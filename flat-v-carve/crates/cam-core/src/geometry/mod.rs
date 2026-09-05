@@ -4,7 +4,7 @@ mod precision;
 mod query;
 mod voronoi;
 
-pub use polygon::{BooleanOp, Region, Ring};
+pub use polygon::{BooleanOp, Region, Ring, WindingRule};
 pub use precision::{Grid, GridPoint};
 pub use query::{BoundaryQuery, Clearance, PointLocation};
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,8 @@ pub struct Diagnostic {
     pub severity: Severity,
     pub stage: &'static str,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -69,6 +71,10 @@ pub enum Severity {
 }
 
 impl Diagnostic {
+    pub(crate) fn source(mut self, id: &str) -> Self {
+        self.source_id = Some(id.into());
+        self
+    }
     pub(crate) fn at_stage(mut self, stage: &'static str) -> Self {
         self.stage = stage;
         self
@@ -87,6 +93,7 @@ impl Diagnostic {
             },
             stage: "geometry",
             message: message.into(),
+            source_id: None,
         }
     }
 }

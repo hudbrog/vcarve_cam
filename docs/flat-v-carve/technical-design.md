@@ -1,7 +1,7 @@
 # Flat V-carve CAM: technical design
 
 Date: 2026-09-05\
-Status: M0 polygon/Voronoi adapters and M1 target/cutter geometry implemented and tested; import, planning, stock verification, and machine output remain the intended design for later milestones.
+Status: M0 geometry, M1 target/cutter models, and M2 SVG import/editable jobs implemented and tested; planning, stock verification, and machine output remain the intended design for later milestones.
 
 See [architecture](architecture.md) for scope and component boundaries, and [implementation plan](implementation-plan.md) for delivery order. Unless explicitly attributed to a source, the geometry below is derived for this project.
 
@@ -150,7 +150,7 @@ Flattening tolerance applies after transforms so scaling does not amplify an unt
 
 Initially require text and strokes to be converted to paths in Inkscape. Report open paths, external references, masks, clip paths, filters, and unsupported styling. Ignore non-geometric editor metadata. Do not automatically close a substantial gap or remove a tiny island without a diagnostic.
 
-The parser is selected during the SVG milestone. A parser that silently drops unsupported objects does not satisfy this import contract.
+M2 implements the supported subset with `roxmltree` 0.21.1 and `svgtypes` 0.16.1. It resolves filled components in page coordinates before workpiece placement, preserving IDs across placement edits; both source and final snapping budgets are recorded. Unsupported rendering effects and out-of-page geometry are rejected. See the [M2 capability report](m2-capability-report.md) for exact subset boundaries, transformed curve bounds, Inkscape measurements, and unresolved precision cases.
 
 ## 5. Endmill planning
 
@@ -276,6 +276,8 @@ Quality acceptance has separate criteria: overcut must stay within the stated nu
 Use versioned JSON for jobs and planning artifacts. UI transport schemas are derived from or checked against the Rust model. Preserve the input SVG snapshot for repeatability; an external filename alone is insufficient. Derived previews are replaceable caches.
 
 A saved job can be incomplete while the user is editing it. Planning validates all required machining fields. Export additionally requires a complete machine profile and a successful verification of the required bounds.
+
+M2's schema-version-1 `Job` implements embedded artwork, import placement/precision, selected component IDs, nullable stock/operation/tool settings, tolerances, and an optional editable machine profile. It stores no trusted normalized-geometry cache. The implemented `import`, `inspect`, `select`, and `validate-job` commands rebuild/validate the source snapshot. `plan` currently returns an explicit diagnostic with no machining plan; the plan/verify/export contracts below are completed in later milestones.
 
 Proposed CLI, with names provisional:
 

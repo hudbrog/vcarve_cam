@@ -97,4 +97,4 @@ Model inputs validate schema version, dimensions, range, geometry, profile ident
 
 The [CLI tests](../../flat-v-carve/crates/cam-app/tests/cli.rs) verify deterministic replay, invalid tool edits, explicit inconclusive exit status, and replacement of a previous successful SVG by an error view when a parsed model fails validation. M1 returns exit code 1 for invalid settings or an inconclusive preview, and 2 for command/JSON/I/O errors. Malformed JSON is a parse error before preview generation; its exit status must be checked when invoking the CLI.
 
-M2 will add Inkscape SVG normalization and versioned, editable jobs. The strict M1 model input is a geometry experiment format and does not implement that job contract. M3–M5 will build and verify cutting sequences using these primitives. No G-code or machine operation is implemented by M1.
+The subsequent [M2 capability report](m2-capability-report.md) covers Inkscape SVG normalization and versioned, editable jobs. The strict M1 model input remains a separate geometry experiment format. M3–M5 will build and verify cutting sequences using these primitives. No G-code or machine operation is implemented by M1.

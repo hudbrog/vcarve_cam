@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="100mm" height="60mm" viewBox="0 0 100 60">
+  <title>M2 Inkscape export coupon</title>
+  <defs/>
+  <g inkscape:groupmode="layer" inkscape:label="Pockets" id="pockets" transform="translate(5,5)" style="fill:#123456;stroke:none">
+    <path id="letter-o" fill-rule="evenodd" d="M 0,0 H 20 V 20 H 0 Z M 5,5 H 15 V 15 H 5 Z"/>
+    <path id="curves" d="M 30,0 C 30,8 35,8 40,0 S 50,0 50,8 Q 50,18 40,20 T 30,8 A 5,5 0 0 1 30,0 Z"/>
+    <rect id="rounded" x="60" y="0" width="20" height="15" rx="2"/>
+    <circle id="disk" cx="70" cy="32" r="7"/>
+    <rect id="overlap-a" x="0" y="30" width="15" height="10"/>
+    <rect id="overlap-b" x="10" y="30" width="15" height="10"/>
+    <text id="letter-b" x="35" y="43" style="font-family:Arial;font-size:20px;fill:#000000">B</text>
+  </g>
+  <g id="hidden" style="display:none"><text x="1" y="1">H</text></g>
+</svg>

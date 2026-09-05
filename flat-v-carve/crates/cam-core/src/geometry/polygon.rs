@@ -39,7 +39,196 @@ pub enum BooleanOp {
     Xor,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindingRule {
+    Nonzero,
+    Evenodd,
+}
+
 impl Region {
+    /// Resolve filled SVG contours before passing nonintersecting boundaries downstream.
+    /// Intentional contour crossings are allowed; snapping must preserve their relations.
+    pub fn from_filled_paths(grid: Grid, input: &[Vec<Point>], rule: WindingRule) -> Result<Self> {
+        if input.iter().map(Vec::len).sum::<usize>() > MAX_EDGES {
+            return Err(Diagnostic::new(
+                "GEOMETRY_LIMIT",
+                "at most 4096 flattened vertices are supported",
+            ));
+        }
+        let mut originals = Vec::new();
+        let mut paths = Paths64::new();
+        let mut diagnostics = Vec::new();
+        for raw in input {
+            let mut points = raw.clone();
+            points.dedup();
+            if points.first() == points.last() && points.len() > 1 {
+                points.pop();
+            }
+            if points.len() != raw.len() {
+                diagnostics.push(Diagnostic::new(
+                    "DUPLICATE_VERTEX_REMOVED",
+                    "removed exact repeated/closing path vertices",
+                ));
+            }
+            if points.len() < 3 {
+                return Err(Diagnostic::new(
+                    "DEGENERATE_RING",
+                    "filled subpath needs at least three distinct vertices",
+                ));
+            }
+            let snapped = points
+                .iter()
+                .map(|&p| grid.quantize(p))
+                .collect::<Result<Vec<_>>>()?;
+            if snapped
+                .iter()
+                .zip(snapped.iter().cycle().skip(1))
+                .any(|(a, b)| a == b)
+            {
+                return Err(Diagnostic::new(
+                    "QUANTIZATION_COLLAPSE",
+                    "snapping collapsed an SVG boundary edge; reduce tolerance or increase scale",
+                ));
+            }
+            let area: f64 = points[1..]
+                .windows(2)
+                .map(|ab| orient(points[0], ab[0], ab[1]))
+                .sum();
+            let snapped_area = twice_area(&snapped);
+            if area != 0.0 && (snapped_area == 0 || (area < 0.0) != (snapped_area < 0)) {
+                return Err(Diagnostic::new(
+                    "QUANTIZATION_ORIENTATION",
+                    "SVG contour area vanished or reversed during snapping",
+                ));
+            }
+            if points[1..]
+                .windows(2)
+                .all(|ab| orient(points[0], ab[0], ab[1]) == 0.0)
+            {
+                return Err(Diagnostic::new(
+                    "DEGENERATE_RING",
+                    "SVG contour is collinear",
+                ));
+            }
+            paths.push(snapped.iter().map(|p| Point64::new(p.x, p.y)).collect());
+            originals.push(points);
+        }
+        Self::check_snapping(grid, &originals)?;
+        let mut engine = Clipper64::new();
+        engine.add_subject(&paths);
+        let mut tree = PolyTree64::new();
+        let rule = match rule {
+            WindingRule::Nonzero => FillRule::NonZero,
+            WindingRule::Evenodd => FillRule::EvenOdd,
+        };
+        if !engine.execute_tree(ClipType::Union, rule, &mut tree, &mut vec![])
+            || engine.error_code() != 0
+        {
+            return Err(Diagnostic::new(
+                "SVG_FILL_FAILED",
+                "could not resolve SVG filled contours",
+            ));
+        }
+        let mut region = Self::from_tree(grid, tree)?;
+        region.diagnostics = diagnostics;
+        Ok(region)
+    }
+
+    /// Check every original/snapped edge relation, including across separate SVG objects.
+    pub(crate) fn check_snapping(grid: Grid, input: &[Vec<Point>]) -> Result<()> {
+        let originals: Vec<Vec<Point>> = input
+            .iter()
+            .map(|raw| {
+                let mut p = raw.clone();
+                p.dedup();
+                if p.len() > 1 && p.first() == p.last() {
+                    p.pop();
+                }
+                p
+            })
+            .collect();
+        if originals.iter().map(Vec::len).sum::<usize>() > MAX_EDGES {
+            return Err(Diagnostic::new(
+                "GEOMETRY_LIMIT",
+                "at most 4096 boundary vertices are supported",
+            ));
+        }
+        for ring in &originals {
+            let q = ring
+                .iter()
+                .map(|&p| grid.quantize(p))
+                .collect::<Result<Vec<_>>>()?;
+            if q.iter().zip(q.iter().cycle().skip(1)).any(|(a, b)| a == b) {
+                return Err(Diagnostic::new(
+                    "QUANTIZATION_COLLAPSE",
+                    "snapping collapsed an SVG boundary edge",
+                ));
+            }
+        }
+        let edges: Vec<_> = originals
+            .iter()
+            .enumerate()
+            .flat_map(|(r, ps)| (0..ps.len()).map(move |i| (r, i)))
+            .collect();
+        for (at, &(r, i)) in edges.iter().enumerate() {
+            for &(s, j) in &edges[at + 1..] {
+                let a = originals[r][i];
+                let b = originals[r][(i + 1) % originals[r].len()];
+                let c = originals[s][j];
+                let d = originals[s][(j + 1) % originals[s].len()];
+                let raw_hit = raw_intersects(a, b, c, d);
+                let qa = grid.quantize(a)?;
+                let qb = grid.quantize(b)?;
+                let qc = grid.quantize(c)?;
+                let qd = grid.quantize(d)?;
+                let grid_hit = intersects(qa, qb, qc, qd);
+                let opposite = |a: f64, b: f64| (a < 0. && b > 0.) || (a > 0. && b < 0.);
+                let raw_proper = opposite(orient(a, b, c), orient(a, b, d))
+                    && opposite(orient(c, d, a), orient(c, d, b));
+                let grid_proper = cross(qa, qb, qc).signum() * cross(qa, qb, qd).signum() < 0
+                    && cross(qc, qd, qa).signum() * cross(qc, qd, qb).signum() < 0;
+                if raw_hit != grid_hit || raw_proper != grid_proper {
+                    return Err(Diagnostic::new(
+                        "QUANTIZATION_TOPOLOGY",
+                        "snapping changed an SVG edge crossing or contact",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Split filled components with their immediate hole rings, in geometric order.
+    pub fn components(&self) -> Vec<Self> {
+        let mut result: Vec<_> = self
+            .rings
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.is_hole)
+            .map(|(i, r)| {
+                let mut outer = r.clone();
+                outer.parent = None;
+                let mut rings = vec![outer];
+                for h in self
+                    .rings
+                    .iter()
+                    .filter(|h| h.is_hole && h.parent == Some(i))
+                {
+                    let mut h = h.clone();
+                    h.parent = Some(0);
+                    rings.push(h);
+                }
+                Self {
+                    grid: self.grid,
+                    rings,
+                    diagnostics: vec![],
+                }
+            })
+            .collect();
+        result.sort_by_key(|r| r.rings[0].points.iter().min().copied());
+        result
+    }
     /// Simple closed rings with even-odd nesting, independent of supplied winding.
     /// This is a geometry fixture API, not the future SVG fill-rule importer.
     pub fn from_rings(grid: Grid, input: &[Vec<Point>]) -> Result<Self> {

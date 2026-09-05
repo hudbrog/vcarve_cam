@@ -10,9 +10,9 @@ clipper2-rust.workspace = true
 boostvoronoi.workspace = true
 robust.workspace = true
 serde.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
+roxmltree.workspace = true
+svgtypes.workspace = true
 
 [lints]
 workspace = true

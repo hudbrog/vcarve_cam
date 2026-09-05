@@ -1,7 +1,7 @@
 # Flat V-carve CAM: implementation plan
 
 Date: 2026-09-05\
-Status: M0 and M1 complete on the initial Linux x86-64 target; M2–M8 planned.
+Status: M0–M2 complete on the initial Linux x86-64 target; M3–M8 planned.
 
 Read [architecture](architecture.md) for agreed scope and [technical design](technical-design.md) for geometry and contracts. This plan orders work by uncertainty: establish the geometric foundation before investing in application polish or relying on machine output.
 
@@ -23,7 +23,7 @@ No calendar estimate is assigned yet. The dependency and geometry spike should e
 | --- | --- | --- | --- |
 | M0 ✓ | Rust dependency and geometry spike | None | [Completed capability report](m0-capability-report.md): native debug/release builds, 28 fixtures, 14 tests, documented precision behavior. |
 | M1 ✓ | Target model, cutter models, and debug preview | M0 | [Completed capability report](m1-capability-report.md): 37 tests, 8 procedural previews, analytic dimensions/depths, finite-tip bounds, and exact-fit contacts. |
-| M2 | SVG import and versioned jobs | M1 | Inkscape fixtures round-trip with correct dimensions, holes, and selection. |
+| M2 ✓ | SVG import and versioned jobs | M1 | [Completed capability report](m2-capability-report.md): 65 tests, native/plain Inkscape exports, portable jobs, dimensions/holes/selection preserved. |
 | M3 | Endmill planner and recorded stock removal | M1; integrate M2 | Valid entries, layer clearing, and measured leftover stock. |
 | M4 | V-bit paths and combined rest machining | M3 | Broad floors, rising corners, finite-tip limits, and complete boundary finish. |
 | M5 | Verification of continuous and rounded motions | M4 | Bounded overcut/residual checks and explicit inconclusive cases. |
@@ -66,13 +66,15 @@ Completed 2026-09-05 with engine 0.2.0. Debug tests, release build, Clippy, and 
 
 ## 5. M2: SVG import and saved jobs
 
-- [ ] Select an SVG/XML parser against actual Inkscape exports and the supported-subset contract.
-- [ ] Support units, transforms, viewBox, closed path commands including arcs, and basic closed shapes.
-- [ ] Resolve compound paths, fill rules, visibility, and supported inherited fills.
-- [ ] Preserve source IDs and map normalized components to user selections.
-- [ ] Add explicit diagnostics for unsupported features and meaningful geometry repairs.
-- [ ] Add versioned job serialization with embedded artwork and editable incomplete settings.
-- [ ] Implement import/plan/inspect CLI entry points as their core operations become available.
+- [x] Select an SVG/XML parser against actual Inkscape exports and the supported-subset contract.
+- [x] Support units, transforms, viewBox, closed path commands including arcs, and basic closed shapes.
+- [x] Resolve compound paths, fill rules, visibility, and supported inherited fills.
+- [x] Preserve source IDs and map normalized components to user selections.
+- [x] Add explicit diagnostics for unsupported features and meaningful geometry repairs.
+- [x] Add versioned job serialization with embedded artwork and editable incomplete settings.
+- [x] Implement import/plan/inspect CLI entry points as their core operations become available.
+
+Completed 2026-09-05 with engine 0.3.0. The release build, 65 integration tests, Clippy, and formatting pass. Both native and plain Inkscape exports preserve dimensions, compound holes, and selections; source bounds agree with Inkscape within 0.000171 mm. The [M2 capability report](m2-capability-report.md) records parser selection, supported features, precision budgets, portable job replay, diagnostics, and limits. `import`, `inspect`, `select`, and `validate-job` are implemented; `plan` reports explicit unavailability until M3 provides cutting paths.
 
 **Exit:** round-tripped jobs preserve physical dimensions, selection, and normalized geometry within tolerance. Reversed winding, transformed groups, and compound letters behave correctly. Text/strokes that need Inkscape conversion are reported rather than machined accidentally.
 

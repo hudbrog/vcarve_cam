@@ -1,7 +1,7 @@
 # Flat V-carve CAM: architecture
 
 Date: 2026-09-05\
-Status: M0 geometry foundation and M1 target/cutter models implemented and tested; M2–M8 remain the planning baseline.
+Status: M0 geometry, M1 target/cutter models, and M2 SVG import/editable jobs implemented and tested; M3–M8 remain the planning baseline.
 
 This document records the product boundaries, components, and language choices. See [technical design](technical-design.md) for geometry and data contracts, and [implementation plan](implementation-plan.md) for milestones and acceptance criteria.
 
@@ -90,6 +90,8 @@ Within `cam-core`, keep modules for `model`, `svg`, `geometry`, `target`, `pocke
 
 M1 implements `model`, `target`, and `preview` alongside M0's `geometry` and `spike`. Independent boundary queries support point/segment clearance and bounded finite-tip reachability. The CLI can validate edited model JSON and render plan/profile SVGs without a browser. These are target/cutter capability views; stock removal from planned moves remains future work. See the [M1 capability report](m1-capability-report.md).
 
+M2 adds `svg` and `job`: explicit SVG subset validation, transformed curve flattening, fill normalization, stable source/component mapping, and portable source/settings snapshots. CLI import, selection, validation, and inspection call this in-memory core. Jobs can be saved with missing machining settings; inspection recomputes derived geometry. See the [M2 capability report](m2-capability-report.md).
+
 Layout inside `flat-v-carve/` (the `web` directory and later core modules remain future work):
 
 ```text
@@ -101,6 +103,7 @@ crates/
   cam-app/src/
 fixtures/m0.json
 fixtures/m1/        # eight editable procedural target/cutter models
+fixtures/m2/        # authored coupon, actual Inkscape exports, reference bounds
 README.md
 artifacts/          # generated locally
 web/                # planned for M7
@@ -115,7 +118,7 @@ Use narrow adapters that expose application-owned region, path, and skeleton typ
 
 M0 checked holes, curved Voronoi edges, degenerate inputs, numerical error, and native builds. The project pins Rust 1.95.0 and the tested crate versions; both geometry dependencies have default features disabled. [The capability report](m0-capability-report.md) records measurements and limitations. A port's documented API alone does not establish its correctness for this CAM workload. Future dependency failures should produce small reproducers and adapter-level decisions, without spreading workarounds throughout the planner.
 
-SVG/XML parsing and HTTP/framework dependencies remain implementation choices. Select them against the supported SVG subset and deployment requirements, not their ability to render arbitrary web content.
+M2 pins `roxmltree` 0.21.1 and `svgtypes` 0.16.1 for XML/attribute parsing, while application code owns supported SVG semantics and diagnostics. [The M2 report](m2-capability-report.md) records parser and fixture evidence. HTTP/framework dependencies remain future choices.
 
 ## 6. Data flow and reproducibility
 
