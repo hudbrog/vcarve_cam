@@ -5,20 +5,26 @@ use cam_core::{
     svg::Bounds,
 };
 use std::fmt::Write;
-fn escape(s: &str) -> String {
+pub(super) fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
-fn text(out: &mut String, x: f64, y: f64, size: u32, s: &str) {
+pub(super) fn text(out: &mut String, x: f64, y: f64, size: u32, s: &str) {
     let _ = write!(
         out,
         "<text x=\"{x}\" y=\"{y}\" font-size=\"{size}\">{}</text>",
         escape(s)
     );
 }
-fn region(out: &mut String, r: &Region, xy: &impl Fn(Point) -> Point, fill: &str, stroke: &str) {
+pub(super) fn region(
+    out: &mut String,
+    r: &Region,
+    xy: &impl Fn(Point) -> Point,
+    fill: &str,
+    stroke: &str,
+) {
     let mut d = String::new();
     for ring in r.rings_mm() {
         for (i, p) in ring.into_iter().enumerate() {

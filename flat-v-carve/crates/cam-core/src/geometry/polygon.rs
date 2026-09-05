@@ -566,7 +566,7 @@ impl Region {
 /// disjoint at their boundaries so nesting is unambiguous. Clipper output has an
 /// explicit hierarchy and may retain shared endpoints between components.
 fn validate_boundaries(rings: &[Ring], originals: Option<&[Vec<Point>]>) -> Result<()> {
-    let edges: Vec<_> = rings
+    let mut edges: Vec<_> = rings
         .iter()
         .enumerate()
         .flat_map(|(r, ring)| {
@@ -586,8 +586,22 @@ fn validate_boundaries(rings: &[Ring], originals: Option<&[Vec<Point>]>) -> Resu
             "M0 accepts at most 4096 boundary edges",
         ));
     }
+    // Output coordinates are already integer and exact. An x-sorted broad phase
+    // preserves every contact/intersection check while avoiding all-pairs work
+    // for the many disjoint sweep edges created by stock unions.
+    if originals.is_none() {
+        edges.sort_by_key(|&(_, _, a, b)| a.x.min(b.x));
+    }
     for (index, &(r, i, a, b)) in edges.iter().enumerate() {
         for &(s, j, c, d) in &edges[index + 1..] {
+            if originals.is_none() {
+                if c.x.min(d.x) > a.x.max(b.x) {
+                    break;
+                }
+                if c.y.min(d.y) > a.y.max(b.y) || c.y.max(d.y) < a.y.min(b.y) {
+                    continue;
+                }
+            }
             let shared = a == c || a == d || b == c || b == d;
             let overlaps = cross(a, b, c) == 0
                 && cross(a, b, d) == 0

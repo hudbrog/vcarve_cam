@@ -3,6 +3,7 @@ use cam_core::{
     job::Job,
     pocket::{EndmillPlan, PlanStatus, plan_endmill},
     svg::{ImportOptions, MAX_SVG_BYTES},
+    vcarve::{CombinedPlan, plan_combined},
 };
 use serde_json::json;
 use std::{
@@ -36,6 +37,7 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
     let mut options = ImportOptions::default();
     let mut tolerance_set = false;
     let mut selection = vec![];
+    let mut stage = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" | "-h" => {
@@ -58,6 +60,13 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
                     .ok_or("--tolerance requires millimeters")?
                     .parse()?;
                 tolerance_set = true;
+            }
+            "--stage" if command == "plan" && stage.is_none() => {
+                let value = args.next().ok_or("--stage requires endmill or combined")?;
+                if !matches!(value.as_str(), "endmill" | "combined") {
+                    return Err("--stage requires endmill or combined".into());
+                }
+                stage = Some(value);
             }
             "--select" if matches!(command, "import" | "select") => {
                 selection.push(args.next().ok_or("--select requires a region ID")?)
@@ -86,14 +95,54 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
             8_000_000
         },
     )?;
-    let is_plan = serde_json::from_str::<serde_json::Value>(&contents)
+    let kind = serde_json::from_str::<serde_json::Value>(&contents)
         .ok()
-        .is_some_and(|v| v.get("artifact_kind").is_some());
+        .and_then(|v| {
+            v.get("artifact_kind")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        });
+    let is_plan = kind.is_some();
+    if matches!(command, "inspect" | "verify") && kind.as_deref() == Some("combined_plan") {
+        return match CombinedPlan::from_json(&contents) {
+            Ok(plan) => {
+                let data = serde_json::to_string_pretty(
+                    &json!({"valid":true,"milestone":"M4","input_fingerprint":plan.input_fingerprint,"motion_fingerprint":plan.motion_fingerprint,"endmill_status":plan.endmill.analysis.status,"analysis":plan.analysis}),
+                )? + "\n";
+                if command == "inspect" {
+                    write(
+                        output.as_ref().unwrap(),
+                        &super::combined_svg::render(&plan),
+                    )?;
+                    if let Some(report) = report {
+                        write(&report, &data)?;
+                    }
+                } else {
+                    write(output.as_ref().unwrap(), &data)?;
+                }
+                eprintln!(
+                    "Combined M4 stage: {:?}; {} endmill and {} V-bit motions, {} quality samples",
+                    plan.analysis.status,
+                    plan.endmill.motions.len(),
+                    plan.vbit_motions.len(),
+                    plan.analysis.samples.len()
+                );
+                Ok(matches!(
+                    plan.analysis.status,
+                    PlanStatus::Complete | PlanStatus::Empty
+                ))
+            }
+            Err(d) => {
+                failed(command, &d, output.as_deref(), report.as_deref())?;
+                Ok(false)
+            }
+        };
+    }
     if matches!(command, "inspect" | "verify") && (is_plan || command == "verify") {
         return match EndmillPlan::from_json(&contents) {
             Ok(plan) => {
                 let data = serde_json::to_string_pretty(
-                    &json!({"valid":true,"milestone":"M3","input_fingerprint":plan.input_fingerprint,"motion_fingerprint":plan.motion_fingerprint,"analysis":plan.analysis}),
+                    &json!({"valid":true,"milestone":"M4","input_fingerprint":plan.input_fingerprint,"motion_fingerprint":plan.motion_fingerprint,"analysis":plan.analysis}),
                 )? + "\n";
                 if command == "inspect" {
                     write(output.as_ref().unwrap(), &super::plan_svg::render(&plan))?;
@@ -141,7 +190,7 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
     });
     match result {
         Ok((job, inspection)) => {
-            let data = json!({"valid":true,"milestone":"M3","inspection":inspection});
+            let data = json!({"valid":true,"milestone":"M4","inspection":inspection});
             match command {
                 "import" | "select" => {
                     write(output.as_ref().unwrap(), &job.to_json()?)?;
@@ -167,6 +216,32 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
                 }
                 "validate-job" => println!("{}", serde_json::to_string_pretty(&data)?),
                 "plan" => {
+                    if stage.as_deref() == Some("combined")
+                        || stage.is_none() && job.vbit_planning.is_some()
+                    {
+                        return match plan_combined(&job) {
+                            Ok(plan) => {
+                                write(output.as_ref().unwrap(), &plan.to_json()?)?;
+                                eprintln!(
+                                    "Combined M4 stage: {:?}; {} endmill and {} V-bit motions",
+                                    plan.analysis.status,
+                                    plan.endmill.motions.len(),
+                                    plan.vbit_motions.len()
+                                );
+                                for d in &plan.analysis.diagnostics {
+                                    eprintln!("{d}");
+                                }
+                                Ok(matches!(
+                                    plan.analysis.status,
+                                    PlanStatus::Complete | PlanStatus::Empty
+                                ))
+                            }
+                            Err(d) => {
+                                failed(command, &d, output.as_deref(), report.as_deref())?;
+                                Ok(false)
+                            }
+                        };
+                    }
                     return match plan_endmill(&job) {
                         Ok(plan) => {
                             write(output.as_ref().unwrap(), &plan.to_json()?)?;
@@ -210,7 +285,7 @@ fn failed(
     report: Option<&Path>,
 ) -> AppResult<()> {
     let data = serde_json::to_string_pretty(
-        &json!({"schema_version":1,"milestone":"M3","valid":false,"diagnostics":[d]}),
+        &json!({"schema_version":1,"milestone":"M4","valid":false,"diagnostics":[d]}),
     )? + "\n";
     match command {
         "inspect" => {

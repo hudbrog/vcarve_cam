@@ -1,7 +1,7 @@
 # Flat V-carve CAM: architecture
 
 Date: 2026-09-05\
-Status: M0–M3 implemented and tested: geometry, target/cutter models, SVG jobs, endmill paths, and stock slices; M4–M8 remain the planning baseline.
+Status: M0–M4 implemented and tested: SVG jobs, both planners, continuous cutter-clearance checks, and combined stock/quality previews; M5–M8 remain the planning baseline.
 
 This document records the product boundaries, components, and language choices. See [technical design](technical-design.md) for geometry and data contracts, and [implementation plan](implementation-plan.md) for milestones and acceptance criteria.
 
@@ -93,6 +93,8 @@ M1 implements `model`, `target`, and `preview` alongside M0's `geometry` and `sp
 M2 adds `svg` and `job`: explicit SVG subset validation, transformed curve flattening, fill normalization, stable source/component mapping, and portable source/settings snapshots. CLI import, selection, validation, and inspection call this in-memory core. Jobs can be saved with missing machining settings; inspection recomputes derived geometry. See the [M2 capability report](m2-capability-report.md).
 
 M3 adds `pocket` (including an independent segment verifier), `motion`, and `stock`. Planning returns an endmill-only artifact with the embedded job, linear XYZ moves, generation issues, and derived layer reports. Stock comes from actual recorded cuts, ramps, and plunges. The core independently checks whole segments and compares capsule sweeps at stepdown slices. The CLI plans, renders paths/residuals, and verifies saved plans. Job schema 2 adds explicit entry settings and ramp capability; schema 1 jobs migrate with those settings unset. Plan fingerprints include the engine, job, moves, and generation issues. Cached reports are recomputed on loading. See the [M3 capability report](m3-capability-report.md).
+
+M4 adds `vcarve` with medial extraction, guarded XYZ path generation, combined planning, and execution/quality verification. `stock` now supports variable-radius V-bit sweeps and analytic point-removal queries. `geometry` independently checks continuous linear-radius clearance and uses an exact bounding-box broad phase for polygon-output validation. Combined artifacts retain both stages, a logical tool-transition marker, actual motions, and path execution records. Floor slices and sampled reachability distinguish missed stock from cutter-limited detail; their global continuous verification remains M5. See the [M4 capability report](m4-capability-report.md).
 
 Layout inside `flat-v-carve/` (the `web` directory and later core modules remain future work):
 

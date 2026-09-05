@@ -9,3 +9,5 @@ pub mod spike;
 pub mod stock;
 pub mod svg;
 pub mod target;
+
+pub mod vcarve;

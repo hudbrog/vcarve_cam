@@ -44,7 +44,7 @@ fn import_inspect_and_select_work_after_original_artwork_is_removed() {
     );
     assert!(result.stdout.is_empty());
     let data = json(job.clone());
-    assert_eq!(data["schema_version"], 2);
+    assert_eq!(data["schema_version"], 3);
     assert!(data["operation"]["max_depth_mm"].is_null());
     assert!(data["tools"][0]["geometry"].is_null());
     fs::remove_file(&svg).unwrap();

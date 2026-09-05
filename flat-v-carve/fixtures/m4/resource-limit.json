@@ -1,0 +1,104 @@
+{
+  "schema_version": 3,
+  "name": "Synthetic M4 resource-limit",
+  "source": {
+    "filename": "synthetic.svg",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40mm\" height=\"30mm\" viewBox=\"0 0 40 30\"><path id=\"pocket\" fill-rule=\"evenodd\" d=\"M0 0h30v20h-30z\"/></svg>"
+  },
+  "import": {
+    "geometry_tolerance_mm": 0.005,
+    "ticks_per_mm": null,
+    "placement": {
+      "origin_mm": {
+        "x": 0,
+        "y": 0
+      },
+      "scale": 1,
+      "rotation_deg": 0
+    }
+  },
+  "selected_region_ids": [
+    "pocket::0"
+  ],
+  "stock": {
+    "thickness_mm": 8
+  },
+  "operation": {
+    "id": "flat-v-carve",
+    "endmill_id": "endmill",
+    "vbit_id": "vbit",
+    "max_depth_mm": 2,
+    "wall_allowance_mm": 0.5,
+    "max_floor_ridge_mm": 0.15,
+    "max_detail_residual_mm": 0
+  },
+  "tools": [
+    {
+      "id": "endmill",
+      "geometry": {
+        "kind": "endmill",
+        "dimensions": {
+          "diameter_mm": 4,
+          "cutting_length_mm": 6,
+          "plunge_capable": true
+        }
+      },
+      "spindle_rpm": 10000,
+      "cutting_feed_mm_min": 300,
+      "plunge_feed_mm_min": 100,
+      "max_stepdown_mm": 1,
+      "stepover_mm": 1.5,
+      "ramp_capable": false,
+      "plunge_capable": null
+    },
+    {
+      "id": "vbit",
+      "geometry": {
+        "kind": "vbit",
+        "dimensions": {
+          "included_angle_deg": 90,
+          "tip_diameter_mm": 0,
+          "max_cutting_diameter_mm": 12,
+          "cutting_height_mm": 5
+        }
+      },
+      "spindle_rpm": 12000,
+      "cutting_feed_mm_min": 250,
+      "plunge_feed_mm_min": 80,
+      "max_stepdown_mm": 1,
+      "stepover_mm": 0.5,
+      "ramp_capable": null,
+      "plunge_capable": true
+    }
+  ],
+  "tolerances": {
+    "motion_tolerance_mm": 0.005,
+    "verification_tolerance_mm": 0.05
+  },
+  "machine_profile": null,
+  "endmill_planning": {
+    "clearance_z_mm": 5,
+    "start_xy_mm": {
+      "x": 0,
+      "y": 0
+    },
+    "strategy": "depth_dependent",
+    "entry": {
+      "kind": "plunge"
+    },
+    "max_layers": 32,
+    "max_loops_per_layer": 128,
+    "max_motions": 10000
+  },
+  "vbit_planning": {
+    "max_paths": 2048,
+    "max_motions": 10,
+    "max_curve_segments": 8192,
+    "max_depth_passes": 32,
+    "max_cleanup_iterations": 2,
+    "quality_sample_spacing_mm": 1,
+    "max_quality_samples": 10000,
+    "reachability_max_cells": 4096,
+    "stock_slices": 3
+  }
+}

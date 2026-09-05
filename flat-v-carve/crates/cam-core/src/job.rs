@@ -7,7 +7,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub const JOB_SCHEMA_VERSION: u32 = 2;
+pub const JOB_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +40,8 @@ pub struct ToolSettings {
     pub stepover_mm: Option<f64>,
     #[serde(default)]
     pub ramp_capable: Option<bool>,
+    #[serde(default)]
+    pub plunge_capable: Option<bool>,
 }
 impl ToolSettings {
     fn empty(id: &str) -> Self {
@@ -52,6 +54,7 @@ impl ToolSettings {
             max_stepdown_mm: None,
             stepover_mm: None,
             ramp_capable: None,
+            plunge_capable: None,
         }
     }
 }
@@ -105,6 +108,8 @@ pub struct Job {
     pub machine_profile: Option<MachineProfile>,
     #[serde(default)]
     pub endmill_planning: Option<crate::pocket::EndmillPlanningSettings>,
+    #[serde(default)]
+    pub vbit_planning: Option<crate::vcarve::VBitPlanningSettings>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -156,6 +161,7 @@ impl Job {
             tolerances: PlanningTolerances::default(),
             machine_profile: None,
             endmill_planning: None,
+            vbit_planning: None,
         })
     }
     pub fn from_json(json: &str) -> Result<Self> {
@@ -167,7 +173,10 @@ impl Job {
         }
         let mut value: serde_json::Value =
             serde_json::from_str(json).map_err(|e| error("JOB_JSON", e.to_string()))?;
-        if value.get("schema_version").and_then(|v| v.as_u64()) == Some(1) {
+        if matches!(
+            value.get("schema_version").and_then(|v| v.as_u64()),
+            Some(1 | 2)
+        ) {
             value["schema_version"] = serde_json::json!(JOB_SCHEMA_VERSION);
         }
         if value.get("schema_version").and_then(|v| v.as_u64()) != Some(JOB_SCHEMA_VERSION as u64) {
@@ -188,6 +197,9 @@ impl Job {
             .map_err(|e| error("JOB_JSON", e.to_string()))
     }
     pub fn validate_settings(&self) -> Result<()> {
+        if let Some(settings) = &self.vbit_planning {
+            settings.validate()?;
+        }
         if let Some(settings) = &self.endmill_planning {
             settings.validate()?;
         }
@@ -229,6 +241,12 @@ impl Job {
             if let Some(g) = &tool.geometry {
                 match g {
                     ToolGeometry::Endmill(s) => {
+                        if tool.plunge_capable.is_some_and(|v| v != s.plunge_capable) {
+                            return Err(error(
+                                "JOB_TOOL_CAPABILITY",
+                                "endmill slot and dimensions disagree about plunge capability",
+                            ));
+                        }
                         Endmill::try_from(s.clone())?;
                     }
                     ToolGeometry::Vbit(s) => {
@@ -335,6 +353,9 @@ impl Job {
             Some(&self.selected_region_ids),
         )?;
         let mut missing = vec![];
+        if self.vbit_planning.is_none() {
+            missing.push("vbit_planning".into());
+        }
         if self.endmill_planning.is_none() {
             missing.push("endmill_planning".into());
         }
@@ -370,6 +391,9 @@ impl Job {
             }
         }
         for t in &self.tools {
+            if t.id == self.operation.vbit_id && t.plunge_capable.is_none() {
+                missing.push(format!("tools.{}.plunge_capable", t.id));
+            }
             if t.geometry.is_none() {
                 missing.push(format!("tools.{}.geometry", t.id));
             }

@@ -1,11 +1,13 @@
 # Flat V-carve CAM: technical design
 
 Date: 2026-09-05\
-Status: M0–M3 implemented and tested, including endmill planning and stock slices. V-bit planning, adaptive combined-stock verification, and machine output remain the intended design for later milestones.
+Status: M0–M4 implemented and tested, including both planners and combined stock/quality previews. Adaptive continuous combined-stock verification and machine output remain M5–M6 work.
 
 See [architecture](architecture.md) for scope and component boundaries, and [implementation plan](implementation-plan.md) for delivery order. Unless explicitly attributed to a source, the geometry below is derived for this project.
 
 The [M3 capability report](m3-capability-report.md) defines the current endmill-only implementation: offset loops with a numerical guard, explicit plunge/ramp entries, clearance-plane links, independent continuous segment clearance, and actual-motion stock comparisons at stepdown slices. M3 uses `verification_tolerance_mm` as the XY floor-coverage tolerance at those slices. The adaptive volume/depth uncertainty and combined finish-quality contracts below remain M5 work; an M3 `complete` stage does not claim them.
+
+The [M4 capability report](m4-capability-report.md) defines the current combined planner: guarded full-depth boundaries, threshold-split medial paths, floor lanes, conservative air proofs against actual endmill sweeps, bounded cleanup, and a retained final finishing family. M4 checks continuous linear-radius cutter clearance, floor coverage at the ridge depth minus an explicit numerical budget, and a configurable sample lattice with independent reachability bounds. Its sampled quality maxima and fixed slices are not the adaptive global certification specified for M5.
 
 ## 1. Coordinate and tolerance conventions
 
@@ -279,9 +281,9 @@ Use versioned JSON for jobs and planning artifacts. UI transport schemas are der
 
 A saved job can be incomplete while the user is editing it. Planning validates all required machining fields. Export additionally requires a complete machine profile and a successful verification of the required bounds.
 
-M2's schema-version-1 `Job` implements embedded artwork, import placement/precision, selected component IDs, nullable stock/operation/tool settings, tolerances, and an optional editable machine profile. It stores no trusted normalized-geometry cache. The implemented `import`, `inspect`, `select`, and `validate-job` commands rebuild/validate the source snapshot. `plan` currently returns an explicit diagnostic with no machining plan; the plan/verify/export contracts below are completed in later milestones.
+M2's schema-version-1 `Job` implements embedded artwork, import placement/precision, selected component IDs, nullable stock/operation/tool settings, tolerances, and an optional editable machine profile. It stores no trusted normalized-geometry cache. The implemented `import`, `inspect`, `select`, and `validate-job` commands rebuild/validate the source snapshot. M3 and M4 extend the job through schemas 2 and 3 and implement `plan`, `inspect`, and `verify` for endmill/combined artifacts. Export still requires M5 verification and the M6 machine profile.
 
-Proposed CLI, with names provisional:
+CLI (`export` and `serve` remain planned):
 
 ```text
 cam import artwork.svg --output job.json
@@ -317,4 +319,4 @@ Diagnostics have a stable code, severity, stage, source region/operation, and op
 
 Planning may return a partial diagnostic preview, but it must label it incomplete. No automatic geometric repair or resource-limit fallback may silently remove requested detail.
 
-The main unresolved engineering items are curved-medial-axis error bounds, dependable rest-floor coverage, and continuous stock-verification bounds. Their acceptance tests are scheduled before usable machine output in the implementation plan.
+M4 implements bounded curved-medial paths and measured rest-floor coverage for the documented fixture workload. The remaining verification work is adaptive global stock/quality bounds, accumulated Boolean/topology uncertainty, and output quantization. Those acceptance tests precede usable machine output in the implementation plan.

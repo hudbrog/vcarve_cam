@@ -48,7 +48,7 @@ impl MotionKind {
         matches!(self, Self::RapidXY | Self::RapidRetract)
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Motion {
     pub id: usize,

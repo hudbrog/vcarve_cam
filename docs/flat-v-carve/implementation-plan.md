@@ -1,7 +1,7 @@
 # Flat V-carve CAM: implementation plan
 
 Date: 2026-09-05\
-Status: M0–M3 complete on the initial Linux x86-64 target; M4–M8 planned.
+Status: M0–M4 complete on the initial Linux x86-64 target; M5–M8 planned.
 
 Read [architecture](architecture.md) for agreed scope and [technical design](technical-design.md) for geometry and contracts. This plan orders work by uncertainty: establish the geometric foundation before investing in application polish or relying on machine output.
 
@@ -24,8 +24,8 @@ No calendar estimate is assigned yet. The dependency and geometry spike should e
 | M0 ✓ | Rust dependency and geometry spike | None | [Completed capability report](m0-capability-report.md): native debug/release builds, 28 fixtures, 14 tests, documented precision behavior. |
 | M1 ✓ | Target model, cutter models, and debug preview | M0 | [Completed capability report](m1-capability-report.md): 37 tests, 8 procedural previews, analytic dimensions/depths, finite-tip bounds, and exact-fit contacts. |
 | M2 ✓ | SVG import and versioned jobs | M1 | [Completed capability report](m2-capability-report.md): 65 tests, native/plain Inkscape exports, portable jobs, dimensions/holes/selection preserved. |
-| M3 | Endmill planner and recorded stock removal | M1; integrate M2 | Valid entries, layer clearing, and measured leftover stock. |
-| M4 | V-bit paths and combined rest machining | M3 | Broad floors, rising corners, finite-tip limits, and complete boundary finish. |
+| M3 ✓ | Endmill planner and recorded stock removal | M1; integrate M2 | [Completed capability report](m3-capability-report.md): 84 tests, 10 release fixtures, continuous clearance, and actual endmill stock. |
+| M4 ✓ | V-bit paths and combined rest machining | M3 | [Completed capability report](m4-capability-report.md): 108 tests, 13 release fixtures, curved/rising detail, floor ridges, and retained final finishing. |
 | M5 | Verification of continuous and rounded motions | M4 | Bounded overcut/residual checks and explicit inconclusive cases. |
 | M6 | LinuxCNC postprocessor and machine-profile contract | M5 | Emitted-subset checks and LinuxCNC preview/simulation. |
 | M7 | Local browser workflow | M2 and stable planning contracts; integrate M6 | Import-to-export parity with CLI and responsive planning. |
@@ -91,21 +91,23 @@ Completed 2026-09-05 with engine 0.3.0. The release build, 65 integration tests,
 
 **Exit:** paths preserve the nominal slopes plus allowance, never cross an island, and leave measurable stock for the V-bit. Cases with no endmill access produce an empty endmill stage and continue to the V-bit planner when appropriate. Missing pocket coverage and unsupported entries are visible diagnostics.
 
-Completed 2026-09-05 with engine 0.4.0. The [M3 capability report](m3-capability-report.md) records the endmill-only completion contract, motion/stock checks, synthetic fixture matrix, explicit failure statuses, saved-plan replay, and numerical limits. `plan` produces recorded XYZ moves; `inspect` and `verify` recompute stock and clearance. Empty stages retain target stock for the M4 planner, which is not yet implemented.
+Completed 2026-09-05 with engine 0.4.0. The [M3 capability report](m3-capability-report.md) records the endmill-only completion contract, motion/stock checks, synthetic fixture matrix, explicit failure statuses, saved-plan replay, and numerical limits. `plan` produces recorded XYZ moves; `inspect` and `verify` recompute stock and clearance. Empty stages retain target stock for the M4 planner described below.
 
 ## 7. M4: V-bit finishing and rest machining
 
-- [ ] Extract the interior medial axis, retaining radii and curved-edge evaluation.
-- [ ] Generate full-depth boundary paths and variable-depth narrow-detail paths.
-- [ ] Split paths at depth-cap and finite-tip reachability transitions; verify family junctions.
-- [ ] Generate finite-spaced floor-clearing lanes using the allowed ridge height.
-- [ ] Add V-bit depth passes based on material actually left by the endmill.
-- [ ] Prune only path sections proved to be air cutting; do not constrain centers to residual polygons.
-- [ ] Simulate the combined sequence and add cleanup for uncovered reachable regions.
-- [ ] End the V-bit stage with a complete achievable boundary finish.
-- [ ] Bound cleanup iteration; return a diagnostic if coverage fails to converge.
+- [x] Extract the interior medial axis, retaining radii and curved-edge evaluation.
+- [x] Generate full-depth boundary paths and variable-depth narrow-detail paths.
+- [x] Split paths at depth-cap and finite-tip reachability transitions; verify family junctions.
+- [x] Generate finite-spaced floor-clearing lanes using the allowed ridge height.
+- [x] Add V-bit depth passes based on material actually left by the endmill.
+- [x] Prune only path sections proved to be air cutting; do not constrain centers to residual polygons.
+- [x] Simulate the combined sequence and add cleanup for uncovered reachable regions.
+- [x] End the V-bit stage with a complete achievable boundary finish.
+- [x] Bound cleanup iteration; return a diagnostic if coverage fails to converge.
 
 **Exit:** wide floors, narrow channels, pointed ends, holes, and transitions are covered within declared tolerances. Pointed-bit floor ridges match the analytic straight-lane case. Zero-ridge requests that require pointed-bit area clearing are rejected. Finite-tip limitations are reported without pretending they are part of the nominal target.
+
+Completed 2026-09-05 with engine 0.5.0. The [M4 capability report](m4-capability-report.md) records curved and rising medial paths, finite-tip/ridge behavior, conservative air pruning, actual variable-radius sweeps, bounded cleanup, final-family replay checks, and the sampled/slice scope of completion. Adaptive continuous stock-quality certification remains M5.
 
 ## 8. M5: verification and output precision
 

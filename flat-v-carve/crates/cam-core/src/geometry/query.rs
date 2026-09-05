@@ -112,6 +112,87 @@ impl BoundaryQuery {
             .map(|&edge| segment_distance(segment, edge))
             .fold(f64::INFINITY, f64::min))
     }
+
+    /// Lower margin for a linearly changing disk along a linear XY move.
+    /// Split at changes of closest boundary feature, then minimize each squared
+    /// distance-minus-radius quadratic over the entire parameter interval.
+    pub fn variable_radius_margin_mm(&self, segment: Segment, r0: f64, r1: f64) -> Result<f64> {
+        if !r0.is_finite() || !r1.is_finite() || r0 < 0. || r1 < 0. {
+            return Err(Diagnostic::new(
+                "SWEEP_RADIUS",
+                "finite nonnegative radii required",
+            ));
+        }
+        for p in [segment.start, segment.end] {
+            if self.sample(p)?.location != PointLocation::Inside {
+                return Err(Diagnostic::new(
+                    "SWEEP_OUTSIDE",
+                    "cutting centers must remain inside the normalized target",
+                ));
+            }
+        }
+        let vx = segment.end.x - segment.start.x;
+        let vy = segment.end.y - segment.start.y;
+        let dr = r1 - r0;
+        let mut margin = f64::INFINITY;
+        for edge in &self.segments {
+            let wx = edge.end.x - edge.start.x;
+            let wy = edge.end.y - edge.start.y;
+            let ww = wx * wx + wy * wy;
+            let cx = segment.start.x - edge.start.x;
+            let cy = segment.start.y - edge.start.y;
+            let u0 = (cx * wx + cy * wy) / ww;
+            let du = (vx * wx + vy * wy) / ww;
+            let mut splits = vec![0., 1.];
+            if du != 0. {
+                for u in [0., 1.] {
+                    let t = (u - u0) / du;
+                    if t > 0. && t < 1. {
+                        splits.push(t);
+                    }
+                }
+            }
+            splits.sort_by(f64::total_cmp);
+            for pair in splits.windows(2) {
+                let [lo, hi] = [pair[0], pair[1]];
+                let u = u0 + du * (lo + hi) / 2.;
+                let (ax, ay, bx, by) = if u <= 0. {
+                    (cx, cy, vx, vy)
+                } else if u >= 1. {
+                    (cx - wx, cy - wy, vx, vy)
+                } else {
+                    (cx - u0 * wx, cy - u0 * wy, vx - du * wx, vy - du * wy)
+                };
+                let aa = bx * bx + by * by - dr * dr;
+                let bb = 2. * (ax * bx + ay * by - r0 * dr);
+                let cc = ax * ax + ay * ay - r0 * r0;
+                let at = |t: f64| (aa * t + bb) * t + cc;
+                let mut least = at(lo).min(at(hi));
+                if aa > 0. {
+                    let t = -bb / (2. * aa);
+                    if t > lo && t < hi {
+                        least = least.min(at(t));
+                    }
+                }
+                let magnitude =
+                    ax.abs() + ay.abs() + bx.abs() + by.abs() + r0 + r1 + self.magnitude;
+                let reserve = 256. * f64::EPSILON * magnitude * magnitude;
+                let denom = (ax + bx * lo)
+                    .hypot(ay + by * lo)
+                    .max((ax + bx * hi).hypot(ay + by * hi))
+                    + r0.max(r1);
+                if !least.is_finite() || !reserve.is_finite() {
+                    return Err(Diagnostic::new(
+                        "SWEEP_RANGE",
+                        "sweep arithmetic exceeds its finite range",
+                    ));
+                }
+                // A negative numerator is a rejection; its quotient is only a diagnostic.
+                margin = margin.min((least - reserve) / denom.max(f64::MIN_POSITIVE));
+            }
+        }
+        Ok(margin)
+    }
 }
 
 fn orient(a: Point, b: Point, c: Point) -> f64 {

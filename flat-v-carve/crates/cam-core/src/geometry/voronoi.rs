@@ -55,6 +55,9 @@ pub struct Linearization {
 }
 
 impl Curve {
+    pub fn reconstruction_bound_mm(&self) -> f64 {
+        self.endpoint_reconstruction_error_mm + self.numerical_reserve_mm
+    }
     pub fn is_curved(&self) -> bool {
         self.control.is_some()
     }

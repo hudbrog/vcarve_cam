@@ -464,7 +464,7 @@ fn schema_one_jobs_migrate_without_inventing_entry_capability_or_settings() {
         tool.as_object_mut().unwrap().remove("ramp_capable");
     }
     let job = Job::from_json(&old.to_string()).unwrap();
-    assert_eq!(job.schema_version, 2);
+    assert_eq!(job.schema_version, 3);
     assert!(job.endmill_planning.is_none());
     assert!(job.tools.iter().all(|t| t.ramp_capable.is_none()));
     assert_eq!(

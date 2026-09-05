@@ -1,7 +1,7 @@
 use super::{Target, error};
 use crate::{
     geometry::{Point, Result},
-    model::VBit,
+    model::{Endmill, Length, VBit},
 };
 use serde::Serialize;
 use std::{cmp::Ordering, collections::BinaryHeap};
@@ -70,6 +70,25 @@ impl Target {
         options: ReachabilityOptions,
     ) -> Result<Reachability> {
         self.validate_vbit(tool)?;
+        self.disk_reachability(tool.tip_radius().mm(), 0., p, options)
+    }
+    pub fn endmill_reachability(
+        &self,
+        tool: &Endmill,
+        allowance: Length,
+        p: Point,
+        options: ReachabilityOptions,
+    ) -> Result<Reachability> {
+        tool.validate_depth(self.depth_cap)?;
+        self.disk_reachability(tool.radius().mm(), allowance.mm(), p, options)
+    }
+    fn disk_reachability(
+        &self,
+        radius: f64,
+        allowance: f64,
+        p: Point,
+        options: ReachabilityOptions,
+    ) -> Result<Reachability> {
         if !options.depth_tolerance_mm.is_finite()
             || options.depth_tolerance_mm <= 0.0
             || options.max_cells == 0
@@ -81,7 +100,6 @@ impl Target {
             ));
         }
         let nominal = self.nominal_depth(p)?.mm();
-        let radius = tool.tip_radius().mm();
         if radius > self.region.grid().max_coordinate_mm() {
             return Err(error(
                 "CENTER_RANGE",
@@ -129,7 +147,11 @@ impl Target {
                 p,
             ));
         }
-        let to_depth = |clearance: f64| ((clearance - radius) / slope).max(0.0).min(nominal);
+        let to_depth = |clearance: f64| {
+            ((clearance - radius - allowance) / slope)
+                .max(0.0)
+                .min(nominal)
+        };
         let mut best = at_p.signed_distance_mm - at_p.numerical_reserve_mm;
         let mut best_point = p;
         for i in 0..16 {
