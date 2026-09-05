@@ -72,7 +72,7 @@ export function VerificationPanel({ verification: v, planCurrent, combined }: { 
         {evidence.depth_bands.length > shown.bands && <button onClick={() => setExpanded({...shown,bands:shown.bands + 20})}>Show next depth bands · {shown.bands} of {evidence.depth_bands.length} shown</button>}
       </details>
       <details><summary>Limits and report identity</summary><ul>{evidence.limitations.map((limit,index) => <li key={index}>{limit}</li>)}</ul><dl><dt>Engine</dt><dd>{report.engine_version}</dd><dt>Source plan task</dt><dd><code>{v.result!.task.verification.planTaskId}</code></dd><dt>Verification fingerprint</dt><dd><code>{report.verification_fingerprint}</code></dd><dt>Authenticated plan</dt><dd><code>{report.authenticated_plan_fingerprint}</code></dd><dt>Checked motions</dt><dd>{evidence.checked_motion_count}</dd><dt>Source depth error</dt><dd>{number(evidence.source_geometry_depth_error_mm)} mm</dd><dt>Arithmetic reserve</dt><dd>{number(evidence.arithmetic_reserve_mm)} mm</dd></dl></details>
-      <p className="hint">Machine output remains unavailable until the M6 profile and exact emitted-program checks are integrated.</p>
+      <p className="hint">Use Export to configure the machine profile and verify the exact emitted LinuxCNC program.</p>
     </section>}
   </>;
 }

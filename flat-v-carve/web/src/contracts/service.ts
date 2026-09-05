@@ -1,3 +1,4 @@
+import type { ExportIdentity, ExportTask, ExportResult } from './export';
 import type { Job, Point } from './job';
 import type { PlanningLimits, PlanTask, PlanResult, TaskIdentity, SliceResponse } from './planning';
 import type { SliceInfo } from './stock';
@@ -6,7 +7,7 @@ import type { VerificationIdentity, VerificationTask, VerificationResult } from 
 
 // Versioned local UI API, deliberately separate from portable job/plan schemas.
 export interface Capabilities {
-  apiVersion: 'ui-4';
+  apiVersion: 'ui-5';
   mode: 'fixture' | 'live';
   engineVersion: string;
   importArtwork: boolean;
@@ -18,6 +19,7 @@ export interface Capabilities {
   limits?: { svgBytes: number; jobBytes: number; requestBytes: number; concurrentInspections: number };
   planning?: PlanningLimits;
   verification?: { defaultOptions: VerificationOptions };
+  export?: { profileBytes: number; programBytes: number; layouts: ('combined' | 'per_tool')[] };
 }
 export interface DisplayComponent {
   id: string;
@@ -67,6 +69,10 @@ export interface CamService {
   cancelPlan?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanTask>;
   planResult?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanResult>;
   stockSlice?(identity: TaskIdentity, slice: SliceInfo, signal?: AbortSignal): Promise<SliceResponse>;
+  startExport?(identity: ExportIdentity, signal?: AbortSignal): Promise<ExportTask>;
+  exportTask?(identity: ExportIdentity, signal?: AbortSignal): Promise<ExportTask>;
+  cancelExport?(identity: ExportIdentity, signal?: AbortSignal): Promise<ExportTask>;
+  exportResult?(identity: ExportIdentity, signal?: AbortSignal): Promise<ExportResult>;
   startVerification?(identity: VerificationIdentity, signal?: AbortSignal): Promise<VerificationTask>;
   verificationTask?(identity: VerificationIdentity, signal?: AbortSignal): Promise<VerificationTask>;
   cancelVerification?(identity: VerificationIdentity, signal?: AbortSignal): Promise<VerificationTask>;
@@ -79,7 +85,6 @@ export function outputBlockedReasons(capabilities: Capabilities | null): string[
   if (capabilities.mode === 'fixture') reasons.push('Fixture mode cannot create machine programs.');
   if (!capabilities.verificationScopes.includes('continuous-stock')) reasons.push('Required geometric verification is unavailable.');
   if (!capabilities.exportFormats.includes('linuxcnc')) reasons.push('LinuxCNC generation and formatted-motion checks are unavailable.');
-  // U1 has no engine-issued plan/output identity, even if an adapter advertises output.
-  reasons.push('No current, independently verified plan and checked output are loaded.');
+
   return reasons;
 }

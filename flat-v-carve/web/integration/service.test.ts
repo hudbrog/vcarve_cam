@@ -6,6 +6,8 @@ import { createHttpService } from '../src/service/http';
 import type { CamService } from '../src/contracts/service';
 import { terminal, type PlanTask, type TaskIdentity } from '../src/contracts/planning';
 import { verificationIdentity, type VerificationIdentity } from '../src/contracts/verification';
+import { exportIdentity, profileSchema, type ExportIdentity } from '../src/contracts/export';
+import { createHash } from 'node:crypto';
 
 // Runs the actual Rust server and the same-engine CLI; no fixture HTTP responses.
 const workspace = fileURLToPath(new URL('../../', import.meta.url));
@@ -42,6 +44,85 @@ beforeAll(async () => {
   await service.capabilities();
 }, 20_000);
 afterAll(() => { child?.kill(); });
+
+async function finishExport(id: ExportIdentity) {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    const task = await service.exportTask!(id);
+    if (['succeeded','failed','cancelled'].includes(task.state)) return task;
+    await new Promise(resolve => setTimeout(resolve,20));
+  }
+  throw new Error('Export did not finish within the test deadline');
+}
+describe('checked LinuxCNC output', () => {
+  it.each([
+    ['combined','narrow-channel','macro-stock-bottom','combined',6,1_000_000,'passed'],
+    ['per-tool','wide-floor','macro-stock-bottom','per_tool',6,1_000_000,'passed'],
+    ['tool-table','finite-tip','tool-table-synthetic','combined',6,1_000_000,'passed'],
+    ['coarse','narrow-channel','macro-stock-bottom','combined',0,1_000_000,'failed'],
+    ['limited','narrow-channel','macro-stock-bottom','combined',6,1,'inconclusive'],
+  ] as const)('matches CLI reports and every program byte for %s', async (name,fixture,profileName,layout,precision,cells,status) => {
+    const {job,id} = await identity(`m4/${fixture}`,'combined');
+    await service.startPlan!(job,id); const plan = await finish(id);
+    const caps = await service.capabilities();
+    const profile = profileSchema.parse(JSON.parse(readFileSync(`${workspace}fixtures/m6/${profileName}.json`,'utf8')));
+    profile.decimal_places = precision;
+    const accepted = exportIdentity(plan,profile,layout,{...caps.verification!.defaultOptions,max_cells:cells},crypto.randomUUID());
+    await expect(service.startExport!({...accepted,revision:accepted.revision + 1})).rejects.toThrow(/EXPORT_PLAN_IDENTITY/);
+    expect((await service.startExport!(accepted)).state).toBe('queued');
+    const changed = structuredClone(accepted); changed.export.profile.coolant = 'mist';
+    await expect(service.startExport!(changed)).rejects.toThrow(/TASK_KEY_REUSED/);
+    const task = await finishExport(accepted);
+    expect(task.state,JSON.stringify(task.diagnostic)).toBe('succeeded');
+    expect(task.summary?.status).toBe(status);
+    const result = await service.exportResult!(accepted);
+    const token = (await (await fetch(`${base}/api/v1/session`)).json()).sessionToken;
+    const path = `${output}/export-${name}.plan.json`;
+    writeFileSync(path,await (await fetch(`${base}/api/v1/tasks/${id.taskId}/artifact`,{headers:{'X-Cam-Session':token}})).text());
+    const profilePath = `${output}/export-${name}.profile.json`; writeFileSync(profilePath,JSON.stringify(profile));
+    const directory = `${output}/export-${name}-${crypto.randomUUID()}`;
+    runCli(['export',path,'--profile',profilePath,'--output',directory,'--layout',layout.replace('_','-'),'--max-cells',String(cells)],status === 'passed' ? 0 : 1);
+    expect(result.report).toEqual(JSON.parse(readFileSync(`${directory}/export-report.json`,'utf8')));
+    expect(JSON.parse(result.reportJson)).toEqual(result.report);
+    expect(result.programs.length).toBe(status === 'passed' ? result.report.programs.length : 0);
+    for (const program of result.programs) {
+      expect(Buffer.from(program.gcode)).toEqual(readFileSync(`${directory}/${program.filename}`));
+      expect(createHash('sha256').update(program.gcode).digest('hex')).toBe(result.report.programs.find(p => p.filename === program.filename)!.sha256);
+    }
+    if (layout === 'per_tool') {
+      expect(result.programs.map(p => p.filename)).toEqual(['endmill.ngc','vbit.ngc']);
+      expect(result.report.programs[1].prerequisites.join(' ')).toMatch(/endmill.ngc/);
+    }
+    await expect(service.planResult!(accepted)).rejects.toThrow(/TASK_KIND/);
+    await expect(service.verificationResult!({...accepted,verification:verificationIdentity(plan,accepted.export.options,'unused').verification})).rejects.toThrow(/TASK_KIND/);
+    expect((await service.startExport!(accepted)).taskId).toBe(accepted.taskId);
+    expect((await service.cancelExport!(accepted)).state).toBe('succeeded');
+    // A captured failed emitted check supplies real report shapes to offline tests.
+    if (name === 'coarse') writeFileSync(`${output}/m6-coarse.json`,JSON.stringify({result,plan},null,2));
+    if (name === 'combined') writeFileSync(`${output}/m6-passed.json`,JSON.stringify({result,plan},null,2));
+  },120_000);
+  it('rejects incompatible/unreviewed profiles and cancels active export', async () => {
+    const {job,id} = await identity('m4/island','combined');
+    await service.startPlan!(job,id); const plan = await finish(id);
+    const caps = await service.capabilities();
+    const profile = profileSchema.parse(JSON.parse(readFileSync(`${workspace}fixtures/m6/macro-stock-bottom.json`,'utf8')));
+    for (const patch of [{m6:{...profile.m6,reviewed:false}},{clearance_z_mm:6}]) {
+      const accepted = exportIdentity(plan,{...profile,...patch},'combined',caps.verification!.defaultOptions,crypto.randomUUID());
+      await service.startExport!(accepted);
+      const task = await finishExport(accepted);
+      expect(task.state).toBe('failed'); expect(task.diagnostic?.code).toMatch(/POST_M6_CONTRACT|POST_CLEARANCE/);
+      await expect(service.exportResult!(accepted)).rejects.toThrow(/PLAN_RESULT_UNAVAILABLE/);
+    }
+    const accepted = exportIdentity(plan,profile,'combined',caps.verification!.defaultOptions,crypto.randomUUID());
+    await service.startExport!(accepted); let task = await service.exportTask!(accepted);
+    while (task.state === 'queued') task = await service.exportTask!(accepted);
+    expect(task.state).toBe('running');
+    expect((await service.validateDraft(job,id.revision)).valid).toBe(true);
+    expect((await service.cancelExport!(accepted)).state).toBe('cancelling');
+    expect((await finishExport(accepted)).state).toBe('cancelled');
+    await expect(service.exportResult!(accepted)).rejects.toThrow(/PLAN_RESULT_UNAVAILABLE/);
+  },60_000);
+});
 
 describe('live Rust/UI contract and CLI parity', () => {
   it('serves the offline production build with the API on the same origin', async () => {

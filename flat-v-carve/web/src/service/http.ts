@@ -1,3 +1,4 @@
+import { acceptExport, exportTaskSchema, exportResultSchema, checkExportBytes } from '../contracts/export';
 import { z } from 'zod';
 import type { Job } from '../contracts/job';
 import type { CamService, Capabilities } from '../contracts/service';
@@ -73,6 +74,25 @@ export function createHttpService(fetcher: typeof fetch = (...args) => fetch(...
   }
   return {
     capabilities,
+    async startExport(identity, signal) {
+      return acceptExport(null, await taskRequest(identity, 'exports', exportTaskSchema, {
+        apiVersion, instanceId:identity.instanceId, requestId:identity.taskId, revision:identity.revision,
+        documentFingerprint:identity.documentFingerprint, export:identity.export,
+      }, signal), identity);
+    },
+    async exportTask(identity, signal) {
+      return acceptExport(null, await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}`, exportTaskSchema, undefined, signal), identity);
+    },
+    async cancelExport(identity, signal) {
+      return acceptExport(null, await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}/cancel`, exportTaskSchema, {}, signal), identity);
+    },
+    async exportResult(identity, signal) {
+      const result = await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}/export`, exportResultSchema, undefined, signal);
+      acceptExport(null,result.task,identity);
+      await checkExportBytes(result);
+      signal?.throwIfAborted();
+      return result;
+    },
     async startVerification(identity, signal) {
       const task = await taskRequest(identity, 'verifications', verificationTaskSchema, {
         apiVersion, instanceId: identity.instanceId, requestId: identity.taskId, revision: identity.revision,

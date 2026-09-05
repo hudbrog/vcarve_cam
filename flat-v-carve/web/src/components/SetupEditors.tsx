@@ -45,10 +45,10 @@ export function ToolsSetup({ draft, fields, dispatch }: Props) {
   </>;
 }
 export function MachineSetup({ fields, dispatch }: Props) {
-  return <Group title="Machine profile snapshot">
+  return <Group title="Job machine constraints">
     {fields(machineProfileFields)}
     <p className="hint">An optional profile needs an ID when any profile value is entered. Work offset and tool numbers must match the actual LinuxCNC setup.</p>
-    <p className="hint">M6 is an editable description only; it does not define or validate macro behavior. Tool-length compensation and exact-output checks require the M6 service contract.</p>
+    <p className="hint">These optional job constraints must agree with the separate LinuxCNC export profile above. The legacy M6 description does not populate or approve that profile’s contract. Changing this job block requires a new plan.</p>
     <ClearBlock fields={machineProfileFields} dispatch={dispatch} label="Clear machine profile" />
   </Group>;
 }

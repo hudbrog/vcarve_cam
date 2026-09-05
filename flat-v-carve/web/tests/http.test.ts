@@ -32,7 +32,7 @@ describe('checked same-origin Rust adapter', () => {
   });
   it('uses an in-memory session and returns only scoped validation for the accepted revision', async () => {
     const { service, calls } = harness();
-    expect(outputBlockedReasons(await service.capabilities())).toHaveLength(3);
+    expect(outputBlockedReasons(await service.capabilities())).toHaveLength(2);
     const { job } = await fixtureService.openExample();
     const result = await service.validateDraft(job, 19);
     expect(result).toEqual({ ...good, revision: 19 });

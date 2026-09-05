@@ -22,6 +22,7 @@ pub struct Input {
     pub stage: Stage,
     pub job: String,
     pub verification: Option<crate::verification::Work>,
+    pub export: Option<crate::exporting::Work>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -29,6 +30,7 @@ pub struct Output {
     pub summary: Value,
     pub motions: Vec<Motion>,
     pub artifact: String,
+    pub programs: Vec<cam_core::post::Program>,
     pub inspection: Inspection,
 }
 
@@ -54,6 +56,9 @@ fn artifact(plan: &impl Serialize) -> Result<String, String> {
 }
 
 pub fn calculate(input: Input) -> Result<Output, Value> {
+    if let Some(work) = input.export {
+        return crate::exporting::calculate(work);
+    }
     if let Some(work) = input.verification {
         return crate::verification::calculate(work);
     }
@@ -121,6 +126,7 @@ pub fn calculate(input: Input) -> Result<Output, Value> {
         motions: motions.into_iter().take(PREVIEW_MOTIONS).collect(),
         artifact,
         inspection,
+        programs: vec![],
     })
 }
 fn resource_error(message: String) -> Value {

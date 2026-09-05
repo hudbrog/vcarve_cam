@@ -31,8 +31,8 @@ describe('fixture service', () => {
     const capabilities = await fixtureService.capabilities();
     expect(capabilities.planningStages).toEqual([]);
     expect(capabilities.verificationScopes).toEqual([]);
-    expect(outputBlockedReasons(capabilities)).toHaveLength(4);
-    expect(outputBlockedReasons({ ...capabilities, mode: 'live', verificationScopes: ['continuous-stock'], exportFormats: ['linuxcnc'] })).toEqual(['No current, independently verified plan and checked output are loaded.']);
+    expect(outputBlockedReasons(capabilities)).toHaveLength(3);
+    expect(outputBlockedReasons({ ...capabilities, mode: 'live', verificationScopes: ['continuous-stock'], exportFormats: ['linuxcnc'] })).toEqual([]);
     expect(outputBlockedReasons(null)).not.toHaveLength(0);
     const { job } = await fixtureService.openExample();
     expect((await fixtureService.validateDraft(job, 18)).authoritative).toBe(false);

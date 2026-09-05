@@ -2,10 +2,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as schema from '../src/contracts/job.ts';
+import { profileSchema } from '../src/contracts/machineProfile.ts';
 
 // A drift alarm, not a Rust schema generator or machining validator.
 // Check the full serialized field sets, including opaque blocks the U1 UI preserves.
 const checks = [
+  ['post/profile.rs', 'LinuxCncProfile', profileSchema],
+  ['post/profile.rs', 'ToolMapping', profileSchema.shape.tools.element],
+  ['post/profile.rs', 'M6Contract', profileSchema.shape.m6],
   ['job.rs', 'Job', schema.jobSchema],
   ['job.rs', 'SourceSnapshot', schema.sourceSchema],
   ['job.rs', 'ToolSettings', schema.toolSchema],

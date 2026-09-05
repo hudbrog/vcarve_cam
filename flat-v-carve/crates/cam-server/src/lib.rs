@@ -1,4 +1,5 @@
 pub mod document;
+pub mod exporting;
 pub mod inspection;
 pub mod planning;
 pub mod planning_worker;
@@ -129,6 +130,11 @@ pub fn router_with_planning(
             "/api/v1/verifications",
             post(start_verification).layer(DefaultBodyLimit::max(16_384)),
         )
+        .route(
+            "/api/v1/exports",
+            post(start_export).layer(DefaultBodyLimit::max(96_000)),
+        )
+        .route("/api/v1/tasks/{id}/export", get(export_result))
         .route("/api/v1/tasks/{id}/verification", get(verification_result))
         .route("/api/v1/tasks/{id}", get(task_snapshot))
         .route("/api/v1/tasks/{id}/cancel", post(cancel_plan))
@@ -221,7 +227,8 @@ async fn capabilities(State(state): State<AppState>) -> Json<Value> {
     Json(
         json!({ "apiVersion": API_VERSION, "mode": "live", "engineVersion": ENGINE_VERSION,
         "importArtwork": true, "openJob": true, "validateDraft": true,
-        "planningStages": ["endmill", "combined"], "verificationScopes": ["continuous-stock"], "exportFormats": [],
+        "planningStages": ["endmill", "combined"], "verificationScopes": ["continuous-stock"], "exportFormats": ["linuxcnc"],
+        "export": {"profileBytes":exporting::PROFILE_BYTES,"programBytes":exporting::PROGRAM_BYTES,"layouts":["combined","per_tool"]},
         "verification": { "defaultOptions": cam_core::verification::VerificationOptions::default() },
         "planning": { "instanceId": state.planning.instance_id, "concurrentPlans": 1,
             "maxPending": planning::MAX_PENDING, "maxTasks": planning::MAX_TASKS,
@@ -313,7 +320,42 @@ async fn verification_result(
         Ok(_) => error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "TASK_KIND",
-            "This task is a plan, not a verification.",
+            "This task is not a verification.",
+        ),
+        Err(failure) => task_error(failure),
+    }
+}
+async fn start_export(
+    State(state): State<AppState>,
+    body: Result<Json<exporting::Start>, JsonRejection>,
+) -> Response {
+    let request = match body {
+        Ok(Json(value)) => value,
+        Err(r) => return error(r.status(), "REQUEST_JSON", &r.body_text()),
+    };
+    match exporting::start(&state.planning, request) {
+        Ok(snapshot) => (StatusCode::ACCEPTED, Json(snapshot)).into_response(),
+        Err(failure) => task_error(failure),
+    }
+}
+async fn export_result(
+    State(state): State<AppState>,
+    RoutePath(id): RoutePath<String>,
+) -> Response {
+    match state.planning.result(&id) {
+        Ok((snapshot, result)) if snapshot.export.is_some() => {
+            // The report and exact programs are one immutable response. No filename
+            // supplied by a client is ever mapped to a path or arbitrary file.
+            match serde_json::from_str::<Value>(&result.artifact) {
+                Ok(report) => Json(json!({"task":snapshot,"report":report,"reportJson":result.artifact,
+                    "programs": if result.summary["status"] == "passed" {result.programs.clone()} else {vec![]}})).into_response(),
+                Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR,"EXPORT_REPORT","Stored export report could not be read."),
+            }
+        }
+        Ok(_) => error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "TASK_KIND",
+            "This task is not a LinuxCNC export.",
         ),
         Err(failure) => task_error(failure),
     }
@@ -326,7 +368,7 @@ async fn cancel_plan(State(state): State<AppState>, RoutePath(id): RoutePath<Str
 }
 async fn plan_result(State(state): State<AppState>, RoutePath(id): RoutePath<String>) -> Response {
     match state.planning.result(&id) {
-        Ok((snapshot, _)) if snapshot.verification.is_some() => error(StatusCode::UNPROCESSABLE_ENTITY, "TASK_KIND", "This task contains verification evidence, not a plan preview."),
+        Ok((snapshot, _)) if snapshot.verification.is_some() || snapshot.export.is_some() => error(StatusCode::UNPROCESSABLE_ENTITY, "TASK_KIND", "This task contains report evidence, not a plan preview."),
         Ok((snapshot, result)) => Json(
             json!({ "task": snapshot, "coordinateSpace": "workpiece-mm-z-up",
             "motions": result.motions, "stockSlices": result.inspection.slices.iter().map(|s| &s.info).collect::<Vec<_>>() }),
@@ -365,7 +407,9 @@ async fn plan_artifact(
                 (header::CONTENT_TYPE, "application/json"),
                 (
                     header::CONTENT_DISPOSITION,
-                    if snapshot.verification.is_some() {
+                    if snapshot.export.is_some() {
+                        "attachment; filename=export-report.json"
+                    } else if snapshot.verification.is_some() {
                         "attachment; filename=verification.json"
                     } else {
                         "attachment; filename=plan.json"

@@ -24,7 +24,7 @@ export function fixtureDisplayMatches(job: Job) {
 export const fixtureService: CamService = {
   async capabilities(signal) {
     check(signal);
-    return { apiVersion: 'ui-4', mode: 'fixture', engineVersion: display.engineVersion,
+    return { apiVersion: 'ui-5', mode: 'fixture', engineVersion: display.engineVersion,
       importArtwork: false, openJob: false, validateDraft: false, planningStages: [], verificationScopes: [], exportFormats: [] };
   },
   async openExample(signal) {

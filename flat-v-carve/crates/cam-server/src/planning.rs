@@ -68,6 +68,8 @@ pub struct Snapshot {
     pub result_available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification: Option<crate::verification::Identity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub export: Option<crate::exporting::Identity>,
 }
 struct Record {
     snapshot: Snapshot,
@@ -157,12 +159,14 @@ impl Planning {
                 summary: None,
                 result_available: false,
                 verification: None,
+                export: None,
             },
             request_hash,
             Input {
                 stage: request.stage,
                 job: raw,
                 verification: None,
+                export: None,
             },
         )
     }
@@ -376,13 +380,14 @@ impl Planning {
     }
 }
 fn diagnostic(code: &str, message: &str) -> Value {
-    json!({ "code": code, "severity": "error", "stage": if code.starts_with("VERIFICATION_") {"verification"} else {"planning"}, "message": message })
+    json!({ "code": code, "severity": "error", "stage": if code.starts_with("EXPORT_") {"export"} else if code.starts_with("VERIFICATION_") {"verification"} else {"planning"}, "message": message })
 }
 async fn run_worker(
     input: Input,
     cancel: &mut watch::Receiver<bool>,
 ) -> Option<Result<Output, Value>> {
     let verifying = input.verification.is_some();
+    let exporting = input.export.is_some();
     let operation = async {
         let mut command = Command::new(std::env::current_exe()?);
         command
@@ -425,7 +430,7 @@ async fn run_worker(
             _ = cancel.changed() => None,
             result = tokio::time::timeout(Duration::from_secs(TIMEOUT_SECONDS), work) => Some(match result {
                 Ok(result) => result,
-                Err(_) => Ok(Err(diagnostic(if verifying {"VERIFICATION_TIMEOUT"} else {"PLAN_TIMEOUT"}, "Calculation exceeded the five-minute service limit. Reduce the job or refine its resource limits."))),
+                Err(_) => Ok(Err(diagnostic(if exporting {"EXPORT_TIMEOUT"} else if verifying {"VERIFICATION_TIMEOUT"} else {"PLAN_TIMEOUT"}, "Calculation exceeded the five-minute service limit. Reduce the job or refine its resource limits."))),
             }),
         };
         // Also reap on read errors/timeouts. A terminal cancellation means actual work stopped.
@@ -438,7 +443,9 @@ async fn run_worker(
         Ok(None) => None,
         Ok(Some(Ok(reply))) => Some(reply),
         Ok(Some(Err(error))) | Err(error) => Some(Err(diagnostic(
-            if verifying {
+            if exporting {
+                "EXPORT_WORKER_FAILURE"
+            } else if verifying {
                 "VERIFICATION_WORKER_FAILURE"
             } else {
                 "PLAN_WORKER_FAILURE"
@@ -522,6 +529,7 @@ mod tests {
                     summary: None,
                     result_available: false,
                     verification: None,
+                    export: None,
                 },
                 request_hash: String::new(),
                 cancel,
@@ -533,6 +541,7 @@ mod tests {
         Some(Ok(Output {
             summary: json!({ "status": "complete" }),
             motions: vec![],
+            programs: vec![],
             artifact: "{}".into(),
             inspection: crate::inspection::Inspection::default(),
         }))
@@ -629,6 +638,92 @@ mod tests {
         service.finish("finish-first", result());
         assert!(service.cancel("finish-first").unwrap().state == Status::Succeeded);
         assert!(service.result("finish-first").is_ok());
+    }
+    #[tokio::test]
+    async fn export_admission_binds_profile_and_plan_and_retries_after_source_expiry() {
+        use crate::exporting::{self, Identity};
+        use cam_core::{
+            post::{LinuxCncProfile, ProgramLayout},
+            verification::VerificationOptions,
+        };
+        let service = Planning::new().unwrap();
+        let _worker = service.worker.acquire().await.unwrap();
+        running(&service, "source");
+        let mut output = result().unwrap().unwrap();
+        output.summary =
+            json!({"inputFingerprint":"a".repeat(64),"motionFingerprint":"b".repeat(64)});
+        service.finish("source", Some(Ok(output)));
+        let source = service.snapshot("source").unwrap();
+        let make = || exporting::Start {
+            api_version: API_VERSION.into(),
+            instance_id: service.instance_id.clone(),
+            request_id: "export".into(),
+            revision: source.revision,
+            document_fingerprint: source.document_fingerprint.clone(),
+            export: Identity {
+                plan_task_id: "source".into(),
+                input_fingerprint: "a".repeat(64),
+                motion_fingerprint: "b".repeat(64),
+                profile: LinuxCncProfile::from_json(include_str!(
+                    "../../../fixtures/m6/macro-stock-bottom.json"
+                ))
+                .unwrap(),
+                layout: ProgramLayout::Combined,
+                options: VerificationOptions::default(),
+            },
+        };
+        assert!(matches!(
+            exporting::start(&service, make()),
+            Err(Failure(422, "EXPORT_STAGE", _))
+        ));
+        service
+            .ledger
+            .lock()
+            .unwrap()
+            .records
+            .get_mut("source")
+            .unwrap()
+            .snapshot
+            .stage = Stage::Combined;
+        let mut wrong = make();
+        wrong.export.motion_fingerprint = "c".repeat(64);
+        assert!(matches!(
+            exporting::start(&service, wrong),
+            Err(Failure(409, "EXPORT_PLAN_IDENTITY", _))
+        ));
+        let mut oversized = make();
+        oversized.export.profile.m6.reference = "x".repeat(64_000);
+        assert!(matches!(
+            exporting::start(&service, oversized),
+            Err(Failure(413, "EXPORT_PROFILE_LIMIT", _))
+        ));
+        let mut wrong = make();
+        wrong.export.options.max_cells = 0;
+        assert!(matches!(
+            exporting::start(&service, wrong),
+            Err(Failure(422, "EXPORT_OPTIONS", _))
+        ));
+        assert!(exporting::start(&service, make()).unwrap().state == Status::Queued);
+        assert_eq!(service.pending.available_permits(), MAX_PENDING - 1);
+        let mut changed = make();
+        changed.export.profile.decimal_places = 0;
+        assert!(matches!(
+            exporting::start(&service, changed),
+            Err(Failure(409, "TASK_KEY_REUSED", _))
+        ));
+        for n in 0..RETAINED_RESULTS {
+            let id = format!("evict-{n}");
+            running(&service, &id);
+            service.finish(&id, result());
+        }
+        assert!(service.result("source").is_err());
+        assert!(exporting::start(&service, make()).unwrap().state == Status::Queued);
+        service.cancel("export").unwrap();
+        tokio::time::timeout(Duration::from_secs(2), service.shutdown())
+            .await
+            .unwrap();
+        assert!(service.snapshot("export").unwrap().state == Status::Cancelled);
+        assert!(service.result("export").is_err());
     }
     #[test]
     fn result_eviction_keeps_summary_identity_and_updates_sequence() {

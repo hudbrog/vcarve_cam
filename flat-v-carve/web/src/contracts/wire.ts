@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { jobSchema, pointSchema } from './job';
 import { verificationOptionsSchema } from './verificationOptions';
 
-export const apiVersion = 'ui-4';
+export const apiVersion = 'ui-5';
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const sessionSchema = z.strictObject({
   apiVersion: z.literal(apiVersion), engineVersion: z.string().min(1), sessionToken: z.string().regex(/^[a-f0-9]{64}$/),
@@ -18,6 +18,7 @@ export const capabilitiesSchema = z.strictObject({
   importArtwork: z.boolean(), openJob: z.boolean(), validateDraft: z.boolean(),
   planningStages: z.array(z.enum(['endmill', 'combined'])), verificationScopes: z.array(z.string()), exportFormats: z.array(z.string()),
   planning: planningLimitsSchema.optional(),
+  export: z.strictObject({ profileBytes: integer.positive(), programBytes: integer.positive(), layouts: z.array(z.enum(['combined','per_tool'])) }).optional(),
   verification: z.strictObject({ defaultOptions: verificationOptionsSchema }).optional(),
   limits: z.strictObject({ svgBytes: integer.positive(), jobBytes: integer.positive(), requestBytes: integer.positive(), concurrentInspections: integer.positive() }),
 }).refine(value => value.planningStages.length === 0 || value.planning !== undefined, 'Planning limits are required');

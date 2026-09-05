@@ -143,10 +143,13 @@ async fn capability_envelope_has_limits_and_no_unimplemented_operations() {
             if field == "verificationScopes" {
                 json!(["continuous-stock"])
             } else {
-                json!([])
+                json!(["linuxcnc"])
             }
         );
     }
+    assert_eq!(caps["export"]["profileBytes"], 64_000);
+    assert_eq!(caps["export"]["programBytes"], 8_000_000);
+    assert_eq!(caps["export"]["layouts"], json!(["combined", "per_tool"]));
     assert_eq!(
         caps["verification"]["defaultOptions"],
         json!(cam_core::verification::VerificationOptions::default())
@@ -173,22 +176,27 @@ async fn capability_envelope_has_limits_and_no_unimplemented_operations() {
 }
 
 #[tokio::test]
-async fn verification_submission_has_a_small_metadata_body_limit() {
+async fn verification_and_export_submissions_have_small_metadata_body_limits() {
     let app = app();
     let token = token(&app).await;
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/api/v1/verifications",
-        &[
-            ("host", "127.0.0.1:4848"),
-            ("x-cam-session", &token),
-            ("content-type", "application/json"),
-        ],
-        json!({"excess":"x".repeat(17_000)}).to_string(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    for (path, size) in [
+        ("/api/v1/verifications", 17_000),
+        ("/api/v1/exports", 97_000),
+    ] {
+        let (status, _) = call(
+            &app,
+            "POST",
+            path,
+            &[
+                ("host", "127.0.0.1:4848"),
+                ("x-cam-session", &token),
+                ("content-type", "application/json"),
+            ],
+            json!({"excess":"x".repeat(size)}).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
 }
 
 #[tokio::test]

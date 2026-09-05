@@ -129,3 +129,8 @@
 .verification-location.failed { fill: #ad274325; stroke: var(--error); }
 .verification-location circle { fill: none; stroke-width: 3; }
 .drawing-note { right: 1rem; line-height: 1.4; }
+
+.profile-check { display: flex; align-items: start; gap: 8px; }
+.profile-check input { flex: 0 0 auto; width: 16px; min-height: 16px; margin-top: 2px; }
+.output-program { padding-block: 12px; border-bottom: 1px solid var(--line); }
+.program-preview { font-size: 11px; line-height: 1.6; max-height: 320px; overflow: auto; padding: 10px; border: 1px solid var(--line); }

@@ -12,7 +12,7 @@ export const intervalSchema = z.strictObject({ lower: scalar, upper: scalar }).r
 export const findingSchema = z.strictObject({ code: z.string(), status, message: z.string(), location: pointSchema,
   cell: boundsSchema.nullable(), motion_id: count.nullable(), measured_mm: intervalSchema.nullable(), limit_mm: scalar.nullable(),
 });
-const stockVerificationSchema = z.strictObject({
+export const stockVerificationSchema = z.strictObject({
   status, domain: boundsSchema, verification_tolerance_mm: scalar, floor_ridge_limit_mm: scalar, detail_residual_limit_mm: scalar,
   arithmetic_reserve_mm: scalar, source_geometry_depth_error_mm: scalar,
   checked_motion_count: count, analytically_clear_motion_count: count, evaluated_cells: count, terminal_cells: count,
