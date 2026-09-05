@@ -1,16 +1,17 @@
 import type { Job, Point } from './job';
 
-// Proposed UI API, deliberately separate from portable job/plan schemas.
-// A production implementation must validate wire DTOs and engine identities.
+// Versioned local UI API, deliberately separate from portable job/plan schemas.
 export interface Capabilities {
-  apiVersion: 'ui-proposal-1';
+  apiVersion: 'ui-1';
   mode: 'fixture' | 'live';
   engineVersion: string;
   importArtwork: boolean;
+  openJob: boolean;
   validateDraft: boolean;
   planningStages: ('endmill' | 'combined')[];
   verificationScopes: string[];
   exportFormats: string[];
+  limits?: { svgBytes: number; jobBytes: number; requestBytes: number; concurrentInspections: number };
 }
 export interface DisplayComponent {
   id: string;
@@ -32,14 +33,29 @@ export interface Diagnostic {
   message: string;
   fieldPath?: string;
   sourceId?: string;
+  stage?: string;
+}
+export interface Validation {
+  revision: number; diagnostics: Diagnostic[]; authoritative: boolean;
+  valid?: boolean; scope?: 'editable-job-and-svg'; missingMachiningFields?: string[];
+  documentFingerprint?: string | null;
+}
+export interface OpenedDocument {
+  job: Job; display: ArtworkDisplay; diagnostics: Diagnostic[];
+  missingMachiningFields: string[]; documentFingerprint: string;
+}
+export function editableDownloadAllowed(validation: Validation | undefined, revision: number): boolean {
+  return validation?.authoritative === true && validation.valid === true
+    && validation.revision === revision && validation.scope === 'editable-job-and-svg'
+    && !!validation.documentFingerprint;
 }
 export interface CamService {
   capabilities(signal?: AbortSignal): Promise<Capabilities>;
   openExample(signal?: AbortSignal): Promise<{ job: Job; display: ArtworkDisplay }>;
   displayFor(job: Job, signal?: AbortSignal): Promise<ArtworkDisplay | null>;
-  validateDraft(job: Job, revision: number, signal?: AbortSignal): Promise<{
-    revision: number; diagnostics: Diagnostic[]; authoritative: boolean;
-  }>;
+  validateDraft(job: Job, revision: number, signal?: AbortSignal): Promise<Validation>;
+  openJob?(json: string, revision: number, signal?: AbortSignal): Promise<OpenedDocument>;
+  importArtwork?(filename: string, svg: string, options: Job['import'], revision: number, signal?: AbortSignal): Promise<OpenedDocument>;
 }
 
 export function outputBlockedReasons(capabilities: Capabilities | null): string[] {

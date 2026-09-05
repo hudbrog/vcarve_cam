@@ -1,0 +1,101 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { createHttpService } from '../src/service/http';
+import type { CamService } from '../src/contracts/service';
+
+// Runs the actual Rust server and the same-engine CLI; no fixture HTTP responses.
+const workspace = fileURLToPath(new URL('../../', import.meta.url));
+const web = fileURLToPath(new URL('../', import.meta.url));
+const suffix = process.platform === 'win32' ? '.exe' : '';
+const executable = `${workspace}target/release/cam-web${suffix}`;
+const cli = `${workspace}target/release/cam${suffix}`;
+const output = `${web}test-results/live`;
+let child: ChildProcess;
+let base: string;
+let service: CamService;
+function runCli(args: string[]) {
+  const result = spawnSync(cli, args, { cwd: workspace, encoding: 'utf8', maxBuffer: 16_000_000, windowsHide: true });
+  if (result.error) throw result.error;
+  expect(result.status, result.stderr).toBe(0);
+  return result.stdout;
+}
+beforeAll(async () => {
+  mkdirSync(output, { recursive: true });
+  child = spawn(executable, ['--port', '0', '--ui-dir', `${web}dist`], { cwd: workspace, windowsHide: true });
+  base = await new Promise<string>((resolve, reject) => {
+    let stdout = ''; let stderr = '';
+    const timer = setTimeout(() => reject(new Error(`Server did not start: ${stderr}`)), 15_000);
+    child.on('error', error => { clearTimeout(timer); reject(error); });
+    child.stderr?.on('data', chunk => { stderr += chunk; });
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`Server exited ${code}: ${stderr}`)); });
+    child.stdout?.on('data', chunk => {
+      stdout += chunk;
+      const url = stdout.match(/CAM_WEB_URL=(http:\/\/127\.0\.0\.1:\d+)/)?.[1];
+      if (url) { clearTimeout(timer); resolve(url); }
+    });
+  });
+  service = createHttpService((url, init) => fetch(new URL(String(url), base), init));
+  await service.capabilities();
+}, 20_000);
+afterAll(() => { child?.kill(); });
+
+describe('live Rust/UI contract and CLI parity', () => {
+  it('serves the offline production build with the API on the same origin', async () => {
+    const response = await fetch(base);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-security-policy')).toContain("connect-src 'self'");
+    const html = await response.text();
+    const script = html.match(/src="([^"]+\.js)"/)?.[1];
+    expect(script).toBeTruthy();
+    const asset = await fetch(new URL(script!, base));
+    expect(asset.headers.get('content-type')).toContain('javascript');
+    expect(asset.status).toBe(200);
+    expect((await fetch(new URL('/Cargo.toml', base))).status).toBe(404);
+  });
+  it('imports Inkscape with exactly the CLI job, normalized rings, holes, and missing settings', async () => {
+    const source = `${workspace}fixtures/m2/inkscape-export.svg`;
+    const jsonPath = `${output}/cli-import.job.json`;
+    runCli(['import', source, '--output', jsonPath]);
+    const cliJob = JSON.parse(readFileSync(jsonPath, 'utf8'));
+    const imported = await service.importArtwork!('inkscape-export.svg', readFileSync(source, 'utf8'), cliJob.import, 23);
+    expect(imported.job).toEqual(cliJob);
+    const inspection = JSON.parse(runCli(['validate-job', jsonPath])).inspection;
+    expect(imported.display.engineVersion).toBe(inspection.engine_version);
+    expect(imported.display.components).toEqual(inspection.geometry.sources.map((source: { id: string; source_id: string; label: string | null; geometry: { grid: { ticks_per_mm: number }; rings: { is_hole: boolean; points: { x: number; y: number }[] }[] } }) => ({
+      id: source.id, label: source.label || source.source_id,
+      rings: source.geometry.rings.map(ring => ({ hole: ring.is_hole, points: ring.points.map(point => ({ x: point.x / source.geometry.grid.ticks_per_mm, y: point.y / source.geometry.grid.ticks_per_mm })) })),
+    })));
+    expect(imported.missingMachiningFields).toEqual(inspection.missing_machining_fields);
+    expect((await service.validateDraft(imported.job, 23)).documentFingerprint).toBe(imported.documentFingerprint);
+  }, 15_000);
+  it('opens configured jobs, migrates old schemas, and rejects future/invalid jobs', async () => {
+    const original = readFileSync(`${workspace}fixtures/m4/finite-tip.json`, 'utf8');
+    const opened = await service.openJob!(original, 4);
+    expect(opened.job).toEqual(JSON.parse(original));
+    expect(opened.missingMachiningFields).toEqual([]);
+    const old = { ...opened.job, schema_version: 1 };
+    expect((await service.openJob!(JSON.stringify(old), 5)).job).toEqual(opened.job);
+    await expect(service.openJob!(JSON.stringify({ ...old, schema_version: 99 }), 6)).rejects.toThrow(/JOB_SCHEMA_VERSION/);
+    opened.job.stock.thickness_mm = -1;
+    const invalid = await service.validateDraft(opened.job, 7);
+    expect(invalid.valid).toBe(false);
+    expect(invalid.diagnostics[0].code).toBe('JOB_PARAMETER');
+    await expect(service.openJob!(JSON.stringify(opened.job), 7)).rejects.toThrow(/JOB_PARAMETER/);
+  });
+  it('normalizes changed artwork placement and roundtrips the browser adapter snapshot through Rust', async () => {
+    const options = { geometry_tolerance_mm: 0.001, ticks_per_mm: null, placement: { origin_mm: { x: 2, y: 3 }, scale: 1.4, rotation_deg: 27 } };
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="30mm" height="20mm" viewBox="0 0 30 20"><rect id="plate" x="5" y="5" width="15" height="10"/></svg>';
+    const imported = await service.importArtwork!('integration-plate.svg', svg, options, 8);
+    expect(await service.displayFor(imported.job)).toEqual(imported.display);
+    writeFileSync(`${output}/adapter.job.json`, JSON.stringify(imported.job));
+    const inspection = JSON.parse(runCli(['validate-job', `${output}/adapter.job.json`])).inspection;
+    expect(inspection.geometry.sources.map((source: { id: string }) => source.id)).toEqual(imported.display.components.map(component => component.id));
+    const checked = await service.validateDraft(imported.job, 8);
+    expect(checked.valid).toBe(true);
+    expect(checked.missingMachiningFields).toEqual(inspection.missing_machining_fields);
+    imported.job.name = 'changed';
+    expect((await service.validateDraft(imported.job, 9)).documentFingerprint).not.toBe(checked.documentFingerprint);
+  });
+});

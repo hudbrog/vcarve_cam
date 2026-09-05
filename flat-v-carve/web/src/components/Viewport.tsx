@@ -96,6 +96,6 @@ export function Viewport({ display, job, inspected, onInspect, hidden }: Props) 
         <div className="drawing-legend"><span className="legend-swatch included" /> Included region <span className="legend-swatch hole" /> Preserved hole <span className="legend-swatch inspected" /> Inspected</div>
       </> : <div className="empty-viewport"><span className="empty-symbol">⌗</span><h2>Artwork needs inspection</h2><p>Connect the local Rust service to normalize this source or changed import tolerance. Your draft is retained.</p></div>}
     </div>
-    <div className="viewport-status"><span>mm <span className="divider">|</span> Stock top Z = 0</span><span>{display ? `Grid 10 mm · captured tolerance ${display.geometryToleranceMm} mm` : 'No geometry available'}</span></div>
+    <div className="viewport-status"><span>mm <span className="divider">|</span> Stock top Z = 0</span><span>{display ? `Grid 10 mm · import tolerance ${display.geometryToleranceMm} mm` : 'No geometry available'}</span></div>
   </section>;
 }

@@ -4,6 +4,8 @@ Date: 2026-09-05\
 Status: proposed contracts and UI milestones, not an implemented HTTP API.\
 Companion: [product and interaction design](README.md).
 
+Implementation update: the [U2 service slice](u2-service-integration.md) now defines `ui-1` routes for session/capabilities and import/open/display/validation. Task, artifact, verification, export, and native-file operations below remain proposals.
+
 ## 1. Ownership and independent progress
 
 Rust remains authoritative for SVG normalization, geometry, machining rules, planning, stock/reachability calculations, verification, artifact identity, migration, and postprocessing. TypeScript owns forms, navigation, local draft text, selection presentation, cameras, display rendering, and task/result presentation.

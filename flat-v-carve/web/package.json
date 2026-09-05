@@ -9,7 +9,8 @@
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
-    "test": "vitest run",
+    "test": "vitest run tests",
+    "check:live": "vitest run integration",
     "typecheck": "tsc --noEmit",
     "check:contracts": "node scripts/check-rust-contract.mjs && node scripts/project-display.mjs --check"
   },
