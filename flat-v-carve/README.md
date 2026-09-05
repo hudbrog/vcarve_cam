@@ -33,6 +33,18 @@ Supported SVG input includes explicit page dimensions, mm/cm/in/pt/pc/px and uni
 
 Exit codes are `0` for successful import/inspection, valid editable jobs, or a complete/empty endmill stage; `1` for invalid inputs or an incomplete/inconclusive stage; and `2` for argument/I/O errors. An invalid inspected job or stale plan replaces the previous SVG/report with an error result. Import failures leave existing job files untouched, so callers must check the exit status.
 
+## Local tool library
+
+The backend now stores reusable named tools and explicit cutting presets. Use
+`cam tool-library --help` for initialization, record management, capture from a
+configured job, import/export, and application to a new job file. Library edits
+use revision checks and atomic file replacement. Applying a tool copies its
+settings into the existing job schema; later library edits never change saved
+jobs. Browser controls and HTTP transport remain integration work.
+
+See the [tool library guide](../docs/flat-v-carve/tool-library.md) for the Rust API,
+CLI examples, validation, persistence, and snapshot behavior.
+
 ## M3 endmill planning and stock
 
 ```sh

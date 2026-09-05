@@ -44,6 +44,40 @@ pub struct ToolSettings {
     pub plunge_capable: Option<bool>,
 }
 impl ToolSettings {
+    /// Validate a reusable tool snapshot without requiring a complete job.
+    /// Operation-role and stock/depth checks remain the job's responsibility.
+    pub fn validate(&self) -> Result<()> {
+        if !crate::preview::valid_id(&self.id) {
+            return Err(error("JOB_TOOL_ID", "tool IDs must be valid and unique"));
+        }
+        for (value, name) in [
+            (self.spindle_rpm, "spindle_rpm"),
+            (self.cutting_feed_mm_min, "cutting_feed_mm_min"),
+            (self.plunge_feed_mm_min, "plunge_feed_mm_min"),
+            (self.max_stepdown_mm, "max_stepdown_mm"),
+            (self.stepover_mm, "stepover_mm"),
+        ] {
+            number(value, name, false)?;
+        }
+        if let Some(g) = &self.geometry {
+            match g {
+                ToolGeometry::Endmill(s) => {
+                    if self.plunge_capable.is_some_and(|v| v != s.plunge_capable) {
+                        return Err(error(
+                            "JOB_TOOL_CAPABILITY",
+                            "endmill slot and dimensions disagree about plunge capability",
+                        ));
+                    }
+                    Endmill::try_from(s.clone())?;
+                }
+                ToolGeometry::Vbit(s) => {
+                    VBit::try_from(s.clone())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn empty(id: &str) -> Self {
         Self {
             id: id.into(),
@@ -229,31 +263,7 @@ impl Job {
             if !crate::preview::valid_id(&tool.id) || !ids.insert(&tool.id) {
                 return Err(error("JOB_TOOL_ID", "tool IDs must be valid and unique"));
             }
-            for (value, name) in [
-                (tool.spindle_rpm, "spindle_rpm"),
-                (tool.cutting_feed_mm_min, "cutting_feed_mm_min"),
-                (tool.plunge_feed_mm_min, "plunge_feed_mm_min"),
-                (tool.max_stepdown_mm, "max_stepdown_mm"),
-                (tool.stepover_mm, "stepover_mm"),
-            ] {
-                number(value, name, false)?;
-            }
-            if let Some(g) = &tool.geometry {
-                match g {
-                    ToolGeometry::Endmill(s) => {
-                        if tool.plunge_capable.is_some_and(|v| v != s.plunge_capable) {
-                            return Err(error(
-                                "JOB_TOOL_CAPABILITY",
-                                "endmill slot and dimensions disagree about plunge capability",
-                            ));
-                        }
-                        Endmill::try_from(s.clone())?;
-                    }
-                    ToolGeometry::Vbit(s) => {
-                        VBit::try_from(s.clone())?;
-                    }
-                }
-            }
+            tool.validate()?;
         }
         if !crate::preview::valid_id(&self.operation.id)
             || self.operation.endmill_id == self.operation.vbit_id

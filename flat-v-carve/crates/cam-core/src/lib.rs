@@ -10,6 +10,7 @@ pub mod spike;
 pub mod stock;
 pub mod svg;
 pub mod target;
+pub mod tool_library;
 
 pub mod vcarve;
 pub mod verification;

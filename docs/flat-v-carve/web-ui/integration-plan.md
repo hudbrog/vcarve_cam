@@ -24,6 +24,7 @@ Keep changes in the future `flat-v-carve/web/` and these design documents until 
 | Continuous stock verification | M5 planned; M4 has continuous clearance with slice/sample quality scope. | Explicit check scope, bounds, refinement state, passed/failed/inconclusive result contract. |
 | Machine profile/output | Basic editable profile snapshot; M6 planned. | Structured M6/compensation/precision fields, profile validation, exact-output checks and export eligibility. |
 | Local browser service | `serve`, HTTP API, background task lifecycle and bundled UI remain planned. | Local transport, file/service lifecycle, progress/cancel/reconnect. |
+| Local tool library | [Rust API and CLI](../tool-library.md) implement named tools, cutting presets, revisioned persistence, import/export, and job snapshots. | Service transport, library management controls, changed-value review, and undoable application. |
 | 3D and arbitrary cross-sections | Debug SVGs and core geometric data exist; no browser display API. | Engine-derived display meshes/heightfields and section queries, with error/resolution metadata. |
 
 Current SVG import has a 2 MB source limit, job JSON an 8 MB input limit, and saved-plan readers their own limits. Expose effective engine limits through capabilities; do not bake these values into permanent browser assumptions. Handle large result data separately from interactive summaries.

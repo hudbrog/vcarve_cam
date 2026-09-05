@@ -6,6 +6,7 @@ mod post_cli;
 mod svg;
 mod target_cli;
 mod target_svg;
+mod tool_library_cli;
 mod verification_svg;
 use cam_core::spike::{Fixture, SCHEMA_VERSION, run_fixture};
 use serde_json::json;
@@ -28,11 +29,16 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let Some(command) = args.next() else {
         print!("{HELP}");
+        print!("\n{}", tool_library_cli::HELP);
         return Ok(true);
     };
     if command == "--help" || command == "-h" {
         print!("{HELP}");
+        print!("\n{}", tool_library_cli::HELP);
         return Ok(true);
+    }
+    if command == "tool-library" {
+        return tool_library_cli::run(args.collect());
     }
     if matches!(command.as_str(), "export" | "verify-gcode") {
         return post_cli::run(&command, args.collect());

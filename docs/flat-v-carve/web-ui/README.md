@@ -26,6 +26,11 @@ Included: portable jobs; SVG inspection and region selection; physical placement
 
 Local reusable tool, setup, and machine presets are proposed conveniences. Applying one copies a snapshot into the job, previews the changed values, and invalidates affected output. Editing a preset must never silently alter existing jobs. No feed or spindle recommendations are generated. Imported jobs retain unset machining values until the user supplies them or explicitly applies a preset.
 
+The [local tool library backend](../tool-library.md) now implements tool definitions,
+optional cutting presets, persistence, and explicit snapshot application through
+Rust and the CLI. Its frontend controls and local-service transport are pending;
+setup and machine preset libraries remain proposed.
+
 The established product boundaries still apply: one flat endmill, one V-bit, one depth cap across selected regions, uniform flat stock, and XYZ motion. CAD drawing, SVG repair/tracing, multiple depths, arbitrary tool stacks, automatic feeds and speeds, cloud accounts, collaboration, and direct machine control remain outside this release. Stock footprint/clamp visualization is an optional future extension; current stock data contains thickness only, so the UI must not imply fixture collision coverage.
 
 ## 3. Workspace structure
