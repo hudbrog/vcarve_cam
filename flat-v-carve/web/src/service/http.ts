@@ -3,6 +3,7 @@ import type { Job } from '../contracts/job';
 import type { CamService, Capabilities } from '../contracts/service';
 import { apiVersion, capabilitiesSchema, displaySchema, envelopeSchema, errorSchema, openedSchema, sessionSchema, validationSchema } from '../contracts/wire';
 import { fixtureService } from './fixture';
+import { acceptTask, planResultSchema, taskSchema, type TaskIdentity } from '../contracts/planning';
 
 // Only same-origin URLs. Session tokens stay in memory and are never persisted or logged.
 export function createHttpService(fetcher: typeof fetch = (...args) => fetch(...args)): CamService {
@@ -55,6 +56,19 @@ export function createHttpService(fetcher: typeof fetch = (...args) => fetch(...
     if (engine !== null && engine !== envelope.engineVersion) throw new Error('Display engine identity differs from the accepted response.');
     return result;
   }
+  async function taskRequest<T>(identity: TaskIdentity, path: string, schema: z.ZodType<T>, body?: object, signal?: AbortSignal): Promise<T> {
+    if (!connection) throw new Error('Reconnect to check this task. Disconnecting does not cancel planning.');
+    const accepted = connection;
+    if (identity.instanceId !== accepted.capabilities.planning?.instanceId || identity.engineVersion !== accepted.capabilities.engineVersion)
+      throw new Error('This task belongs to a previous service instance. It has not been restarted. Start a new plan explicitly.');
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    if (payload && new TextEncoder().encode(payload).length > accepted.capabilities.limits!.requestBytes) throw new Error('Request exceeds the service input limit.');
+    const { response, value } = await read(path, { method: payload === undefined ? 'GET' : 'POST',
+      headers: { 'X-Cam-Session': accepted.token, 'Content-Type': 'application/json' }, body: payload }, signal);
+    if (!response.ok) throw new Error(`Task request failed (${response.status}).`);
+    signal?.throwIfAborted();
+    return parse(schema, value);
+  }
   return {
     capabilities,
     async openExample(signal) {
@@ -67,5 +81,21 @@ export function createHttpService(fetcher: typeof fetch = (...args) => fetch(...
     },
     openJob: (json, revision, signal) => request({ operation: 'open', json }, revision, openedSchema, signal),
     importArtwork: (filename, svg, options: Job['import'], revision, signal) => request({ operation: 'import', filename, svg, options }, revision, openedSchema, signal),
+    async startPlan(job, identity, signal) {
+      const task = await taskRequest(identity, 'tasks', taskSchema, { apiVersion, instanceId: identity.instanceId,
+        requestId: identity.taskId, revision: identity.revision, documentFingerprint: identity.documentFingerprint, stage: identity.stage, job }, signal);
+      return acceptTask(null, task, identity);
+    },
+    async planTask(identity, signal) {
+      return acceptTask(null, await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}`, taskSchema, undefined, signal), identity);
+    },
+    async cancelPlan(identity, signal) {
+      return acceptTask(null, await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}/cancel`, taskSchema, {}, signal), identity);
+    },
+    async planResult(identity, signal) {
+      const result = await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}/result`, planResultSchema, undefined, signal);
+      acceptTask(null, result.task, identity);
+      return result;
+    },
   };
 }

@@ -1,10 +1,17 @@
 use std::{path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Flat V-carve local browser workspace\nUsage: cam-web [--port <0..65535>] [--ui-dir <web/dist>]\n\nBuild the UI with pnpm build before starting. Bind is always 127.0.0.1.\nPort 0 selects an available port; otherwise the port must be free.\nImport, open/migrate, display, and editable-job validation are available.\nPlanning, verification, machine output, and filesystem writes are not exposed.\nCtrl+C stops the service.\n";
+const HELP: &str = "Flat V-carve local browser workspace\nUsage: cam-web [--port <0..65535>] [--ui-dir <web/dist>]\n\nBuild the UI with pnpm build before starting. Bind is always 127.0.0.1.\nPort 0 selects an available port; otherwise the port must be free.\nImport, open/migrate, validation, and cancellable background planning are available.\nGeometric verification, machine output, and filesystem writes are not exposed.\nCtrl+C cancels planning workers and stops the service.\n";
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    match run().await {
+fn main() -> ExitCode {
+    let result = if std::env::args().skip(1).eq(["--planning-worker"]) {
+        cam_server::planning_worker::run()
+    } else {
+        match tokio::runtime::Runtime::new() {
+            Ok(runtime) => runtime.block_on(run()),
+            Err(error) => Err(error.into()),
+        }
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("CAM_WEB_ERROR: {error}");
@@ -44,11 +51,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port.unwrap_or(4848)))
             .await?;
     let port = listener.local_addr()?.port();
-    let app = cam_server::router(port, assets)?;
+    let planning = cam_server::planning::Planning::new()?;
+    let app = cam_server::router_with_planning(port, assets, planning.clone())?;
     println!("CAM_WEB_URL=http://127.0.0.1:{port}");
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
+        .with_graceful_shutdown(async move {
             let _ = tokio::signal::ctrl_c().await;
+            planning.shutdown().await;
         })
         .await?;
     Ok(())

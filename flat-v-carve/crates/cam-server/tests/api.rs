@@ -134,7 +134,10 @@ async fn capability_envelope_has_limits_and_no_unimplemented_operations() {
     assert_eq!(caps["engineVersion"], ENGINE_VERSION);
     assert_eq!(caps["limits"]["svgBytes"], cam_core::svg::MAX_SVG_BYTES);
     assert_eq!(caps["limits"]["requestBytes"], REQUEST_BYTES);
-    for field in ["planningStages", "verificationScopes", "exportFormats"] {
+    assert_eq!(caps["planningStages"], json!(["endmill", "combined"]));
+    assert_eq!(caps["planning"]["concurrentPlans"], 1);
+    assert_eq!(caps["planning"]["maxPending"], 4);
+    for field in ["verificationScopes", "exportFormats"] {
         assert_eq!(caps[field], json!([]));
     }
     for path in [

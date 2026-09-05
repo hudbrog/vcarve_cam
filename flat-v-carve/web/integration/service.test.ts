@@ -4,6 +4,7 @@ import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createHttpService } from '../src/service/http';
 import type { CamService } from '../src/contracts/service';
+import { terminal, type PlanTask, type TaskIdentity } from '../src/contracts/planning';
 
 // Runs the actual Rust server and the same-engine CLI; no fixture HTTP responses.
 const workspace = fileURLToPath(new URL('../../', import.meta.url));
@@ -15,10 +16,10 @@ const output = `${web}test-results/live`;
 let child: ChildProcess;
 let base: string;
 let service: CamService;
-function runCli(args: string[]) {
+function runCli(args: string[], expectedStatus = 0) {
   const result = spawnSync(cli, args, { cwd: workspace, encoding: 'utf8', maxBuffer: 16_000_000, windowsHide: true });
   if (result.error) throw result.error;
-  expect(result.status, result.stderr).toBe(0);
+  expect(result.status, result.stderr).toBe(expectedStatus);
   return result.stdout;
 }
 beforeAll(async () => {
@@ -98,4 +99,78 @@ describe('live Rust/UI contract and CLI parity', () => {
     imported.job.name = 'changed';
     expect((await service.validateDraft(imported.job, 9)).documentFingerprint).not.toBe(checked.documentFingerprint);
   });
+});
+
+async function identity(fixture: string, stage: TaskIdentity['stage'] = 'endmill') {
+  const opened = await service.openJob!(readFileSync(`${workspace}fixtures/${fixture}.json`, 'utf8'), 14);
+  const caps = await service.capabilities();
+  const id: TaskIdentity = { taskId: crypto.randomUUID(), instanceId: caps.planning!.instanceId,
+    engineVersion: caps.engineVersion, revision: 14, documentFingerprint: opened.documentFingerprint, stage };
+  return { job: opened.job, id };
+}
+async function finish(id: TaskIdentity) {
+  const deadline = Date.now() + 30_000;
+  let previous: PlanTask | null = null;
+  while (Date.now() < deadline) {
+    const task = await service.planTask!(id);
+    if (previous) expect(task.sequence).toBeGreaterThanOrEqual(previous.sequence);
+    if (terminal(task)) return task;
+    previous = task;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error('Planning did not finish within the test deadline');
+}
+describe('real background planning', () => {
+  it.each([
+    ['m3/rectangle', 'endmill', 'complete'], ['m3/no-access', 'endmill', 'empty'],
+    ['m3/unsupported-entry', 'endmill', 'incomplete'], ['m3/resource-limit', 'endmill', 'inconclusive'],
+    ['m4/finite-tip', 'combined', 'complete'],
+  ] as const)('matches CLI artifact and recorded motions for %s', async (fixture, stage, status) => {
+    const { job, id } = await identity(fixture, stage);
+    const accepted = await service.startPlan!(job, id);
+    expect(accepted.state).toBe('queued');
+    const task = await finish(id);
+    expect(task.state, JSON.stringify(task.diagnostic)).toBe('succeeded');
+    expect(task.summary?.status).toBe(status);
+    const result = await service.planResult!(id);
+    const path = `${output}/${fixture.replace('/', '-')}-${stage}.plan.json`;
+    runCli(['plan', `${workspace}fixtures/${fixture}.json`, '--stage', stage, '--output', path], ['complete', 'empty'].includes(status) ? 0 : 1);
+    const cliPlan = JSON.parse(readFileSync(path, 'utf8'));
+    expect(task.summary?.inputFingerprint).toBe(cliPlan.input_fingerprint);
+    expect(task.summary?.motionFingerprint).toBe(cliPlan.motion_fingerprint);
+    const motions = stage === 'combined' ? [...cliPlan.endmill.motions, ...cliPlan.vbit_motions] : cliPlan.motions;
+    expect(result.motions).toEqual(motions.slice(0, 20_000));
+    expect(task.summary?.motionCount).toBe(motions.length);
+    const session = await (await fetch(`${base}/api/v1/session`)).json();
+    const artifact = await fetch(`${base}/api/v1/tasks/${id.taskId}/artifact`, { headers: { 'X-Cam-Session': session.sessionToken } });
+    expect(await artifact.json()).toEqual(cliPlan);
+    expect((await service.cancelPlan!(id)).state).toBe('succeeded');
+    expect((await service.startPlan!(job, id)).taskId).toBe(id.taskId); // Retry does not calculate again.
+    await expect(service.startPlan!({ ...job, name: 'edited' }, id)).rejects.toThrow(/STALE_DOCUMENT/);
+    await expect(service.startPlan!(job, { ...id, revision: id.revision + 1 })).rejects.toThrow(/TASK_KEY_REUSED/);
+  }, 45_000);
+  it('checks the chosen stage in Rust and preserves its setup diagnostic', async () => {
+    const { job, id } = await identity('m3/rectangle', 'combined');
+    await service.startPlan!(job, id);
+    const task = await finish(id);
+    expect(task.state).toBe('failed');
+    expect(task.diagnostic?.code).toBeTruthy();
+    expect(task.summary).toBeNull();
+    await expect(service.planResult!(id)).rejects.toThrow(/PLAN_RESULT_UNAVAILABLE/);
+  });
+  it('keeps validation responsive, reconnects without replay, and cancels running work', async () => {
+    const { job, id } = await identity('m4/finite-tip', 'combined');
+    await service.startPlan!(job, id);
+    let task = await service.planTask!(id);
+    while (task.state === 'queued') task = await service.planTask!(id);
+    expect(task.state).toBe('running');
+    expect((await service.validateDraft(job, 15)).valid).toBe(true);
+    await service.capabilities();
+    const cancelled = await service.cancelPlan!(id);
+    expect(cancelled.state).toBe('cancelling');
+    expect((await finish(id)).state).toBe('cancelled');
+    expect((await service.cancelPlan!(id)).state).toBe('cancelled');
+    await expect(service.planResult!(id)).rejects.toThrow(/PLAN_RESULT_UNAVAILABLE/);
+    await expect(service.planTask!({ ...id, instanceId: '0'.repeat(32) })).rejects.toThrow(/previous service instance/);
+  }, 15_000);
 });

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub const API_VERSION: &str = "ui-1";
+pub const API_VERSION: &str = "ui-2";
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const JOB_BYTES: usize = 8_000_000;
 pub const REQUEST_BYTES: usize = 16_100_000;
@@ -126,7 +126,7 @@ fn diagnostics(geometry: &NormalizedGeometry) -> Vec<UiDiagnostic> {
         .collect()
 }
 // A document receipt, deliberately distinct from planner/verification fingerprints.
-fn fingerprint(job: &Job) -> String {
+pub(crate) fn fingerprint(job: &Job) -> String {
     let mut hash = Sha256::new();
     hash.update(b"ui-document-v1\0");
     hash.update(ENGINE_VERSION.as_bytes());

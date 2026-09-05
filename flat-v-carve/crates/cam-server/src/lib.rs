@@ -1,9 +1,11 @@
 pub mod document;
+pub mod planning;
+pub mod planning_worker;
 
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    extract::{DefaultBodyLimit, Request, State, rejection::JsonRejection},
+    extract::{DefaultBodyLimit, Path as RoutePath, Request, State, rejection::JsonRejection},
     http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -94,8 +96,16 @@ struct AppState {
     assets: Arc<Assets>,
     workers: Arc<Semaphore>,
     requests: Arc<Semaphore>,
+    planning: Arc<planning::Planning>,
 }
 pub fn router(port: u16, assets: Assets) -> io::Result<Router> {
+    router_with_planning(port, assets, planning::Planning::new()?)
+}
+pub fn router_with_planning(
+    port: u16,
+    assets: Assets,
+    planning: Arc<planning::Planning>,
+) -> io::Result<Router> {
     let mut secret = [0u8; 32];
     getrandom::fill(&mut secret).map_err(io::Error::other)?;
     let authority = format!("127.0.0.1:{port}");
@@ -106,11 +116,17 @@ pub fn router(port: u16, assets: Assets) -> io::Result<Router> {
         assets: Arc::new(assets),
         workers: Arc::new(Semaphore::new(WORKERS)),
         requests: Arc::new(Semaphore::new(8)),
+        planning,
     };
     Ok(Router::new()
         .route("/api/v1/session", get(session))
         .route("/api/v1/capabilities", get(capabilities))
         .route("/api/v1/document", post(document_request))
+        .route("/api/v1/tasks", post(start_plan))
+        .route("/api/v1/tasks/{id}", get(task_snapshot))
+        .route("/api/v1/tasks/{id}/cancel", post(cancel_plan))
+        .route("/api/v1/tasks/{id}/result", get(plan_result))
+        .route("/api/v1/tasks/{id}/artifact", get(plan_artifact))
         .fallback(asset)
         .layer(DefaultBodyLimit::max(REQUEST_BYTES))
         .layer(middleware::from_fn_with_state(state.clone(), boundary))
@@ -193,14 +209,100 @@ async fn session(State(state): State<AppState>) -> Json<Value> {
         json!({ "apiVersion": API_VERSION, "engineVersion": ENGINE_VERSION, "sessionToken": state.token }),
     )
 }
-async fn capabilities() -> Json<Value> {
+async fn capabilities(State(state): State<AppState>) -> Json<Value> {
     Json(
         json!({ "apiVersion": API_VERSION, "mode": "live", "engineVersion": ENGINE_VERSION,
         "importArtwork": true, "openJob": true, "validateDraft": true,
-        "planningStages": [], "verificationScopes": [], "exportFormats": [],
+        "planningStages": ["endmill", "combined"], "verificationScopes": [], "exportFormats": [],
+        "planning": { "instanceId": state.planning.instance_id, "concurrentPlans": 1,
+            "maxPending": planning::MAX_PENDING, "maxTasks": planning::MAX_TASKS,
+            "retainedResults": planning::RETAINED_RESULTS, "timeoutSeconds": planning::TIMEOUT_SECONDS,
+            "previewMotions": planning_worker::PREVIEW_MOTIONS, "artifactBytes": planning_worker::ARTIFACT_BYTES },
         "limits": { "svgBytes": cam_core::svg::MAX_SVG_BYTES, "jobBytes": JOB_BYTES,
             "requestBytes": REQUEST_BYTES, "concurrentInspections": WORKERS } }),
     )
+}
+fn task_error(failure: planning::Failure) -> Response {
+    error(
+        StatusCode::from_u16(failure.0).unwrap(),
+        failure.1,
+        &failure.2,
+    )
+}
+async fn start_plan(
+    State(state): State<AppState>,
+    body: Result<Json<planning::Start>, JsonRejection>,
+) -> Response {
+    let request = match body {
+        Ok(Json(value)) => value,
+        Err(rejection) => return error(rejection.status(), "REQUEST_JSON", &rejection.body_text()),
+    };
+    let Ok(permit) = state.workers.clone().try_acquire_owned() else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "SERVICE_BUSY",
+            "The engine is inspecting other requests. Retry shortly.",
+        );
+    };
+    // Parsing/canonicalizing large jobs must not occupy an async executor thread.
+    match tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        state.planning.start(request)
+    })
+    .await
+    {
+        Ok(Ok(snapshot)) => (StatusCode::ACCEPTED, Json(snapshot)).into_response(),
+        Ok(Err(failure)) => task_error(failure),
+        Err(_) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "PLAN_START_FAILURE",
+            "Could not accept the plan. Retry with the same request ID.",
+        ),
+    }
+}
+async fn task_snapshot(
+    State(state): State<AppState>,
+    RoutePath(id): RoutePath<String>,
+) -> Response {
+    match state.planning.snapshot(&id) {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(failure) => task_error(failure),
+    }
+}
+async fn cancel_plan(State(state): State<AppState>, RoutePath(id): RoutePath<String>) -> Response {
+    match state.planning.cancel(&id) {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(failure) => task_error(failure),
+    }
+}
+async fn plan_result(State(state): State<AppState>, RoutePath(id): RoutePath<String>) -> Response {
+    match state.planning.result(&id) {
+        Ok((snapshot, result)) => Json(
+            json!({ "task": snapshot, "coordinateSpace": "workpiece-mm-z-up",
+            "motions": result.motions }),
+        )
+        .into_response(),
+        Err(failure) => task_error(failure),
+    }
+}
+async fn plan_artifact(
+    State(state): State<AppState>,
+    RoutePath(id): RoutePath<String>,
+) -> Response {
+    match state.planning.result(&id) {
+        Ok((_, result)) => (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "attachment; filename=plan.json",
+                ),
+            ],
+            result.artifact.clone(),
+        )
+            .into_response(),
+        Err(failure) => task_error(failure),
+    }
 }
 async fn document_request(
     State(state): State<AppState>,

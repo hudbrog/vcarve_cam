@@ -1,8 +1,9 @@
 import type { Job, Point } from './job';
+import type { PlanningLimits, PlanTask, PlanResult, TaskIdentity } from './planning';
 
 // Versioned local UI API, deliberately separate from portable job/plan schemas.
 export interface Capabilities {
-  apiVersion: 'ui-1';
+  apiVersion: 'ui-2';
   mode: 'fixture' | 'live';
   engineVersion: string;
   importArtwork: boolean;
@@ -12,6 +13,7 @@ export interface Capabilities {
   verificationScopes: string[];
   exportFormats: string[];
   limits?: { svgBytes: number; jobBytes: number; requestBytes: number; concurrentInspections: number };
+  planning?: PlanningLimits;
 }
 export interface DisplayComponent {
   id: string;
@@ -56,6 +58,10 @@ export interface CamService {
   validateDraft(job: Job, revision: number, signal?: AbortSignal): Promise<Validation>;
   openJob?(json: string, revision: number, signal?: AbortSignal): Promise<OpenedDocument>;
   importArtwork?(filename: string, svg: string, options: Job['import'], revision: number, signal?: AbortSignal): Promise<OpenedDocument>;
+  startPlan?(job: Job, identity: TaskIdentity, signal?: AbortSignal): Promise<PlanTask>;
+  planTask?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanTask>;
+  cancelPlan?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanTask>;
+  planResult?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanResult>;
 }
 
 export function outputBlockedReasons(capabilities: Capabilities | null): string[] {

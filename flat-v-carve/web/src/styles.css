@@ -66,3 +66,15 @@
   @container cam-window (max-width: 78.125rem) { .step span > small { display: none; } }
   @container cam-window (max-width: 23.75rem) { .navigator nav { grid-template-columns: repeat(2, minmax(0, 1fr)); } .step strong { overflow-wrap: anywhere; } }
 }
+/* Recorded engine motions remain distinct from filled source geometry. */
+.plan-motion { fill: none; stroke: #269ccc; stroke-width: 1.5; pointer-events: none; }
+.plan-motion.vbit { stroke: #48b89b; }
+.legend-swatch.endmill-motion { background: #269ccc; }
+.legend-swatch.vbit-motion { background: #48b89b; }
+.legend-swatch.travel-motion { background: #b67720; }
+.plan-motion.travel { stroke: #b67720; stroke-width: 1; stroke-dasharray: 4 3; opacity: .7; }
+.task-state { font-weight: 650; }
+.plan-outcome { border-left: 3px solid var(--accent, #1275a3); padding-left: .7rem; font-weight: 650; text-transform: capitalize; }
+.plan-outcome.incomplete, .plan-outcome.inconclusive { border-color: #b67720; }
+.plan-result details { font-size: .8rem; line-height: 1.5; }
+.plan-result code, .inspector-group dd code { overflow-wrap: anywhere; }
