@@ -1,7 +1,7 @@
 # Flat V-carve CAM: implementation plan
 
 Date: 2026-09-05\
-Status: M0–M4 complete on the initial Linux x86-64 target; M5–M8 planned.
+Status: M0–M5 implemented; M5 validated on native Windows x64. M6–M8 planned.
 
 Read [architecture](architecture.md) for agreed scope and [technical design](technical-design.md) for geometry and contracts. This plan orders work by uncertainty: establish the geometric foundation before investing in application polish or relying on machine output.
 
@@ -26,7 +26,7 @@ No calendar estimate is assigned yet. The dependency and geometry spike should e
 | M2 ✓ | SVG import and versioned jobs | M1 | [Completed capability report](m2-capability-report.md): 65 tests, native/plain Inkscape exports, portable jobs, dimensions/holes/selection preserved. |
 | M3 ✓ | Endmill planner and recorded stock removal | M1; integrate M2 | [Completed capability report](m3-capability-report.md): 84 tests, 10 release fixtures, continuous clearance, and actual endmill stock. |
 | M4 ✓ | V-bit paths and combined rest machining | M3 | [Completed capability report](m4-capability-report.md): 108 tests, 13 release fixtures, curved/rising detail, floor ridges, and retained final finishing. |
-| M5 | Verification of continuous and rounded motions | M4 | Bounded overcut/residual checks and explicit inconclusive cases. |
+| M5 ✓ | Verification of continuous and rounded motions | M4 | [Completed capability report](m5-capability-report.md): 127 tests, bounded stock/quality checks, rounded-coordinate revalidation, and ten release expectations. |
 | M6 | LinuxCNC postprocessor and machine-profile contract | M5 | Emitted-subset checks and LinuxCNC preview/simulation. |
 | M7 | Local browser workflow | M2 and stable planning contracts; integrate M6 | Import-to-export parity with CLI and responsive planning. |
 | M8 | Measured machining trial and usable release | M6, M7 | Test carving, measured deviations, reproducible installation and documented limits. |
@@ -111,18 +111,20 @@ Completed 2026-09-05 with engine 0.5.0. The [M4 capability report](m4-capability
 
 ## 8. M5: verification and output precision
 
-- [ ] Complete depth-slice swept-area construction for both tools and linear XYZ motion.
-- [ ] Maintain conservative removal bounds for rest pruning and overcut checks.
-- [ ] Refine slices and height-field cells where a requested error bound is unresolved.
-- [ ] Validate segments analytically or with bounded subdivision; include entry and linking moves.
-- [ ] Distinguish overcut, permitted floor ridges, unreachable detail, and other residual stock.
-- [ ] Enforce the explicit detail-residual limit without misclassifying missed reachable material as unreachable.
-- [ ] Add explicit failed and inconclusive report states with locations and measured bounds.
-- [ ] Validate rounded machine coordinates and detect zero-length/reversed moves introduced by formatting.
-- [ ] Check deterministic ordering and artifact invalidation after job/tool changes.
-- [ ] Measure planning time, memory, segment count, and artifact size on representative artwork.
+- [x] Complete depth-slice swept-area construction for both tools and linear XYZ motion.
+- [x] Maintain conservative removal bounds for rest pruning and overcut checks.
+- [x] Refine slices and height-field cells where a requested error bound is unresolved.
+- [x] Validate segments analytically or with bounded subdivision; include entry and linking moves.
+- [x] Distinguish overcut, permitted floor ridges, unreachable detail, and other residual stock.
+- [x] Enforce the explicit detail-residual limit without misclassifying missed reachable material as unreachable.
+- [x] Add explicit failed and inconclusive report states with locations and measured bounds.
+- [x] Validate rounded machine coordinates and detect zero-length/reversed moves introduced by formatting.
+- [x] Check deterministic ordering and artifact invalidation after job/tool changes.
+- [x] Measure planning time, memory, segment count, and artifact size on representative artwork.
 
 **Exit:** deliberately injected gouges, unsafe modeled-stock links, missed strips, and rounding errors are detected. Coarse grids cannot yield a false pass on narrow fixtures. Reducing resource limits yields an inconclusive result. Refinement demonstrates convergence on the analytic fixture set.
+
+Completed 2026-09-05 with engine 0.6.0 on Windows x64 and pinned Rust 1.95.0. Debug/release builds, all 127 integration tests in both profiles, Clippy with warnings denied, and formatting pass. All ten release fixture expectations match. The [M5 capability report](m5-capability-report.md) records independent whole-cell bounds, adaptive depth bands, finite-tip reachability, strict ridge/detail limits, rounded-coordinate checks, failure locations, and measured performance. Rounding exposed and removed floating-point-only initial plunges. M4 zero-ridge cap-contact examples are explicitly rejected under M5's stricter limit. Bounds apply to normalized polygon geometry and modeled motions, with source conversion error and physical-machine limits reported separately.
 
 ## 9. M6: LinuxCNC integration
 

@@ -4,6 +4,7 @@ use cam_core::{
     pocket::{EndmillPlan, PlanStatus, plan_endmill},
     svg::{ImportOptions, MAX_SVG_BYTES},
     vcarve::{CombinedPlan, plan_combined},
+    verification::{VerificationOptions, VerificationStatus, verify_plan},
 };
 use serde_json::json;
 use std::{
@@ -38,6 +39,9 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
     let mut tolerance_set = false;
     let mut selection = vec![];
     let mut stage = None;
+    let mut verification_options = VerificationOptions::default();
+    let mut verification_flags = std::collections::BTreeSet::new();
+    let mut verification_preview = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" | "-h" => {
@@ -68,6 +72,31 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
                 }
                 stage = Some(value);
             }
+            "--max-cells"
+            | "--max-depth"
+            | "--reachability-cells"
+            | "--max-depth-bands"
+            | "--decimal-places"
+                if command == "verify" && verification_flags.insert(arg.clone()) =>
+            {
+                let value: usize = args
+                    .next()
+                    .ok_or("verification flag requires an integer")?
+                    .parse()?;
+                match arg.as_str() {
+                    "--max-cells" => verification_options.max_cells = value,
+                    "--max-depth" => verification_options.max_depth = value,
+                    "--reachability-cells" => verification_options.reachability_max_cells = value,
+                    "--max-depth-bands" => verification_options.max_depth_bands = value,
+                    "--decimal-places" => verification_options.decimal_places = Some(value),
+                    _ => unreachable!(),
+                }
+            }
+            "--preview" if command == "verify" && verification_preview.is_none() => {
+                verification_preview = Some(PathBuf::from(
+                    args.next().ok_or("--preview requires an SVG file")?,
+                ));
+            }
             "--select" if matches!(command, "import" | "select") => {
                 selection.push(args.next().ok_or("--select requires a region ID")?)
             }
@@ -84,6 +113,15 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
     }
     if output.as_ref() == Some(&input) || report.as_ref() == Some(&input) {
         return Err("use a different output path to preserve the input".into());
+    }
+    verification_options.validate()?;
+    if verification_preview
+        .as_ref()
+        .is_some_and(|p| p == &input || Some(p) == output.as_ref())
+    {
+        return Err(
+            "verification preview must use a different path from the input and JSON report".into(),
+        );
     }
     let contents = read(
         &input,
@@ -106,6 +144,50 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
     if matches!(command, "inspect" | "verify") && kind.as_deref() == Some("combined_plan") {
         return match CombinedPlan::from_json(&contents) {
             Ok(plan) => {
+                if command == "verify" {
+                    return match verify_plan(&plan, &verification_options) {
+                        Ok(verification) => {
+                            let passed = verification.status == VerificationStatus::Passed;
+                            let data = json!({"valid":true,"milestone":"M5","input_fingerprint":plan.input_fingerprint,
+                                "motion_fingerprint":plan.motion_fingerprint,"endmill_status":plan.endmill.analysis.status,
+                                "analysis":plan.analysis,"verification":verification});
+                            write(
+                                output.as_ref().unwrap(),
+                                &(serde_json::to_string_pretty(&data)? + "\n"),
+                            )?;
+                            if let Some(preview) = verification_preview {
+                                write(
+                                    &preview,
+                                    &super::verification_svg::render(
+                                        &plan.endmill.job,
+                                        &verification,
+                                    )?,
+                                )?;
+                            }
+                            eprintln!(
+                                "M5 verification: {:?}; {} adaptive cells, {} unresolved; rounded coordinates: {}",
+                                verification.status,
+                                verification.original.evaluated_cells,
+                                verification.original.unresolved_cells,
+                                verification.rounded.as_ref().map_or_else(
+                                    || "not requested".into(),
+                                    |r| format!(
+                                        "{:?} at {} decimal places",
+                                        r.verification.status, r.decimal_places
+                                    )
+                                )
+                            );
+                            Ok(passed)
+                        }
+                        Err(d) => {
+                            failed(command, &d, output.as_deref(), None)?;
+                            if let Some(preview) = verification_preview {
+                                write(&preview, &super::job_svg::failure(&d.to_string()))?;
+                            }
+                            Ok(false)
+                        }
+                    };
+                }
                 let data = serde_json::to_string_pretty(
                     &json!({"valid":true,"milestone":"M4","input_fingerprint":plan.input_fingerprint,"motion_fingerprint":plan.motion_fingerprint,"endmill_status":plan.endmill.analysis.status,"analysis":plan.analysis}),
                 )? + "\n";
@@ -134,11 +216,17 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
             }
             Err(d) => {
                 failed(command, &d, output.as_deref(), report.as_deref())?;
+                if let Some(preview) = verification_preview {
+                    write(&preview, &super::job_svg::failure(&d.to_string()))?;
+                }
                 Ok(false)
             }
         };
     }
     if matches!(command, "inspect" | "verify") && (is_plan || command == "verify") {
+        if !verification_flags.is_empty() || verification_preview.is_some() {
+            return Err("M5 verification options require a combined plan; endmill-only verify retains the M3 stage contract".into());
+        }
         return match EndmillPlan::from_json(&contents) {
             Ok(plan) => {
                 let data = serde_json::to_string_pretty(
@@ -285,7 +373,7 @@ fn failed(
     report: Option<&Path>,
 ) -> AppResult<()> {
     let data = serde_json::to_string_pretty(
-        &json!({"schema_version":1,"milestone":"M4","valid":false,"diagnostics":[d]}),
+        &json!({"schema_version":1,"milestone":if command == "verify" {"M5"} else {"M4"},"valid":false,"diagnostics":[d]}),
     )? + "\n";
     match command {
         "inspect" => {

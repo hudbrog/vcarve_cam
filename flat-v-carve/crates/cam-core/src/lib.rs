@@ -11,3 +11,4 @@ pub mod svg;
 pub mod target;
 
 pub mod vcarve;
+pub mod verification;

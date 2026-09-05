@@ -1,10 +1,10 @@
 # Flat V-carve CAM
 
-An isolated Rust workspace for the combined endmill/V-bit planner described in the [project docs](../docs/flat-v-carve/architecture.md). M0–M4 implement geometry, SVG jobs, endmill clearing, V-bit finishing/rest machining, and recorded-motion stock previews. Adaptive full-volume verification, machine output, and the browser workflow follow in M5–M7.
+An isolated Rust workspace for the combined endmill/V-bit planner described in the [project docs](../docs/flat-v-carve/architecture.md). M0–M5 implement geometry, SVG jobs, both planners, recorded-motion previews, bounded continuous stock verification, and rounded-coordinate checks. Machine output and the browser workflow follow in M6–M7.
 
 ## Run
 
-Install [Rust with rustup](https://www.rust-lang.org/tools/install). The workspace pins Rust **1.95.0**; rustup selects it when running Cargo here. The tested target is **x86_64-unknown-linux-gnu**, Ubuntu 24.04.4 under WSL2. Windows-native and WebAssembly builds have not been tested.
+Install [Rust with rustup](https://www.rust-lang.org/tools/install). The workspace pins Rust **1.95.0**; rustup selects it when running Cargo here. Tested native targets are **x86_64-pc-windows-msvc** on Windows and **x86_64-unknown-linux-gnu** on Ubuntu 24.04.4 under WSL2. See [Windows setup](#windows-setup) for prerequisites and PowerShell commands. WebAssembly builds have not been tested.
 
 From this directory:
 
@@ -77,7 +77,28 @@ Pointed-bit floor lane spacing is constrained by the permitted ridge. A pointed 
 
 Saved combined plans bind both stages, tool-transition markers, path execution records, generation issues, and the engine/job identity. Reopening recomputes the actual sweeps and quality report. Changing cached analysis cannot create a successful result. The verifier also rejects omitted depth passes without stock evidence and an absent or incomplete final finish.
 
-M4 `complete` means candidate-family completion, continuous segment clearance, accessible-floor slice coverage, and quality at the reported sample lattice/motion witnesses. Floor coverage is checked at `D - allowed_ridge - numerical_depth_budget`, where the explicitly reported numerical depth budget is half the verification tolerance. The report also retains XY coverage tolerance. Sampled residual maxima are **not global error bounds**: adaptive continuous stock/finish certification belongs to M5. See the [M4 capability report](../docs/flat-v-carve/m4-capability-report.md).
+M4 `complete` means candidate-family completion, continuous segment clearance, accessible-floor slice coverage, and quality at the reported sample lattice/motion witnesses. Floor coverage is checked at `D - allowed_ridge - numerical_depth_budget`, where the explicitly reported numerical depth budget is half the verification tolerance. The report also retains XY coverage tolerance. Sampled residual maxima are **not global error bounds**; use M5 verification below for bounded continuous checks. See the [M4 capability report](../docs/flat-v-carve/m4-capability-report.md).
+
+## M5 continuous verification and coordinate precision
+
+From this workspace, using PowerShell or one-line shell commands:
+
+```powershell
+cargo run --release --locked -p cam-app -- plan fixtures/m4/curved-medial.json --output artifacts/m5/curved-medial/plan.json
+cargo run --release --locked -p cam-app -- verify artifacts/m5/curved-medial/plan.json --output artifacts/m5/curved-medial/verification.json --decimal-places 6 --preview artifacts/m5/curved-medial/verification.svg
+```
+
+`verify` authenticates the combined plan and checks the entire normalized target and cutting-sweep domain, including islands and exterior material. Adaptive cells bound overcut, floor ridges, unreachable nominal detail, and other reachable residue. Depth bands and integrated volumes carry separate area/volume bounds. `inspect` continues to show M4 planning evidence; the M5 finding preview uses red for failures and amber for unresolved bounds.
+
+Check `verification.status`: `passed`, `failed`, or `inconclusive`. Only `passed` exits 0; failed or inconclusive verification exits 1, and argument/I/O errors exit 2. The outer `valid` field means the artifact was readable/authenticated and is not a finish-quality result. Cached analysis is never trusted.
+
+`--decimal-places 0..9` checks the actual formatted XYZ coordinates independently. Omitting it verifies original coordinates only. The report retains both results, their fingerprints, coordinate changes, located findings, maximum-error intervals, and uncertainty. No G-code or machine defaults are generated. M6 will require the actual machine profile and output precision.
+
+Resource controls are `--max-cells` (default 1,000,000; total across refinement passes per coordinate set), `--max-depth` (24), `--reachability-cells` (4,096 per point query), and `--max-depth-bands` (512). Exhausted bounds remain inconclusive. Lowering limits cannot produce a coarse-grid pass. The geometric model is the rebuilt normalized polygon; source flattening/snap error is reported separately.
+
+M5 enforces the explicit ridge and detail limits without adding M4's numerical allowance. Consequently, the M4 zero-ridge `contact-line` and `contact-point` examples do not pass M5: their guarded cap motions leave about 0.01 mm. The [M5 fixtures](fixtures/m5/README.md) record these expected failures alongside successful and resource-limited cases. Endmill-only `verify` retains its M3 stage contract; the new M5 options require a combined plan.
+
+Engine **0.6.0** invalidates plans created by older engines. Regenerate plans from saved jobs; job schema 3 still accepts schemas 1 and 2. The [M5 capability report](../docs/flat-v-carve/m5-capability-report.md) records the methods, regression evidence, Windows performance measurements, and remaining limits. Run `scripts/benchmark-m5.ps1` from PowerShell 7 after a release build to reproduce the ten release cases and their JSON/SVG artifacts.
 
 ## M1 target and cutter previews
 
@@ -126,6 +147,32 @@ cargo run --locked -p cam-app -- geometry-spike \
 ```
 
 Exit codes: `0` for all expectations met, `1` for a failed capability check, `2` for command/input/I/O errors. Progress goes to stderr; artifacts go to the specified directory. Re-running replaces the same named artifact files. An individual reproducer is a fixture object; the bundled suite is an array of those objects.
+
+## Windows setup
+
+Install the [MSVC prerequisites](https://rust-lang.github.io/rustup/installation/windows-msvc.html): Visual Studio Build Tools with the **Desktop development with C++** workload, including the x64/x86 compiler and a Windows SDK. This workspace was built with Visual Studio Build Tools 2019, MSVC **14.29.30133**, and Windows SDK **10.0.19041.0** on Windows build **26200.9168** (x64).
+
+Install the x64 Windows version of [rustup](https://www.rust-lang.org/tools/install) using the MSVC host, then open a new PowerShell window so `%USERPROFILE%\.cargo\bin` is on `PATH`. From the repository root:
+
+```powershell
+Set-Location flat-v-carve
+rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
+rustup show
+cargo build --workspace --locked
+cargo build --release --workspace --locked
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo fmt --all -- --check
+```
+
+`rustup show` should report `1.95.0-x86_64-pc-windows-msvc` as active for this workspace. The executables are `target\debug\cam.exe` and `target\release\cam.exe`. Run the release CLI from PowerShell:
+
+```powershell
+.\target\release\cam.exe import fixtures/m2/inkscape-export.svg --output artifacts/windows/job.json
+.\target\release\cam.exe inspect artifacts/windows/job.json --output artifacts/windows/preview.svg --report artifacts/windows/report.json
+```
+
+The multiline examples elsewhere in this README use POSIX shell `\` continuations; in PowerShell, put each command on one line as above. A Developer PowerShell session is not required for this workspace when the MSVC prerequisites are installed.
 
 ## Develop
 

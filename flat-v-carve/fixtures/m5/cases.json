@@ -1,0 +1,12 @@
+[
+  {"id":"narrow-channel","job":"fixtures/m4/narrow-channel.json","arguments":["--decimal-places","6"],"expected":"passed"},
+  {"id":"wide-floor","job":"fixtures/m4/wide-floor.json","arguments":["--decimal-places","6"],"expected":"passed"},
+  {"id":"island","job":"fixtures/m4/island.json","arguments":["--decimal-places","6"],"expected":"passed"},
+  {"id":"finite-tip","job":"fixtures/m4/finite-tip.json","arguments":["--decimal-places","6"],"expected":"passed"},
+  {"id":"curved-medial","job":"fixtures/m4/curved-medial.json","arguments":["--decimal-places","6"],"expected":"passed"},
+  {"id":"disconnected","job":"fixtures/m4/disconnected.json","arguments":["--decimal-places","6"],"expected":"passed"},
+  {"id":"contact-line","job":"fixtures/m4/contact-line.json","arguments":["--decimal-places","6"],"expected":"failed"},
+  {"id":"contact-point","job":"fixtures/m4/contact-point.json","arguments":["--decimal-places","6"],"expected":"failed"},
+  {"id":"cell-limit","job":"fixtures/m4/narrow-channel.json","arguments":["--max-cells","1"],"expected":"inconclusive"},
+  {"id":"rounding-coarse","job":"fixtures/m4/narrow-channel.json","arguments":["--decimal-places","0"],"expected":"failed"}
+]

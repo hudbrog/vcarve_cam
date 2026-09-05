@@ -45,6 +45,52 @@ impl BoundaryQuery {
     pub fn segments(&self) -> &[Segment] {
         &self.segments
     }
+    /// Signed-distance enclosure over a complete axis-aligned rectangle.
+    /// Distance to a segment is convex, so its maximum is at a box vertex.
+    /// A boundary intersecting/contained in the box forces a mixed-sign bound.
+    pub fn box_signed_distance_bounds(&self, min: Point, max: Point) -> Result<(f64, f64)> {
+        if min.x > max.x || min.y > max.y {
+            return Err(Diagnostic::new("QUERY_BOX", "ordered finite box required"));
+        }
+        let center = min.lerp(max, 0.5);
+        let sample = self.sample(center)?;
+        self.sample(min)?;
+        self.sample(max)?;
+        let corners = [min, Point::new(max.x, min.y), max, Point::new(min.x, max.y)];
+        let mut lower = f64::INFINITY;
+        let mut upper = f64::INFINITY;
+        for &edge in &self.segments {
+            let inside = |p: Point| p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y;
+            let least = if inside(edge.start) || inside(edge.end) {
+                0.
+            } else {
+                (0..4)
+                    .map(|i| {
+                        segment_distance(
+                            edge,
+                            Segment {
+                                start: corners[i],
+                                end: corners[(i + 1) % 4],
+                            },
+                        )
+                    })
+                    .fold(f64::INFINITY, f64::min)
+            };
+            lower = lower.min(least);
+            upper = upper.min(corners.iter().map(|&p| edge.distance(p)).fold(0., f64::max));
+        }
+        let reserve = sample.numerical_reserve_mm * 4.;
+        upper += reserve;
+        if lower <= reserve {
+            return Ok((-upper, upper));
+        }
+        lower -= reserve;
+        Ok(if sample.location == PointLocation::Inside {
+            (lower, upper)
+        } else {
+            (-upper, -lower)
+        })
+    }
     pub fn sample(&self, p: Point) -> Result<Clearance> {
         if !p.finite() || p.x.abs() > self.query_limit || p.y.abs() > self.query_limit {
             return Err(Diagnostic::new(

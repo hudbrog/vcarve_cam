@@ -1,13 +1,15 @@
 # Flat V-carve CAM: technical design
 
 Date: 2026-09-05\
-Status: M0–M4 implemented and tested, including both planners and combined stock/quality previews. Adaptive continuous combined-stock verification and machine output remain M5–M6 work.
+Status: M0–M5 implemented and tested, including both planners, combined previews, bounded continuous stock verification, and rounded-coordinate checks. Machine output remains M6 work.
 
 See [architecture](architecture.md) for scope and component boundaries, and [implementation plan](implementation-plan.md) for delivery order. Unless explicitly attributed to a source, the geometry below is derived for this project.
 
-The [M3 capability report](m3-capability-report.md) defines the current endmill-only implementation: offset loops with a numerical guard, explicit plunge/ramp entries, clearance-plane links, independent continuous segment clearance, and actual-motion stock comparisons at stepdown slices. M3 uses `verification_tolerance_mm` as the XY floor-coverage tolerance at those slices. The adaptive volume/depth uncertainty and combined finish-quality contracts below remain M5 work; an M3 `complete` stage does not claim them.
+The [M3 capability report](m3-capability-report.md) defines the current endmill-only implementation: offset loops with a numerical guard, explicit plunge/ramp entries, clearance-plane links, independent continuous segment clearance, and actual-motion stock comparisons at stepdown slices. M3 uses `verification_tolerance_mm` as the XY floor-coverage tolerance at those slices. An M3 `complete` stage does not claim the separate M5 adaptive stock/quality contract below.
 
 The [M4 capability report](m4-capability-report.md) defines the current combined planner: guarded full-depth boundaries, threshold-split medial paths, floor lanes, conservative air proofs against actual endmill sweeps, bounded cleanup, and a retained final finishing family. M4 checks continuous linear-radius cutter clearance, floor coverage at the ridge depth minus an explicit numerical budget, and a configurable sample lattice with independent reachability bounds. Its sampled quality maxima and fixed slices are not the adaptive global certification specified for M5.
+
+The [M5 capability report](m5-capability-report.md) defines the implemented continuous verifier. Independent analytical point and box bounds drive adaptive height-field/depth-band refinement over the normalized target and every cutting footprint. Reported maximum-error intervals satisfy the requested verification uncertainty before passing. Explicit floor/detail limits are not increased by M4's numerical allowance. Decimal coordinate formatting triggers independent semantic and stock revalidation; cached reports cannot authorize changed jobs or motions. Source conversion error is reported separately from normalized-target bounds. Physical machine and emitted-program verification remain M6.
 
 ## 1. Coordinate and tolerance conventions
 
@@ -319,4 +321,4 @@ Diagnostics have a stable code, severity, stage, source region/operation, and op
 
 Planning may return a partial diagnostic preview, but it must label it incomplete. No automatic geometric repair or resource-limit fallback may silently remove requested detail.
 
-M4 implements bounded curved-medial paths and measured rest-floor coverage for the documented fixture workload. The remaining verification work is adaptive global stock/quality bounds, accumulated Boolean/topology uncertainty, and output quantization. Those acceptance tests precede usable machine output in the implementation plan.
+M4 implements bounded curved-medial paths and measured rest-floor coverage for the documented fixture workload. M5 adds adaptive global stock/quality bounds against normalized geometry and output-coordinate revalidation, independently of preview Boolean unions. Source topology/conversion error remains a separately reported input limitation. M6 must verify the emitted numeric program and actual machine-profile contract before usable machine output.

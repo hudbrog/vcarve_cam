@@ -10,7 +10,9 @@ M4 implements the combined planner from the [implementation checklist](implement
 
 ## Build and test evidence
 
-The pinned Rust 1.95.0 workspace builds in debug and release on Ubuntu 24.04 under WSL2, `x86_64-unknown-linux-gnu`. All **108 integration tests** pass: 12 M0 core, 20 M1 core, 24 M2 core, 16 M3 core, 21 M4 core, and 15 CLI tests. Clippy passes with `-D warnings`, and formatting passes. M4 adds no dependencies. Windows-native and WebAssembly compilation remain unestablished.
+The pinned Rust 1.95.0 workspace builds in debug and release on Ubuntu 24.04 under WSL2, `x86_64-unknown-linux-gnu`, and native Windows, `x86_64-pc-windows-msvc`. All **108 integration tests** pass on both targets: 12 M0 core, 20 M1 core, 24 M2 core, 16 M3 core, 21 M4 core, and 15 CLI tests. Clippy passes with `-D warnings`, and formatting passes. M4 adds no dependencies. WebAssembly compilation remains unestablished.
+
+Windows validation on 2026-09-05 used Windows build 26200.9168 (x64), PowerShell 7.6.5, Rust/Cargo 1.95.0, Visual Studio Build Tools 2019 with MSVC 14.29.30133, and Windows SDK 10.0.19041.0. The locked debug build fetched dependencies; the locked release build, tests, and Clippy then passed with `--offline`. The release `cam.exe` imported and inspected the bundled Inkscape export, then planned, inspected, and verified `fixtures/m4/curved-medial.json`: status `complete`, 52 endmill motions, 833 V-bit motions, and 418 quality samples. See [Windows setup and validation commands](../../flat-v-carve/README.md#windows-setup).
 
 The new tests compare tapered sweep area against an analytic cone-hull area, point removal against a stationary-point solution and dense independent reference, and pointed/flat-tip ridges against the straight-lane formula. They check whole-segment clearance across an island, curved XYZ approximation, source radii and cap junctions, empty roughing stages, exact-fit lines/points, a 120° V-bit, and rotated/translated artwork.
 

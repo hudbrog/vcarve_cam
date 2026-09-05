@@ -1,7 +1,7 @@
 # Flat V-carve CAM: architecture
 
 Date: 2026-09-05\
-Status: M0–M4 implemented and tested: SVG jobs, both planners, continuous cutter-clearance checks, and combined stock/quality previews; M5–M8 remain the planning baseline.
+Status: M0–M5 implemented and tested: SVG jobs, both planners, combined previews, bounded continuous stock/quality verification, and rounded-coordinate checks; M6–M8 remain the planning baseline.
 
 This document records the product boundaries, components, and language choices. See [technical design](technical-design.md) for geometry and data contracts, and [implementation plan](implementation-plan.md) for milestones and acceptance criteria.
 
@@ -94,7 +94,9 @@ M2 adds `svg` and `job`: explicit SVG subset validation, transformed curve flatt
 
 M3 adds `pocket` (including an independent segment verifier), `motion`, and `stock`. Planning returns an endmill-only artifact with the embedded job, linear XYZ moves, generation issues, and derived layer reports. Stock comes from actual recorded cuts, ramps, and plunges. The core independently checks whole segments and compares capsule sweeps at stepdown slices. The CLI plans, renders paths/residuals, and verifies saved plans. Job schema 2 adds explicit entry settings and ramp capability; schema 1 jobs migrate with those settings unset. Plan fingerprints include the engine, job, moves, and generation issues. Cached reports are recomputed on loading. See the [M3 capability report](m3-capability-report.md).
 
-M4 adds `vcarve` with medial extraction, guarded XYZ path generation, combined planning, and execution/quality verification. `stock` now supports variable-radius V-bit sweeps and analytic point-removal queries. `geometry` independently checks continuous linear-radius clearance and uses an exact bounding-box broad phase for polygon-output validation. Combined artifacts retain both stages, a logical tool-transition marker, actual motions, and path execution records. Floor slices and sampled reachability distinguish missed stock from cutter-limited detail; their global continuous verification remains M5. See the [M4 capability report](m4-capability-report.md).
+M4 adds `vcarve` with medial extraction, guarded XYZ path generation, combined planning, and execution/quality verification. `stock` supports variable-radius V-bit sweeps and analytic point-removal queries. `geometry` independently checks continuous linear-radius clearance and uses an exact bounding-box broad phase for polygon-output validation. Combined artifacts retain both stages, a logical tool-transition marker, actual motions, and path execution records. Floor slices and sampled reachability distinguish missed stock from cutter-limited detail; M5 below adds the separate continuous verification contract. See the [M4 capability report](m4-capability-report.md).
+
+M5 adds `verification`: independent box distance bounds, analytical cutter-removal bounds, adaptive whole-surface and depth-band refinement, explicit maximum-error intervals, and located failed/inconclusive states. It authenticates plan identity and execution records, distinguishes reachable residue from cutter-limited detail, and rechecks decimal-formatted coordinates when precision is supplied. `cam verify` produces M5 JSON and an optional findings SVG; `inspect` retains the M4 planning preview. Acceptance uses the normalized polygon and actual motions, independently of repeated preview polygon unions. See the [M5 capability report](m5-capability-report.md) for the supported bound model, measured Windows performance, and strict zero-ridge contact failures.
 
 Layout inside `flat-v-carve/` (the `web` directory and later core modules remain future work):
 
