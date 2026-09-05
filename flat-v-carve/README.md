@@ -1,6 +1,6 @@
 # Flat V-carve CAM
 
-An isolated Rust workspace for the combined endmill/V-bit planner described in the [project docs](../docs/flat-v-carve/architecture.md). M0–M2 implement geometry, cutter/target models, SVG import, editable jobs, region selection, and headless previews. Toolpaths, machine output, and the browser workflow belong to later milestones.
+An isolated Rust workspace for the combined endmill/V-bit planner described in the [project docs](../docs/flat-v-carve/architecture.md). M0–M3 implement geometry, cutter/target models, SVG import, editable jobs, and endmill clearing with recorded XYZ moves and stock previews. V-bit finishing, full-volume verification, machine output, and the browser workflow follow in M4–M7.
 
 ## Run
 
@@ -31,7 +31,28 @@ Repeat `--select` for multiple regions. `select` with no IDs saves an empty sele
 
 Supported SVG input includes explicit page dimensions, mm/cm/in/pt/pc/px and unitless CSS pixels, `viewBox`, affine transforms, all path commands including elliptical arcs, rectangles/rounded rectangles, circles, ellipses, polygons, compound fills, and inherited solid styles/visibility. Text and strokes must be converted to paths in Inkscape. CSS stylesheets, references/clones, gradients, clipping/masking/filter effects, animation, nested viewports, relative lengths, and artwork outside the page are rejected with diagnostics. The [M2 report](../docs/flat-v-carve/m2-capability-report.md) defines the supported subset and precision limits.
 
-M2 exit codes are `0` for successful import/inspection or valid editable jobs, `1` for invalid SVG/jobs or unavailable planning, and `2` for argument/I/O errors. An invalid inspected job, including malformed job JSON, replaces the previous SVG/report with an error result. Import failures leave existing job files untouched, so callers must check the exit status. `cam plan job.json --output diagnostics.json` validates the job and reports `PLANNING_NOT_IMPLEMENTED`; cutting paths start in M3.
+Exit codes are `0` for successful import/inspection, valid editable jobs, or a complete/empty endmill stage; `1` for invalid inputs or an incomplete/inconclusive stage; and `2` for argument/I/O errors. An invalid inspected job or stale plan replaces the previous SVG/report with an error result. Import failures leave existing job files untouched, so callers must check the exit status.
+
+## M3 endmill planning and stock
+
+```sh
+cargo run --release --locked -p cam-app -- plan fixtures/m3/island.json \
+  --output artifacts/m3/island/plan.json
+cargo run --release --locked -p cam-app -- inspect artifacts/m3/island/plan.json \
+  --output artifacts/m3/island/preview.svg --report artifacts/m3/island/report.json
+cargo run --release --locked -p cam-app -- verify artifacts/m3/island/plan.json \
+  --output artifacts/m3/island/verification.json
+```
+
+The [M3 fixtures](fixtures/m3/README.md) supply **synthetic test settings**, including feeds and spindle speed. Imported jobs still have no machining defaults. Planning requires stock thickness, depth, horizontal wall allowance, endmill dimensions/capability/feeds/spindle/stepdown/stepover, V-bit geometry to define the target angle, planning tolerances, and `endmill_planning` settings for the clearance plane, start XY, entry, strategy, and resource limits. V-bit cutting settings and finish-quality limits remain editable for M4.
+
+`depth_dependent` clearing generates offset loops inside each layer's admissible center region; `deepest_region` uses the deepest region at every stepdown. Direct plunges require a plunge-capable endmill and explicit plunge feed. Ramps require `ramp_capable: true` and an explicit angle/feed. Every disconnected loop retracts and links at the configured clearance Z. M3 limits stepover to half the tool diameter; it does not optimize travel or calculate machine-specific cutting parameters.
+
+Each saved plan embeds the job and records actual XYZ moves, identity fingerprints, generation issues, and stock reports. `inspect` and `verify` rebuild clearance and stock from the motions, ignoring cached analysis. Editing the job or motions invalidates the fingerprint and requires replanning. Job schema 1 migrates to schema 2 without inventing new settings; plan schema 1 is a separate artifact format tied to the generating engine version.
+
+The preview shows layer paths, removed stock, and remaining target. Missing accessible floor is pink; possible overcut is purple. No-access stages are empty. Exact-fit contacts and insufficient numerical margin are inconclusive; unsupported entries and missed floors are reported explicitly. Partial plans remain inspectable and exit with status 1.
+
+M3 checks whole-segment center clearance and compares actual endmill sweeps at planned depth slices. `complete` refers to this endmill-stage coverage within the declared XY tolerance. Remaining target includes slopes, wall allowance, and detail for M4. It does not establish combined finish quality, adaptive full-volume verification (M5), or readiness for machine output (M6). See the [M3 capability report](../docs/flat-v-carve/m3-capability-report.md) for formulas, evidence, and limits.
 
 ## M1 target and cutter previews
 
@@ -92,6 +113,6 @@ cargo fmt --all -- --check
 
 After dependencies have been fetched, these commands also accept `--offline` (except `cargo fmt`, which needs no network). `Cargo.lock` is part of the project. Both geometry crates have default features disabled, and all direct dependency versions are pinned.
 
-`cam-core` contains in-memory geometry contracts, narrow dependency adapters, SVG normalization, portable jobs, cutter/target models, independent distance queries, and preview calculations. It has no filesystem or process access. `cam-app` handles command arguments, fixtures, JSON/SVG output, and build metadata. The debug SVGs visualize geometry; no toolpaths are generated yet.
+`cam-core` contains in-memory geometry contracts, narrow dependency adapters, SVG normalization, portable jobs, cutter/target models, independent distance queries, endmill planning, linear motions, stock analysis, and preview calculations. It has no filesystem or process access. `cam-app` handles command arguments, fixtures, JSON/SVG output, and build metadata. The debug SVGs visualize source geometry, recorded endmill paths, and stock slices; no G-code is generated.
 
-See the [M2 capability report](../docs/flat-v-carve/m2-capability-report.md) for importer/job evidence and the [M1 report](../docs/flat-v-carve/m1-capability-report.md) for finite-tip and exact-fit geometry. The [M0 report](../docs/flat-v-carve/m0-capability-report.md) records the underlying geometry dependencies and precision policy.
+See the [M3 capability report](../docs/flat-v-carve/m3-capability-report.md) for endmill evidence, the [M2 report](../docs/flat-v-carve/m2-capability-report.md) for importer/job evidence and the [M1 report](../docs/flat-v-carve/m1-capability-report.md) for finite-tip and exact-fit geometry. The [M0 report](../docs/flat-v-carve/m0-capability-report.md) records the underlying geometry dependencies and precision policy.

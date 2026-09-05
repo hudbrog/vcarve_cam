@@ -1,7 +1,7 @@
 # Flat V-carve CAM: architecture
 
 Date: 2026-09-05\
-Status: M0 geometry, M1 target/cutter models, and M2 SVG import/editable jobs implemented and tested; M3–M8 remain the planning baseline.
+Status: M0–M3 implemented and tested: geometry, target/cutter models, SVG jobs, endmill paths, and stock slices; M4–M8 remain the planning baseline.
 
 This document records the product boundaries, components, and language choices. See [technical design](technical-design.md) for geometry and data contracts, and [implementation plan](implementation-plan.md) for milestones and acceptance criteria.
 
@@ -88,9 +88,11 @@ Start with two Rust crates rather than a large collection of services:
 
 Within `cam-core`, keep modules for `model`, `svg`, `geometry`, `target`, `pocket`, `vcarve`, `stock`, `motion`, `verify`, and `post`. Split modules into crates only when a real dependency or compilation problem warrants it.
 
-M1 implements `model`, `target`, and `preview` alongside M0's `geometry` and `spike`. Independent boundary queries support point/segment clearance and bounded finite-tip reachability. The CLI can validate edited model JSON and render plan/profile SVGs without a browser. These are target/cutter capability views; stock removal from planned moves remains future work. See the [M1 capability report](m1-capability-report.md).
+M1 implements `model`, `target`, and `preview` alongside M0's `geometry` and `spike`. Independent boundary queries support point/segment clearance and bounded finite-tip reachability. The CLI can validate edited model JSON and render plan/profile SVGs without a browser. These are target/cutter capability views; M3 now adds stock removal from recorded endmill moves. See the [M1 capability report](m1-capability-report.md).
 
 M2 adds `svg` and `job`: explicit SVG subset validation, transformed curve flattening, fill normalization, stable source/component mapping, and portable source/settings snapshots. CLI import, selection, validation, and inspection call this in-memory core. Jobs can be saved with missing machining settings; inspection recomputes derived geometry. See the [M2 capability report](m2-capability-report.md).
+
+M3 adds `pocket` (including an independent segment verifier), `motion`, and `stock`. Planning returns an endmill-only artifact with the embedded job, linear XYZ moves, generation issues, and derived layer reports. Stock comes from actual recorded cuts, ramps, and plunges. The core independently checks whole segments and compares capsule sweeps at stepdown slices. The CLI plans, renders paths/residuals, and verifies saved plans. Job schema 2 adds explicit entry settings and ramp capability; schema 1 jobs migrate with those settings unset. Plan fingerprints include the engine, job, moves, and generation issues. Cached reports are recomputed on loading. See the [M3 capability report](m3-capability-report.md).
 
 Layout inside `flat-v-carve/` (the `web` directory and later core modules remain future work):
 

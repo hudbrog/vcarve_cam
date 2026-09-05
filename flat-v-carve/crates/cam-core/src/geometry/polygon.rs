@@ -408,10 +408,19 @@ impl Region {
     /// Disk erosion: round joins are essential around holes and reflex corners.
     /// Positive-area output only; Target::center_set also retains exact-fit lines/points.
     pub fn erode(&self, radius_mm: f64) -> Result<Self> {
+        self.offset(radius_mm, false)
+    }
+
+    /// Euclidean outward offset; holes shrink. Approximation follows the shared grid policy.
+    pub fn dilate(&self, radius_mm: f64) -> Result<Self> {
+        self.offset(radius_mm, true)
+    }
+
+    fn offset(&self, radius_mm: f64, outward: bool) -> Result<Self> {
         if !radius_mm.is_finite() || radius_mm < 0.0 {
             return Err(Diagnostic::new(
                 "INVALID_OFFSET",
-                "inward radius must be finite and nonnegative",
+                "offset radius must be finite and nonnegative",
             ));
         }
         if radius_mm == 0.0 {
@@ -441,7 +450,14 @@ impl Region {
         );
         engine.add_paths(&self.paths(), JoinType::Round, EndType::Polygon);
         let mut tree = PolyTree64::new();
-        engine.execute_tree(-radius_mm * self.grid.scale(), &mut tree);
+        engine.execute_tree(
+            if outward {
+                radius_mm * self.grid.scale()
+            } else {
+                -radius_mm * self.grid.scale()
+            },
+            &mut tree,
+        );
         if engine.error_code() != 0 {
             return Err(Diagnostic::new(
                 "POLYGON_BACKEND",
@@ -453,6 +469,51 @@ impl Region {
             output.diagnostics.push(Diagnostic::new("OFFSET_EMPTY_AREA", "erosion has no positive-area output; this does not rule out exact-fit centerlines or points"));
         }
         Ok(output)
+    }
+
+    /// Convex hull of quantized constructed points, with exact integer orientation.
+    pub(crate) fn convex_hull(grid: Grid, points: &[Point]) -> Result<Self> {
+        let mut points = points
+            .iter()
+            .map(|&p| grid.quantize(p))
+            .collect::<Result<Vec<_>>>()?;
+        points.sort();
+        points.dedup();
+        if points.len() < 3 {
+            return Err(Diagnostic::new(
+                "CONVEX_HULL_COLLAPSE",
+                "constructed sweep collapsed on the grid",
+            ));
+        }
+        let half = |iter: Vec<GridPoint>| {
+            let mut hull = vec![];
+            for p in iter {
+                while hull.len() >= 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0 {
+                    hull.pop();
+                }
+                hull.push(p);
+            }
+            hull.pop();
+            hull
+        };
+        let mut hull = half(points.clone());
+        points.reverse();
+        hull.extend(half(points));
+        if hull.len() < 3 {
+            return Err(Diagnostic::new(
+                "CONVEX_HULL_COLLAPSE",
+                "constructed sweep has no area",
+            ));
+        }
+        Ok(Self {
+            grid,
+            rings: vec![Ring {
+                points: hull,
+                parent: None,
+                is_hole: false,
+            }],
+            diagnostics: vec![],
+        })
     }
 
     fn paths(&self) -> Paths64 {

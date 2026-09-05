@@ -1,5 +1,6 @@
 mod job_cli;
 mod job_svg;
+mod plan_svg;
 mod svg;
 mod target_cli;
 mod target_svg;
@@ -7,7 +8,7 @@ use cam_core::spike::{Fixture, SCHEMA_VERSION, run_fixture};
 use serde_json::json;
 use std::{fs, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Flat V-carve CAM — SVG jobs and target geometry\n\nUsage:\n  cam import <artwork.svg> --output <job.json> [--tolerance <mm>] [--select <region-id> ...]\n  cam inspect <job.json> --output <preview.svg> [--report <report.json>]\n  cam select <job.json> --output <job.json> [--select <region-id> ...]\n  cam validate-job <job.json>\n  cam plan <job.json> --output <diagnostics.json>\n  cam geometry-spike --output <directory> [--fixture <fixture.json>]\n  cam target-demo --output <directory>\n  cam target-preview --input <model.json> --output <directory>\n  cam validate-model --input <model.json>\n\nM2 imports editable jobs with embedded artwork and no invented machining settings.\nInspect rebuilds geometry; plan returns a diagnostic because cutting paths start in M3.\nM0/M1 commands remain available. No G-code is generated.\n";
+const HELP: &str = "Flat V-carve CAM — SVG jobs and target geometry\n\nUsage:\n  cam import <artwork.svg> --output <job.json> [--tolerance <mm>] [--select <region-id> ...]\n  cam inspect <job-or-plan.json> --output <preview.svg> [--report <report.json>]\n  cam select <job.json> --output <job.json> [--select <region-id> ...]\n  cam validate-job <job.json>\n  cam plan <job.json> --output <plan.json>\n  cam verify <plan.json> --output <report.json>\n  cam geometry-spike --output <directory> [--fixture <fixture.json>]\n  cam target-demo --output <directory>\n  cam target-preview --input <model.json> --output <directory>\n  cam validate-model --input <model.json>\n\nM3 plans endmill clearing from explicit job settings.\nInspect and verify recompute saved motions and stock; incomplete stages exit with status 1.\nM0/M1 commands remain available. No G-code is generated.\n";
 
 fn main() -> ExitCode {
     match run() {
@@ -32,7 +33,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     }
     if matches!(
         command.as_str(),
-        "import" | "inspect" | "select" | "validate-job" | "plan"
+        "import" | "inspect" | "select" | "validate-job" | "plan" | "verify"
     ) {
         return job_cli::run(&command, args.collect());
     }

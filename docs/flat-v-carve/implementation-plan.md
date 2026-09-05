@@ -1,7 +1,7 @@
 # Flat V-carve CAM: implementation plan
 
 Date: 2026-09-05\
-Status: M0–M2 complete on the initial Linux x86-64 target; M3–M8 planned.
+Status: M0–M3 complete on the initial Linux x86-64 target; M4–M8 planned.
 
 Read [architecture](architecture.md) for agreed scope and [technical design](technical-design.md) for geometry and contracts. This plan orders work by uncertainty: establish the geometric foundation before investing in application polish or relying on machine output.
 
@@ -80,16 +80,18 @@ Completed 2026-09-05 with engine 0.3.0. The release build, 65 integration tests,
 
 ## 6. M3: endmill planner
 
-- [ ] Start with conservative clearing of the deepest admissible region at each stepdown.
-- [ ] Extend to depth-dependent regions so shallow passes clear more of the upper stock.
-- [ ] Generate offset loops with valid stepover, island handling, and residual detection.
-- [ ] Implement supported ramps/direct plunges with explicit tool capability and feed requirements.
-- [ ] Use simple clearance-plane links between disconnected cuts.
-- [ ] Record stock removed by every cutting move, including entries and links.
-- [ ] Finish accessible floor regions to the requested depth.
-- [ ] Verify tool-center feasibility along whole segments and compare swept areas with the target.
+- [x] Start with conservative clearing of the deepest admissible region at each stepdown.
+- [x] Extend to depth-dependent regions so shallow passes clear more of the upper stock.
+- [x] Generate offset loops with valid stepover, island handling, and residual detection.
+- [x] Implement supported ramps/direct plunges with explicit tool capability and feed requirements.
+- [x] Use simple clearance-plane links between disconnected cuts.
+- [x] Record stock removed by every cutting move, including entries and links.
+- [x] Finish accessible floor regions to the requested depth.
+- [x] Verify tool-center feasibility along whole segments and compare swept areas with the target.
 
 **Exit:** paths preserve the nominal slopes plus allowance, never cross an island, and leave measurable stock for the V-bit. Cases with no endmill access produce an empty endmill stage and continue to the V-bit planner when appropriate. Missing pocket coverage and unsupported entries are visible diagnostics.
+
+Completed 2026-09-05 with engine 0.4.0. The [M3 capability report](m3-capability-report.md) records the endmill-only completion contract, motion/stock checks, synthetic fixture matrix, explicit failure statuses, saved-plan replay, and numerical limits. `plan` produces recorded XYZ moves; `inspect` and `verify` recompute stock and clearance. Empty stages retain target stock for the M4 planner, which is not yet implemented.
 
 ## 7. M4: V-bit finishing and rest machining
 

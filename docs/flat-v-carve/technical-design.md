@@ -1,9 +1,11 @@
 # Flat V-carve CAM: technical design
 
 Date: 2026-09-05\
-Status: M0 geometry, M1 target/cutter models, and M2 SVG import/editable jobs implemented and tested; planning, stock verification, and machine output remain the intended design for later milestones.
+Status: M0–M3 implemented and tested, including endmill planning and stock slices. V-bit planning, adaptive combined-stock verification, and machine output remain the intended design for later milestones.
 
 See [architecture](architecture.md) for scope and component boundaries, and [implementation plan](implementation-plan.md) for delivery order. Unless explicitly attributed to a source, the geometry below is derived for this project.
+
+The [M3 capability report](m3-capability-report.md) defines the current endmill-only implementation: offset loops with a numerical guard, explicit plunge/ramp entries, clearance-plane links, independent continuous segment clearance, and actual-motion stock comparisons at stepdown slices. M3 uses `verification_tolerance_mm` as the XY floor-coverage tolerance at those slices. The adaptive volume/depth uncertainty and combined finish-quality contracts below remain M5 work; an M3 `complete` stage does not claim them.
 
 ## 1. Coordinate and tolerance conventions
 

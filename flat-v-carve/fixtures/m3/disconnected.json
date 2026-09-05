@@ -1,0 +1,92 @@
+{
+  "schema_version": 2,
+  "name": "Synthetic disconnected",
+  "source": {
+    "filename": "synthetic.svg",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40mm\" height=\"30mm\" viewBox=\"0 0 40 30\"><path id=\"pocket\" fill-rule=\"evenodd\" d=\"M0 0h16v20h-16z M24 0h16v20h-16z\"/></svg>"
+  },
+  "import": {
+    "geometry_tolerance_mm": 0.005,
+    "ticks_per_mm": null,
+    "placement": {
+      "origin_mm": {
+        "x": 0,
+        "y": 0
+      },
+      "scale": 1,
+      "rotation_deg": 0
+    }
+  },
+  "selected_region_ids": [
+    "pocket::0",
+    "pocket::1"
+  ],
+  "stock": {
+    "thickness_mm": 8
+  },
+  "operation": {
+    "id": "flat-v-carve",
+    "endmill_id": "endmill",
+    "vbit_id": "vbit",
+    "max_depth_mm": 2,
+    "wall_allowance_mm": 0.5,
+    "max_floor_ridge_mm": null,
+    "max_detail_residual_mm": null
+  },
+  "tools": [
+    {
+      "id": "endmill",
+      "geometry": {
+        "kind": "endmill",
+        "dimensions": {
+          "diameter_mm": 4,
+          "cutting_length_mm": 6,
+          "plunge_capable": true
+        }
+      },
+      "spindle_rpm": 10000,
+      "cutting_feed_mm_min": 300,
+      "plunge_feed_mm_min": 100,
+      "max_stepdown_mm": 1,
+      "stepover_mm": 1.5,
+      "ramp_capable": false
+    },
+    {
+      "id": "vbit",
+      "geometry": {
+        "kind": "vbit",
+        "dimensions": {
+          "included_angle_deg": 90,
+          "tip_diameter_mm": 0,
+          "max_cutting_diameter_mm": 12,
+          "cutting_height_mm": 5
+        }
+      },
+      "spindle_rpm": null,
+      "cutting_feed_mm_min": null,
+      "plunge_feed_mm_min": null,
+      "max_stepdown_mm": null,
+      "stepover_mm": null,
+      "ramp_capable": null
+    }
+  ],
+  "tolerances": {
+    "motion_tolerance_mm": 0.005,
+    "verification_tolerance_mm": 0.05
+  },
+  "machine_profile": null,
+  "endmill_planning": {
+    "clearance_z_mm": 5,
+    "start_xy_mm": {
+      "x": 0,
+      "y": 0
+    },
+    "strategy": "depth_dependent",
+    "entry": {
+      "kind": "plunge"
+    },
+    "max_layers": 32,
+    "max_loops_per_layer": 128,
+    "max_motions": 10000
+  }
+}

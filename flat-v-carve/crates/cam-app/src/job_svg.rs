@@ -128,7 +128,13 @@ pub fn render(inspection: &JobInspection) -> String {
         14,
         "Geometry is ready for inspection.",
     );
-    text(&mut out, 970., 272., 14, "Toolpath planning starts in M3.");
+    text(
+        &mut out,
+        970.,
+        272.,
+        14,
+        "M3 endmill planning is available.",
+    );
     text(
         &mut out,
         970.,

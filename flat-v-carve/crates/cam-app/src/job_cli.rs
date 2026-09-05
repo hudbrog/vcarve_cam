@@ -1,6 +1,7 @@
 use cam_core::{
     geometry::Diagnostic,
     job::Job,
+    pocket::{EndmillPlan, PlanStatus, plan_endmill},
     svg::{ImportOptions, MAX_SVG_BYTES},
 };
 use serde_json::json;
@@ -75,6 +76,50 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
     if output.as_ref() == Some(&input) || report.as_ref() == Some(&input) {
         return Err("use a different output path to preserve the input".into());
     }
+    let contents = read(
+        &input,
+        if command == "import" {
+            MAX_SVG_BYTES
+        } else if matches!(command, "inspect" | "verify") {
+            128_000_000
+        } else {
+            8_000_000
+        },
+    )?;
+    let is_plan = serde_json::from_str::<serde_json::Value>(&contents)
+        .ok()
+        .is_some_and(|v| v.get("artifact_kind").is_some());
+    if matches!(command, "inspect" | "verify") && (is_plan || command == "verify") {
+        return match EndmillPlan::from_json(&contents) {
+            Ok(plan) => {
+                let data = serde_json::to_string_pretty(
+                    &json!({"valid":true,"milestone":"M3","input_fingerprint":plan.input_fingerprint,"motion_fingerprint":plan.motion_fingerprint,"analysis":plan.analysis}),
+                )? + "\n";
+                if command == "inspect" {
+                    write(output.as_ref().unwrap(), &super::plan_svg::render(&plan))?;
+                    if let Some(report) = report {
+                        write(&report, &data)?;
+                    }
+                } else {
+                    write(output.as_ref().unwrap(), &data)?;
+                }
+                eprintln!(
+                    "Endmill stage: {:?}; recomputed {} motions and {} stock slices",
+                    plan.analysis.status,
+                    plan.motions.len(),
+                    plan.analysis.layers.len()
+                );
+                Ok(matches!(
+                    plan.analysis.status,
+                    PlanStatus::Complete | PlanStatus::Empty
+                ))
+            }
+            Err(d) => {
+                failed(command, &d, output.as_deref(), report.as_deref())?;
+                Ok(false)
+            }
+        };
+    }
     let parsed = if command == "import" {
         Job::from_svg(
             input
@@ -82,11 +127,11 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
                 .ok_or("input filename missing")?
                 .to_string_lossy()
                 .into_owned(),
-            read(&input, MAX_SVG_BYTES)?,
+            contents,
             options,
         )
     } else {
-        Job::from_json(&read(&input, 8_000_000)?)
+        Job::from_json(&contents)
     };
     let result = parsed.and_then(|mut job| {
         if command == "select" || !selection.is_empty() {
@@ -96,7 +141,7 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
     });
     match result {
         Ok((job, inspection)) => {
-            let data = json!({"valid":true,"milestone":"M2","inspection":inspection});
+            let data = json!({"valid":true,"milestone":"M3","inspection":inspection});
             match command {
                 "import" | "select" => {
                     write(output.as_ref().unwrap(), &job.to_json()?)?;
@@ -122,14 +167,28 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
                 }
                 "validate-job" => println!("{}", serde_json::to_string_pretty(&data)?),
                 "plan" => {
-                    let data = json!({"schema_version":1,"milestone":"M2","planning_available":false,"plan":null,"missing_machining_fields":inspection.missing_machining_fields,
-                        "diagnostics":[{"code":"PLANNING_NOT_IMPLEMENTED","severity":"error","stage":"plan","message":"M2 imports and inspects jobs. Cutting path generation begins in M3; no machining plan was generated."}]});
-                    write(
-                        output.as_ref().unwrap(),
-                        &(serde_json::to_string_pretty(&data)? + "\n"),
-                    )?;
-                    eprintln!("PLANNING_NOT_IMPLEMENTED: cutting paths begin in M3");
-                    return Ok(false);
+                    return match plan_endmill(&job) {
+                        Ok(plan) => {
+                            write(output.as_ref().unwrap(), &plan.to_json()?)?;
+                            eprintln!(
+                                "Endmill stage: {:?}; {} motions, {} stock slices",
+                                plan.analysis.status,
+                                plan.motions.len(),
+                                plan.analysis.layers.len()
+                            );
+                            for d in &plan.analysis.diagnostics {
+                                eprintln!("{d}");
+                            }
+                            Ok(matches!(
+                                plan.analysis.status,
+                                PlanStatus::Complete | PlanStatus::Empty
+                            ))
+                        }
+                        Err(d) => {
+                            failed(command, &d, output.as_deref(), report.as_deref())?;
+                            Ok(false)
+                        }
+                    };
                 }
                 _ => unreachable!(),
             }
@@ -151,7 +210,7 @@ fn failed(
     report: Option<&Path>,
 ) -> AppResult<()> {
     let data = serde_json::to_string_pretty(
-        &json!({"schema_version":1,"milestone":"M2","valid":false,"diagnostics":[d]}),
+        &json!({"schema_version":1,"milestone":"M3","valid":false,"diagnostics":[d]}),
     )? + "\n";
     match command {
         "inspect" => {
@@ -161,7 +220,7 @@ fn failed(
             }
         }
         "validate-job" => print!("{data}"),
-        "plan" => write(output.unwrap(), &data)?,
+        "plan" | "verify" => write(output.unwrap(), &data)?,
         _ => {}
     }
     eprintln!("{d}");

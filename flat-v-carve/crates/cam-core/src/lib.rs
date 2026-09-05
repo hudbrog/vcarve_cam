@@ -2,7 +2,10 @@
 pub mod geometry;
 pub mod job;
 pub mod model;
+pub mod motion;
+pub mod pocket;
 pub mod preview;
 pub mod spike;
+pub mod stock;
 pub mod svg;
 pub mod target;

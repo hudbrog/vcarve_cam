@@ -7,7 +7,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub const JOB_SCHEMA_VERSION: u32 = 1;
+pub const JOB_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -38,6 +38,8 @@ pub struct ToolSettings {
     pub plunge_feed_mm_min: Option<f64>,
     pub max_stepdown_mm: Option<f64>,
     pub stepover_mm: Option<f64>,
+    #[serde(default)]
+    pub ramp_capable: Option<bool>,
 }
 impl ToolSettings {
     fn empty(id: &str) -> Self {
@@ -49,6 +51,7 @@ impl ToolSettings {
             plunge_feed_mm_min: None,
             max_stepdown_mm: None,
             stepover_mm: None,
+            ramp_capable: None,
         }
     }
 }
@@ -100,6 +103,8 @@ pub struct Job {
     pub tools: Vec<ToolSettings>,
     pub tolerances: PlanningTolerances,
     pub machine_profile: Option<MachineProfile>,
+    #[serde(default)]
+    pub endmill_planning: Option<crate::pocket::EndmillPlanningSettings>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -150,6 +155,7 @@ impl Job {
             tools: vec![ToolSettings::empty("endmill"), ToolSettings::empty("vbit")],
             tolerances: PlanningTolerances::default(),
             machine_profile: None,
+            endmill_planning: None,
         })
     }
     pub fn from_json(json: &str) -> Result<Self> {
@@ -159,8 +165,11 @@ impl Job {
                 "job exceeds the 8 MB input limit",
             ));
         }
-        let value: serde_json::Value =
+        let mut value: serde_json::Value =
             serde_json::from_str(json).map_err(|e| error("JOB_JSON", e.to_string()))?;
+        if value.get("schema_version").and_then(|v| v.as_u64()) == Some(1) {
+            value["schema_version"] = serde_json::json!(JOB_SCHEMA_VERSION);
+        }
         if value.get("schema_version").and_then(|v| v.as_u64()) != Some(JOB_SCHEMA_VERSION as u64) {
             return Err(error(
                 "JOB_SCHEMA_VERSION",
@@ -179,6 +188,9 @@ impl Job {
             .map_err(|e| error("JOB_JSON", e.to_string()))
     }
     pub fn validate_settings(&self) -> Result<()> {
+        if let Some(settings) = &self.endmill_planning {
+            settings.validate()?;
+        }
         if self.schema_version != JOB_SCHEMA_VERSION {
             return Err(error(
                 "JOB_SCHEMA_VERSION",
@@ -323,6 +335,9 @@ impl Job {
             Some(&self.selected_region_ids),
         )?;
         let mut missing = vec![];
+        if self.endmill_planning.is_none() {
+            missing.push("endmill_planning".into());
+        }
         if self.selected_region_ids.is_empty() {
             missing.push("selected_region_ids".into());
         }
@@ -376,7 +391,7 @@ impl Job {
             name: self.name.clone(),
             geometry,
             missing_machining_fields: missing,
-            planning_available: false,
+            planning_available: true,
         })
     }
 }

@@ -472,7 +472,7 @@ fn jobs_embed_source_and_round_trip_incomplete_settings_and_selection() {
     assert_eq!(loaded.to_json().unwrap(), saved);
     let inspection = loaded.inspect().unwrap();
     near(inspection.geometry.selected.area_mm2(), 1200., 1e-8);
-    assert!(!inspection.planning_available);
+    assert!(inspection.planning_available);
     assert!(
         inspection
             .missing_machining_fields
@@ -499,7 +499,7 @@ fn job_edits_rebuild_geometry_and_reject_stale_selection() {
 fn jobs_reject_future_schema_unknown_fields_and_invalid_partial_settings() {
     let job = Job::from_svg("box.svg".into(), svg(BOX), ImportOptions::default()).unwrap();
     let mut value = serde_json::to_value(&job).unwrap();
-    value["schema_version"] = serde_json::json!(2);
+    value["schema_version"] = serde_json::json!(3);
     assert_eq!(
         Job::from_json(&value.to_string()).unwrap_err().code,
         "JOB_SCHEMA_VERSION"

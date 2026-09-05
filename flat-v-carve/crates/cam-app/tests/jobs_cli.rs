@@ -44,7 +44,7 @@ fn import_inspect_and_select_work_after_original_artwork_is_removed() {
     );
     assert!(result.stdout.is_empty());
     let data = json(job.clone());
-    assert_eq!(data["schema_version"], 1);
+    assert_eq!(data["schema_version"], 2);
     assert!(data["operation"]["max_depth_mm"].is_null());
     assert!(data["tools"][0]["geometry"].is_null());
     fs::remove_file(&svg).unwrap();
@@ -73,7 +73,7 @@ fn import_inspect_and_select_work_after_original_artwork_is_removed() {
             .len(),
         7
     );
-    assert_eq!(data["inspection"]["planning_available"], false);
+    assert_eq!(data["inspection"]["planning_available"], true);
     let selected = s.0.join("selected.json");
     let result = cam()
         .arg("select")
@@ -112,7 +112,7 @@ fn import_inspect_and_select_work_after_original_artwork_is_removed() {
 }
 
 #[test]
-fn editable_jobs_validate_without_machining_settings_and_plan_is_explicitly_unavailable() {
+fn editable_jobs_validate_without_machining_settings_and_plan_requires_explicit_settings() {
     let s = Scratch::new("plan");
     let svg = input(&s);
     let job = s.0.join("job.json");
@@ -147,9 +147,9 @@ fn editable_jobs_validate_without_machining_settings_and_plan_is_explicitly_unav
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     let data = json(plan);
-    assert_eq!(data["planning_available"], false);
+    assert_eq!(data["valid"], false);
     assert!(data["plan"].is_null());
-    assert_eq!(data["diagnostics"][0]["code"], "PLANNING_NOT_IMPLEMENTED");
+    assert_eq!(data["diagnostics"][0]["code"], "MISSING_PLANNING_SETTINGS");
 }
 
 #[test]
