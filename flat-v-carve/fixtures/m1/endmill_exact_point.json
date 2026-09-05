@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "id": "endmill_exact_point",
+  "description": "4 mm endmill in the nominal floor of an 8 mm square: retain the isolated center.",
+  "geometry_tolerance_mm": 0.001,
+  "ticks_per_mm": null,
+  "rings": [
+    [
+      {
+        "x": 0,
+        "y": 0
+      },
+      {
+        "x": 8,
+        "y": 0
+      },
+      {
+        "x": 8,
+        "y": 8
+      },
+      {
+        "x": 0,
+        "y": 8
+      }
+    ]
+  ],
+  "max_depth_mm": 2,
+  "endmill": {
+    "diameter_mm": 4,
+    "cutting_length_mm": 10,
+    "plunge_capable": false
+  },
+  "vbit": {
+    "included_angle_deg": 90,
+    "tip_diameter_mm": 1,
+    "max_cutting_diameter_mm": 12,
+    "cutting_height_mm": 4
+  },
+  "wall_allowance_mm": 0,
+  "section_depths_mm": [
+    0,
+    1,
+    2
+  ],
+  "cross_sections": [
+    {
+      "id": "across",
+      "start": {
+        "x": 0,
+        "y": 4
+      },
+      "end": {
+        "x": 8,
+        "y": 4
+      },
+      "samples": 129
+    }
+  ],
+  "preview_depth_tolerance_mm": 0.001,
+  "max_reachability_cells": 20000
+}

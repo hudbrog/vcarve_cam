@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "id": "finite_tip_corner",
+  "description": "1 mm flat tip in a right-triangle corner; compare physical reachability with the sharp nominal target.",
+  "geometry_tolerance_mm": 0.001,
+  "ticks_per_mm": null,
+  "rings": [
+    [
+      {
+        "x": 0,
+        "y": 0
+      },
+      {
+        "x": 16,
+        "y": 0
+      },
+      {
+        "x": 0,
+        "y": 16
+      }
+    ]
+  ],
+  "max_depth_mm": 2,
+  "endmill": {
+    "diameter_mm": 2,
+    "cutting_length_mm": 10,
+    "plunge_capable": false
+  },
+  "vbit": {
+    "included_angle_deg": 90,
+    "tip_diameter_mm": 1,
+    "max_cutting_diameter_mm": 12,
+    "cutting_height_mm": 4
+  },
+  "wall_allowance_mm": 0,
+  "section_depths_mm": [
+    0,
+    1,
+    2
+  ],
+  "cross_sections": [
+    {
+      "id": "corner_diagonal",
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "end": {
+        "x": 5,
+        "y": 5
+      },
+      "samples": 129
+    },
+    {
+      "id": "corner_detail",
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "end": {
+        "x": 0.5,
+        "y": 0.5
+      },
+      "samples": 129
+    }
+  ],
+  "preview_depth_tolerance_mm": 0.001,
+  "max_reachability_cells": 20000
+}

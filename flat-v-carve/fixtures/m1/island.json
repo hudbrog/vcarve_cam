@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "id": "island",
+  "description": "20 mm pocket with preserved 4 mm island. Independent profiles include the island interior.",
+  "geometry_tolerance_mm": 0.001,
+  "ticks_per_mm": null,
+  "rings": [
+    [
+      {
+        "x": 0,
+        "y": 0
+      },
+      {
+        "x": 20,
+        "y": 0
+      },
+      {
+        "x": 20,
+        "y": 20
+      },
+      {
+        "x": 0,
+        "y": 20
+      }
+    ],
+    [
+      {
+        "x": 8,
+        "y": 8
+      },
+      {
+        "x": 12,
+        "y": 8
+      },
+      {
+        "x": 12,
+        "y": 12
+      },
+      {
+        "x": 8,
+        "y": 12
+      }
+    ]
+  ],
+  "max_depth_mm": 2,
+  "endmill": {
+    "diameter_mm": 3,
+    "cutting_length_mm": 10,
+    "plunge_capable": false
+  },
+  "vbit": {
+    "included_angle_deg": 90,
+    "tip_diameter_mm": 1,
+    "max_cutting_diameter_mm": 12,
+    "cutting_height_mm": 4
+  },
+  "wall_allowance_mm": 0.25,
+  "section_depths_mm": [
+    0,
+    1,
+    2
+  ],
+  "cross_sections": [
+    {
+      "id": "through_island",
+      "start": {
+        "x": -1,
+        "y": 10
+      },
+      "end": {
+        "x": 21,
+        "y": 10
+      },
+      "samples": 129
+    }
+  ],
+  "preview_depth_tolerance_mm": 0.001,
+  "max_reachability_cells": 20000
+}

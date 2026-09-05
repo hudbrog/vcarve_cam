@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "id": "triangle_incenter",
+  "description": "6-8-10 triangle has a 2 mm inradius; a 2 mm endmill at depth 1 fits only at the incenter.",
+  "geometry_tolerance_mm": 0.001,
+  "ticks_per_mm": null,
+  "rings": [
+    [
+      {
+        "x": 0,
+        "y": 0
+      },
+      {
+        "x": 6,
+        "y": 0
+      },
+      {
+        "x": 0,
+        "y": 8
+      }
+    ]
+  ],
+  "max_depth_mm": 1,
+  "endmill": {
+    "diameter_mm": 2,
+    "cutting_length_mm": 10,
+    "plunge_capable": false
+  },
+  "vbit": {
+    "included_angle_deg": 90,
+    "tip_diameter_mm": 0,
+    "max_cutting_diameter_mm": 12,
+    "cutting_height_mm": 4
+  },
+  "wall_allowance_mm": 0,
+  "section_depths_mm": [
+    0,
+    0.5,
+    1
+  ],
+  "cross_sections": [
+    {
+      "id": "through_incenter",
+      "start": {
+        "x": 0,
+        "y": 2
+      },
+      "end": {
+        "x": 6,
+        "y": 2
+      },
+      "samples": 129
+    }
+  ],
+  "preview_depth_tolerance_mm": 0.001,
+  "max_reachability_cells": 20000
+}

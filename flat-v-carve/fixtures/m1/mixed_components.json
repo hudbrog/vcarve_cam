@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "id": "mixed_components",
+  "description": "A collapsed center line and a positive-area center region coexist in disconnected pockets.",
+  "geometry_tolerance_mm": 0.001,
+  "ticks_per_mm": null,
+  "rings": [
+    [
+      {
+        "x": 0,
+        "y": 0
+      },
+      {
+        "x": 20,
+        "y": 0
+      },
+      {
+        "x": 20,
+        "y": 8
+      },
+      {
+        "x": 0,
+        "y": 8
+      }
+    ],
+    [
+      {
+        "x": 30,
+        "y": 0
+      },
+      {
+        "x": 42,
+        "y": 0
+      },
+      {
+        "x": 42,
+        "y": 12
+      },
+      {
+        "x": 30,
+        "y": 12
+      }
+    ]
+  ],
+  "max_depth_mm": 2,
+  "endmill": {
+    "diameter_mm": 4,
+    "cutting_length_mm": 10,
+    "plunge_capable": false
+  },
+  "vbit": {
+    "included_angle_deg": 90,
+    "tip_diameter_mm": 1,
+    "max_cutting_diameter_mm": 12,
+    "cutting_height_mm": 4
+  },
+  "wall_allowance_mm": 0,
+  "section_depths_mm": [
+    0,
+    1,
+    2
+  ],
+  "cross_sections": [
+    {
+      "id": "across_both",
+      "start": {
+        "x": -1,
+        "y": 4
+      },
+      "end": {
+        "x": 43,
+        "y": 4
+      },
+      "samples": 129
+    }
+  ],
+  "preview_depth_tolerance_mm": 0.001,
+  "max_reachability_cells": 20000
+}

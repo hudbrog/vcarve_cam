@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "id": "wide_channel",
+  "description": "Synthetic 20 x 10 mm channel, 2 mm depth cap, pointed 90 degree V-bit.",
+  "geometry_tolerance_mm": 0.001,
+  "ticks_per_mm": null,
+  "rings": [
+    [
+      {
+        "x": 0,
+        "y": 0
+      },
+      {
+        "x": 20,
+        "y": 0
+      },
+      {
+        "x": 20,
+        "y": 10
+      },
+      {
+        "x": 0,
+        "y": 10
+      }
+    ]
+  ],
+  "max_depth_mm": 2,
+  "endmill": {
+    "diameter_mm": 4,
+    "cutting_length_mm": 10,
+    "plunge_capable": false
+  },
+  "vbit": {
+    "included_angle_deg": 90,
+    "tip_diameter_mm": 0,
+    "max_cutting_diameter_mm": 12,
+    "cutting_height_mm": 4
+  },
+  "wall_allowance_mm": 0.5,
+  "section_depths_mm": [
+    0,
+    1,
+    2
+  ],
+  "cross_sections": [
+    {
+      "id": "across",
+      "start": {
+        "x": 10,
+        "y": -1
+      },
+      "end": {
+        "x": 10,
+        "y": 11
+      },
+      "samples": 129
+    }
+  ],
+  "preview_depth_tolerance_mm": 0.001,
+  "max_reachability_cells": 20000
+}
