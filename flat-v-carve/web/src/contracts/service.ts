@@ -1,10 +1,12 @@
 import type { Job, Point } from './job';
 import type { PlanningLimits, PlanTask, PlanResult, TaskIdentity, SliceResponse } from './planning';
 import type { SliceInfo } from './stock';
+import type { VerificationOptions } from './verificationOptions';
+import type { VerificationIdentity, VerificationTask, VerificationResult } from './verification';
 
 // Versioned local UI API, deliberately separate from portable job/plan schemas.
 export interface Capabilities {
-  apiVersion: 'ui-3';
+  apiVersion: 'ui-4';
   mode: 'fixture' | 'live';
   engineVersion: string;
   importArtwork: boolean;
@@ -15,6 +17,7 @@ export interface Capabilities {
   exportFormats: string[];
   limits?: { svgBytes: number; jobBytes: number; requestBytes: number; concurrentInspections: number };
   planning?: PlanningLimits;
+  verification?: { defaultOptions: VerificationOptions };
 }
 export interface DisplayComponent {
   id: string;
@@ -64,6 +67,10 @@ export interface CamService {
   cancelPlan?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanTask>;
   planResult?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanResult>;
   stockSlice?(identity: TaskIdentity, slice: SliceInfo, signal?: AbortSignal): Promise<SliceResponse>;
+  startVerification?(identity: VerificationIdentity, signal?: AbortSignal): Promise<VerificationTask>;
+  verificationTask?(identity: VerificationIdentity, signal?: AbortSignal): Promise<VerificationTask>;
+  cancelVerification?(identity: VerificationIdentity, signal?: AbortSignal): Promise<VerificationTask>;
+  verificationResult?(identity: VerificationIdentity, signal?: AbortSignal): Promise<VerificationResult>;
 }
 
 export function outputBlockedReasons(capabilities: Capabilities | null): string[] {

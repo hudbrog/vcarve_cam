@@ -1,6 +1,6 @@
 # Flat V-carve web workspace
 
-The local TypeScript workspace from the [web UI design](../../docs/flat-v-carve/web-ui/README.md), connected to Rust for SVG import, job migration/opening, validation, cancellable background planning, recorded motion previews, and 2D stock inspection. Development can still use the deterministic fixture adapter.
+The local TypeScript workspace from the [web UI design](../../docs/flat-v-carve/web-ui/README.md), connected to Rust for SVG import, job migration/opening, validation, cancellable background planning, recorded motion previews, 2D stock inspection, and M5 continuous verification. Development can still use the deterministic fixture adapter.
 
 ## Run with Rust
 
@@ -48,7 +48,7 @@ The production bundle is in `dist/`. `pnpm preview` serves it on loopback port 4
 - Schema 3 job file open/download, undo/redo, and recovery across reloads in the **same browser tab**. Recovery is distinct from a downloaded portable snapshot. Open/replacement is undoable; rejected input preserves the current draft. Invalid recovery is preserved until explicitly replaced.
 - System/light/dark appearance, responsive stacked panels, desktop inspector resizing, labeled controls, visible focus, native text-editing shortcuts, and keyboard equivalents for viewport actions.
 
-Live mode supports endmill and combined background planning, task cancellation/recovery, engine outcomes and diagnostics, and bounded recorded-motion previews. Stock inspection shows engine-produced depth slices after the endmill or both tools, lower/upper removal bounds, remaining target, possible overcut, and endmill floor coverage. Area and supported diagnostic links fit the affected region. Tool and path-layer filters change only the motion overlay. Continuous-volume verification, 3D simulation, and machine output remain unavailable in the UI. Fixture mode has no planning capability.
+Live mode supports endmill and combined background planning, task cancellation/recovery, engine outcomes and diagnostics, and bounded recorded-motion previews. Stock inspection shows engine-produced depth slices after the endmill or both tools, lower/upper removal bounds, remaining target, possible overcut, and endmill floor coverage. Area and supported diagnostic links fit the affected region. Tool and path-layer filters change only the motion overlay. M5 verifies current combined plans with continuous error and depth-band bounds, optional rounded-coordinate checks, locatable findings, cancellation, and stale-report protection. 3D simulation and machine output remain unavailable. Fixture mode has no planning or verification capability.
 
 ## Boundaries and next work
 
@@ -58,18 +58,19 @@ The fixture adapter only supplies geometry for the captured source and import pr
 
 Optional planning/profile blocks can remain entirely unset. A partly entered block cannot be serialized until its required fields are supplied or the block is cleared; its unfinished text remains in recovery. Switching from ramp to plunge retains ramp text in the draft but excludes it from the active job. Clearing a block is undoable. Planning fields cannot be inferred from defaults. Different planning/profile clearances are reported without silently choosing between them.
 
-The [U3 background-planning report](../../docs/flat-v-carve/web-ui/u3-background-planning.md) records task execution and identity/recovery. The [stock-inspection report](../../docs/flat-v-carve/web-ui/u3-stock-inspection.md) records the engine 0.7.2 integration, display limits, slice parity, and browser checks. The selected core planner checks stage-specific setup during submission; editable-job validation alone does not establish readiness. M5 verification and M6 LinuxCNC output are implemented in Rust; their service routes, evidence review, profile editor, and exact-output gating are the next integration work. Native save/file conflicts, 3D, arbitrary cross-sections, motion playback, durable recovery, and multi-tab document ownership remain later work.
+The [U3 background-planning report](../../docs/flat-v-carve/web-ui/u3-background-planning.md) records task execution and identity/recovery. The [stock-inspection report](../../docs/flat-v-carve/web-ui/u3-stock-inspection.md) records display limits and slice parity. The [M5 integration report](../../docs/flat-v-carve/web-ui/u5-verification.md) records the shared task queue, report identities, verification settings, and CLI/browser checks. Editable-job validation alone does not establish planning readiness or verification. M6 LinuxCNC output is implemented in Rust; its separate profile editor, exact-output checks, and gated downloads are next. Native save/file conflicts, 3D, arbitrary cross-sections, motion playback, durable recovery, and multi-tab document ownership remain later work.
 
 ## Code map
 
 | File / directory | Responsibility |
 | --- | --- |
 | `src/contracts/job.ts` | Runtime structural checks and inferred TypeScript types for current portable jobs. |
-| `src/contracts/service.ts`, `wire.ts`, `planning.ts`, `stock.ts` | Replaceable service interface and runtime checks for the `ui-3` transport. |
+| `src/contracts/service.ts`, `wire.ts`, `planning.ts`, `stock.ts`, `verification.ts` | Replaceable service interface and runtime checks for the `ui-4` transport. |
 | `src/service/fixture.ts` | Deterministic captured-artwork adapter; absent capabilities remain unavailable. |
 | `src/service/http.ts`, `useValidation.ts` | Same-origin session, checked responses, debounced validation, and stale-response guards. |
 | `src/service/usePlanning.ts`, `src/components/PlanPanel.tsx` | Immutable submissions, monotonic task tracking, cancellation, recovery, scoped outcomes, and stale-result gating. |
 | `src/service/useInspection.ts`, `src/components/StockInspector.tsx` | Identity-bound slice loading, depth/tool/layer controls, metrics, overlays, and geometry-linked findings. |
+| `src/service/useVerification.ts`, `src/components/VerificationPanel.tsx` | Recoverable verification settings/tasks, continuous bounds, coordinate scopes, and findings. |
 | `../crates/cam-server/` | Loopback HTTP boundary, bounded engine workers, build assets, and engine-to-display projection. |
 | `src/state/` | Recoverable form text, candidate serialization, grouped edit history, monotonically increasing revisions. |
 | `src/components/Viewport.tsx` | Inert source and stock rings, recorded motion projection, overlay controls, and camera transforms. |

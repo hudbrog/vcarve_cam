@@ -2,6 +2,7 @@ pub mod document;
 pub mod inspection;
 pub mod planning;
 pub mod planning_worker;
+pub mod verification;
 
 use axum::{
     Json, Router,
@@ -124,6 +125,11 @@ pub fn router_with_planning(
         .route("/api/v1/capabilities", get(capabilities))
         .route("/api/v1/document", post(document_request))
         .route("/api/v1/tasks", post(start_plan))
+        .route(
+            "/api/v1/verifications",
+            post(start_verification).layer(DefaultBodyLimit::max(16_384)),
+        )
+        .route("/api/v1/tasks/{id}/verification", get(verification_result))
         .route("/api/v1/tasks/{id}", get(task_snapshot))
         .route("/api/v1/tasks/{id}/cancel", post(cancel_plan))
         .route("/api/v1/tasks/{id}/result", get(plan_result))
@@ -215,7 +221,8 @@ async fn capabilities(State(state): State<AppState>) -> Json<Value> {
     Json(
         json!({ "apiVersion": API_VERSION, "mode": "live", "engineVersion": ENGINE_VERSION,
         "importArtwork": true, "openJob": true, "validateDraft": true,
-        "planningStages": ["endmill", "combined"], "verificationScopes": [], "exportFormats": [],
+        "planningStages": ["endmill", "combined"], "verificationScopes": ["continuous-stock"], "exportFormats": [],
+        "verification": { "defaultOptions": cam_core::verification::VerificationOptions::default() },
         "planning": { "instanceId": state.planning.instance_id, "concurrentPlans": 1,
             "maxPending": planning::MAX_PENDING, "maxTasks": planning::MAX_TASKS,
             "retainedResults": planning::RETAINED_RESULTS, "timeoutSeconds": planning::TIMEOUT_SECONDS,
@@ -272,6 +279,45 @@ async fn task_snapshot(
         Err(failure) => task_error(failure),
     }
 }
+async fn start_verification(
+    State(state): State<AppState>,
+    body: Result<Json<verification::Start>, JsonRejection>,
+) -> Response {
+    let request = match body {
+        Ok(Json(value)) => value,
+        Err(rejection) => return error(rejection.status(), "REQUEST_JSON", &rejection.body_text()),
+    };
+    match verification::start(&state.planning, request) {
+        Ok(snapshot) => (StatusCode::ACCEPTED, Json(snapshot)).into_response(),
+        Err(failure) => task_error(failure),
+    }
+}
+async fn verification_result(
+    State(state): State<AppState>,
+    RoutePath(id): RoutePath<String>,
+) -> Response {
+    match state.planning.result(&id) {
+        Ok((snapshot, result)) if snapshot.verification.is_some() => {
+            match serde_json::from_str::<Value>(&result.artifact) {
+                Ok(report) => Json(
+                    json!({"task":snapshot,"coordinateSpace":"workpiece-mm-z-up","report":report}),
+                )
+                .into_response(),
+                Err(_) => error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "VERIFICATION_REPORT",
+                    "Stored report could not be read.",
+                ),
+            }
+        }
+        Ok(_) => error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "TASK_KIND",
+            "This task is a plan, not a verification.",
+        ),
+        Err(failure) => task_error(failure),
+    }
+}
 async fn cancel_plan(State(state): State<AppState>, RoutePath(id): RoutePath<String>) -> Response {
     match state.planning.cancel(&id) {
         Ok(snapshot) => Json(snapshot).into_response(),
@@ -280,6 +326,7 @@ async fn cancel_plan(State(state): State<AppState>, RoutePath(id): RoutePath<Str
 }
 async fn plan_result(State(state): State<AppState>, RoutePath(id): RoutePath<String>) -> Response {
     match state.planning.result(&id) {
+        Ok((snapshot, _)) if snapshot.verification.is_some() => error(StatusCode::UNPROCESSABLE_ENTITY, "TASK_KIND", "This task contains verification evidence, not a plan preview."),
         Ok((snapshot, result)) => Json(
             json!({ "task": snapshot, "coordinateSpace": "workpiece-mm-z-up",
             "motions": result.motions, "stockSlices": result.inspection.slices.iter().map(|s| &s.info).collect::<Vec<_>>() }),
@@ -313,12 +360,16 @@ async fn plan_artifact(
     RoutePath(id): RoutePath<String>,
 ) -> Response {
     match state.planning.result(&id) {
-        Ok((_, result)) => (
+        Ok((snapshot, result)) => (
             [
                 (header::CONTENT_TYPE, "application/json"),
                 (
                     header::CONTENT_DISPOSITION,
-                    "attachment; filename=plan.json",
+                    if snapshot.verification.is_some() {
+                        "attachment; filename=verification.json"
+                    } else {
+                        "attachment; filename=plan.json"
+                    },
                 ),
             ],
             result.artifact.clone(),

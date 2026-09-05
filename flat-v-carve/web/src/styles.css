@@ -118,3 +118,14 @@
 .stock-metrics td { text-align: right; }
 .stock-metrics button { font-size: .75rem; padding: .2rem .45rem; }
 .slice-finding { border-left: 2px solid #e686a4; padding-left: .6rem; font-size: .8rem; margin: .7rem 0; }
+.verification-report { font-size: .8125rem; }
+.verification-report details { margin: .8rem 0; }
+.verification-report summary { cursor: pointer; }
+.verification-report td { white-space: nowrap; }
+.verification-finding { border-left: 3px solid #b67720; padding-left: .7rem; margin: 1rem 0; }
+.verification-finding.failed, .plan-outcome.failed { border-color: var(--error); }
+.plan-outcome.passed { border-color: #148075; }
+.verification-location { fill: #b6772030; stroke: #b67720; stroke-width: 2; pointer-events: none; }
+.verification-location.failed { fill: #ad274325; stroke: var(--error); }
+.verification-location circle { fill: none; stroke-width: 3; }
+.drawing-note { right: 1rem; line-height: 1.4; }

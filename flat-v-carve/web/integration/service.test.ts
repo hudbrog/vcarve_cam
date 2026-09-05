@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createHttpService } from '../src/service/http';
 import type { CamService } from '../src/contracts/service';
 import { terminal, type PlanTask, type TaskIdentity } from '../src/contracts/planning';
+import { verificationIdentity, type VerificationIdentity } from '../src/contracts/verification';
 
 // Runs the actual Rust server and the same-engine CLI; no fixture HTTP responses.
 const workspace = fileURLToPath(new URL('../../', import.meta.url));
@@ -212,4 +213,62 @@ describe('real background planning', () => {
     await expect(service.planResult!(id)).rejects.toThrow(/PLAN_RESULT_UNAVAILABLE/);
     await expect(service.planTask!({ ...id, instanceId: '0'.repeat(32) })).rejects.toThrow(/previous service instance/);
   }, 15_000);
+});
+
+async function finishVerification(id: VerificationIdentity) {
+  const deadline = Date.now() + 45_000;
+  while (Date.now() < deadline) {
+    const task = await service.verificationTask!(id);
+    if (['succeeded','failed','cancelled'].includes(task.state)) return task;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error('Verification did not finish within the test deadline');
+}
+describe('real continuous verification', () => {
+  it.each([
+    ['original', null, 1_000_000, 'passed'],
+    ['rounded', 0, 1_000_000, 'failed'],
+    ['limited', null, 1, 'inconclusive'],
+  ] as const)('matches every CLI report field for %s evidence', async (name, places, cells, status) => {
+    const {job,id} = await identity('m4/narrow-channel','combined');
+    await service.startPlan!(job,id);
+    const plan = await finish(id);
+    const caps = await service.capabilities();
+    const options = {...caps.verification!.defaultOptions, max_cells:cells, decimal_places:places};
+    const verification = verificationIdentity(plan,options,crypto.randomUUID());
+    await expect(service.startVerification!({...verification, revision:verification.revision + 1})).rejects.toThrow(/VERIFICATION_PLAN_IDENTITY/);
+    expect((await service.startVerification!(verification)).state).toBe('queued');
+    await expect(service.startVerification!({...verification,verification:{...verification.verification,options:{...options,max_depth:1}}})).rejects.toThrow(/TASK_KEY_REUSED/);
+    const task = await finishVerification(verification);
+    expect(task.state,JSON.stringify(task.diagnostic)).toBe('succeeded');
+    expect(task.summary?.status).toBe(status);
+    const result = await service.verificationResult!(verification);
+    const session = await (await fetch(`${base}/api/v1/session`)).json();
+    const artifact = await fetch(`${base}/api/v1/tasks/${id.taskId}/artifact`, {headers:{'X-Cam-Session':session.sessionToken}});
+    const path = `${output}/verify-${name}.plan.json`;
+    writeFileSync(path,await artifact.text());
+    const reportPath = `${output}/verify-${name}.report.json`;
+    runCli(['verify',path,'--output',reportPath,'--max-cells',String(cells),...(places === null ? [] : ['--decimal-places',String(places)])],status === 'passed' ? 0 : 1);
+    expect(result.report).toEqual(JSON.parse(readFileSync(reportPath,'utf8')).verification);
+    expect((await service.cancelVerification!(verification)).state).toBe('succeeded');
+    expect((await service.startVerification!(verification)).taskId).toBe(verification.taskId);
+    await expect(service.planResult!(verification)).rejects.toThrow(/TASK_KIND/);
+    await service.capabilities(); // Reconnect preserves the result and does not replay.
+    expect((await service.verificationResult!(verification)).report).toEqual(result.report);
+  },60_000);
+  it('cancels a running verification while document checks remain responsive', async () => {
+    const {job,id} = await identity('m4/island','combined');
+    await service.startPlan!(job,id);
+    const plan = await finish(id);
+    const options = (await service.capabilities()).verification!.defaultOptions;
+    const verification = verificationIdentity(plan,{...options,decimal_places:6},crypto.randomUUID());
+    await service.startVerification!(verification);
+    let task = await service.verificationTask!(verification);
+    while (task.state === 'queued') task = await service.verificationTask!(verification);
+    expect(task.state).toBe('running');
+    expect((await service.validateDraft(job,id.revision)).valid).toBe(true);
+    expect((await service.cancelVerification!(verification)).state).toBe('cancelling');
+    expect((await finishVerification(verification)).state).toBe('cancelled');
+    await expect(service.verificationResult!(verification)).rejects.toThrow(/PLAN_RESULT_UNAVAILABLE/);
+  },45_000);
 });

@@ -3,6 +3,7 @@ import type { ArtworkDisplay } from '../contracts/service';
 import type { Job, Point } from '../contracts/job';
 import type { Motion } from '../contracts/planning';
 import { stockLayers, type DisplayBounds, type SliceInfo, type StockRegion } from '../contracts/stock';
+import type { Finding } from '../contracts/verification';
 
 interface Props {
   display: ArtworkDisplay | null; job: Job; inspected: string | null;
@@ -13,6 +14,8 @@ interface Props {
   stockPending?: boolean;
   stockError?: string;
   focus?: { bounds: DisplayBounds; serial: number } | null;
+  verificationFinding?: Finding;
+  verificationScope?: string;
 }
 export function placePoint(point: Point, placement: Job['import']['placement']): Point {
   const radians = placement.rotation_deg * Math.PI / 180;
@@ -29,7 +32,7 @@ export function motionPath(motions: Motion[]): string {
   return motions.map(motion => `M${motion.start.x},${-motion.start.y}L${motion.end.x},${-motion.end.y}`).join(' ');
 }
 export function stockPath(region: StockRegion): string { return pathData(region.rings); }
-export function Viewport({ display, job, inspected, onInspect, hidden, motions, stockInfo, stockGeometry, stockPending, stockError, focus }: Props) {
+export function Viewport({ display, job, inspected, onInspect, hidden, motions, stockInfo, stockGeometry, stockPending, stockError, focus, verificationFinding, verificationScope }: Props) {
   const [camera, setCamera] = useState({ x: 50, y: 30, span: 125 });
   const [grid, setGrid] = useState(true);
   const [showMotions, setShowMotions] = useState(true);
@@ -85,8 +88,8 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions, 
     </div>
     <div className="drawing-wrap">
       {display ? <>
-        <div className="drawing-note">{stockInfo ? `STOCK SLICE · ${stockInfo.stage === 'endmill' ? 'after endmill' : 'after both tools'} · ${stockInfo.depthMm} mm deep${stockPending ? ' · loading…' : stockError || stockInfo.unavailableReason ? ' · geometry unavailable' : ''}` : motions ? motions.length === 0 ? 'NO RECORDED MOTIONS · see plan outcome' : showMotions ? 'RECORDED MOTIONS · top projection' : 'SOURCE GEOMETRY · motion overlay hidden' : 'SOURCE GEOMETRY · no planned cuts'}</div>
-        <svg className="drawing" role="group" aria-label={`${stockInfo ? `Stock slice at ${stockInfo.depthMm} mm below stock top. Use the stock overlay controls and area table to inspect regions.` : 'Top view of normalized artwork. Inspect shapes with the source list.'} Arrow keys pan; plus and minus zoom; Home fits the job.`}
+        <div className="drawing-note">{verificationFinding ? `VERIFICATION FINDING · ${verificationScope ?? "original coordinates"} · ${verificationFinding.code}` : stockInfo ? `STOCK SLICE · ${stockInfo.stage === 'endmill' ? 'after endmill' : 'after both tools'} · ${stockInfo.depthMm} mm deep${stockPending ? ' · loading…' : stockError || stockInfo.unavailableReason ? ' · geometry unavailable' : ''}` : motions ? motions.length === 0 ? 'NO RECORDED MOTIONS · see plan outcome' : showMotions ? 'RECORDED MOTIONS · top projection' : 'SOURCE GEOMETRY · motion overlay hidden' : 'SOURCE GEOMETRY · no planned cuts'}</div>
+        <svg className="drawing" role="group" aria-label={`${verificationFinding ? `Verification finding ${verificationFinding.code} in ${verificationScope ?? "original coordinates"}. Path overlays show original recorded motions.` : stockInfo ? `Stock slice at ${stockInfo.depthMm} mm below stock top. Use the stock overlay controls and area table to inspect regions.` : 'Top view of normalized artwork. Inspect shapes with the source list.'} Arrow keys pan; plus and minus zoom; Home fits the job.`}
           tabIndex={0} viewBox={`${camera.x - camera.span / 2} ${-camera.y - camera.span * .35} ${camera.span} ${camera.span * .7}`}
           onKeyDown={event => {
             const step = camera.span * .08;
@@ -136,6 +139,11 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions, 
             <path d="M0 -8V0H8" vectorEffect="non-scaling-stroke" />
             <circle cx="0" cy="0" r=".55" vectorEffect="non-scaling-stroke" />
           </g>
+          {verificationFinding && <g data-verification-finding={verificationFinding.code} className={`verification-location ${verificationFinding.status}`}>
+            <title>{verificationFinding.code} · {verificationFinding.message}</title>
+            {verificationFinding.cell && <rect x={verificationFinding.cell.min.x} y={-verificationFinding.cell.max.y} width={verificationFinding.cell.max.x - verificationFinding.cell.min.x} height={verificationFinding.cell.max.y - verificationFinding.cell.min.y} vectorEffect="non-scaling-stroke" />}
+            <circle cx={verificationFinding.location.x} cy={-verificationFinding.location.y} r={camera.span / 90} vectorEffect="non-scaling-stroke" />
+          </g>}
           <g className="axis-labels" fontSize="2.2"><text x="9" y=".8">X</text><text x="-.8" y="-9">Y</text><text x="1.2" y="3">0, 0</text></g>
         </svg>
         <div className="drawing-legend">{stockInfo ? stockPaths.map(region => <span className="stock-legend-item" key={region.key}><span className={`stock-swatch ${region.key}`} />{stockLayers[region.key].label}</span>) : <><span className="legend-swatch included" /> Included region <span className="legend-swatch hole" /> Preserved hole <span className="legend-swatch inspected" /> Inspected</>}{showMotions && <>

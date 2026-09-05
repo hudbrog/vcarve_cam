@@ -138,8 +138,19 @@ async fn capability_envelope_has_limits_and_no_unimplemented_operations() {
     assert_eq!(caps["planning"]["concurrentPlans"], 1);
     assert_eq!(caps["planning"]["maxPending"], 4);
     for field in ["verificationScopes", "exportFormats"] {
-        assert_eq!(caps[field], json!([]));
+        assert_eq!(
+            caps[field],
+            if field == "verificationScopes" {
+                json!(["continuous-stock"])
+            } else {
+                json!([])
+            }
+        );
     }
+    assert_eq!(
+        caps["verification"]["defaultOptions"],
+        json!(cam_core::verification::VerificationOptions::default())
+    );
     for path in [
         "/../Cargo.toml",
         "/%2e%2e/Cargo.toml",
@@ -159,6 +170,25 @@ async fn capability_envelope_has_limits_and_no_unimplemented_operations() {
             StatusCode::NOT_FOUND
         );
     }
+}
+
+#[tokio::test]
+async fn verification_submission_has_a_small_metadata_body_limit() {
+    let app = app();
+    let token = token(&app).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/verifications",
+        &[
+            ("host", "127.0.0.1:4848"),
+            ("x-cam-session", &token),
+            ("content-type", "application/json"),
+        ],
+        json!({"excess":"x".repeat(17_000)}).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 #[tokio::test]

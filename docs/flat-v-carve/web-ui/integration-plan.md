@@ -1,10 +1,10 @@
 # Web UI: integration and delivery plan
 
 Date: 2026-09-05\
-Status: delivery roadmap; U1/U2 and bounded U3 planning/2D inspection are implemented.\
+Status: delivery roadmap; U1/U2, bounded U3 planning/2D inspection, and U5 M5 verification are implemented.\
 Companion: [product and interaction design](README.md).
 
-Implementation update: [U2](u2-service-integration.md), [background planning](u3-background-planning.md), and [stock inspection](u3-stock-inspection.md) implement the local service through `ui-3` with Rust 0.7.2. Import/open/display/validation, cancellable tasks, artifact access, recorded motions, and stock slices are live. M5/M6 are implemented in core/CLI; verification/export service integration and native-file operations below remain future work. The operation tables describe the overall target and are not a frozen HTTP specification.
+Implementation update: [U2](u2-service-integration.md), [background planning](u3-background-planning.md), [stock inspection](u3-stock-inspection.md), and [M5 verification](u5-verification.md) implement the local service through `ui-4` with Rust 0.7.2. Import/open/display/validation, cancellable tasks, artifact access, recorded motions, stock slices, and continuous verification are live. M6 is implemented in core/CLI; profile/export service integration and native-file operations below remain future work. The operation tables describe the overall target and are not a frozen HTTP specification.
 
 ## 1. Ownership and independent progress
 
@@ -23,11 +23,11 @@ Integration runs in the `codex/web-integration` worktree. The frontend and `cam-
 | Endmill/combined plans | Actual XYZ motions, tool transition, fingerprints, partial results. | Async task envelope, summaries, motion access and cancellation. |
 | Stock/quality inspection | Layer/slice polygons and point samples with residual/reachability evidence. | Display primitives, spatial queries, chunking, stable overlay identity. |
 | Diagnostic model | Code, warning/error severity, stage, message, optional source ID. | Optional field paths, region/motion IDs, location/bounds, measured-limit data and remediation hints. Missing fields remain absent. |
-| Continuous stock verification | M5 implemented in Rust; M4 planning retains slice/sample quality scope. | Service tasks, explicit check scope, bounds, refinement state, passed/failed/inconclusive result contract. |
+| Continuous stock verification | M5 service/UI implemented for combined plans; M4 planning retains slice/sample quality scope. | Reuse bound-aware review and immutable identities for M6 output checks. |
 | Machine profile/output | M6 LinuxCNC postprocessing implemented with a separate schema-1 profile; the UI edits the basic job profile. | Complete M6 profile editor, profile validation, exact-output checks and export eligibility. |
-| Local browser service | `cam-web`, same-origin `ui-3` API, bounded background tasks and bundled UI are implemented. | Verification/output routes and release lifecycle/file integration. |
-| Local tool library | [Rust API and CLI](../tool-library.md) implement named tools, cutting presets, revisioned persistence, import/export, and job snapshots. | Service transport, library management controls, changed-value review, and undoable application. |
+| Local browser service | `cam-web`, same-origin `ui-4` API, shared planning/verification queue and bundled UI are implemented. | Output routes and release lifecycle/file integration. |
 | 3D and arbitrary cross-sections | Debug SVGs and core geometric data exist; no browser display API. | Engine-derived display meshes/heightfields and section queries, with error/resolution metadata. |
+| Local tool library | [Rust API and CLI](../tool-library.md) implement named tools, cutting presets, revisioned persistence, import/export, and job snapshots. | Service transport, library management controls, changed-value review, and undoable application. |
 
 Rust 0.7.2 supports 32 MB SVG sources and 64 MB job JSON. The service advertises these limits and a 128.1 MB request envelope limit through capabilities; saved plans and display responses retain separate bounds. Handle large result data separately from interactive summaries.
 
@@ -109,7 +109,7 @@ These U stages expand M7; they do not rename or block the Rust M stages. Advance
 | U5 — verification and output | Bound-aware review, spatial diagnostics, machine profiles, formatted-output preview, combined/per-tool downloads. | M5/M6 capabilities. | Failed/inconclusive/stale outputs are gated server-side; exact checked files match the reviewed snapshot. |
 | U6 — usable local release | Local presets, file conflicts/recovery, offline packaging, lifecycle/browser checks, help and first-run workflow. | Chosen target OS/browser and integrated service. | Ordinary import-to-export workflow, restart/recovery, CLI parity, and supported installation are demonstrated. |
 
-U3 now has bounded stock slices, tool/path-layer filters, and links from supported slice diagnostics to geometry. U4 still needs 3D/section display contracts and large-artwork rendering work. U5 can integrate the completed M5/M6 APIs now; service enforcement and exact-output parity are still required before enabling machine downloads. No calendar commitments are made here.
+U3 now has bounded stock slices, tool/path-layer filters, and links from supported slice diagnostics to geometry. U4 still needs 3D/section display contracts and large-artwork rendering work. U5's M5 verification workflow is implemented. The next U5 slice is the M6 profile/editor/output service, with exact-output parity and server-side eligibility checks before machine downloads are enabled. No calendar commitments are made here.
 
 ## 7. Acceptance scenarios
 

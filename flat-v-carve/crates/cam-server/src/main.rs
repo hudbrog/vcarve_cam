@@ -1,6 +1,6 @@
 use std::{path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Flat V-carve local browser workspace\nUsage: cam-web [--port <0..65535>] [--ui-dir <web/dist>]\n\nBuild the UI with pnpm build before starting. Bind is always 127.0.0.1.\nPort 0 selects an available port; otherwise the port must be free.\nImport, open/migrate, validation, and cancellable background planning are available.\nGeometric verification, machine output, and filesystem writes are not exposed.\nCtrl+C cancels planning workers and stops the service.\n";
+const HELP: &str = "Flat V-carve local browser workspace\nUsage: cam-web [--port <0..65535>] [--ui-dir <web/dist>]\n\nBuild the UI with pnpm build before starting. Bind is always 127.0.0.1.\nPort 0 selects an available port; otherwise the port must be free.\nImport, open/migrate, validation, and cancellable background planning are available.\nM5 combined-plan stock verification is available. Machine output and filesystem writes are not exposed.\nCtrl+C cancels computation workers and stops the service.\n";
 
 fn main() -> ExitCode {
     let result = if std::env::args().skip(1).eq(["--planning-worker"]) {

@@ -66,6 +66,8 @@ pub struct Snapshot {
     pub diagnostic: Option<Value>,
     pub summary: Option<Value>,
     pub result_available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<crate::verification::Identity>,
 }
 struct Record {
     snapshot: Snapshot,
@@ -88,7 +90,7 @@ pub struct Planning {
 #[derive(Debug)]
 pub struct Failure(pub u16, pub &'static str, pub String);
 impl Failure {
-    fn new(status: u16, code: &'static str, message: &str) -> Self {
+    pub(crate) fn new(status: u16, code: &'static str, message: &str) -> Self {
         Self(status, code, message.into())
     }
 }
@@ -104,27 +106,12 @@ impl Planning {
         }))
     }
     pub fn start(self: &Arc<Self>, request: Start) -> Result<Snapshot, Failure> {
-        if request.api_version != API_VERSION || request.instance_id != self.instance_id {
-            return Err(Failure::new(
-                409,
-                "TASK_INSTANCE",
-                "The service changed. Reconnect; previous tasks are not replayed.",
-            ));
-        }
-        if request.request_id.is_empty()
-            || request.request_id.len() > 128
-            || !request
-                .request_id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            || request.revision > 9_007_199_254_740_991
-        {
-            return Err(Failure::new(
-                400,
-                "REQUEST_IDENTITY",
-                "A short request ID and safe revision are required.",
-            ));
-        }
+        self.validate_identity(
+            &request.api_version,
+            &request.instance_id,
+            &request.request_id,
+            request.revision,
+        )?;
         let raw = request.job.to_string();
         if raw.len() > JOB_BYTES {
             return Err(Failure::new(
@@ -146,19 +133,102 @@ impl Planning {
         let request_hash = format!(
             "{:x}",
             Sha256::digest(
-                serde_json::to_vec(&(request.revision, request.stage, &document_fingerprint))
-                    .unwrap()
+                serde_json::to_vec(&(
+                    "plan",
+                    request.revision,
+                    request.stage,
+                    &document_fingerprint
+                ))
+                .unwrap()
             )
         );
+        self.enqueue(
+            Snapshot {
+                api_version: API_VERSION,
+                engine_version: ENGINE_VERSION,
+                instance_id: self.instance_id.clone(),
+                task_id: request.request_id,
+                revision: request.revision,
+                document_fingerprint,
+                stage: request.stage,
+                sequence: 1,
+                state: Status::Queued,
+                diagnostic: None,
+                summary: None,
+                result_available: false,
+                verification: None,
+            },
+            request_hash,
+            Input {
+                stage: request.stage,
+                job: raw,
+                verification: None,
+            },
+        )
+    }
+    pub(crate) fn validate_identity(
+        &self,
+        api_version: &str,
+        instance_id: &str,
+        request_id: &str,
+        revision: u64,
+    ) -> Result<(), Failure> {
+        if api_version != API_VERSION || instance_id != self.instance_id {
+            return Err(Failure::new(
+                409,
+                "TASK_INSTANCE",
+                "The service changed. Reconnect; previous tasks are not replayed.",
+            ));
+        }
+        if request_id.is_empty()
+            || request_id.len() > 128
+            || !request_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || revision > 9_007_199_254_740_991
+        {
+            return Err(Failure::new(
+                400,
+                "REQUEST_IDENTITY",
+                "A short request ID and safe revision are required.",
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn replay(&self, id: &str, hash: &str) -> Result<Option<Snapshot>, Failure> {
+        let ledger = self.ledger.lock().unwrap();
+        if ledger.closed {
+            return Err(Failure::new(
+                503,
+                "SERVICE_STOPPING",
+                "The service is shutting down.",
+            ));
+        }
+        match ledger.records.get(id) {
+            Some(record) if record.request_hash == hash => Ok(Some(record.snapshot.clone())),
+            Some(_) => Err(Failure::new(
+                409,
+                "TASK_KEY_REUSED",
+                "This request ID already belongs to another immutable input.",
+            )),
+            None => Ok(None),
+        }
+    }
+    pub(crate) fn enqueue(
+        self: &Arc<Self>,
+        snapshot: Snapshot,
+        request_hash: String,
+        input: Input,
+    ) -> Result<Snapshot, Failure> {
         let mut ledger = self.ledger.lock().unwrap();
         if ledger.closed {
             return Err(Failure::new(
                 503,
                 "SERVICE_STOPPING",
-                "The service is shutting down and no longer accepts plans.",
+                "The service is shutting down and no longer accepts computations.",
             ));
         }
-        if let Some(record) = ledger.records.get(&request.request_id) {
+        if let Some(record) = ledger.records.get(&snapshot.task_id) {
             return if record.request_hash == request_hash {
                 Ok(record.snapshot.clone())
             } else {
@@ -180,23 +250,9 @@ impl Planning {
             Failure::new(
                 503,
                 "PLAN_QUEUE_FULL",
-                "One plan is running and three are queued. Wait or cancel a task.",
+                "One calculation is running and three are queued. Wait or cancel a task.",
             )
         })?;
-        let snapshot = Snapshot {
-            api_version: API_VERSION,
-            engine_version: ENGINE_VERSION,
-            instance_id: self.instance_id.clone(),
-            task_id: request.request_id,
-            revision: request.revision,
-            document_fingerprint,
-            stage: request.stage,
-            sequence: 1,
-            state: Status::Queued,
-            diagnostic: None,
-            summary: None,
-            result_available: false,
-        };
         let (cancel, mut cancelled) = watch::channel(false);
         ledger.records.insert(
             snapshot.task_id.clone(),
@@ -231,14 +287,7 @@ impl Planning {
                 record.snapshot.state = Status::Running;
                 record.snapshot.sequence += 1;
             }
-            let result = run_worker(
-                Input {
-                    stage: request.stage,
-                    job: raw,
-                },
-                &mut cancelled,
-            )
-            .await;
+            let result = run_worker(input, &mut cancelled).await;
             service.finish(&id, result);
         });
         Ok(snapshot)
@@ -327,12 +376,13 @@ impl Planning {
     }
 }
 fn diagnostic(code: &str, message: &str) -> Value {
-    json!({ "code": code, "severity": "error", "stage": "planning", "message": message })
+    json!({ "code": code, "severity": "error", "stage": if code.starts_with("VERIFICATION_") {"verification"} else {"planning"}, "message": message })
 }
 async fn run_worker(
     input: Input,
     cancel: &mut watch::Receiver<bool>,
 ) -> Option<Result<Output, Value>> {
+    let verifying = input.verification.is_some();
     let operation = async {
         let mut command = Command::new(std::env::current_exe()?);
         command
@@ -375,7 +425,7 @@ async fn run_worker(
             _ = cancel.changed() => None,
             result = tokio::time::timeout(Duration::from_secs(TIMEOUT_SECONDS), work) => Some(match result {
                 Ok(result) => result,
-                Err(_) => Ok(Err(diagnostic("PLAN_TIMEOUT", "Planning exceeded the five-minute service limit. Reduce the job or refine its resource limits."))),
+                Err(_) => Ok(Err(diagnostic(if verifying {"VERIFICATION_TIMEOUT"} else {"PLAN_TIMEOUT"}, "Calculation exceeded the five-minute service limit. Reduce the job or refine its resource limits."))),
             }),
         };
         // Also reap on read errors/timeouts. A terminal cancellation means actual work stopped.
@@ -387,9 +437,14 @@ async fn run_worker(
     match operation.await {
         Ok(None) => None,
         Ok(Some(Ok(reply))) => Some(reply),
-        Ok(Some(Err(error))) | Err(error) => {
-            Some(Err(diagnostic("PLAN_WORKER_FAILURE", &error.to_string())))
-        }
+        Ok(Some(Err(error))) | Err(error) => Some(Err(diagnostic(
+            if verifying {
+                "VERIFICATION_WORKER_FAILURE"
+            } else {
+                "PLAN_WORKER_FAILURE"
+            },
+            &error.to_string(),
+        ))),
     }
 }
 
@@ -466,6 +521,7 @@ mod tests {
                     diagnostic: None,
                     summary: None,
                     result_available: false,
+                    verification: None,
                 },
                 request_hash: String::new(),
                 cancel,
@@ -480,6 +536,84 @@ mod tests {
             artifact: "{}".into(),
             inspection: crate::inspection::Inspection::default(),
         }))
+    }
+    #[tokio::test]
+    async fn verification_binds_a_combined_source_and_retries_after_source_expiry() {
+        use crate::verification::{self, Identity};
+        use cam_core::verification::VerificationOptions;
+        let service = Planning::new().unwrap();
+        let _worker = service.worker.acquire().await.unwrap();
+        running(&service, "source");
+        let mut output = result().unwrap().unwrap();
+        output.summary =
+            json!({"inputFingerprint":"a".repeat(64),"motionFingerprint":"b".repeat(64)});
+        service.finish("source", Some(Ok(output)));
+        let source = service.snapshot("source").unwrap();
+        let make = || verification::Start {
+            api_version: API_VERSION.into(),
+            instance_id: service.instance_id.clone(),
+            request_id: "verify".into(),
+            revision: source.revision,
+            document_fingerprint: source.document_fingerprint.clone(),
+            verification: Identity {
+                plan_task_id: "source".into(),
+                input_fingerprint: "a".repeat(64),
+                motion_fingerprint: "b".repeat(64),
+                options: VerificationOptions::default(),
+            },
+        };
+        assert!(matches!(
+            verification::start(&service, make()),
+            Err(Failure(422, "VERIFICATION_STAGE", _))
+        ));
+        service
+            .ledger
+            .lock()
+            .unwrap()
+            .records
+            .get_mut("source")
+            .unwrap()
+            .snapshot
+            .stage = Stage::Combined;
+        let mut wrong = make();
+        wrong.revision += 1;
+        assert!(matches!(
+            verification::start(&service, wrong),
+            Err(Failure(409, "VERIFICATION_PLAN_IDENTITY", _))
+        ));
+        let mut wrong = make();
+        wrong.verification.motion_fingerprint = "c".repeat(64);
+        assert!(matches!(
+            verification::start(&service, wrong),
+            Err(Failure(409, "VERIFICATION_PLAN_IDENTITY", _))
+        ));
+        let mut wrong = make();
+        wrong.verification.options.max_cells = 0;
+        assert!(matches!(
+            verification::start(&service, wrong),
+            Err(Failure(422, "VERIFICATION_OPTIONS", _))
+        ));
+        assert!(verification::start(&service, make()).unwrap().state == Status::Queued);
+        assert_eq!(service.pending.available_permits(), MAX_PENDING - 1);
+        let mut reused = make();
+        reused.verification.options.max_cells = 1;
+        assert!(matches!(
+            verification::start(&service, reused),
+            Err(Failure(409, "TASK_KEY_REUSED", _))
+        ));
+        for n in 0..RETAINED_RESULTS {
+            let id = format!("other-{n}");
+            running(&service, &id);
+            service.finish(&id, result());
+        }
+        assert!(service.result("source").is_err());
+        assert!(verification::start(&service, make()).unwrap().state == Status::Queued);
+        service.cancel("verify").unwrap();
+        tokio::time::timeout(Duration::from_secs(2), service.shutdown())
+            .await
+            .unwrap();
+        assert!(service.snapshot("verify").unwrap().state == Status::Cancelled);
+        assert!(service.result("verify").is_err());
     }
     #[test]
     fn cancellation_and_completion_have_one_authoritative_winner() {

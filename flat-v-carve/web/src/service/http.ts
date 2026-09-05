@@ -5,6 +5,7 @@ import { apiVersion, capabilitiesSchema, displaySchema, envelopeSchema, errorSch
 import { fixtureService } from './fixture';
 import { acceptTask, planResultSchema, sliceResponseSchema, taskSchema, type TaskIdentity } from '../contracts/planning';
 import { sliceInfoSchema } from '../contracts/stock';
+import { acceptVerification, verificationTaskSchema, verificationResultSchema } from '../contracts/verification';
 
 // Only same-origin URLs. Session tokens stay in memory and are never persisted or logged.
 export function createHttpService(fetcher: typeof fetch = (...args) => fetch(...args)): CamService {
@@ -72,6 +73,24 @@ export function createHttpService(fetcher: typeof fetch = (...args) => fetch(...
   }
   return {
     capabilities,
+    async startVerification(identity, signal) {
+      const task = await taskRequest(identity, 'verifications', verificationTaskSchema, {
+        apiVersion, instanceId: identity.instanceId, requestId: identity.taskId, revision: identity.revision,
+        documentFingerprint: identity.documentFingerprint, verification: identity.verification,
+      }, signal);
+      return acceptVerification(null, task, identity);
+    },
+    async verificationTask(identity, signal) {
+      return acceptVerification(null, await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}`, verificationTaskSchema, undefined, signal), identity);
+    },
+    async cancelVerification(identity, signal) {
+      return acceptVerification(null, await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}/cancel`, verificationTaskSchema, {}, signal), identity);
+    },
+    async verificationResult(identity, signal) {
+      const result = await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}/verification`, verificationResultSchema, undefined, signal);
+      acceptVerification(null, result.task, identity);
+      return result;
+    },
     async openExample(signal) {
       const { job } = await fixtureService.openExample(signal);
       return request({ operation: 'open', json: JSON.stringify(job) }, 0, openedSchema, signal);

@@ -21,6 +21,7 @@ pub enum Stage {
 pub struct Input {
     pub stage: Stage,
     pub job: String,
+    pub verification: Option<crate::verification::Work>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -53,6 +54,9 @@ fn artifact(plan: &impl Serialize) -> Result<String, String> {
 }
 
 pub fn calculate(input: Input) -> Result<Output, Value> {
+    if let Some(work) = input.verification {
+        return crate::verification::calculate(work);
+    }
     let job = Job::from_json(&input.job).map_err(|d| json!(UiDiagnostic::from(d)))?;
     // Readiness is decided by the selected core planner, including its stage-specific
     // settings checks. Editable-job validation alone never implies readiness.

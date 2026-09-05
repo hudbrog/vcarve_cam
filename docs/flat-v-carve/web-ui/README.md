@@ -1,10 +1,10 @@
 # Web UI: product and interaction design
 
 Date: 2026-09-05\
-Status: product design baseline; U1/U2 and bounded U3 planning/2D inspection are implemented.\
+Status: product design baseline; U1/U2, bounded U3 planning/2D inspection, and U5 M5 verification are implemented.\
 Confirmed direction: a persistent CAM workspace with guided setup steps.
 
-This design expands M7 into a complete product experience. Read the [integration and delivery plan](integration-plan.md) for current implementation status, remaining service work, and acceptance scenarios, and the [stock-inspection report](u3-stock-inspection.md) for the latest checked slice. Features described below remain product targets unless the implementation reports mark them delivered.
+This design expands M7 into a complete product experience. Read the [integration and delivery plan](integration-plan.md) for current implementation status, remaining service work, and acceptance scenarios, and the [M5 verification report](u5-verification.md) for the latest checked slice. Features described below remain product targets unless the implementation reports mark them delivered.
 
 ## 1. Product intent
 
