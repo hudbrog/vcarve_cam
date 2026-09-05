@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub const API_VERSION: &str = "ui-2";
+pub const API_VERSION: &str = "ui-3";
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const JOB_BYTES: usize = 8_000_000;
-pub const REQUEST_BYTES: usize = 16_100_000;
+pub const JOB_BYTES: usize = 64_000_000;
+pub const REQUEST_BYTES: usize = 128_100_000;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

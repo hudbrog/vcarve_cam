@@ -1,4 +1,5 @@
 pub mod document;
+pub mod inspection;
 pub mod planning;
 pub mod planning_worker;
 
@@ -126,6 +127,7 @@ pub fn router_with_planning(
         .route("/api/v1/tasks/{id}", get(task_snapshot))
         .route("/api/v1/tasks/{id}/cancel", post(cancel_plan))
         .route("/api/v1/tasks/{id}/result", get(plan_result))
+        .route("/api/v1/tasks/{id}/slices/{slice}", get(stock_slice))
         .route("/api/v1/tasks/{id}/artifact", get(plan_artifact))
         .fallback(asset)
         .layer(DefaultBodyLimit::max(REQUEST_BYTES))
@@ -217,7 +219,8 @@ async fn capabilities(State(state): State<AppState>) -> Json<Value> {
         "planning": { "instanceId": state.planning.instance_id, "concurrentPlans": 1,
             "maxPending": planning::MAX_PENDING, "maxTasks": planning::MAX_TASKS,
             "retainedResults": planning::RETAINED_RESULTS, "timeoutSeconds": planning::TIMEOUT_SECONDS,
-            "previewMotions": planning_worker::PREVIEW_MOTIONS, "artifactBytes": planning_worker::ARTIFACT_BYTES },
+            "previewMotions": planning_worker::PREVIEW_MOTIONS, "artifactBytes": planning_worker::ARTIFACT_BYTES,
+            "stockSlices": true, "sliceVertices": inspection::SLICE_VERTICES, "inspectionVertices": inspection::TOTAL_VERTICES },
         "limits": { "svgBytes": cam_core::svg::MAX_SVG_BYTES, "jobBytes": JOB_BYTES,
             "requestBytes": REQUEST_BYTES, "concurrentInspections": WORKERS } }),
     )
@@ -279,9 +282,29 @@ async fn plan_result(State(state): State<AppState>, RoutePath(id): RoutePath<Str
     match state.planning.result(&id) {
         Ok((snapshot, result)) => Json(
             json!({ "task": snapshot, "coordinateSpace": "workpiece-mm-z-up",
-            "motions": result.motions }),
+            "motions": result.motions, "stockSlices": result.inspection.slices.iter().map(|s| &s.info).collect::<Vec<_>>() }),
         )
         .into_response(),
+        Err(failure) => task_error(failure),
+    }
+}
+async fn stock_slice(
+    State(state): State<AppState>,
+    RoutePath((id, slice)): RoutePath<(String, String)>,
+) -> Response {
+    match state.planning.result(&id) {
+        Ok((snapshot, result)) => match result.inspection.slices.iter().find(|s| s.info.id == slice)
+        {
+            Some(value) => Json(
+                json!({ "task": snapshot, "coordinateSpace": "workpiece-mm-z-up", "slice": value }),
+            )
+            .into_response(),
+            None => error(
+                StatusCode::NOT_FOUND,
+                "SLICE_NOT_FOUND",
+                "This plan has no slice with that ID.",
+            ),
+        },
         Err(failure) => task_error(failure),
     }
 }

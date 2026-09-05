@@ -2,6 +2,8 @@
 
 Date: 2026-09-05. Implemented in the isolated `codex/web-integration` worktree, on top of `fabc02f`. This is the background-planning slice of U3; stock slices and richer inspection remain follow-up work. No `cam-core` or `cam-app` source changes are required, so parallel M6 development remains separate.
 
+Subsequent update: the [stock-inspection slice](u3-stock-inspection.md) rebases this work onto Rust 0.7.2 and delivers depth slices, tool/layer filters, and supported diagnostic locations. That report supersedes the wire/input-limit values and remaining-U3 status below; this report retains the original implementation evidence.
+
 ## Delivered workflow
 
 The production browser workspace can submit endmill or combined plans from an immutable, Rust-identified job snapshot. It shows queued/running/cancelling/terminal task state, preserves engine diagnostics and complete/empty/incomplete/inconclusive outcomes, and displays the recorded XYZ motions projected into XY. Endmill, V-bit, and optional travel overlays have distinct colors. Fit plan uses the recorded coordinates; artwork placement is not applied a second time.

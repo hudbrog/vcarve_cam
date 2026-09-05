@@ -1,5 +1,6 @@
 //! Private IPC for cam-web's disposable compute process. No shell or user paths.
 use crate::document::{ENGINE_VERSION, JOB_BYTES, UiDiagnostic};
+use crate::inspection::Inspection;
 use cam_core::{job::Job, motion::Motion, pocket::plan_endmill, vcarve::plan_combined};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -27,6 +28,7 @@ pub struct Output {
     pub summary: Value,
     pub motions: Vec<Motion>,
     pub artifact: String,
+    pub inspection: Inspection,
 }
 
 struct BoundedWriter(Vec<u8>, usize);
@@ -54,7 +56,7 @@ pub fn calculate(input: Input) -> Result<Output, Value> {
     let job = Job::from_json(&input.job).map_err(|d| json!(UiDiagnostic::from(d)))?;
     // Readiness is decided by the selected core planner, including its stage-specific
     // settings checks. Editable-job validation alone never implies readiness.
-    let (mut summary, motions, artifact) = match input.stage {
+    let (mut summary, motions, artifact, inspection) = match input.stage {
         Stage::Endmill => {
             let plan = plan_endmill(&job).map_err(|d| json!(UiDiagnostic::from(d)))?;
             let summary = json!({
@@ -67,7 +69,8 @@ pub fn calculate(input: Input) -> Result<Output, Value> {
                 "omittedGenerationIssues": plan.generation_issues.len().saturating_sub(100),
             });
             let artifact = artifact(&plan).map_err(resource_error)?;
-            (summary, plan.motions, artifact)
+            let inspection = Inspection::endmill(&plan);
+            (summary, plan.motions, artifact, inspection)
         }
         Stage::Combined => {
             let plan = plan_combined(&job).map_err(|d| json!(UiDiagnostic::from(d)))?;
@@ -94,13 +97,14 @@ pub fn calculate(input: Input) -> Result<Output, Value> {
                 "omittedGenerationIssues": issues.len().saturating_sub(100),
             });
             let artifact = artifact(&plan).map_err(resource_error)?;
+            let inspection = Inspection::combined(&plan);
             let motions = plan
                 .endmill
                 .motions
                 .into_iter()
                 .chain(plan.vbit_motions)
                 .collect();
-            (summary, motions, artifact)
+            (summary, motions, artifact, inspection)
         }
     };
     summary["engineVersion"] = json!(ENGINE_VERSION);
@@ -112,6 +116,7 @@ pub fn calculate(input: Input) -> Result<Output, Value> {
         summary,
         motions: motions.into_iter().take(PREVIEW_MOTIONS).collect(),
         artifact,
+        inspection,
     })
 }
 fn resource_error(message: String) -> Value {
@@ -124,8 +129,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .take((JOB_BYTES * 2 + 1024) as u64)
         .read_to_end(&mut bytes)?;
     let input: Input = serde_json::from_slice(&bytes)?;
-    let reply = calculate(input);
+    let mut reply = calculate(input);
     let mut writer = BoundedWriter(Vec::new(), WORKER_BYTES);
+    if serde_json::to_writer(&mut writer, &reply).is_err() {
+        // A large display must not discard an otherwise usable artifact.
+        if let Ok(result) = &mut reply {
+            result.inspection.omit_geometry();
+        }
+    } else {
+        io::stdout().write_all(&writer.0)?;
+        return Ok(());
+    }
+    writer.0.clear();
     if let Err(error) = serde_json::to_writer(&mut writer, &reply) {
         writer.0.clear();
         serde_json::to_writer(

@@ -1,12 +1,18 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ArtworkDisplay } from '../contracts/service';
 import type { Job, Point } from '../contracts/job';
 import type { Motion } from '../contracts/planning';
+import { stockLayers, type DisplayBounds, type SliceInfo, type StockRegion } from '../contracts/stock';
 
 interface Props {
   display: ArtworkDisplay | null; job: Job; inspected: string | null;
   onInspect: (id: string) => void; hidden: Set<string>;
   motions?: Motion[];
+  stockInfo?: SliceInfo;
+  stockGeometry?: StockRegion[];
+  stockPending?: boolean;
+  stockError?: string;
+  focus?: { bounds: DisplayBounds; serial: number } | null;
 }
 export function placePoint(point: Point, placement: Job['import']['placement']): Point {
   const radians = placement.rotation_deg * Math.PI / 180;
@@ -22,11 +28,23 @@ export function motionPath(motions: Motion[]): string {
   // Engine motions already use workpiece coordinates. Only flip Y for SVG.
   return motions.map(motion => `M${motion.start.x},${-motion.start.y}L${motion.end.x},${-motion.end.y}`).join(' ');
 }
-export function Viewport({ display, job, inspected, onInspect, hidden, motions }: Props) {
+export function stockPath(region: StockRegion): string { return pathData(region.rings); }
+export function Viewport({ display, job, inspected, onInspect, hidden, motions, stockInfo, stockGeometry, stockPending, stockError, focus }: Props) {
   const [camera, setCamera] = useState({ x: 50, y: 30, span: 125 });
   const [grid, setGrid] = useState(true);
   const [showMotions, setShowMotions] = useState(true);
   const [showTravel, setShowTravel] = useState(false);
+  const stockPaths = useMemo(() => {
+    const order = ['removedUpper', 'removedLower', 'accessibleFloor', 'requestedCenters', 'remainingTarget', 'missingFloor', 'possibleOvercut', 'nominalTarget'];
+    return [...(stockGeometry ?? [])].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key)).map(region => ({ key: region.key, path: stockPath(region) }));
+  }, [stockGeometry]);
+  function fitBounds(bounds: DisplayBounds) {
+    const { min, max } = bounds;
+    setCamera({ x: (min.x + max.x) / 2, y: (min.y + max.y) / 2, span: Math.max(max.x - min.x, (max.y - min.y) / .7, .01) * 1.2 });
+  }
+  useEffect(() => { if (focus) fitBounds(focus.bounds); }, [focus]);
+  const stockBounds = stockInfo?.regions.find(r => r.key === 'nominalTarget')?.bounds;
+  const hatchSize = camera.span / 80;
   const motionGroups = useMemo(() => {
     const groups = new Map<string, Motion[]>();
     for (const motion of motions ?? []) {
@@ -58,6 +76,7 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions }
         <button onClick={() => fit()}>Fit job</button>
         <button onClick={() => fit(true)} disabled={!inspected}>Fit inspected</button>
         {motions && <button onClick={() => fit(false, true)} disabled={!motions.length}>Fit plan</button>}
+        {stockInfo && <button onClick={() => stockBounds && fitBounds(stockBounds)} disabled={!stockBounds || !stockGeometry?.length}>Fit slice</button>}
         <button onClick={() => zoom(1.25)} aria-label="Zoom out">−</button>
         <button onClick={() => zoom(.8)} aria-label="Zoom in">+</button>
         <button aria-pressed={grid} onClick={() => setGrid(!grid)}>Grid</button>
@@ -66,8 +85,8 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions }
     </div>
     <div className="drawing-wrap">
       {display ? <>
-        <div className="drawing-note">{motions ? showMotions ? 'RECORDED MOTIONS · top projection' : 'SOURCE GEOMETRY · motion overlay hidden' : 'SOURCE GEOMETRY · no planned cuts'}</div>
-        <svg className="drawing" role="group" aria-label="Top view of normalized artwork. Inspect shapes with the source list. Arrow keys pan; plus and minus zoom; Home fits the job."
+        <div className="drawing-note">{stockInfo ? `STOCK SLICE · ${stockInfo.stage === 'endmill' ? 'after endmill' : 'after both tools'} · ${stockInfo.depthMm} mm deep${stockPending ? ' · loading…' : stockError || stockInfo.unavailableReason ? ' · geometry unavailable' : ''}` : motions ? motions.length === 0 ? 'NO RECORDED MOTIONS · see plan outcome' : showMotions ? 'RECORDED MOTIONS · top projection' : 'SOURCE GEOMETRY · motion overlay hidden' : 'SOURCE GEOMETRY · no planned cuts'}</div>
+        <svg className="drawing" role="group" aria-label={`${stockInfo ? `Stock slice at ${stockInfo.depthMm} mm below stock top. Use the stock overlay controls and area table to inspect regions.` : 'Top view of normalized artwork. Inspect shapes with the source list.'} Arrow keys pan; plus and minus zoom; Home fits the job.`}
           tabIndex={0} viewBox={`${camera.x - camera.span / 2} ${-camera.y - camera.span * .35} ${camera.span} ${camera.span * .7}`}
           onKeyDown={event => {
             const step = camera.span * .08;
@@ -97,6 +116,9 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions }
             <pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse">
               <path d="M10 0H0V10" fill="none" className="grid-line" strokeWidth="0.08" />
             </pattern>
+            <pattern id="stock-remaining" width={hatchSize} height={hatchSize} patternUnits="userSpaceOnUse"><path d={`M0 ${hatchSize}L${hatchSize} 0`} stroke="#e686a4" strokeWidth={hatchSize / 7} /></pattern>
+            <pattern id="stock-missing" width={hatchSize} height={hatchSize} patternUnits="userSpaceOnUse"><path d={`M0 ${hatchSize / 2}H${hatchSize}`} stroke="#f3588b" strokeWidth={hatchSize / 4} /></pattern>
+            <pattern id="stock-overcut" width={hatchSize} height={hatchSize} patternUnits="userSpaceOnUse"><path d={`M0 0L${hatchSize} ${hatchSize}M0 ${hatchSize}L${hatchSize} 0`} stroke="#b384eb" strokeWidth={hatchSize / 7} /></pattern>
           </defs>
           <rect x={camera.x - camera.span / 2} y={-camera.y - camera.span * .35} width={camera.span} height={camera.span * .7} className="drawing-background" />
           {grid && <rect x={camera.x - camera.span / 2} y={-camera.y - camera.span * .35} width={camera.span} height={camera.span * .7} fill="url(#grid)" />}
@@ -107,6 +129,7 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions }
             vectorEffect="non-scaling-stroke" onClick={() => onInspect(component.id)}>
             <title>{`${component.label} · ${job.selected_region_ids.includes(component.id) ? 'Included for machining' : 'Excluded from machining'}`}</title>
           </path>)}
+          {stockPaths.map(region => <path key={region.key} data-stock-region={region.key} d={region.path} fillRule="evenodd" className={`stock-region ${region.key}`} vectorEffect="non-scaling-stroke"><title>{`${stockLayers[region.key].label} · engine-calculated slice`}</title></path>)}
           {showMotions && motionGroups.map(group => <path key={group.key} data-motion-group={group.key}
             d={group.path} className={`plan-motion ${group.travel ? 'travel' : group.tool === job.operation.vbit_id ? 'vbit cutting' : 'endmill cutting'}`} vectorEffect="non-scaling-stroke"><title>{`${group.key} · recorded XYZ motions projected to XY`}</title></path>)}
           <g className="workpiece-axes" strokeWidth="1.5" fill="none">
@@ -115,7 +138,11 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions }
           </g>
           <g className="axis-labels" fontSize="2.2"><text x="9" y=".8">X</text><text x="-.8" y="-9">Y</text><text x="1.2" y="3">0, 0</text></g>
         </svg>
-        <div className="drawing-legend"><span className="legend-swatch included" /> Included region <span className="legend-swatch hole" /> Preserved hole <span className="legend-swatch inspected" /> Inspected{motions && showMotions && <><span className="legend-swatch endmill-motion" /> Endmill <span className="legend-swatch vbit-motion" /> V-bit{showTravel && <><span className="legend-swatch travel-motion" /> Travel</>}</>}</div>
+        <div className="drawing-legend">{stockInfo ? stockPaths.map(region => <span className="stock-legend-item" key={region.key}><span className={`stock-swatch ${region.key}`} />{stockLayers[region.key].label}</span>) : <><span className="legend-swatch included" /> Included region <span className="legend-swatch hole" /> Preserved hole <span className="legend-swatch inspected" /> Inspected</>}{showMotions && <>
+          {motionGroups.some(g => !g.travel && g.tool === job.operation.endmill_id) && <><span className="legend-swatch endmill-motion" /> Endmill</>}
+          {motionGroups.some(g => !g.travel && g.tool === job.operation.vbit_id) && <><span className="legend-swatch vbit-motion" /> V-bit</>}
+          {motionGroups.some(g => g.travel) && <><span className="legend-swatch travel-motion" /> Travel</>}
+        </>}</div>
       </> : <div className="empty-viewport"><span className="empty-symbol">⌗</span><h2>Artwork needs inspection</h2><p>Connect the local Rust service to normalize this source or changed import tolerance. Your draft is retained.</p></div>}
     </div>
     <div className="viewport-status"><span>mm <span className="divider">|</span> Stock top Z = 0</span><span>{display ? `Grid 10 mm · import tolerance ${display.geometryToleranceMm} mm` : 'No geometry available'}</span></div>

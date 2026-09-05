@@ -127,7 +127,11 @@ impl Planning {
         }
         let raw = request.job.to_string();
         if raw.len() > JOB_BYTES {
-            return Err(Failure::new(413, "JOB_RESOURCE_LIMIT", "Job exceeds 8 MB."));
+            return Err(Failure::new(
+                413,
+                "JOB_RESOURCE_LIMIT",
+                "Job exceeds 64 MB.",
+            ));
         }
         let job = Job::from_json(&raw)
             .map_err(|d| Failure(422, "PLAN_JOB", format!("{}: {}", d.code, d.message)))?;
@@ -474,6 +478,7 @@ mod tests {
             summary: json!({ "status": "complete" }),
             motions: vec![],
             artifact: "{}".into(),
+            inspection: crate::inspection::Inspection::default(),
         }))
     }
     #[test]

@@ -3,7 +3,8 @@ import type { Job } from '../contracts/job';
 import type { CamService, Capabilities } from '../contracts/service';
 import { apiVersion, capabilitiesSchema, displaySchema, envelopeSchema, errorSchema, openedSchema, sessionSchema, validationSchema } from '../contracts/wire';
 import { fixtureService } from './fixture';
-import { acceptTask, planResultSchema, taskSchema, type TaskIdentity } from '../contracts/planning';
+import { acceptTask, planResultSchema, sliceResponseSchema, taskSchema, type TaskIdentity } from '../contracts/planning';
+import { sliceInfoSchema } from '../contracts/stock';
 
 // Only same-origin URLs. Session tokens stay in memory and are never persisted or logged.
 export function createHttpService(fetcher: typeof fetch = (...args) => fetch(...args)): CamService {
@@ -95,6 +96,12 @@ export function createHttpService(fetcher: typeof fetch = (...args) => fetch(...
     async planResult(identity, signal) {
       const result = await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}/result`, planResultSchema, undefined, signal);
       acceptTask(null, result.task, identity);
+      return result;
+    },
+    async stockSlice(identity, slice, signal) {
+      const result = await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}/slices/${encodeURIComponent(slice.id)}`, sliceResponseSchema, undefined, signal);
+      acceptTask(null, result.task, identity);
+      if (JSON.stringify(result.slice.info) !== JSON.stringify(parse(sliceInfoSchema, slice))) throw new Error('The service returned different slice metadata. This response was discarded.');
       return result;
     },
   };

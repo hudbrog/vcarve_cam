@@ -66,6 +66,13 @@
   @container cam-window (max-width: 78.125rem) { .step span > small { display: none; } }
   @container cam-window (max-width: 23.75rem) { .navigator nav { grid-template-columns: repeat(2, minmax(0, 1fr)); } .step strong { overflow-wrap: anywhere; } }
 }
+@layer layout {
+  /* Wrapped inspection controls must not push the drawer over the drawing. */
+  .work-area { overflow-y: auto; }
+  .viewport { flex: 1 0 auto; }
+  .inspection-toolbar, .viewport-toolbar, .viewport-status { flex-shrink: 0; }
+  .drawer { flex-shrink: 1; min-height: 3rem; }
+}
 /* Recorded engine motions remain distinct from filled source geometry. */
 .plan-motion { fill: none; stroke: #269ccc; stroke-width: 1.5; pointer-events: none; }
 .plan-motion.vbit { stroke: #48b89b; }
@@ -78,3 +85,36 @@
 .plan-outcome.incomplete, .plan-outcome.inconclusive { border-color: #b67720; }
 .plan-result details { font-size: .8rem; line-height: 1.5; }
 .plan-result code, .inspector-group dd code { overflow-wrap: anywhere; }
+.inspection-toolbar { display: flex; flex-wrap: wrap; gap: .6rem; padding: .65rem .85rem; border-bottom: 1px solid var(--line); }
+.inspection-toolbar label { display: flex; flex-direction: column; gap: .2rem; font-size: .7rem; flex: 1; min-width: 100px; }
+.inspection-toolbar select { width: 100%; font-size: .8rem; }
+.stock-region { pointer-events: none; stroke-width: 1.2; }
+.stock-region.nominalTarget { fill: none; stroke: #adb9c8; stroke-dasharray: 5 3; }
+.stock-region.removedLower { fill: #34a1c6; fill-opacity: .32; stroke: #48b9da; }
+.stock-region.removedUpper { fill: #34a1c6; fill-opacity: .14; stroke: #74a9ce; stroke-dasharray: 3 3; }
+.stock-region.remainingTarget { fill: url(#stock-remaining); stroke: #e686a4; }
+.stock-region.possibleOvercut { fill: url(#stock-overcut); stroke: #b384eb; }
+.stock-region.missingFloor { fill: url(#stock-missing); stroke: #f3588b; }
+.stock-region.accessibleFloor { fill: none; stroke: #d5ad5f; }
+.stock-region.requestedCenters { fill: none; stroke: #daab63; stroke-dasharray: 2 3; }
+.stock-overlays { display: grid; gap: .45rem; border: 0; padding: 0; margin: .9rem 0; font-size: .8rem; }
+.stock-overlays legend { font-weight: 650; margin-bottom: .5rem; }
+.stock-overlays label { display: flex; align-items: center; gap: .4rem; }
+.stock-swatch { display: inline-block; width: .7rem; height: .7rem; flex: 0 0 .7rem; border: 1px solid #adb9c8; }
+.stock-swatch.nominalTarget { border-style: dashed; }
+.stock-swatch.removedLower { background: #34a1c6; }
+.stock-swatch.removedUpper { background: #34a1c640; border-style: dashed; }
+.stock-swatch.remainingTarget { background: repeating-linear-gradient(135deg, #e686a4 0 1px, transparent 1px 4px); border-color: #e686a4; }
+.stock-swatch.missingFloor { background: repeating-linear-gradient(0deg, #f3588b 0 2px, transparent 2px 4px); border-color: #f3588b; }
+.stock-swatch.possibleOvercut { background: repeating-linear-gradient(45deg, #b384eb 0 1px, transparent 1px 4px), repeating-linear-gradient(135deg, #b384eb 0 1px, transparent 1px 4px); border-color: #b384eb; }
+.stock-swatch.accessibleFloor, .stock-swatch.requestedCenters { border-color: #d5ad5f; }
+.stock-swatch.requestedCenters { border-style: dashed; }
+.stock-legend-item { display: inline-flex; gap: .3rem; align-items: center; }
+.drawing-legend { flex-wrap: wrap; }
+.stock-metrics { width: 100%; border-collapse: collapse; font-size: .75rem; margin: 1rem 0; }
+.stock-metrics caption { text-align: left; font-weight: 650; margin-bottom: .4rem; }
+.stock-metrics th, .stock-metrics td { padding: .3rem 0; border-bottom: 1px solid var(--line); text-align: left; }
+.stock-metrics tbody th { font-weight: 400; }
+.stock-metrics td { text-align: right; }
+.stock-metrics button { font-size: .75rem; padding: .2rem .45rem; }
+.slice-finding { border-left: 2px solid #e686a4; padding-left: .6rem; font-size: .8rem; margin: .7rem 0; }

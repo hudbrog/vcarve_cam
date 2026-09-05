@@ -1,10 +1,10 @@
 # Web UI: integration and delivery plan
 
 Date: 2026-09-05\
-Status: proposed contracts and UI milestones, not an implemented HTTP API.\
+Status: delivery roadmap; U1/U2 and bounded U3 planning/2D inspection are implemented.\
 Companion: [product and interaction design](README.md).
 
-Implementation update: the [U2 service slice](u2-service-integration.md) now defines `ui-1` routes for session/capabilities and import/open/display/validation. Task, artifact, verification, export, and native-file operations below remain proposals.
+Implementation update: [U2](u2-service-integration.md), [background planning](u3-background-planning.md), and [stock inspection](u3-stock-inspection.md) implement the local service through `ui-3` with Rust 0.7.2. Import/open/display/validation, cancellable tasks, artifact access, recorded motions, and stock slices are live. M5/M6 are implemented in core/CLI; verification/export service integration and native-file operations below remain future work. The operation tables describe the overall target and are not a frozen HTTP specification.
 
 ## 1. Ownership and independent progress
 
@@ -12,7 +12,7 @@ Rust remains authoritative for SVG normalization, geometry, machining rules, pla
 
 The UI can start against deterministic fixtures through a replaceable service adapter. It must not call the CLI by shell command from browser code or copy machining formulas into client validation. The production adapter talks to the local application service; the fixture adapter exercises the same UI contract. CLI behavior remains a parity oracle for identical inputs and engine versions.
 
-Keep changes in the future `flat-v-carve/web/` and these design documents until integration work is scheduled. Existing Rust files, milestone reports, and shared top-level docs are being edited independently; this planning pass adds new files only. It does not scaffold an application, install frontend dependencies, or create hosting infrastructure.
+Integration runs in the `codex/web-integration` worktree. The frontend and `cam-server` adapt the core APIs; backend milestones no longer block this work. No hosting infrastructure is configured.
 
 ## 2. Current capability inventory
 
@@ -23,13 +23,13 @@ Keep changes in the future `flat-v-carve/web/` and these design documents until 
 | Endmill/combined plans | Actual XYZ motions, tool transition, fingerprints, partial results. | Async task envelope, summaries, motion access and cancellation. |
 | Stock/quality inspection | Layer/slice polygons and point samples with residual/reachability evidence. | Display primitives, spatial queries, chunking, stable overlay identity. |
 | Diagnostic model | Code, warning/error severity, stage, message, optional source ID. | Optional field paths, region/motion IDs, location/bounds, measured-limit data and remediation hints. Missing fields remain absent. |
-| Continuous stock verification | M5 planned; M4 has continuous clearance with slice/sample quality scope. | Explicit check scope, bounds, refinement state, passed/failed/inconclusive result contract. |
-| Machine profile/output | Basic editable profile snapshot; M6 planned. | Structured M6/compensation/precision fields, profile validation, exact-output checks and export eligibility. |
-| Local browser service | `serve`, HTTP API, background task lifecycle and bundled UI remain planned. | Local transport, file/service lifecycle, progress/cancel/reconnect. |
+| Continuous stock verification | M5 implemented in Rust; M4 planning retains slice/sample quality scope. | Service tasks, explicit check scope, bounds, refinement state, passed/failed/inconclusive result contract. |
+| Machine profile/output | M6 LinuxCNC postprocessing implemented with a separate schema-1 profile; the UI edits the basic job profile. | Complete M6 profile editor, profile validation, exact-output checks and export eligibility. |
+| Local browser service | `cam-web`, same-origin `ui-3` API, bounded background tasks and bundled UI are implemented. | Verification/output routes and release lifecycle/file integration. |
 | Local tool library | [Rust API and CLI](../tool-library.md) implement named tools, cutting presets, revisioned persistence, import/export, and job snapshots. | Service transport, library management controls, changed-value review, and undoable application. |
 | 3D and arbitrary cross-sections | Debug SVGs and core geometric data exist; no browser display API. | Engine-derived display meshes/heightfields and section queries, with error/resolution metadata. |
 
-Current SVG import has a 2 MB source limit, job JSON an 8 MB input limit, and saved-plan readers their own limits. Expose effective engine limits through capabilities; do not bake these values into permanent browser assumptions. Handle large result data separately from interactive summaries.
+Rust 0.7.2 supports 32 MB SVG sources and 64 MB job JSON. The service advertises these limits and a 128.1 MB request envelope limit through capabilities; saved plans and display responses retain separate bounds. Handle large result data separately from interactive summaries.
 
 ## 3. Proposed service interface
 
@@ -109,7 +109,7 @@ These U stages expand M7; they do not rename or block the Rust M stages. Advance
 | U5 — verification and output | Bound-aware review, spatial diagnostics, machine profiles, formatted-output preview, combined/per-tool downloads. | M5/M6 capabilities. | Failed/inconclusive/stale outputs are gated server-side; exact checked files match the reviewed snapshot. |
 | U6 — usable local release | Local presets, file conflicts/recovery, offline packaging, lifecycle/browser checks, help and first-run workflow. | Chosen target OS/browser and integrated service. | Ordinary import-to-export workflow, restart/recovery, CLI parity, and supported installation are demonstrated. |
 
-U4 design can proceed during U2/U3; integration waits for display data. U5 screens can use fixture states before M5/M6, but usable output waits for the real capabilities. No calendar commitments are made until service and rendering spikes establish effort.
+U3 now has bounded stock slices, tool/path-layer filters, and links from supported slice diagnostics to geometry. U4 still needs 3D/section display contracts and large-artwork rendering work. U5 can integrate the completed M5/M6 APIs now; service enforcement and exact-output parity are still required before enabling machine downloads. No calendar commitments are made here.
 
 ## 7. Acceptance scenarios
 

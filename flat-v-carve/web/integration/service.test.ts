@@ -144,6 +144,40 @@ describe('real background planning', () => {
     const session = await (await fetch(`${base}/api/v1/session`)).json();
     const artifact = await fetch(`${base}/api/v1/tasks/${id.taskId}/artifact`, { headers: { 'X-Cam-Session': session.sessionToken } });
     expect(await artifact.json()).toEqual(cliPlan);
+    // The CLI rebuilds analysis independently from the saved artifact. Display
+    // rings must be exactly that engine geometry, including holes and placement.
+    const inspectPlan = (artifactPath: string, suffix: string, expectedStatus: number) => {
+      const report = `${path}.${suffix}.report.json`;
+      runCli(['inspect', artifactPath, '--output', `${path}.${suffix}.svg`, '--report', report], expectedStatus);
+      return JSON.parse(readFileSync(report, 'utf8')).analysis;
+    };
+    const analysis = inspectPlan(path, 'analysis', ['complete', 'empty'].includes(status) ? 0 : 1);
+    let endmillAnalysis = analysis;
+    if (stage === 'combined') {
+      const endmillPath = `${path}.endmill.json`;
+      writeFileSync(endmillPath, JSON.stringify(cliPlan.endmill));
+      endmillAnalysis = inspectPlan(endmillPath, 'endmill', 0);
+    }
+    const regionKeys = { nominalTarget: 'nominal_section', remainingTarget: 'remaining_target', possibleOvercut: 'possible_overcut',
+      accessibleFloor: 'accessible_floor', missingFloor: 'missing_floor_beyond_tolerance', requestedCenters: 'requested_centers' };
+    expect(result.stockSlices.length).toBe(endmillAnalysis.layers.length + (stage === 'combined' ? analysis.slices.length : 0));
+    for (const info of result.stockSlices) {
+      const index = Number(info.id.split('-')[1]);
+      const core = info.stage === 'endmill' ? endmillAnalysis.layers[index] : analysis.slices[index];
+      const display = await service.stockSlice!(id, info);
+      expect(display.slice.info).toEqual(info);
+      expect(info.depthMm).toBe(core.depth_mm);
+      expect(info.capsuleRadialErrorMm).toBe(core.removal.capsule_radial_error_mm);
+      expect(info.contributingMotionCount).toBe(core.removal.contributing_motion_ids.length);
+      expect(display.slice.geometry).not.toBeNull();
+      for (const region of display.slice.geometry!) {
+        const actual = region.key === 'removedLower' ? core.removal.lower : region.key === 'removedUpper' ? core.removal.upper : core[regionKeys[region.key]];
+        expect(region.rings).toEqual(actual.rings.map((ring: { is_hole: boolean; points: { x: number; y: number }[] }) => ({
+          hole: ring.is_hole, points: ring.points.map(p => ({ x: p.x / actual.grid.ticks_per_mm, y: p.y / actual.grid.ticks_per_mm })),
+        })));
+      }
+    }
+    await expect(service.stockSlice!(id, { ...result.stockSlices[0], id: 'endmill-999' })).rejects.toThrow(/SLICE_NOT_FOUND/);
     expect((await service.cancelPlan!(id)).state).toBe('succeeded');
     expect((await service.startPlan!(job, id)).taskId).toBe(id.taskId); // Retry does not calculate again.
     await expect(service.startPlan!({ ...job, name: 'edited' }, id)).rejects.toThrow(/STALE_DOCUMENT/);
@@ -160,6 +194,11 @@ describe('real background planning', () => {
   });
   it('keeps validation responsive, reconnects without replay, and cancels running work', async () => {
     const { job, id } = await identity('m4/finite-tip', 'combined');
+    // The 0.7.2 spatial index finishes small fixtures before a browser roundtrip.
+    // Use a real, bounded sampling workload to exercise active cancellation.
+    job.vbit_planning!.quality_sample_spacing_mm = 0.12;
+    job.vbit_planning!.max_quality_samples = 50_000;
+    id.documentFingerprint = (await service.validateDraft(job, id.revision)).documentFingerprint!;
     await service.startPlan!(job, id);
     let task = await service.planTask!(id);
     while (task.state === 'queued') task = await service.planTask!(id);

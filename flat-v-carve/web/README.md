@@ -1,6 +1,6 @@
 # Flat V-carve web workspace
 
-The local TypeScript workspace from the [web UI design](../../docs/flat-v-carve/web-ui/README.md), connected to Rust for SVG import, job migration/opening, validation, cancellable background planning, and recorded motion previews. Development can still use the deterministic fixture adapter.
+The local TypeScript workspace from the [web UI design](../../docs/flat-v-carve/web-ui/README.md), connected to Rust for SVG import, job migration/opening, validation, cancellable background planning, recorded motion previews, and 2D stock inspection. Development can still use the deterministic fixture adapter.
 
 ## Run with Rust
 
@@ -15,7 +15,7 @@ cargo build --release --locked -p cam-server -p cam-app
 
 Open the exact loopback URL printed by `cam-web`. Linux uses `./target/release/cam-web`. `--port 0` selects an available port; a specified occupied port fails explicitly. `--ui-dir` selects the built UI directory (default `web/dist`). The service loads build assets at startup, so rebuild and restart after changes. Ctrl+C stops it.
 
-The production bundle selects the live adapter. Import starts a new job with machining values unset; open accepts editable jobs and migrates schemas 1/2 through Rust. Supplied invalid settings are reported without rewriting the draft. Downloads require a successful editable-job validation receipt for the current revision. This does not establish planning readiness or machining verification.
+The production bundle selects the live adapter. Import starts a new job with cutting settings unset and 0 mm wall allowance; open accepts editable jobs and migrates schemas 1/2 through Rust. Supplied invalid settings are reported without rewriting the draft. Downloads require a successful editable-job validation receipt for the current revision. This does not establish planning readiness or machining verification.
 
 The service runs as a separate `cam-web` executable to keep CLI/machining development independent. It binds only `127.0.0.1` and serves UI and API from one origin. It launches its own hidden compute worker for each plan, calls core planners directly, and kills/reaps that worker on cancellation. It never launches the CLI or a shell, writes jobs to local paths, or accepts filesystem paths from HTTP requests. File selection and portable downloads remain browser-owned.
 
@@ -48,7 +48,7 @@ The production bundle is in `dist/`. `pnpm preview` serves it on loopback port 4
 - Schema 3 job file open/download, undo/redo, and recovery across reloads in the **same browser tab**. Recovery is distinct from a downloaded portable snapshot. Open/replacement is undoable; rejected input preserves the current draft. Invalid recovery is preserved until explicitly replaced.
 - System/light/dark appearance, responsive stacked panels, desktop inspector resizing, labeled controls, visible focus, native text-editing shortcuts, and keyboard equivalents for viewport actions.
 
-Live mode supports endmill and combined background planning, task cancellation/recovery, engine outcomes and diagnostics, and bounded recorded-motion previews. Geometric verification, stock simulation views, and machine output remain unavailable. Fixture mode has no planning capability.
+Live mode supports endmill and combined background planning, task cancellation/recovery, engine outcomes and diagnostics, and bounded recorded-motion previews. Stock inspection shows engine-produced depth slices after the endmill or both tools, lower/upper removal bounds, remaining target, possible overcut, and endmill floor coverage. Area and supported diagnostic links fit the affected region. Tool and path-layer filters change only the motion overlay. Continuous-volume verification, 3D simulation, and machine output remain unavailable in the UI. Fixture mode has no planning capability.
 
 ## Boundaries and next work
 
@@ -58,20 +58,21 @@ The fixture adapter only supplies geometry for the captured source and import pr
 
 Optional planning/profile blocks can remain entirely unset. A partly entered block cannot be serialized until its required fields are supplied or the block is cleared; its unfinished text remains in recovery. Switching from ramp to plunge retains ramp text in the draft but excludes it from the active job. Clearing a block is undoable. Planning fields cannot be inferred from defaults. Different planning/profile clearances are reported without silently choosing between them.
 
-The [U3 background-planning report](../../docs/flat-v-carve/web-ui/u3-background-planning.md) records task execution, cancellation, identity/recovery, result limits, and checks. The selected core planner checks stage-specific setup during submission; editable-job validation alone does not establish readiness. Remaining U3 work includes stock slices and richer inspection. Verification and LinuxCNC output need authoritative M5/M6 service capabilities and exact-output checks. Native save/file conflicts, 3D, cross-sections, motion playback, durable recovery, and multi-tab document ownership remain later work.
+The [U3 background-planning report](../../docs/flat-v-carve/web-ui/u3-background-planning.md) records task execution and identity/recovery. The [stock-inspection report](../../docs/flat-v-carve/web-ui/u3-stock-inspection.md) records the engine 0.7.2 integration, display limits, slice parity, and browser checks. The selected core planner checks stage-specific setup during submission; editable-job validation alone does not establish readiness. M5 verification and M6 LinuxCNC output are implemented in Rust; their service routes, evidence review, profile editor, and exact-output gating are the next integration work. Native save/file conflicts, 3D, arbitrary cross-sections, motion playback, durable recovery, and multi-tab document ownership remain later work.
 
 ## Code map
 
 | File / directory | Responsibility |
 | --- | --- |
 | `src/contracts/job.ts` | Runtime structural checks and inferred TypeScript types for current portable jobs. |
-| `src/contracts/service.ts`, `wire.ts`, `planning.ts` | Replaceable service interface and runtime checks for the `ui-2` transport. |
+| `src/contracts/service.ts`, `wire.ts`, `planning.ts`, `stock.ts` | Replaceable service interface and runtime checks for the `ui-3` transport. |
 | `src/service/fixture.ts` | Deterministic captured-artwork adapter; absent capabilities remain unavailable. |
 | `src/service/http.ts`, `useValidation.ts` | Same-origin session, checked responses, debounced validation, and stale-response guards. |
 | `src/service/usePlanning.ts`, `src/components/PlanPanel.tsx` | Immutable submissions, monotonic task tracking, cancellation, recovery, scoped outcomes, and stale-result gating. |
+| `src/service/useInspection.ts`, `src/components/StockInspector.tsx` | Identity-bound slice loading, depth/tool/layer controls, metrics, overlays, and geometry-linked findings. |
 | `../crates/cam-server/` | Loopback HTTP boundary, bounded engine workers, build assets, and engine-to-display projection. |
 | `src/state/` | Recoverable form text, candidate serialization, grouped edit history, monotonically increasing revisions. |
-| `src/components/Viewport.tsx` | Inert rings, recorded motion projection, overlay controls, and camera transforms. |
+| `src/components/Viewport.tsx` | Inert source and stock rings, recorded motion projection, overlay controls, and camera transforms. |
 | `src/components/SetupEditors.tsx` | Stock, planning, computation, and machine-profile editor composition. |
 | `src/App.tsx` | Workspace composition, local file fallback, recovery, and capability presentation. |
 | `tests/` | Draft/schema preservation, recovery, fixture/display, and output-gating regression checks. |

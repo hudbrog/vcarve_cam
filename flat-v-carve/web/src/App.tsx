@@ -6,6 +6,8 @@ import { fixtureService } from './service/fixture';
 import { useValidation } from './service/useValidation';
 import { usePlanning } from './service/usePlanning';
 import { PlanPanel } from './components/PlanPanel';
+import { useInspection } from './service/useInspection';
+import { InspectionToolbar } from './components/StockInspector';
 import { allFields, fieldStep, materialize, newDraft, setupWarnings, type Draft } from './state/draft';
 import { initialWorkspace, workspaceReducer } from './state/workspace';
 import { Fields } from './components/Fields';
@@ -97,6 +99,7 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
   const job = draftResult.job ?? draftResult.previewJob;
   const validation = useValidation(service, draftResult.job, state.revision, refresh, capabilities.validateDraft);
   const planning = usePlanning(service, capabilities, validation.result, state.revision, planMode, refresh);
+  const inspection = useInspection(service, planning.result, planning.current, job, refresh);
   const [displayError, setDisplayError] = useState('');
   const jobForDisplay = useRef(job);
   jobForDisplay.current = job;
@@ -201,7 +204,7 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
           placement: { origin_mm: { x: 0, y: 0 }, scale: 1, rotation_deg: 0 } }, state.revision, signal)).job;
       }
       return capabilities.openJob && service.openJob ? (await service.openJob(text, state.revision, signal)).job : parseJob(JSON.parse(text));
-    }, svg ? 'SVG imported by Rust. All machining settings are unset.'
+    }, svg ? 'SVG imported by Rust. Cutting settings need setup; wall allowance defaults to 0 mm.'
       : capabilities.openJob ? 'Job opened and checked by Rust as an editable document.' : 'Job opened as an editable draft. Geometry and settings await Rust validation.');
     if (fileInput.current) fileInput.current.value = '';
     if (svgInput.current) svgInput.current.value = '';
@@ -244,7 +247,8 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
         <div className="navigator-footer"><label htmlFor="theme">Appearance</label><select id="theme" value={theme} onChange={event => setTheme(event.target.value as Theme)}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><button className="text-button" onClick={() => shortcutsDialog.current?.showModal()}>Keyboard shortcuts <span>?</span></button></div>
       </aside>
       <main className="work-area">
-        <Viewport display={display} job={job} inspected={inspected} onInspect={id => { setInspected(id); setStep('artwork'); }} hidden={hidden} motions={planning.current ? planning.result?.motions : undefined} />
+        {planning.result && <InspectionToolbar inspection={inspection} />}
+        <Viewport display={display} job={job} inspected={inspected} onInspect={id => { setInspected(id); setStep('artwork'); }} hidden={hidden} motions={inspection.motions} stockInfo={inspection.current ? inspection.selected : undefined} stockGeometry={inspection.geometry} stockPending={inspection.pending} stockError={inspection.error} focus={inspection.focus} />
         <div className="drawer"><div className="drawer-tabs"><button aria-expanded={drawer === 'issues'} onClick={() => setDrawer(drawer === 'issues' ? null : 'issues')}>Issues <span className="count">{errors.length + warnings.length + planIssues.length + 1 + (validation.result?.diagnostics.length ?? 0) + (displayError ? 1 : 0)}</span></button><button aria-expanded={drawer === 'activity'} onClick={() => setDrawer(drawer === 'activity' ? null : 'activity')}>Activity</button><span className="drawer-summary">{errors.length ? 'Draft needs attention' : 'No verification result'}</span></div>
           {drawer === 'issues' && <div className="drawer-content">{planIssues.map((issue, i) => <button className="issue issue-button" key={`plan-${i}`} onClick={() => setStep('plan')}><span className="issue-tag">PLAN</span><span><strong>{issue.code}</strong><span>{issue.message}</span></span></button>)}<div className="issue"><span className="issue-tag">INFO</span><div><strong role="status">{validation.headline}</strong><p>{capabilities.mode === 'live' ? 'This checks supplied job settings and SVG normalization. It does not establish stage readiness, cutting verification, or machine-output eligibility.' : 'The fixture adapter provides captured source geometry. Planning, geometric verification, and machine output require the local Rust service.'}</p>{validation.error && <p role="alert">{validation.error}</p>}{validation.result?.diagnostics.map((diagnostic, index) => <p key={index} role={diagnostic.severity === 'error' ? 'alert' : undefined}><strong>{diagnostic.code}</strong>: {diagnostic.message}{diagnostic.sourceId && <span> · source {diagnostic.sourceId}</span>}</p>)}{!!validation.result?.missingMachiningFields?.length && <details><summary>Settings still unset</summary><ul>{validation.result.missingMachiningFields.map(path => <li key={path}>{path}</li>)}</ul></details>}</div></div>{displayError && <p role="alert">{displayError}</p>}{warnings.map(warning => <button key={warning.path} className="issue issue-button" onClick={() => focusField(warning.path)}><span className="issue-tag">REVIEW</span><span>{warning.message}</span></button>)}{errors.map(([path, error]) => <button key={path} className="issue issue-button" onClick={() => focusField(path)}><span className="issue-tag error">INPUT</span><span><strong>{allFields(state.draft.base).find(field => field.path === path)?.label ?? path}</strong><span>{error}</span></span></button>)}</div>}
           {drawer === 'activity' && <div className="drawer-content"><p>{validation.pending ? 'Checking editable job with Rust…' : planning.active ? 'A background planning task is active. Inspect Plan & inspect for progress or cancellation.' : 'No planning task is running.'}</p><p className="muted">Draft revision {state.revision}. {recovery}. Recovery belongs to this browser tab; download a job to keep it after closing the tab.</p></div>}
@@ -262,7 +266,7 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
         </>}
         {step === 'stock' && <StockSetup {...setupProps} />}
         {step === 'tools' && <ToolsSetup {...setupProps} />}
-        {step === 'plan' && <PlanPanel planning={planning} capabilities={capabilities} job={draftResult.job} validation={validation.result} revision={state.revision} stage={planMode} onStage={setPlanMode} />}
+        {step === 'plan' && <PlanPanel planning={planning} capabilities={capabilities} job={draftResult.job} validation={validation.result} revision={state.revision} stage={planMode} onStage={setPlanMode} inspection={inspection} />}
         {step === 'verify' && <><Group title="No verification result"><p>Geometric verification is not available in this workspace yet.</p><p className="hint">Source geometry establishes no cutting or finish result. M4 planning checks concern continuous clearance, slices, and samples; sampled maxima are not global error bounds.</p></Group><Group title="Evidence to review"><dl><dt>Continuous clearance</dt><dd>Not run</dd><dt>Stock slices / samples</dt><dd>Not run</dd><dt>Geometric bounds</dt><dd>Not available</dd><dt>Formatted motions</dt><dd>Not available</dd></dl></Group><Group title="Inspection remains available"><p className="hint">You can inspect artwork, edit incomplete settings, and download a job while verification is unavailable.</p><button onClick={() => setStep('artwork')}>Inspect artwork</button></Group></>}
         {step === 'export' && <><Group title="Machine program unavailable"><ul className="blocked-reasons">{blocking.map(reason => <li key={reason}>{reason}</li>)}</ul><button className="primary wide" disabled>Export LinuxCNC program</button></Group><Group title="Portable job"><p className="hint">Download source and settings independently of machine output. The snapshot contains no display caches or verification claims.</p><button className="wide" onClick={download}>Download job snapshot</button></Group><MachineSetup {...setupProps} /></>}
         <div className="inspector-next"><button onClick={() => setStep(steps[Math.min(steps.findIndex(item => item.id === step) + 1, steps.length - 1)].id)} disabled={step === 'export'}>Next: {steps[Math.min(steps.findIndex(item => item.id === step) + 1, steps.length - 1)].label} <span>→</span></button></div>
@@ -276,13 +280,13 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
       <input ref={fileInput} type="file" tabIndex={-1} aria-label="Job file" accept=".json,application/json" className="sr-only" onChange={event => void openFile(event.target.files?.[0])} />
       <button className="primary wide" disabled={opening} onClick={() => fileInput.current?.click()}>Choose job file…</button>
       {capabilities.importArtwork && <>
-        <div className="dialog-divider">SVG ARTWORK</div><p className="hint">Import starts a new editable job with all machining settings unset.</p>
+        <div className="dialog-divider">SVG ARTWORK</div><p className="hint">Import starts a new editable job with cutting settings unset and 0 mm wall allowance.</p>
         <label className="field-label" htmlFor="import-tolerance">Import tolerance (mm)</label><input id="import-tolerance" inputMode="decimal" value={importTolerance} onChange={event => setImportTolerance(event.target.value)} />
         <input ref={svgInput} type="file" tabIndex={-1} aria-label="SVG file" accept=".svg,image/svg+xml" className="sr-only" onChange={event => void openFile(event.target.files?.[0], true)} />
         <button className="wide" disabled={opening} onClick={() => svgInput.current?.click()}>Choose SVG file…</button>
       </>}
       <div className="dialog-divider">BUNDLED EXAMPLE</div>
-      <button className="example-button" disabled={opening} onClick={() => void replaceDocument(async signal => (await service.openExample(signal)).job, 'Opened synthetic Inkscape artwork with all machining values unset.')}><strong>Inkscape geometry coupon <span>→</span></strong><span>7 regions · curved paths · preserved holes</span><small>Synthetic artwork. No machining preset.</small></button>
+      <button className="example-button" disabled={opening} onClick={() => void replaceDocument(async signal => (await service.openExample(signal)).job, 'Opened synthetic Inkscape artwork with cutting settings unset and 0 mm wall allowance.')}><strong>Inkscape geometry coupon <span>→</span></strong><span>7 regions · curved paths · preserved holes</span><small>Synthetic artwork. No machining preset.</small></button>
       <p className="hint">Opening a file or example is undoable. Download your current job to keep a separate copy.</p>
     </dialog>
     <dialog ref={shortcutsDialog} aria-labelledby="shortcuts-dialog-title" onKeyDown={containDialogFocus}><div className="dialog-heading"><h2 id="shortcuts-dialog-title">Keyboard shortcuts</h2><button onClick={() => shortcutsDialog.current?.close()} aria-label="Close shortcuts">×</button></div><dl><dt>Download job</dt><dd>Ctrl / ⌘ S</dd><dt>Undo outside fields</dt><dd>Ctrl / ⌘ Z</dd><dt>Redo outside fields</dt><dd>Ctrl / ⌘ Shift Z</dd><dt>Pan focused drawing</dt><dd>Arrow keys</dd><dt>Zoom focused drawing</dt><dd>+ / −</dd><dt>Fit job</dt><dd>Home</dd><dt>Clear inspection</dt><dd>Escape</dd><dt>Resize focused separator</dt><dd>Left / Right</dd></dl><p className="hint">Text fields keep their native editing shortcuts. Regions are also available through the source list.</p></dialog>

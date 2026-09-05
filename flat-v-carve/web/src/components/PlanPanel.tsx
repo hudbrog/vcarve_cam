@@ -2,11 +2,13 @@ import type { Job } from '../contracts/job';
 import type { Capabilities, Validation } from '../contracts/service';
 import type { PlanningStage } from '../contracts/planning';
 import type { usePlanning } from '../service/usePlanning';
+import { StockInspector, type Inspection } from './StockInspector';
 
 type Planning = ReturnType<typeof usePlanning>;
-export function PlanPanel({ planning, capabilities, job, validation, revision, stage, onStage }: {
+export function PlanPanel({ planning, capabilities, job, validation, revision, stage, onStage, inspection }: {
   planning: Planning; capabilities: Capabilities; job: Job | null; validation: Validation | undefined;
   revision: number; stage: PlanningStage; onStage: (stage: PlanningStage) => void;
+  inspection: Inspection;
 }) {
   const { task, result } = planning;
   const checked = !!job && validation?.valid && validation.authoritative && validation.revision === revision && !!validation.documentFingerprint;
@@ -29,6 +31,7 @@ export function PlanPanel({ planning, capabilities, job, validation, revision, s
       {planning.restored && <p className="hint">Recovered task from this tab. Regenerate any recovered plan to bind its motion preview to this visit’s draft revision.</p>}
       {task?.state === 'succeeded' && !task.resultAvailable && <p className="hint">The motion preview and plan artifact expired. The service retains the latest {capabilities.planning?.retainedResults} results.</p>}
     </section>}
+    <StockInspector inspection={inspection} />
     {result?.task.summary && <section className="inspector-group plan-result"><h2>{planning.current ? 'Current plan' : 'Previous plan · stale'}</h2>
       <p className={`plan-outcome ${result.task.summary.status}`}>Outcome: {result.task.summary.status}</p>
       {!planning.current && <p className="inline-warning">This result does not match the current draft, stage, or service. Its motions are hidden.</p>}

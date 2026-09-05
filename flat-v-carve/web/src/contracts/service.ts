@@ -1,9 +1,10 @@
 import type { Job, Point } from './job';
-import type { PlanningLimits, PlanTask, PlanResult, TaskIdentity } from './planning';
+import type { PlanningLimits, PlanTask, PlanResult, TaskIdentity, SliceResponse } from './planning';
+import type { SliceInfo } from './stock';
 
 // Versioned local UI API, deliberately separate from portable job/plan schemas.
 export interface Capabilities {
-  apiVersion: 'ui-2';
+  apiVersion: 'ui-3';
   mode: 'fixture' | 'live';
   engineVersion: string;
   importArtwork: boolean;
@@ -62,6 +63,7 @@ export interface CamService {
   planTask?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanTask>;
   cancelPlan?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanTask>;
   planResult?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanResult>;
+  stockSlice?(identity: TaskIdentity, slice: SliceInfo, signal?: AbortSignal): Promise<SliceResponse>;
 }
 
 export function outputBlockedReasons(capabilities: Capabilities | null): string[] {

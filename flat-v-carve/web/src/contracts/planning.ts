@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { apiVersion, diagnosticSchema, planningLimitsSchema } from './wire';
 import type { Capabilities, Validation } from './service';
+import { sliceInfoSchema, stockSliceSchema } from './stock';
 
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const fingerprint = z.string().regex(/^[a-f0-9]{64}$/);
@@ -30,8 +31,15 @@ export const motionSchema = z.strictObject({
 });
 export const planResultSchema = z.strictObject({
   task: taskSchema, coordinateSpace: z.literal('workpiece-mm-z-up'), motions: z.array(motionSchema).max(20_000),
+  // Core permits 256 endmill layers, 32 combined depths, and a floor-check depth.
+  stockSlices: z.array(sliceInfoSchema).max(289),
 }).refine(result => result.task.state === 'succeeded' && result.task.resultAvailable
-  && result.motions.length === result.task.summary?.previewMotionCount, 'Inconsistent motion preview');
+  && result.motions.length === result.task.summary?.previewMotionCount
+  && new Set(result.stockSlices.map(s => s.id)).size === result.stockSlices.length
+  && (result.task.stage === 'combined' || result.stockSlices.every(s => s.stage === 'endmill')), 'Inconsistent motion preview');
+export const sliceResponseSchema = z.strictObject({ task: taskSchema, coordinateSpace: z.literal('workpiece-mm-z-up'), slice: stockSliceSchema })
+  .refine(r => r.task.state === 'succeeded' && r.task.resultAvailable && (r.task.stage === 'combined' || r.slice.info.stage === 'endmill'));
+export type SliceResponse = z.infer<typeof sliceResponseSchema>;
 export type PlanningLimits = z.infer<typeof planningLimitsSchema>;
 export type PlanTask = z.infer<typeof taskSchema>;
 export type PlanResult = z.infer<typeof planResultSchema>;
