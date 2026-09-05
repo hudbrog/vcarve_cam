@@ -130,16 +130,17 @@ pub fn run(command: &str, args: Vec<String>) -> AppResult<bool> {
         } else if matches!(command, "inspect" | "verify") {
             128_000_000
         } else {
-            8_000_000
+            64_000_000
         },
     )?;
-    let kind = serde_json::from_str::<serde_json::Value>(&contents)
+    #[derive(serde::Deserialize)]
+    struct ArtifactKind {
+        artifact_kind: Option<String>,
+    }
+    // Skip arrays instead of allocating a second complete motion/report tree.
+    let kind = serde_json::from_str::<ArtifactKind>(&contents)
         .ok()
-        .and_then(|v| {
-            v.get("artifact_kind")
-                .and_then(|v| v.as_str())
-                .map(str::to_owned)
-        });
+        .and_then(|v| v.artifact_kind);
     let is_plan = kind.is_some();
     if matches!(command, "inspect" | "verify") && kind.as_deref() == Some("combined_plan") {
         return match CombinedPlan::from_json(&contents) {

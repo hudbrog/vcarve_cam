@@ -3,7 +3,12 @@ import capturedDisplay from '../fixtures/inkscape.display.json';
 import { parseJob, type Job } from '../contracts/job';
 import type { ArtworkDisplay, CamService } from '../contracts/service';
 
-const example = parseJob(capturedJob);
+// New example jobs use the same allowance default as Rust SVG import.
+// The captured artwork geometry is independent of this machining setting.
+const example = parseJob({
+  ...capturedJob,
+  operation: { ...capturedJob.operation, wall_allowance_mm: 0 },
+});
 const display: ArtworkDisplay = {
   ...capturedDisplay,
   coordinateSpace: 'source-page-mm-y-up',

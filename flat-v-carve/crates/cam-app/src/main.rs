@@ -2,6 +2,7 @@ mod combined_svg;
 mod job_cli;
 mod job_svg;
 mod plan_svg;
+mod post_cli;
 mod svg;
 mod target_cli;
 mod target_svg;
@@ -10,7 +11,7 @@ use cam_core::spike::{Fixture, SCHEMA_VERSION, run_fixture};
 use serde_json::json;
 use std::{fs, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Flat V-carve CAM — SVG jobs and target geometry\n\nUsage:\n  cam import <artwork.svg> --output <job.json> [--tolerance <mm>] [--select <region-id> ...]\n  cam inspect <job-or-plan.json> --output <preview.svg> [--report <report.json>]\n  cam select <job.json> --output <job.json> [--select <region-id> ...]\n  cam validate-job <job.json>\n  cam plan <job.json> --output <plan.json> [--stage endmill|combined]\n  cam verify <plan.json> --output <report.json> [--decimal-places <0..9>] [--preview <findings.svg>]\n      [--max-cells <count>] [--max-depth <count>] [--reachability-cells <count>] [--max-depth-bands <count>]\n  cam geometry-spike --output <directory> [--fixture <fixture.json>]\n  cam target-demo --output <directory>\n  cam target-preview --input <model.json> --output <directory>\n  cam validate-model --input <model.json>\n\nM4 plans combined endmill/V-bit work when vbit_planning is configured.\nUse --stage endmill to generate only the roughing stage.\nInspect shows M4 planning evidence. Verify adds M5 continuous stock/error bounds for combined plans.\nM5 failed or inconclusive results exit 1; endmill-only verify retains the M3 stage contract.\nOutput coordinate precision is checked only when --decimal-places is supplied.\nM0/M1 commands remain available. No G-code is generated.\n";
+const HELP: &str = "Flat V-carve CAM — SVG jobs and target geometry\n\nUsage:\n  cam import <artwork.svg> --output <job.json> [--tolerance <mm>] [--select <region-id> ...]\n  cam inspect <job-or-plan.json> --output <preview.svg> [--report <report.json>]\n  cam select <job.json> --output <job.json> [--select <region-id> ...]\n  cam validate-job <job.json>\n  cam plan <job.json> --output <plan.json> [--stage endmill|combined]\n  cam verify <plan.json> --output <report.json> [--decimal-places <0..9>] [--preview <findings.svg>]\n      [--max-cells <count>] [--max-depth <count>] [--reachability-cells <count>] [--max-depth-bands <count>]\n  cam export <plan.json> --profile <machine.json> --output <new-directory> [--layout combined|per-tool]\n  cam verify-gcode <plan.json> --profile <machine.json> --program <program.ngc> --output <new-report.json>\n      [--layout combined|per-tool] [--program <second.ngc>] [--max-cells <count>]\n  cam geometry-spike --output <directory> [--fixture <fixture.json>]\n  cam target-demo --output <directory>\n  cam target-preview --input <model.json> --output <directory>\n  cam validate-model --input <model.json>\n\nM4 plans combined endmill/V-bit work when vbit_planning is configured.\nUse --stage endmill to generate only the roughing stage.\nInspect shows M4 planning evidence. Verify adds M5 continuous stock/error bounds for combined plans.\nM5 failed or inconclusive results exit 1; endmill-only verify retains the M3 stage contract.\nFor verify, output coordinate precision is checked when --decimal-places is supplied; export always uses profile precision.\nM6 export checks original and emitted motions and publishes a new directory with G-code and a report.\nA failed or inconclusive export publishes a report only; existing outputs are never overwritten.\nverify-gcode reads saved numeric output; it is not a general LinuxCNC interpreter.\nM0/M1 commands remain available.\n";
 
 fn main() -> ExitCode {
     match run() {
@@ -32,6 +33,9 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     if command == "--help" || command == "-h" {
         print!("{HELP}");
         return Ok(true);
+    }
+    if matches!(command.as_str(), "export" | "verify-gcode") {
+        return post_cli::run(&command, args.collect());
     }
     if matches!(
         command.as_str(),

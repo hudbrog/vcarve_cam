@@ -1,7 +1,7 @@
 # Flat V-carve CAM: architecture
 
 Date: 2026-09-05\
-Status: M0–M5 implemented and tested: SVG jobs, both planners, combined previews, bounded continuous stock/quality verification, and rounded-coordinate checks; M6–M8 remain the planning baseline.
+Status: M0–M5 implemented and tested. M6 linear LinuxCNC export and numeric readback are implemented; actual controller integration remains pending. M7–M8 remain the integration/release baseline.
 
 This document records the product boundaries, components, and language choices. See [technical design](technical-design.md) for geometry and data contracts, and [implementation plan](implementation-plan.md) for milestones and acceptance criteria.
 
@@ -29,7 +29,7 @@ The user should not have to coordinate independent pocket and engraving operatio
 | Finished shape | Agreed | Full sloped walls, depth cap, and shallower narrow details. |
 | Tools | MVP boundary | One flat endmill and one conical V-bit per job. |
 | Geometry libraries | Tested in M0 | `clipper2-rust` 1.1.0 and `boostvoronoi` 0.12.1 behind application-owned adapters; see [capability evidence](m0-capability-report.md). |
-| Units and datum | Proposed default | Millimeters internally; stock top is Z = 0; cutting Z is negative. |
+| Units and datum | Agreed for export | Millimeters internally; stock top is Z = 0 and cutting Z is negative. The user's M6 TLO establishes work Z0 at stock bottom/worktable; export adds stock thickness. |
 | Distribution | Proposed default | Native local executable; browser assets bundled for everyday use. |
 | WebAssembly | Deferred | Evaluate after the native geometry pipeline works. |
 
@@ -133,6 +133,8 @@ The source of truth is a versioned job containing an embedded SVG snapshot, sele
 Planning produces a separate artifact containing normalized regions, semantic operations, explicit motion segments, dependency versions, input fingerprints, and diagnostics. Preview meshes and thumbnails are derived data. Editing a job invalidates results derived from changed inputs.
 
 The postprocessor consumes validated motions and a machine profile. It does not regenerate pocketing or infer tool geometry. Rounding during output formatting is followed by validation of the emitted numeric motion representation.
+
+M6 implements this with a separately versioned export profile, combined/per-tool files, byte hashes, strict numeric readback, and M5 revalidation in stock-top coordinates. The [M6 report](m6-capability-report.md) records the declared macro TLO contract, work Z150 then X0 Y0 positioning, and the pending actual LinuxCNC configuration/preview checks.
 
 Given the same job, engine version, dependencies, and configuration, planning should use stable region and path ordering. Record versions because numerical-library changes can change paths. Do not promise bitwise identical floating-point results across every architecture.
 

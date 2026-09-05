@@ -1,9 +1,85 @@
 //! Stock derived only from recorded cutting motions. Slice polygons supplement exact point queries.
+use crate::geometry::spatial::{Aabb, SpatialIndex};
 use crate::{
-    geometry::{BooleanOp, Diagnostic, Grid, Point, Region, Result},
+    geometry::{Diagnostic, Grid, Point, Region, Result, union::UnionAccumulator},
     motion::Motion,
 };
 use serde::Serialize;
+
+enum QueryTool<'a> {
+    Endmill(f64),
+    Vbit(&'a crate::model::VBit),
+}
+/// Cached broad phase for repeated stock samples. Analytic motion-removal
+/// formulas are shared with the independent full-scan public queries below.
+pub(crate) struct StockQuery<'a> {
+    motions: Vec<&'a Motion>,
+    index: SpatialIndex,
+    tool: QueryTool<'a>,
+}
+impl<'a> StockQuery<'a> {
+    pub fn endmill(motions: &'a [Motion], radius: f64) -> Result<Self> {
+        removed_depth_at(motions, radius, Point::new(0., 0.))?;
+        Ok(Self::build(motions, QueryTool::Endmill(radius)))
+    }
+    pub fn vbit(motions: &'a [Motion], tool: &'a crate::model::VBit) -> Result<Self> {
+        vbit_removed_depth_at(motions, tool, Point::new(0., 0.))?;
+        Ok(Self::build(motions, QueryTool::Vbit(tool)))
+    }
+    fn build(motions: &'a [Motion], tool: QueryTool<'a>) -> Self {
+        let motions: Vec<_> = motions.iter().filter(|m| m.kind.cutting()).collect();
+        let index = SpatialIndex::new(
+            motions
+                .iter()
+                .map(|m| {
+                    let radius = match tool {
+                        QueryTool::Endmill(r) => r,
+                        QueryTool::Vbit(t) => {
+                            t.tip_radius().mm()
+                                + m.start.depth().max(m.end.depth()) * t.angle().slope()
+                        }
+                    };
+                    let b = Aabb::new(m.start.xy(), m.end.xy());
+                    let magnitude = b
+                        .min
+                        .x
+                        .abs()
+                        .max(b.max.x.abs())
+                        .max(b.min.y.abs())
+                        .max(b.max.y.abs());
+                    let r = radius + 1024. * f64::EPSILON * (magnitude + radius + 1.);
+                    Aabb::new(
+                        Point::new(b.min.x - r, b.min.y - r),
+                        Point::new(b.max.x + r, b.max.y + r),
+                    )
+                })
+                .collect(),
+        );
+        Self {
+            motions,
+            index,
+            tool,
+        }
+    }
+    pub fn removed_depth(&self, p: Point) -> Result<f64> {
+        if !p.finite() {
+            return Err(Diagnostic::new(
+                "STOCK_QUERY",
+                "finite query point required",
+            ));
+        }
+        let mut candidates = vec![];
+        self.index.visit(Aabb::new(p, p), |i| {
+            candidates.push(i);
+            Ok(())
+        })?;
+        let motions = candidates.into_iter().map(|i| self.motions[i]);
+        match self.tool {
+            QueryTool::Endmill(r) => endmill_depth(motions, r, p),
+            QueryTool::Vbit(t) => vbit_depth(motions, t, p),
+        }
+    }
+}
 
 fn validate_motions(motions: &[Motion]) -> Result<()> {
     if motions.iter().any(|m| !m.start.finite() || !m.end.finite()) {
@@ -13,6 +89,67 @@ fn validate_motions(motions: &[Motion]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod indexed_query_tests {
+    use super::*;
+    use crate::{
+        model::{VBit, VBitSpec},
+        motion::{MotionKind, Position},
+    };
+    #[test]
+    fn cached_queries_match_full_scans_at_flanks_endpoints_and_flat_tip_edges() {
+        let motions: Vec<_> = (0..200)
+            .map(|i| Motion {
+                id: i,
+                tool_id: "test".into(),
+                operation_id: "test".into(),
+                layer: 0,
+                kind: if i % 2 == 0 {
+                    MotionKind::Cut
+                } else {
+                    MotionKind::Plunge
+                },
+                start: Position::new(Point::new(i as f64 * 10., 10000.), -0.5),
+                end: Position::new(
+                    Point::new(i as f64 * 10. + if i % 2 == 0 { 3. } else { 0. }, 10000.),
+                    -2.,
+                ),
+                feed_mm_min: Some(100.),
+            })
+            .collect();
+        let endmill = StockQuery::endmill(&motions, 2.).unwrap();
+        for tip in [0., 1.] {
+            let tool = VBit::try_from(VBitSpec {
+                included_angle_deg: 90.,
+                tip_diameter_mm: tip,
+                max_cutting_diameter_mm: 12.,
+                cutting_height_mm: 5.,
+            })
+            .unwrap();
+            let vbit = StockQuery::vbit(&motions, &tool).unwrap();
+            for i in 0..200 {
+                for dx in [-2.500000001, -2.5, 0., 1.5, 3., 5., 5.500000001] {
+                    for dy in [-2.5, -2., -0.5, 0., 0.5, 2., 2.5] {
+                        let p = Point::new(i as f64 * 10. + dx, 10000. + dy);
+                        assert!(
+                            (endmill.removed_depth(p).unwrap()
+                                - removed_depth_at(&motions, 2., p).unwrap())
+                            .abs()
+                                < 1e-12
+                        );
+                        assert!(
+                            (vbit.removed_depth(p).unwrap()
+                                - vbit_removed_depth_at(&motions, &tool, p).unwrap())
+                            .abs()
+                                < 1e-12
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -90,23 +227,23 @@ pub fn removal_at_slice(
                 .at_stage("stock"),
         );
     }
-    let mut lower = Region::from_rings(grid, &[])?;
-    let mut upper = lower.clone();
+    let mut lower = UnionAccumulator::new(grid);
+    let mut upper = UnionAccumulator::new(grid);
     let mut ids = vec![];
     let mut error: f64 = 0.;
     for m in motions {
         if let Some((a, b)) = m.at_depth(depth) {
             let capsule = capsule_bounds(grid, a, b, radius)?;
             error = error.max(capsule.radial_error_mm);
-            lower = lower.boolean(BooleanOp::Union, &capsule.lower)?;
-            upper = upper.boolean(BooleanOp::Union, &capsule.upper)?;
+            lower.push(capsule.lower)?;
+            upper.push(capsule.upper)?;
             ids.push(m.id);
         }
     }
     Ok(SliceRemoval {
         depth_mm: depth,
-        lower,
-        upper,
+        lower: lower.finish()?,
+        upper: upper.finish()?,
         contributing_motion_ids: ids,
         capsule_radial_error_mm: error,
     })
@@ -116,6 +253,13 @@ pub fn removal_at_slice(
 /// Solve the interval where XY lies within the disk, then maximize the linear depth.
 pub fn removed_depth_at(motions: &[Motion], radius: f64, p: Point) -> Result<f64> {
     validate_motions(motions)?;
+    endmill_depth(motions.iter().filter(|m| m.kind.cutting()), radius, p)
+}
+fn endmill_depth<'a>(
+    motions: impl Iterator<Item = &'a Motion>,
+    radius: f64,
+    p: Point,
+) -> Result<f64> {
     if !p.finite() || !radius.is_finite() || radius <= 0. {
         return Err(
             Diagnostic::new("STOCK_QUERY", "positive radius and finite point required")
@@ -123,7 +267,7 @@ pub fn removed_depth_at(motions: &[Motion], radius: f64, p: Point) -> Result<f64
         );
     }
     let mut removed: f64 = 0.;
-    for m in motions.iter().filter(|m| m.kind.cutting()) {
+    for m in motions {
         let a = m.start.xy();
         let b = m.end.xy();
         let vx = b.x - a.x;
@@ -261,8 +405,8 @@ pub fn vbit_removal_at_slice(
                 .at_stage("stock"),
         );
     }
-    let mut lower = Region::from_rings(grid, &[])?;
-    let mut upper = lower.clone();
+    let mut lower = UnionAccumulator::new(grid);
+    let mut upper = UnionAccumulator::new(grid);
     let mut ids = vec![];
     let mut error: f64 = 0.;
     for m in motions.iter().filter(|m| m.kind.cutting()) {
@@ -283,15 +427,15 @@ pub fn vbit_removal_at_slice(
         let radius = |d: f64| tool.tip_radius().mm() + (d - depth).max(0.) * tool.angle().slope();
         let c =
             variable_capsule_bounds(grid, a.xy(), radius(a.depth()), b.xy(), radius(b.depth()))?;
-        lower = lower.boolean(BooleanOp::Union, &c.lower)?;
-        upper = upper.boolean(BooleanOp::Union, &c.upper)?;
+        lower.push(c.lower)?;
+        upper.push(c.upper)?;
         error = error.max(c.radial_error_mm);
         ids.push(m.id);
     }
     Ok(SliceRemoval {
         depth_mm: depth,
-        lower,
-        upper,
+        lower: lower.finish()?,
+        upper: upper.finish()?,
         contributing_motion_ids: ids,
         capsule_radial_error_mm: error,
     })
@@ -315,6 +459,13 @@ pub fn vbit_removed_depth_at(
         )
         .at_stage("stock"));
     }
+    vbit_depth(motions.iter().filter(|m| m.kind.cutting()), tool, p)
+}
+fn vbit_depth<'a>(
+    motions: impl Iterator<Item = &'a Motion>,
+    tool: &crate::model::VBit,
+    p: Point,
+) -> Result<f64> {
     if !p.finite() {
         return Err(
             Diagnostic::new("STOCK_QUERY", "finite query point required").at_stage("stock"),
@@ -323,7 +474,7 @@ pub fn vbit_removed_depth_at(
     let mut removed: f64 = 0.;
     let slope = tool.angle().slope();
     let tip = tool.tip_radius().mm();
-    for m in motions.iter().filter(|m| m.kind.cutting()) {
+    for m in motions {
         let a = m.start.xy();
         let b = m.end.xy();
         let vx = b.x - a.x;

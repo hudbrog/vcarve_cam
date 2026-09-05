@@ -2,6 +2,9 @@
 mod polygon;
 mod precision;
 mod query;
+mod snapping;
+pub(crate) mod spatial;
+pub(crate) mod union;
 mod voronoi;
 
 pub use polygon::{BooleanOp, Region, Ring, WindingRule};
@@ -86,7 +89,10 @@ impl Diagnostic {
     pub(crate) fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),
-            severity: if matches!(code, "DUPLICATE_VERTEX_REMOVED" | "OFFSET_EMPTY_AREA") {
+            severity: if matches!(
+                code,
+                "DUPLICATE_VERTEX_REMOVED" | "OFFSET_EMPTY_AREA" | "SNAPPED_VERTEX_COALESCED"
+            ) {
                 Severity::Warning
             } else {
                 Severity::Error

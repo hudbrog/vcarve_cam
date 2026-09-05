@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "synthetic-tool-table",
+  "work_offset": "G55",
+  "z_datum": "stock_top",
+  "clearance_z_mm": 5,
+  "decimal_places": 6,
+  "program_start_position_mm": {"x": 0, "y": 0, "z": 5},
+  "length_compensation": "tool_table",
+  "tools": [
+    {"tool_id": "endmill", "tool_number": 1, "length_offset_number": 11, "spindle_direction": "clockwise"},
+    {"tool_id": "vbit", "tool_number": 2, "length_offset_number": 12, "spindle_direction": "counterclockwise"}
+  ],
+  "spindle_spinup_seconds": 1.5,
+  "coolant": "flood",
+  "m6": {
+    "reference": "Synthetic test ONLY: after each M6 and G43 Hn the compensated tool tip is at X30 Y30 Z20 in G55; datum/rotation/local offsets are unchanged and tool-table offsets are Z only. Not an actual machine profile.",
+    "reviewed": true,
+    "return_position": {"kind": "fixed_position", "position_mm": {"x": 30, "y": 30, "z": 20}},
+    "preserves_work_datum": true,
+    "local_offsets_unused": true,
+    "tool_offsets_z_only": true
+  }
+}

@@ -1,3 +1,4 @@
+use cam_core::pocket::EndmillPlan;
 use serde_json::Value;
 use std::{fs, path::PathBuf, process::Command};
 struct Scratch(PathBuf);
@@ -46,8 +47,13 @@ fn endmill_plan_inspection_and_verification_replay_embedded_job() {
     assert!(out.stdout.is_empty());
     let data = json(&plan);
     assert_eq!(data["artifact_kind"], "endmill_plan");
-    assert_eq!(data["analysis"]["status"], "complete");
-    assert_eq!(data["analysis"]["layers"][1]["depth_mm"], 2.);
+    assert!(data.get("analysis").is_none());
+    let rebuilt = EndmillPlan::from_json(&data.to_string()).unwrap();
+    assert_eq!(
+        rebuilt.analysis.status,
+        cam_core::pocket::PlanStatus::Complete
+    );
+    assert_eq!(rebuilt.analysis.layers[1].depth_mm, 2.);
     fs::remove_file(job).unwrap();
     let out = cam()
         .arg("inspect")
@@ -75,7 +81,10 @@ fn endmill_plan_inspection_and_verification_replay_embedded_job() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert_eq!(json(&report)["analysis"], data["analysis"]);
+    assert_eq!(
+        json(&report)["analysis"],
+        serde_json::to_value(&rebuilt.analysis).unwrap()
+    );
     let mut changed = data;
     changed["analysis"] = serde_json::json!({"status":"empty","layers":[]});
     fs::write(&plan, changed.to_string()).unwrap();
@@ -118,7 +127,11 @@ fn empty_and_partial_plans_have_explicit_exit_status_and_inspectable_stock() {
         );
         let data = json(&plan);
         assert_eq!(data["artifact_kind"], "endmill_plan");
-        assert_eq!(data["analysis"]["status"], status);
+        let rebuilt = EndmillPlan::from_json(&data.to_string()).unwrap();
+        assert_eq!(
+            serde_json::to_value(rebuilt.analysis.status).unwrap(),
+            status
+        );
         let out = cam()
             .arg("inspect")
             .arg(&plan)

@@ -3,7 +3,7 @@ use serde::Serialize;
 
 /// Conservative common domain for i32 Voronoi and i64 Clipper input.
 pub const MAX_GRID_COORD: i64 = 1_000_000_000;
-pub(crate) const MAX_EDGES: usize = 4096;
+pub(crate) const MAX_EDGES: usize = 2_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct GridPoint {

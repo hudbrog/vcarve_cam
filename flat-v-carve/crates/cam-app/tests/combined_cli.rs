@@ -1,3 +1,4 @@
+use cam_core::vcarve::CombinedPlan;
 use serde_json::Value;
 use std::{fs, path::PathBuf, process::Command};
 struct Scratch(PathBuf);
@@ -45,7 +46,12 @@ fn combined_plan_replays_embedded_job_and_endmill_only_mode_remains_available() 
     );
     let data = json(&plan);
     assert_eq!(data["artifact_kind"], "combined_plan");
-    assert_eq!(data["endmill"]["analysis"]["status"], "empty");
+    assert!(data.get("analysis").is_none());
+    let rebuilt = CombinedPlan::from_json(&data.to_string()).unwrap();
+    assert_eq!(
+        rebuilt.endmill.analysis.status,
+        cam_core::pocket::PlanStatus::Empty
+    );
     assert!(!data["vbit_motions"].as_array().unwrap().is_empty());
     let out = cam()
         .arg("plan")
@@ -83,7 +89,10 @@ fn combined_plan_replays_embedded_job_and_endmill_only_mode_remains_available() 
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert_eq!(json(&report)["analysis"], data["analysis"]);
+    assert_eq!(
+        json(&report)["analysis"],
+        serde_json::to_value(&rebuilt.analysis).unwrap()
+    );
 }
 #[test]
 fn partial_combined_plans_and_invalid_zero_ridge_requests_have_explicit_outputs() {
@@ -103,7 +112,11 @@ fn partial_combined_plans_and_invalid_zero_ridge_requests_have_explicit_outputs(
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(json(&plan)["artifact_kind"], "combined_plan");
-    assert_eq!(json(&plan)["analysis"]["status"], "inconclusive");
+    let rebuilt = CombinedPlan::from_json(&fs::read_to_string(&plan).unwrap()).unwrap();
+    assert_eq!(
+        rebuilt.analysis.status,
+        cam_core::pocket::PlanStatus::Inconclusive
+    );
     let out = cam()
         .arg("verify")
         .arg(&plan)

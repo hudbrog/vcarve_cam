@@ -663,7 +663,7 @@ fn run(
             "Bounds apply to the rebuilt normalized polygon target, modeled cutters, and recorded linear XYZ motions. Source flattening/snap depth error is reported separately; this is not a topology proof for arbitrary SVG artwork.".into(),
             "Analytical distance queries use explicit floating-point reserves, not directed-rounding interval arithmetic. Preview polygon Boolean results are not used as acceptance evidence.".into(),
             "Depth-band areas and residual volumes retain spatial uncertainty. A pass bounds maximum finish errors; it does not claim that area or volume uncertainty has a requested dimensional tolerance.".into(),
-            "Fixture/holder clearance, machine dynamics, feeds suitability, and hidden tool-change motions are outside this geometric contract. Rounded coordinates are checked only when decimal_places is supplied.".into(),
+            "Fixture/holder clearance, machine dynamics, feeds suitability, and hidden tool-change motions are outside this geometric contract. Numeric formatting is checked by explicit rounded-coordinate verification or the M6 emitted-program reader.".into(),
         ],
     })
 }

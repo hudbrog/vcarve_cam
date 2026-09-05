@@ -118,7 +118,7 @@ pub struct JobInspection {
     pub engine_version: String,
     pub name: String,
     pub geometry: NormalizedGeometry,
-    /// Missing settings are expected during editing, and are never invented on import.
+    /// Missing settings are expected during editing; import only supplies documented defaults.
     pub missing_machining_fields: Vec<String>,
     pub planning_available: bool,
 }
@@ -153,7 +153,7 @@ impl Job {
                 endmill_id: "endmill".into(),
                 vbit_id: "vbit".into(),
                 max_depth_mm: None,
-                wall_allowance_mm: None,
+                wall_allowance_mm: Some(0.),
                 max_floor_ridge_mm: None,
                 max_detail_residual_mm: None,
             },
@@ -165,10 +165,10 @@ impl Job {
         })
     }
     pub fn from_json(json: &str) -> Result<Self> {
-        if json.len() > 8_000_000 {
+        if json.len() > 64_000_000 {
             return Err(error(
                 "JOB_RESOURCE_LIMIT",
-                "job exceeds the 8 MB input limit",
+                "job exceeds the 64 MB input limit",
             ));
         }
         let mut value: serde_json::Value =

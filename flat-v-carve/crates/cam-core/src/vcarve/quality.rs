@@ -4,10 +4,7 @@ use crate::{
     model::{Depth, Length},
     motion::Motion,
     pocket::{EndmillPlan, PlanStatus},
-    stock::{
-        SliceRemoval, capsule_bounds, removal_at_slice, removed_depth_at, vbit_removal_at_slice,
-        vbit_removed_depth_at,
-    },
+    stock::{SliceRemoval, StockQuery, capsule_bounds, removal_at_slice, vbit_removal_at_slice},
     svg::Bounds,
     target::{CenterSet, CenterSetStatus, ReachabilityOptions, ReachabilityStatus},
 };
@@ -103,13 +100,15 @@ pub(super) fn sample(ctx: &Context, endmill: &EndmillPlan, moves: &[Motion]) -> 
         }
     }
     let mut samples = vec![];
+    let endmill_stock = StockQuery::endmill(&endmill.motions, ctx.mill.radius().mm())?;
+    let vbit_stock = StockQuery::vbit(moves, &ctx.tool)?;
     for p in points {
         let nominal = ctx.target.nominal_depth(p)?.mm();
         if nominal == 0. {
             continue;
         }
-        let ea = removed_depth_at(&endmill.motions, ctx.mill.radius().mm(), p)?;
-        let va = vbit_removed_depth_at(moves, &ctx.tool, p)?;
+        let ea = endmill_stock.removed_depth(p)?;
+        let va = vbit_stock.removed_depth(p)?;
         let actual = ea.max(va);
         let ridge = if nominal == ctx.target.depth_cap().mm() {
             ctx.ridge
@@ -381,5 +380,5 @@ pub(super) fn analyze(
         max_sampled_residual_mm:samples.iter().map(|s|s.residual_mm).fold(0.,f64::max),max_sampled_missed_reachable_mm:samples.iter().map(|s|s.missed_reachable_mm).fold(0.,f64::max),max_sampled_unavoidable_residual_mm:samples.iter().map(|s|s.unavoidable_residual_lower_mm).fold(0.,f64::max),
         samples:quality.samples,minimum_center_margin_lower_bound_mm:minimum,finish_paths_expected:0,finish_paths_executed:0,pruned_air_paths:0,cleanup_paths:0,diagnostics,
         meaning:"M4 candidate-family completion, continuous segment clearance, floor slice coverage, and sampled combined finish-quality evidence.".into(),
-        limitations:vec!["Quality maxima are measured at the configured lattice and motion witnesses, not certified over the entire height field; adaptive full-volume verification remains M5.".into(),"Individual variable-radius capsule brackets include snapping. Repeated polygon Boolean errors and topology are not a formal interval proof.".into(),"Guarded V-bit depths/contours reserve geometric clearance; normalized source error is reported separately by job inspection.".into(),"Tool transitions are planning markers only. M6 machine output, fixture/holder clearance, and cutting loads are not implemented.".into()]})
+        limitations:vec!["Quality maxima are measured at the configured lattice and motion witnesses, not certified over the entire height field; adaptive full-volume verification remains M5.".into(),"Individual variable-radius capsule brackets include snapping. Repeated polygon Boolean errors and topology are not a formal interval proof.".into(),"Guarded V-bit depths/contours reserve geometric clearance; normalized source error is reported separately by job inspection.".into(),"Tool transitions here are planning markers only; machine output requires M6 export. Fixture/holder clearance and cutting loads remain outside this planning analysis.".into()]})
 }

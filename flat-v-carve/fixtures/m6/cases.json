@@ -1,0 +1,10 @@
+[
+  {"id":"narrow-macro", "job":"narrow-channel", "profile":"macro-stock-bottom", "layout":"combined", "status":"passed"},
+  {"id":"wide-macro", "job":"wide-floor", "profile":"macro-stock-bottom", "layout":"combined", "status":"passed"},
+  {"id":"wide-per-tool", "job":"wide-floor", "profile":"macro-stock-bottom", "layout":"per-tool", "status":"passed"},
+  {"id":"island-macro", "job":"island", "profile":"macro-stock-bottom", "layout":"combined", "status":"passed"},
+  {"id":"finite-tip-table", "job":"finite-tip", "profile":"tool-table-synthetic", "layout":"combined", "status":"passed"},
+  {"id":"strict-contact", "job":"contact-line", "profile":"macro-stock-bottom", "layout":"combined", "status":"inconclusive"},
+  {"id":"coarse-rounding", "job":"narrow-channel", "profile":"macro-stock-bottom", "layout":"combined", "decimal_places":0, "status":"failed"},
+  {"id":"cell-limit", "job":"narrow-channel", "profile":"macro-stock-bottom", "layout":"combined", "max_cells":1, "status":"inconclusive"}
+]

@@ -1,4 +1,5 @@
 use super::precision::{MAX_EDGES, cross, inside, intersects, on_segment, twice_area};
+use super::spatial::{Aabb, SpatialIndex};
 use super::{Diagnostic, Grid, GridPoint, Point, Result, Segment};
 use clipper2_rust::{
     ClipType, Clipper64, ClipperOffset, EndType, FillRule, JoinType, Paths64, Point64, PolyTree64,
@@ -53,7 +54,7 @@ impl Region {
         if input.iter().map(Vec::len).sum::<usize>() > MAX_EDGES {
             return Err(Diagnostic::new(
                 "GEOMETRY_LIMIT",
-                "at most 4096 flattened vertices are supported",
+                "at most two million flattened vertices are supported",
             ));
         }
         let mut originals = Vec::new();
@@ -77,19 +78,22 @@ impl Region {
                     "filled subpath needs at least three distinct vertices",
                 ));
             }
-            let snapped = points
+            let mut snapped = points
                 .iter()
                 .map(|&p| grid.quantize(p))
                 .collect::<Result<Vec<_>>>()?;
-            if snapped
-                .iter()
-                .zip(snapped.iter().cycle().skip(1))
-                .any(|(a, b)| a == b)
-            {
+            snapped.dedup();
+            if snapped.len() > 1 && snapped.first() == snapped.last() {
+                snapped.pop();
+            }
+            if snapped.len() < 3 {
                 return Err(Diagnostic::new(
                     "QUANTIZATION_COLLAPSE",
-                    "snapping collapsed an SVG boundary edge; reduce tolerance or increase scale",
+                    "snapping would erase a closed boundary; refine the grid",
                 ));
+            }
+            if snapped.len() < points.len() {
+                diagnostics.push(Diagnostic::new("SNAPPED_VERTEX_COALESCED", format!("coalesced {} consecutive vertices within the reported grid-snap bound; local topology checked", points.len() - snapped.len())));
             }
             let area: f64 = points[1..]
                 .windows(2)
@@ -135,72 +139,20 @@ impl Region {
         Ok(region)
     }
 
-    /// Check every original/snapped edge relation, including across separate SVG objects.
+    /// Check topology with a spatial broad phase, permitting only local grid contractions.
     pub(crate) fn check_snapping(grid: Grid, input: &[Vec<Point>]) -> Result<()> {
-        let originals: Vec<Vec<Point>> = input
-            .iter()
-            .map(|raw| {
-                let mut p = raw.clone();
-                p.dedup();
-                if p.len() > 1 && p.first() == p.last() {
-                    p.pop();
-                }
-                p
-            })
-            .collect();
-        if originals.iter().map(Vec::len).sum::<usize>() > MAX_EDGES {
-            return Err(Diagnostic::new(
-                "GEOMETRY_LIMIT",
-                "at most 4096 boundary vertices are supported",
-            ));
-        }
-        for ring in &originals {
-            let q = ring
-                .iter()
-                .map(|&p| grid.quantize(p))
-                .collect::<Result<Vec<_>>>()?;
-            if q.iter().zip(q.iter().cycle().skip(1)).any(|(a, b)| a == b) {
-                return Err(Diagnostic::new(
-                    "QUANTIZATION_COLLAPSE",
-                    "snapping collapsed an SVG boundary edge",
-                ));
-            }
-        }
-        let edges: Vec<_> = originals
-            .iter()
-            .enumerate()
-            .flat_map(|(r, ps)| (0..ps.len()).map(move |i| (r, i)))
-            .collect();
-        for (at, &(r, i)) in edges.iter().enumerate() {
-            for &(s, j) in &edges[at + 1..] {
-                let a = originals[r][i];
-                let b = originals[r][(i + 1) % originals[r].len()];
-                let c = originals[s][j];
-                let d = originals[s][(j + 1) % originals[s].len()];
-                let raw_hit = raw_intersects(a, b, c, d);
-                let qa = grid.quantize(a)?;
-                let qb = grid.quantize(b)?;
-                let qc = grid.quantize(c)?;
-                let qd = grid.quantize(d)?;
-                let grid_hit = intersects(qa, qb, qc, qd);
-                let opposite = |a: f64, b: f64| (a < 0. && b > 0.) || (a > 0. && b < 0.);
-                let raw_proper = opposite(orient(a, b, c), orient(a, b, d))
-                    && opposite(orient(c, d, a), orient(c, d, b));
-                let grid_proper = cross(qa, qb, qc).signum() * cross(qa, qb, qd).signum() < 0
-                    && cross(qc, qd, qa).signum() * cross(qc, qd, qb).signum() < 0;
-                if raw_hit != grid_hit || raw_proper != grid_proper {
-                    return Err(Diagnostic::new(
-                        "QUANTIZATION_TOPOLOGY",
-                        "snapping changed an SVG edge crossing or contact",
-                    ));
-                }
-            }
-        }
-        Ok(())
+        super::snapping::check(grid, input)
     }
-
     /// Split filled components with their immediate hole rings, in geometric order.
     pub fn components(&self) -> Vec<Self> {
+        let mut holes = vec![vec![]; self.rings.len()];
+        for (index, ring) in self.rings.iter().enumerate() {
+            if ring.is_hole
+                && let Some(parent) = ring.parent
+            {
+                holes[parent].push(index);
+            }
+        }
         let mut result: Vec<_> = self
             .rings
             .iter()
@@ -210,12 +162,8 @@ impl Region {
                 let mut outer = r.clone();
                 outer.parent = None;
                 let mut rings = vec![outer];
-                for h in self
-                    .rings
-                    .iter()
-                    .filter(|h| h.is_hole && h.parent == Some(i))
-                {
-                    let mut h = h.clone();
+                for &index in &holes[i] {
+                    let mut h = self.rings[index].clone();
                     h.parent = Some(0);
                     rings.push(h);
                 }
@@ -235,7 +183,7 @@ impl Region {
         if input.iter().map(Vec::len).sum::<usize>() > MAX_EDGES {
             return Err(Diagnostic::new(
                 "GEOMETRY_LIMIT",
-                "M0 accepts at most 4096 boundary vertices",
+                "at most two million boundary vertices are supported",
             ));
         }
         let mut diagnostics = vec![];
@@ -283,7 +231,7 @@ impl Region {
                 is_hole: false,
             });
         }
-        validate_boundaries(&rings, Some(&originals))?;
+        validate_boundaries(grid, &rings, Some(&originals))?;
         for i in 0..rings.len() {
             let area = twice_area(&rings[i].points);
             if area == 0 {
@@ -403,6 +351,107 @@ impl Region {
             ));
         }
         Self::from_tree(self.grid, tree)
+    }
+
+    /// Union all selected regions in one backend operation, without repeatedly
+    /// rebuilding an ever larger prefix of the selection.
+    pub fn union_all(grid: Grid, regions: &[&Self]) -> Result<Self> {
+        let mut engine = Clipper64::new();
+        let mut count = 0;
+        for region in regions {
+            if region.grid != grid {
+                return Err(Diagnostic::new(
+                    "GRID_MISMATCH",
+                    "union operands must share a grid",
+                ));
+            }
+            count += region.rings.iter().map(|r| r.points.len()).sum::<usize>();
+            if count > MAX_EDGES {
+                return Err(Diagnostic::new(
+                    "GEOMETRY_LIMIT",
+                    "union input exceeds two million vertices",
+                ));
+            }
+            engine.add_subject(&region.paths());
+        }
+        if count == 0 {
+            return Self::from_rings(grid, &[]);
+        }
+        let mut tree = PolyTree64::new();
+        if !engine.execute_tree(ClipType::Union, FillRule::NonZero, &mut tree, &mut vec![])
+            || engine.error_code() != 0
+        {
+            return Err(Diagnostic::new("POLYGON_BACKEND", "selection union failed"));
+        }
+        Self::from_tree(grid, tree)
+    }
+
+    /// Clip a constructed open/closed polyline to filled area (including
+    /// holes). Endpoints are snapped to the region grid; this is a planning
+    /// operation, not a stock-clearance proof. No connector is added across a
+    /// clipped-out interval. Output ordering and direction are canonical.
+    pub fn clip_polyline(&self, points: &[Point]) -> Result<Vec<Vec<Point>>> {
+        if points.len() > 65_536 {
+            return Err(Diagnostic::new(
+                "GEOMETRY_LIMIT",
+                "polyline exceeds 65536 vertices",
+            ));
+        }
+        let mut input = points
+            .iter()
+            .map(|&p| self.grid.quantize(p))
+            .collect::<Result<Vec<_>>>()?;
+        input.dedup();
+        if input.len() < 2 || self.rings.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut engine = Clipper64::new();
+        engine.add_open_subject(&vec![
+            input.iter().map(|p| Point64::new(p.x, p.y)).collect(),
+        ]);
+        engine.add_clip(&self.paths());
+        let mut open = vec![];
+        if !engine.execute(
+            ClipType::Intersection,
+            FillRule::NonZero,
+            &mut vec![],
+            Some(&mut open),
+        ) || engine.error_code() != 0
+        {
+            return Err(Diagnostic::new(
+                "POLYLINE_BACKEND",
+                "open path clipping failed",
+            ));
+        }
+        let mut paths = vec![];
+        for raw in open {
+            let mut path: Vec<_> = raw
+                .into_iter()
+                .map(|p| GridPoint { x: p.x, y: p.y })
+                .collect();
+            path.dedup();
+            if path.len() < 2 {
+                continue;
+            }
+            let closed = path.first() == path.last();
+            if closed {
+                path.pop();
+                let start = path.iter().enumerate().min_by_key(|(_, p)| **p).unwrap().0;
+                path.rotate_left(start);
+                path.push(path[0]);
+            }
+            let reverse: Vec<_> = path.iter().rev().copied().collect();
+            if reverse < path {
+                path = reverse;
+            }
+            paths.push(path);
+        }
+        paths.sort();
+        paths.dedup();
+        Ok(paths
+            .into_iter()
+            .map(|p| p.into_iter().map(|q| self.grid.point(q)).collect())
+            .collect())
     }
 
     /// Disk erosion: round joins are essential around holes and reflex corners.
@@ -552,7 +601,7 @@ impl Region {
                 ring.points.reverse();
             }
         }
-        validate_boundaries(&rings, None)?;
+        validate_boundaries(grid, &rings, None)?;
         Ok(Self {
             grid,
             rings,
@@ -565,8 +614,8 @@ impl Region {
 /// Adjacent input edges may share endpoints. Input rings must be simple and mutually
 /// disjoint at their boundaries so nesting is unambiguous. Clipper output has an
 /// explicit hierarchy and may retain shared endpoints between components.
-fn validate_boundaries(rings: &[Ring], originals: Option<&[Vec<Point>]>) -> Result<()> {
-    let mut edges: Vec<_> = rings
+fn validate_boundaries(grid: Grid, rings: &[Ring], originals: Option<&[Vec<Point>]>) -> Result<()> {
+    let edges: Vec<_> = rings
         .iter()
         .enumerate()
         .flat_map(|(r, ring)| {
@@ -583,26 +632,24 @@ fn validate_boundaries(rings: &[Ring], originals: Option<&[Vec<Point>]>) -> Resu
     if edges.len() > MAX_EDGES {
         return Err(Diagnostic::new(
             "GEOMETRY_LIMIT",
-            "M0 accepts at most 4096 boundary edges",
+            "at most two million boundary edges are supported",
         ));
     }
-    // Output coordinates are already integer and exact. An x-sorted broad phase
-    // preserves every contact/intersection check while avoiding all-pairs work
-    // for the many disjoint sweep edges created by stock unions.
-    if originals.is_none() {
-        edges.sort_by_key(|&(_, _, a, b)| a.x.min(b.x));
-    }
-    for (index, &(r, i, a, b)) in edges.iter().enumerate() {
-        for &(s, j, c, d) in &edges[index + 1..] {
-            if originals.is_none() {
-                if c.x.min(d.x) > a.x.max(b.x) {
-                    break;
-                }
-                if c.y.min(d.y) > a.y.max(b.y) || c.y.max(d.y) < a.y.min(b.y) {
-                    continue;
-                }
-            }
-            let shared = a == c || a == d || b == c || b == d;
+    let index = SpatialIndex::new(
+        edges
+            .iter()
+            .map(|&(r, i, a, b)| {
+                let bounds = Aabb::new(grid.point(a), grid.point(b));
+                originals.map_or(bounds, |raw| {
+                    bounds.union(Aabb::new(raw[r][i], raw[r][(i + 1) % raw[r].len()]))
+                })
+            })
+            .collect(),
+    );
+    index.pairs(|left, right| {
+        let (r, i, a, b) = edges[left];
+        let (s, j, c, d) = edges[right];
+        let shared = a == c || a == d || b == c || b == d;
             let overlaps = cross(a, b, c) == 0
                 && cross(a, b, d) == 0
                 && ((on_segment(c, a, b) && c != a && c != b)
@@ -654,12 +701,12 @@ fn validate_boundaries(rings: &[Ring], originals: Option<&[Vec<Point>]>) -> Resu
                     format!("edges {r}:{i} and {s}:{j} intersect or overlap"),
                 ));
             }
-        }
-    }
+        Ok(())
+    })?;
     Ok(())
 }
 
-fn orient(a: Point, b: Point, c: Point) -> f64 {
+pub(super) fn orient(a: Point, b: Point, c: Point) -> f64 {
     let to_coord = |p: Point| robust::Coord { x: p.x, y: p.y };
     robust::orient2d(to_coord(a), to_coord(b), to_coord(c))
 }
@@ -670,7 +717,7 @@ fn raw_on(p: Point, a: Point, b: Point) -> bool {
         && p.y >= a.y.min(b.y)
         && p.y <= a.y.max(b.y)
 }
-fn raw_intersects(a: Point, b: Point, c: Point, d: Point) -> bool {
+pub(super) fn raw_intersects(a: Point, b: Point, c: Point, d: Point) -> bool {
     let opposite = |x: f64, y: f64| (x > 0.0 && y < 0.0) || (x < 0.0 && y > 0.0);
     (opposite(orient(a, b, c), orient(a, b, d)) && opposite(orient(c, d, a), orient(c, d, b)))
         || raw_on(a, c, d)

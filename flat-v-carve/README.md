@@ -1,6 +1,6 @@
 # Flat V-carve CAM
 
-An isolated Rust workspace for the combined endmill/V-bit planner described in the [project docs](../docs/flat-v-carve/architecture.md). M0–M5 implement geometry, SVG jobs, both planners, recorded-motion previews, bounded continuous stock verification, and rounded-coordinate checks. Machine output and the browser workflow follow in M6–M7.
+An isolated Rust workspace for the combined endmill/V-bit planner described in the [project docs](../docs/flat-v-carve/architecture.md). M0–M5 implement geometry, SVG jobs, both planners, recorded-motion previews, and bounded continuous stock verification. M6 implements LinuxCNC output and numeric readback; actual controller validation remains pending. The integrated browser workflow follows in M7.
 
 ## Run
 
@@ -16,7 +16,7 @@ cargo run --release --locked -p cam-app -- inspect artifacts/m2/job.json \
 cargo run --locked -p cam-app -- validate-job artifacts/m2/job.json
 ```
 
-`import` embeds the SVG in schema-versioned JSON, selects all visible supported regions, and leaves machining settings unset. The original SVG file is no longer needed. Edit job settings in JSON; `inspect` rebuilds geometry from the snapshot, and `validate-job` writes a JSON inspection to stdout. Missing machining settings are allowed while editing; supplied invalid values are rejected. No geometry cache in the job is trusted.
+`import` embeds the SVG in schema-versioned JSON, selects all visible supported regions, and defaults the configurable endmill wall allowance to **0 mm**. Other machining settings remain unset. The original SVG file is no longer needed. Edit job settings in JSON; `inspect` rebuilds geometry from the snapshot, and `validate-job` writes a JSON inspection to stdout. Missing machining settings are allowed while editing; supplied invalid values are rejected. No geometry cache in the job is trusted. Opening existing jobs preserves their saved allowance, including an explicitly unset value.
 
 Select a component using an ID listed in the inspection report or preview:
 
@@ -44,11 +44,11 @@ cargo run --release --locked -p cam-app -- verify artifacts/m3/island/plan.json 
   --output artifacts/m3/island/verification.json
 ```
 
-The [M3 fixtures](fixtures/m3/README.md) supply **synthetic test settings**, including feeds and spindle speed. Imported jobs still have no machining defaults. Planning requires stock thickness, depth, horizontal wall allowance, endmill dimensions/capability/feeds/spindle/stepdown/stepover, V-bit geometry to define the target angle, planning tolerances, and `endmill_planning` settings for the clearance plane, start XY, entry, strategy, and resource limits. V-bit cutting settings and finish-quality limits remain editable for M4.
+The [M3 fixtures](fixtures/m3/README.md) supply **synthetic test settings**, including feeds and spindle speed. Imported jobs default only the endmill wall allowance to zero; tools and cutting settings must still be supplied. Planning requires stock thickness, depth, horizontal wall allowance, endmill dimensions/capability/feeds/spindle/stepdown/stepover, V-bit geometry to define the target angle, planning tolerances, and `endmill_planning` settings for the clearance plane, start XY, entry, strategy, and resource limits. V-bit cutting settings and finish-quality limits remain editable for M4.
 
 `depth_dependent` clearing generates offset loops inside each layer's admissible center region; `deepest_region` uses the deepest region at every stepdown. Direct plunges require a plunge-capable endmill and explicit plunge feed. Ramps require `ramp_capable: true` and an explicit angle/feed. Every disconnected loop retracts and links at the configured clearance Z. M3 limits stepover to half the tool diameter; it does not optimize travel or calculate machine-specific cutting parameters.
 
-Each saved plan embeds the job and records actual XYZ moves, identity fingerprints, generation issues, and stock reports. `inspect` and `verify` rebuild clearance and stock from the motions, ignoring cached analysis. Editing the job or motions invalidates the fingerprint and requires replanning. Job schema 1 migrates to schema 2 without inventing new settings; plan schema 1 is a separate artifact format tied to the generating engine version.
+Each saved plan embeds the job and records actual XYZ moves, identity fingerprints, and generation issues. Plans use compact JSON and omit derived stock/quality caches; `inspect --report` writes the rebuilt analysis separately. `inspect` and `verify` rebuild clearance and stock from the motions and ignore any supplied cached analysis. Saving rejects artifacts above the 128 MB reload limit. Editing the job or motions invalidates the fingerprint and requires replanning. Job schema 1 migrates to schema 2 without inventing new settings; plan schema 1 is a separate artifact format tied to the generating engine version.
 
 The preview shows layer paths, removed stock, and remaining target. Missing accessible floor is pink; possible overcut is purple. No-access stages are empty. Exact-fit contacts and insufficient numerical margin are inconclusive; unsupported entries and missed floors are reported explicitly. Partial plans remain inspectable and exit with status 1.
 
@@ -67,13 +67,13 @@ cargo run --release --locked -p cam-app -- verify artifacts/m4/curved-medial/pla
 
 `plan` generates both stages when `vbit_planning` is configured; otherwise it retains endmill-only behavior. `--stage combined` explicitly requests both stages, and `--stage endmill` generates only M3 roughing, including from an M4 job. Both artifact kinds support `inspect` and `verify`.
 
-M4 combines full-depth boundary contours, variable-depth medial-axis branches, and clipped floor lanes. Finite tip geometry is used throughout. Branches split at positive-cut and depth-cap transitions; curved branches are subdivided with XYZ error and continuous clearance checks. Exact-fit lines and points remain represented, using a small guarded depth reserve where necessary. All endmill work precedes the V-bit; the complete achievable boundary/rising-detail family runs last, after bounded cleanup.
+M4 combines full-depth boundary contours, variable-depth medial-axis branches, and floor cleanup contours. Finite tip geometry is used throughout. Branches split at positive-cut and depth-cap transitions; curved branches are subdivided with XYZ error and continuous clearance checks. Exact-fit lines and points remain represented, using a small guarded depth reserve where necessary. All endmill work precedes the V-bit; the complete achievable boundary/rising-detail family runs last, after bounded cleanup.
 
-Each V-bit depth pass begins from recorded endmill stock. Floor lanes are divided into thirds so an interior section can be omitted only when its **entire cutter sweep**, including its flank, fits inside a recorded endmill sweep. Other sections are retained. Final finishing is always retained. M4 uses direct plunge entries with explicit V-bit `plunge_capable: true` and plunge feed; it does not infer that capability from the cutter dimensions or use V-bit ramps.
+Floor cleanup uses inward contours restricted to stock left by recorded endmill sweeps. The clipping region includes the permitted-ridge cutter footprint and a numerical guard so cuts centered beside residual stock can still finish its edge. Disconnected fragments get separate clearance links; a small local raster covers any final thin core. Each depth pass also retains the conservative whole-sweep air proof, including the cutter flank. Final finishing is always retained. M4 uses direct plunge entries with explicit V-bit `plunge_capable: true` and plunge feed; it does not infer that capability from the cutter dimensions or use V-bit ramps.
 
 Set the V-bit cutting/plunge feeds, spindle speed, stepdown, stepover, `max_floor_ridge_mm`, `max_detail_residual_mm`, and `vbit_planning` limits explicitly. Job schema 3 adds these planning controls and per-tool plunge capability; schemas 1 and 2 migrate without inventing values. The [M4 fixtures](fixtures/m4/README.md) provide **synthetic test settings**, not machining recommendations.
 
-Pointed-bit floor lane spacing is constrained by the permitted ridge. A pointed V-bit with zero allowed ridge is rejected when residual floor area needs clearing; finite flat tips can support zero-ridge clearing with overlapping lanes. Cutter-limited detail uses independent reachability bounds and is reported separately from missed reachable material.
+Floor contour spacing is at most 90% of the cutter radius at the permitted ridge height, capped by the configured stepover. This reserves coverage at converging corners, where the parallel-lane half-spacing formula is insufficient. A pointed V-bit with zero allowed ridge is rejected when residual floor area needs clearing; finite flat tips can support zero-ridge clearing with overlapping passes. Cutter-limited detail uses independent reachability bounds and is reported separately from missed reachable material. M5 independently verifies the resulting stock.
 
 Saved combined plans bind both stages, tool-transition markers, path execution records, generation issues, and the engine/job identity. Reopening recomputes the actual sweeps and quality report. Changing cached analysis cannot create a successful result. The verifier also rejects omitted depth passes without stock evidence and an absent or incomplete final finish.
 
@@ -92,13 +92,43 @@ cargo run --release --locked -p cam-app -- verify artifacts/m5/curved-medial/pla
 
 Check `verification.status`: `passed`, `failed`, or `inconclusive`. Only `passed` exits 0; failed or inconclusive verification exits 1, and argument/I/O errors exit 2. The outer `valid` field means the artifact was readable/authenticated and is not a finish-quality result. Cached analysis is never trusted.
 
-`--decimal-places 0..9` checks the actual formatted XYZ coordinates independently. Omitting it verifies original coordinates only. The report retains both results, their fingerprints, coordinate changes, located findings, maximum-error intervals, and uncertainty. No G-code or machine defaults are generated. M6 will require the actual machine profile and output precision.
+`--decimal-places 0..9` checks the actual formatted XYZ coordinates independently. Omitting it verifies original coordinates only. The report retains both results, their fingerprints, coordinate changes, located findings, maximum-error intervals, and uncertainty. This command does not generate G-code; M6 export below requires an explicit machine profile and checks formatting after machine-datum translation.
 
 Resource controls are `--max-cells` (default 1,000,000; total across refinement passes per coordinate set), `--max-depth` (24), `--reachability-cells` (4,096 per point query), and `--max-depth-bands` (512). Exhausted bounds remain inconclusive. Lowering limits cannot produce a coarse-grid pass. The geometric model is the rebuilt normalized polygon; source flattening/snap error is reported separately.
 
 M5 enforces the explicit ridge and detail limits without adding M4's numerical allowance. Consequently, the M4 zero-ridge `contact-line` and `contact-point` examples do not pass M5: their guarded cap motions leave about 0.01 mm. The [M5 fixtures](fixtures/m5/README.md) record these expected failures alongside successful and resource-limited cases. Endmill-only `verify` retains its M3 stage contract; the new M5 options require a combined plan.
 
-Engine **0.6.0** invalidates plans created by older engines. Regenerate plans from saved jobs; job schema 3 still accepts schemas 1 and 2. The [M5 capability report](../docs/flat-v-carve/m5-capability-report.md) records the methods, regression evidence, Windows performance measurements, and remaining limits. Run `scripts/benchmark-m5.ps1` from PowerShell 7 after a release build to reproduce the ten release cases and their JSON/SVG artifacts.
+Engine **0.7.2** invalidates plans created by older engines. Regenerate plans from saved jobs; job schema 3 still accepts schemas 1 and 2. The [M5 capability report](../docs/flat-v-carve/m5-capability-report.md) records the methods, regression evidence, Windows performance measurements, and remaining limits. Run `scripts/benchmark-m5.ps1` from PowerShell 7 after a release build to reproduce the ten release cases and their JSON/SVG artifacts.
+
+## Real artwork and scalability
+
+Engine 0.7.2 imports `../real_data/flower_box.svg` at 0.005 mm tolerance without editing the source. Spatial indexes replace repeated all-edge topology, containment, distance, and stock-query scans; selected regions use a batch union and recorded cutter sweeps use bounded batches with balanced merges. Consecutive vertices may coalesce on the precision grid only after local topology checks; erased rings, new nonlocal contacts, and changed crossings still fail.
+
+The [scalability report](../docs/flat-v-carve/scalability-report.md) separates import measurements from planning and verification. Reproduce the 1×/10×/100× import cases on Windows with:
+
+```powershell
+cargo build --release --locked --workspace --examples --bins
+./scripts/benchmark-import.ps1 -OutputDirectory artifacts/import-scalability-new
+```
+
+The benchmark repeats the real path at unchanged physical size and tolerance. It records component/vertex counts, area, time, peak process working set, and source hash. It does not establish 100× full CAM or deeply connected artwork performance. Current bounds are 32 MB SVG, 200,000 XML nodes, two million flattened vertices, 64 MB job JSON, and 128 MB saved plans. Dense intersection arrangements and excessive spatial candidate pairs have separate guards. V-bit budgets remain explicit per job, up to 65,536 paths and one million motions/curve segments/quality samples; hitting a budget never means complete. The browser fixture service retains its own smaller file limit pending native integration.
+
+## M6 LinuxCNC export
+
+```powershell
+cargo run --release --locked -p cam-app -- plan fixtures/m4/island.json --output artifacts/m6-example/plan.json
+cargo run --release --locked -p cam-app -- export artifacts/m6-example/plan.json --profile fixtures/m6/macro-stock-bottom.json --output artifacts/m6-example/combined
+cargo run --release --locked -p cam-app -- export artifacts/m6-example/plan.json --profile fixtures/m6/macro-stock-bottom.json --layout per-tool --output artifacts/m6-example/per-tool
+cargo run --release --locked -p cam-app -- verify-gcode artifacts/m6-example/plan.json --profile fixtures/m6/macro-stock-bottom.json --program artifacts/m6-example/combined/combined.ngc --output artifacts/m6-example/readback.json
+```
+
+Export requires a new output directory and publishes `export-report.json` with `combined.ngc`, or independent `endmill.ngc`/`vbit.ngc` files for nonempty stages. For per-tool readback, pass `--layout per-tool --program <endmill.ngc> --program <vbit.ngc>` in cutting order. V-bit rest machining requires the matching endmill program to have run on the same stock, even though each file establishes its own modal state.
+
+The supplied [macro profile](fixtures/m6/macro-stock-bottom.json) follows the user-described Z-only M6 TLO with stock-bottom/worktable zero, T1/T2, and `G0 Z150` then X0 Y0 after M6. G54, six decimals, clockwise spindle, coolant off, and zero added spin-up dwell are editable initial choices. With 8 mm stock, the 2 mm depth cap outputs Z6 and a 5 mm planning clearance outputs Z13. Z150 is in the selected work frame. See the [profile contract](fixtures/m6/README.md) for setup and clearance assumptions.
+
+Macro-managed output preserves TLO; tool-table output applies the configured G43 H mapping. Original and decoded output motions must pass M5. Every modal/tool/feed/coordinate block is checked by a strict numeric subset reader. Failed or inconclusive output produces a report-only bundle and exits 1; argument/profile/stale-plan/I/O errors exit 2. Existing outputs are never overwritten. Verification resource flags match `verify`; output decimal precision comes from the profile.
+
+Run `scripts/check-m6.ps1` after a release build to reproduce eight fixture expectations and saved-byte readbacks. The [M6 capability report](../docs/flat-v-carve/m6-capability-report.md) records contracts and limits. LinuxCNC preview/simulation with the actual macro/configuration remains pending; the bundled cutting settings are synthetic fixtures.
 
 ## M1 target and cutter previews
 

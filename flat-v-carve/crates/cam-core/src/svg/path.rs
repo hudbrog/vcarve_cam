@@ -2,7 +2,7 @@ use super::{Result, error};
 use crate::geometry::{Point, Segment};
 use svgtypes::{PathParser, PathSegment as S};
 
-pub(super) const MAX_VERTICES: usize = 4096;
+pub(super) const MAX_VERTICES: usize = 2_000_000;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Matrix(pub [f64; 6]);
@@ -76,7 +76,7 @@ impl Flattener {
         if self.total > MAX_VERTICES {
             return Err(error(
                 "SVG_CURVE_LIMIT",
-                "flattening exceeds 4096 vertices; increase tolerance or simplify artwork",
+                "flattening exceeds two million vertices; partition the artwork",
             ));
         }
         self.points.push(p);
@@ -153,7 +153,7 @@ impl Flattener {
         let n = (sweep.abs() * (curvature / (8.0 * self.tolerance)).sqrt())
             .ceil()
             .max(1.0);
-        if !n.is_finite() || n > MAX_VERTICES as f64 {
+        if !n.is_finite() || n > 65_536. {
             return Err(error(
                 "SVG_CURVE_LIMIT",
                 "elliptical arc exceeds the curve subdivision budget",

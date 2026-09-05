@@ -1,7 +1,7 @@
 # Flat V-carve CAM: implementation plan
 
 Date: 2026-09-05\
-Status: M0–M5 implemented; M5 validated on native Windows x64. M6–M8 planned.
+Status: M0–M5 implemented; M6 postprocessor and numeric readback implemented on native Windows x64, with actual controller validation pending. M7–M8 integration/release work remains planned.
 
 Read [architecture](architecture.md) for agreed scope and [technical design](technical-design.md) for geometry and contracts. This plan orders work by uncertainty: establish the geometric foundation before investing in application polish or relying on machine output.
 
@@ -27,7 +27,7 @@ No calendar estimate is assigned yet. The dependency and geometry spike should e
 | M3 ✓ | Endmill planner and recorded stock removal | M1; integrate M2 | [Completed capability report](m3-capability-report.md): 84 tests, 10 release fixtures, continuous clearance, and actual endmill stock. |
 | M4 ✓ | V-bit paths and combined rest machining | M3 | [Completed capability report](m4-capability-report.md): 108 tests, 13 release fixtures, curved/rising detail, floor ridges, and retained final finishing. |
 | M5 ✓ | Verification of continuous and rounded motions | M4 | [Completed capability report](m5-capability-report.md): 127 tests, bounded stock/quality checks, rounded-coordinate revalidation, and ten release expectations. |
-| M6 | LinuxCNC postprocessor and machine-profile contract | M5 | Emitted-subset checks and LinuxCNC preview/simulation. |
+| M6 (software implemented) | LinuxCNC postprocessor and machine-profile contract | M5 | [Export and emitted-subset checks](m6-capability-report.md); actual LinuxCNC preview/simulation remains pending. |
 | M7 | Local browser workflow | M2 and stable planning contracts; integrate M6 | Import-to-export parity with CLI and responsive planning. |
 | M8 | Measured machining trial and usable release | M6, M7 | Test carving, measured deviations, reproducible installation and documented limits. |
 
@@ -128,16 +128,21 @@ Completed 2026-09-05 with engine 0.6.0 on Windows x64 and pinned Rust 1.95.0. De
 
 ## 9. M6: LinuxCNC integration
 
-- [ ] Obtain the actual M6 macro/configuration behavior and document its preconditions/postconditions.
-- [ ] Set tool numbers and choose macro-managed or post-managed length compensation.
-- [ ] Define work offset, clearance plane, spindle/feed settings, and output precision in the profile.
-- [ ] Emit an explicit modal setup and linear moves with G61 initially.
-- [ ] Group endmill work before V-bit work and support combined/per-tool programs.
-- [ ] Restore required cutting state after M6 without overwriting macro-managed offsets.
-- [ ] Implement a reader for the emitted numeric G-code subset and recheck its motion list.
+- [x] Document user-described M6 preconditions/postconditions: Z-only TLO, stock-bottom/worktable datum, unchanged XY offsets, and user-specified Z150 then X0 Y0 safe positioning.
+- [x] Set provisional T1/T2 and implement macro-managed and post-managed length compensation policies.
+- [x] Define work offset, stock datum, clearance, spindle/feed state, and output precision in an explicit profile.
+- [x] Emit an explicit modal setup and linear moves with G61 initially.
+- [x] Group endmill work before V-bit work and support combined/per-tool programs.
+- [x] Restore required cutting state after M6 without overwriting macro-managed offsets.
+- [x] Implement a reader for the emitted numeric G-code subset and recheck its motion list.
+- [ ] Check the actual M6 macro, tool table, and INI/HAL configuration against the declared contract.
 - [ ] Inspect programs in LinuxCNC preview or a matching simulation configuration.
 
 **Exit:** tool selection, compensation, units, work offset, spindle restart, and stage transitions match the documented profile. Independent per-tool files do not depend on a previous file's modal state. There are no guessed machine positions or hidden probing assumptions.
+
+Engine 0.7.1 implements the software portion. Export verifies the authenticated original plan and the actual translated/formatted numeric program; failed/inconclusive results publish no G-code. Per-tool V-bit files retain the explicit prior-endmill stock prerequisite. The [M6 capability report](m6-capability-report.md) distinguishes Windows regression evidence from the pending actual controller validation; the milestone's full machine-integration exit is not yet claimed.
+
+G-code review also exposed redundant V-bit floor rastering. Engine 0.7.1 restricts floor cleanup contours to residual endmill stock while retaining boundary and rising-corner finishing. The island regression checks path locality, entry count, cutting distance, and original/rounded M5 acceptance; an acute pocket with no endmill access checks full V-bit floor coverage.
 
 ## 10. M7: local browser workflow
 
@@ -192,3 +197,5 @@ Compare the target and actual sweeps through independent calculations where poss
 ## 13. Optimization backlog
 
 After the combined workflow is reliable, evaluate path ordering, verified in-stock links, accelerated stock analysis, multiple clearance tools, arc fitting, bounded LinuxCNC blending, and WebAssembly. Each optimization retains the same fixtures and verification requirements. A changed strategy must not silently weaken the user's finish tolerance or remove small details.
+
+Engine 0.7.2 starts real-artwork scalability work ahead of M7. The [scalability report](scalability-report.md) records spatial topology/distance/stock indexes, batch and balanced unions, compact authenticated plan files, successful import through 994,300 vertices, and complete M4 planning for the unchanged flower artwork. The 100× result is import-only. Follow-up acceptance requires connected medial traversal, component-local work, scalable M5 verification, and bounded preview/artifact output, measured on real connected and repeated artwork at 10× and 100× volume.

@@ -431,9 +431,13 @@ fn curve_and_input_limits_fail_explicitly() {
         "SVG_CURVE_LIMIT"
     );
     assert_eq!(
-        import_svg(&" ".repeat(2_000_001), &ImportOptions::default(), None)
-            .unwrap_err()
-            .code,
+        import_svg(
+            &" ".repeat(cam_core::svg::MAX_SVG_BYTES + 1),
+            &ImportOptions::default(),
+            None
+        )
+        .unwrap_err()
+        .code,
         "SVG_RESOURCE_LIMIT"
     );
     let nested = svg(&format!("{}{}{}", "<g>".repeat(66), BOX, "</g>".repeat(66)));

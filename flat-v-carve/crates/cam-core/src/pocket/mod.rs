@@ -63,6 +63,8 @@ pub struct EndmillPlan {
     pub spindle_rpm: f64,
     pub motions: Vec<Motion>,
     pub generation_issues: Vec<GenerationIssue>,
+    // Derived geometry is rebuilt on load and belongs in inspection reports.
+    #[serde(skip_serializing)]
     pub analysis: EndmillAnalysis,
 }
 #[derive(Deserialize)]
@@ -90,9 +92,16 @@ fn input_hash(job: &Job) -> Result<String> {
 }
 impl EndmillPlan {
     pub fn to_json(&self) -> Result<String> {
-        serde_json::to_string_pretty(self)
+        let json = serde_json::to_string(self)
             .map(|s| s + "\n")
-            .map_err(|e| error("PLAN_JSON", e.to_string()))
+            .map_err(|e| error("PLAN_JSON", e.to_string()))?;
+        if json.len() > 128_000_000 {
+            return Err(error(
+                "PLAN_RESOURCE_LIMIT",
+                "plan exceeds the 128 MB reload limit",
+            ));
+        }
+        Ok(json)
     }
     /// Recompute geometry, clearance and stock; serialized analysis is never trusted.
     pub fn from_json(json: &str) -> Result<Self> {

@@ -4,6 +4,7 @@ pub mod job;
 pub mod model;
 pub mod motion;
 pub mod pocket;
+pub mod post;
 pub mod preview;
 pub mod spike;
 pub mod stock;

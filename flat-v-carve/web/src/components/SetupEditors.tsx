@@ -19,7 +19,7 @@ export function StockSetup({ fields }: Props) {
 }
 export function ToolsSetup({ draft, fields, dispatch }: Props) {
   return <>
-    <Group title="Desired shape">{fields(shapeFields)}<p className="hint">Physical finish allowances are separate from numerical accuracy. Enter values for your actual setup; no cutting settings are filled automatically.</p></Group>
+    <Group title="Desired shape">{fields(shapeFields)}<p className="hint">Endmill wall allowance defaults to 0 mm. Increase it to leave stock for V-bit cleanup. Physical finish allowances are separate from numerical accuracy.</p></Group>
     {(['endmill', 'vbit'] as const).map((kind, index) => <details className="tool-section" key={kind} open>
       <summary><span className={`tool-index ${kind}`}>{index + 1}</span>{kind === 'endmill' ? 'Endmill clearing' : 'V-bit rest & finish'}</summary>
       {fields(toolFields(draft.base, kind))}

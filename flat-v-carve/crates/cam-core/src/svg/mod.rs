@@ -1,6 +1,7 @@
 //! Supported-subset SVG importer. XML is data only; no filesystem or network access.
 mod path;
 mod style;
+use crate::geometry::spatial::{Aabb, SpatialIndex};
 use crate::geometry::{BooleanOp, Diagnostic, Grid, Point, Region, Result, WindingRule};
 use path::{Flattener, MAX_VERTICES, Matrix};
 use roxmltree::{Document, Node};
@@ -9,7 +10,7 @@ use std::collections::BTreeSet;
 use style::Style;
 
 const SVG_NS: &str = "http://www.w3.org/2000/svg";
-pub const MAX_SVG_BYTES: usize = 2_000_000;
+pub const MAX_SVG_BYTES: usize = 32_000_000;
 
 pub(super) fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("svg")
@@ -157,7 +158,7 @@ pub fn import_svg(
     if source.len() > MAX_SVG_BYTES {
         return Err(error(
             "SVG_RESOURCE_LIMIT",
-            "SVG exceeds the 2 MB input limit",
+            "SVG exceeds the 32 MB input limit",
         ));
     }
     Grid::new(options.geometry_tolerance_mm, 0.)?;
@@ -166,7 +167,7 @@ pub fn import_svg(
         source,
         roxmltree::ParsingOptions {
             allow_dtd: false,
-            nodes_limit: 20_000,
+            nodes_limit: 200_000,
             ..Default::default()
         },
     )
@@ -345,25 +346,43 @@ pub fn import_svg(
         |s| s.to_vec(),
     );
     let unique: BTreeSet<_> = selection.iter().collect();
-    if unique.len() != selection.len()
-        || selection
-            .iter()
-            .any(|id| !sources.iter().any(|s| s.id == *id))
-    {
+    let known: BTreeSet<_> = sources.iter().map(|s| &s.id).collect();
+    if unique.len() != selection.len() || !unique.is_subset(&known) {
         return Err(error(
             "SVG_SELECTION",
             "selection contains duplicate or unknown region IDs; inspect the source components",
         ));
     }
-    let mut selected = Region::from_rings(grid, &[])?;
-    for s in sources.iter().filter(|s| unique.contains(&s.id)) {
-        selected = selected.boolean(BooleanOp::Union, &s.geometry)?;
-    }
+    let selected_sources: Vec<_> = sources.iter().filter(|s| unique.contains(&s.id)).collect();
+    let selected = Region::union_all(
+        grid,
+        &selected_sources
+            .iter()
+            .map(|s| &s.geometry)
+            .collect::<Vec<_>>(),
+    )?;
+    let source_index = SpatialIndex::new(
+        selected_sources
+            .iter()
+            .map(|s| {
+                let b = Bounds::of(&s.geometry).unwrap();
+                Aabb::new(b.min, b.max)
+            })
+            .collect(),
+    );
     let mut components = vec![];
     for geometry in selected.components() {
         let mut selected_region_ids = vec![];
         let mut source_ids = BTreeSet::new();
-        for s in sources.iter().filter(|s| unique.contains(&s.id)) {
+        let bounds = Bounds::of(&geometry).unwrap();
+        let mut candidates = vec![];
+        source_index.visit(Aabb::new(bounds.min, bounds.max), |i| {
+            candidates.push(i);
+            Ok(())
+        })?;
+        candidates.sort_unstable();
+        for i in candidates {
+            let s = selected_sources[i];
             if geometry
                 .boolean(BooleanOp::Intersection, &s.geometry)?
                 .area_mm2()
@@ -640,7 +659,7 @@ impl Reader {
         if self.vertices > MAX_VERTICES {
             return Err(error(
                 "SVG_RESOURCE_LIMIT",
-                "total flattened input exceeds 4096 vertices",
+                "total flattened input exceeds two million vertices",
             ));
         }
         // We do not emulate viewport clipping. Refuse artwork that could be cropped.

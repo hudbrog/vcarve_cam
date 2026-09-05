@@ -80,12 +80,10 @@ fn representative_combined_stock_has_bounded_finish_errors() {
         assert_eq!(r.status, VerificationStatus::Passed, "{name}");
         assert!(r.original.maximum_error_uncertainty_mm <= 0.05);
         assert!(r.original.evaluated_cells <= VerificationOptions::default().max_cells);
-        if name == "wide-floor" {
-            // Long pointed-bit lanes have spacing 1.6 * ridge = 0.24 mm.
-            // Their analytic maximum ridge is spacing / (2*tan(45 degrees)).
-            assert!(r.original.bounds.floor_ridge_mm.lower <= 0.12);
-            assert!(r.original.bounds.floor_ridge_mm.upper >= 0.12);
-        }
+        assert!(
+            r.original.bounds.floor_ridge_mm.upper
+                <= p.endmill.job.operation.max_floor_ridge_mm.unwrap()
+        );
     }
 }
 

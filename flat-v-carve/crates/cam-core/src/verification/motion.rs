@@ -100,10 +100,15 @@ pub(super) fn check(
 ) -> (usize, Vec<Finding>) {
     let settings = ctx.job.endmill_planning.as_ref().unwrap();
     let round = |x| places.map_or(x, |n| coordinate(x, n));
-    let clearance = round(settings.clearance_z_mm);
+    let clearance = ctx
+        .emitted_start
+        .map_or_else(|| round(settings.clearance_z_mm), |p| p.z);
     let mut previous = Position::new(settings.start_xy_mm, settings.clearance_z_mm);
     if let Some(n) = places {
         previous = position(previous, n);
+    }
+    if let Some(start) = ctx.emitted_start {
+        previous = start;
     }
     let mut clear = 0;
     let mut findings = vec![];

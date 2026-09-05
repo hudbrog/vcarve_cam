@@ -197,6 +197,7 @@ struct Context<'a> {
     detail: f64,
     reserve: f64,
     source_error: f64,
+    emitted_start: Option<crate::motion::Position>,
 }
 impl<'a> Context<'a> {
     fn new(job: &'a Job) -> Result<Self> {
@@ -263,6 +264,7 @@ impl<'a> Context<'a> {
             tolerance,
             reserve,
             source_error,
+            emitted_start: None,
             allowance: Length::new(required(
                 job.operation.wall_allowance_mm,
                 "wall_allowance_mm",
@@ -274,6 +276,22 @@ impl<'a> Context<'a> {
             )?,
         })
     }
+}
+
+/// The post's reader has already decoded machine words into stock-top space.
+/// Use the decoded initial position/clearance, without formatting a second
+/// time or changing the job's target. Only the post can supply this override.
+pub(crate) fn verify_emitted_motions(
+    job: &Job,
+    endmill: &[Motion],
+    vbit: &[Motion],
+    options: &VerificationOptions,
+    emitted_start: crate::motion::Position,
+) -> Result<StockVerification> {
+    options.validate()?;
+    let mut ctx = Context::new(job)?;
+    ctx.emitted_start = Some(emitted_start);
+    adaptive::verify(&ctx, endmill, vbit, options, None, vec![])
 }
 
 /// Checks raw motion lists, useful for challenging the verifier independently of

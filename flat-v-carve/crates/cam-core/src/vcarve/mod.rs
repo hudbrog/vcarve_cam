@@ -2,6 +2,7 @@
 //! quality evidence; adaptive full-volume certification remains M5.
 mod medial;
 mod quality;
+mod rest;
 mod settings;
 mod verify;
 use crate::{
@@ -68,6 +69,8 @@ pub struct CombinedPlan {
     pub vbit_motions: Vec<Motion>,
     pub executions: Vec<Execution>,
     pub generation_issues: Vec<GenerationIssue>,
+    // Cached stock, medial geometry and samples are regenerated, never trusted.
+    #[serde(skip_serializing)]
     pub analysis: CombinedAnalysis,
 }
 #[derive(Deserialize)]
@@ -98,9 +101,16 @@ fn identity(endmill: &EndmillPlan) -> Result<String> {
 }
 impl CombinedPlan {
     pub fn to_json(&self) -> Result<String> {
-        serde_json::to_string_pretty(self)
+        let json = serde_json::to_string(self)
             .map(|s| s + "\n")
-            .map_err(|e| error("PLAN_JSON", e.to_string()))
+            .map_err(|e| error("PLAN_JSON", e.to_string()))?;
+        if json.len() > 128_000_000 {
+            return Err(error(
+                "PLAN_RESOURCE_LIMIT",
+                "combined plan exceeds the 128 MB reload limit",
+            ));
+        }
+        Ok(json)
     }
     pub fn from_json(json: &str) -> Result<Self> {
         if json.len() > 128_000_000 {
@@ -316,7 +326,10 @@ fn candidates(ctx: &Context, endmill: &EndmillPlan) -> Result<(MedialAxis, Vec<C
             .boolean(BooleanOp::Difference, &before.lower)?;
         let spacing = ctx
             .stepover
-            .min(1.6 * (ctx.tool.tip_radius().mm() + ctx.ridge * ctx.tool.angle().slope()));
+            // Contours converge at corners; the parallel-line half-spacing
+            // formula alone is insufficient there. Keep each offset band
+            // within one permitted-ridge cutter footprint with a reserve.
+            .min(0.9 * (ctx.tool.tip_radius().mm() + ctx.ridge * ctx.tool.angle().slope()));
         if ctx.tool.tip_radius().mm() == 0. && ctx.ridge == 0. && !needed.rings().is_empty() {
             return Err(error(
                 "ZERO_RIDGE_AREA_CLEARING",
@@ -330,26 +343,7 @@ fn candidates(ctx: &Context, endmill: &EndmillPlan) -> Result<(MedialAxis, Vec<C
                     "floor lane spacing cannot be represented with the current precision",
                 ));
             }
-            // Keep boundary ends while allowing interior thirds to receive an
-            // independent whole-sweep air proof against recorded endmill cuts.
-            paths = lanes(&centers, spacing, ctx.settings.max_paths)?
-                .into_iter()
-                .flat_map(|lane| {
-                    (0..3).map(move |i| Candidate {
-                        family: PathFamily::Floor,
-                        points: vec![
-                            lane.points[0].lerp(lane.points[1], i as f64 / 3.),
-                            lane.points[0].lerp(lane.points[1], (i + 1) as f64 / 3.),
-                        ],
-                        source_branch: None,
-                    })
-                })
-                .collect();
-            for p in &mut paths {
-                for q in &mut p.points {
-                    q.z = -cap;
-                }
-            }
+            paths = rest::floor_paths(ctx, &centers, &needed, spacing)?;
         }
         for mut ring in centers.rings_mm() {
             ring.push(ring[0]);

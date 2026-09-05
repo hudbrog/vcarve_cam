@@ -20,12 +20,12 @@ pub struct VBitPlanningSettings {
 }
 impl VBitPlanningSettings {
     pub fn validate(&self) -> Result<()> {
-        if !(1..=4096).contains(&self.max_paths)
-            || !(1..=100_000).contains(&self.max_motions)
-            || !(1..=65_536).contains(&self.max_curve_segments)
+        if !(1..=65_536).contains(&self.max_paths)
+            || !(1..=1_000_000).contains(&self.max_motions)
+            || !(1..=1_000_000).contains(&self.max_curve_segments)
             || !(1..=256).contains(&self.max_depth_passes)
             || self.max_cleanup_iterations > 8
-            || !(1..=50_000).contains(&self.max_quality_samples)
+            || !(1..=1_000_000).contains(&self.max_quality_samples)
             || !(1..=100_000).contains(&self.reachability_max_cells)
             || !(1..=32).contains(&self.stock_slices)
         {

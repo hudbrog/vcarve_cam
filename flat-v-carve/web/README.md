@@ -25,7 +25,7 @@ The production bundle is in `dist/`, with relative asset URLs for future local s
 ## What works
 
 - Persistent 2D viewport, six-step navigator, inspector, and issues/activity drawer.
-- Source/component inspection, explicit machining inclusion, independent visibility, and preserved holes. The bundled Inkscape coupon uses real captured Rust normalization; it is synthetic artwork with all machining settings unset.
+- Source/component inspection, explicit machining inclusion, independent visibility, and preserved holes. The bundled Inkscape coupon uses real captured Rust normalization; a new example job defaults the editable endmill wall allowance to 0 mm, matching Rust import. Other machining settings remain unset. Opening saved jobs preserves their allowance values.
 - Display-only placement, fit job/inspected region, zoom, pointer/keyboard pan, and physical axes. Placement uses `scale × rotate(page XY − origin)`; no machining calculations run in TypeScript.
 - Stock, placement, target allowances, both tool geometries/cutting values, and accuracy fields. Travel, entry/strategy, all current resource/sampling limits, and machine-profile fields are editable. Empty fields are distinct from zero; capability choices distinguish unset/Yes/No. Partial numeric and grouped inputs remain editable.
 - Schema 3 job file open/download, undo/redo, and recovery across reloads in the **same browser tab**. Recovery is distinct from a downloaded portable snapshot. Open/replacement is undoable; rejected input preserves the current draft. Invalid recovery is preserved until explicitly replaced.

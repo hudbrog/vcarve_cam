@@ -1,4 +1,5 @@
 //! Cached, independent distances and containment; no polygon offset or Voronoi calls.
+use super::spatial::{Aabb, SpatialIndex};
 use super::{Diagnostic, Point, Region, Result, Segment};
 use serde::Serialize;
 
@@ -21,8 +22,8 @@ pub struct Clearance {
 
 #[derive(Clone, Debug)]
 pub struct BoundaryQuery {
-    rings: Vec<Vec<Point>>,
     segments: Vec<Segment>,
+    index: SpatialIndex,
     magnitude: f64,
     query_limit: f64,
 }
@@ -35,9 +36,11 @@ impl BoundaryQuery {
             .flatten()
             .map(|p| p.x.abs().max(p.y.abs()))
             .fold(1.0, f64::max);
+        let segments = region.segments();
+        let index = SpatialIndex::new(segments.iter().map(|s| Aabb::new(s.start, s.end)).collect());
         Self {
-            rings,
-            segments: region.segments(),
+            segments,
+            index,
             magnitude,
             query_limit: 4.0 * region.grid().max_coordinate_mm(),
         }
@@ -57,11 +60,11 @@ impl BoundaryQuery {
         self.sample(min)?;
         self.sample(max)?;
         let corners = [min, Point::new(max.x, min.y), max, Point::new(min.x, max.y)];
-        let mut lower = f64::INFINITY;
-        let mut upper = f64::INFINITY;
-        for &edge in &self.segments {
+        let bounds = Aabb::new(min, max);
+        let mut lower = self.index.minimum(bounds, |i| {
+            let edge = self.segments[i];
             let inside = |p: Point| p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y;
-            let least = if inside(edge.start) || inside(edge.end) {
+            if inside(edge.start) || inside(edge.end) {
                 0.
             } else {
                 (0..4)
@@ -75,10 +78,14 @@ impl BoundaryQuery {
                         )
                     })
                     .fold(f64::INFINITY, f64::min)
-            };
-            lower = lower.min(least);
-            upper = upper.min(corners.iter().map(|&p| edge.distance(p)).fold(0., f64::max));
-        }
+            }
+        });
+        let mut upper = self.index.minimum(bounds, |i| {
+            corners
+                .iter()
+                .map(|&p| self.segments[i].distance(p))
+                .fold(0., f64::max)
+        });
         let reserve = sample.numerical_reserve_mm * 4.;
         upper += reserve;
         if lower <= reserve {
@@ -106,8 +113,9 @@ impl BoundaryQuery {
         }
         let mut inside = false;
         let mut boundary = false;
-        for ring in &self.rings {
-            for (&a, &b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+        self.index
+            .visit(Aabb::new(p, Point::new(self.query_limit, p.y)), |i| {
+                let Segment { start: a, end: b } = self.segments[i];
                 let orientation = orient(a, b, p);
                 if orientation == 0.0
                     && p.x >= a.x.min(b.x)
@@ -120,13 +128,11 @@ impl BoundaryQuery {
                 if (a.y > p.y) != (b.y > p.y) && ((orientation > 0.0) == (b.y > a.y)) {
                     inside = !inside;
                 }
-            }
-        }
+                Ok(())
+            })?;
         let distance = self
-            .segments
-            .iter()
-            .map(|s| s.distance(p))
-            .fold(f64::INFINITY, f64::min);
+            .index
+            .minimum(Aabb::new(p, p), |i| self.segments[i].distance(p));
         let location = if boundary {
             PointLocation::Boundary
         } else if inside {
@@ -153,10 +159,10 @@ impl BoundaryQuery {
         self.sample(segment.start)?;
         self.sample(segment.end)?;
         Ok(self
-            .segments
-            .iter()
-            .map(|&edge| segment_distance(segment, edge))
-            .fold(f64::INFINITY, f64::min))
+            .index
+            .minimum(Aabb::new(segment.start, segment.end), |i| {
+                segment_distance(segment, self.segments[i])
+            }))
     }
 
     /// Lower margin for a linearly changing disk along a linear XY move.
@@ -180,8 +186,31 @@ impl BoundaryQuery {
         let vx = segment.end.x - segment.start.x;
         let vy = segment.end.y - segment.start.y;
         let dr = r1 - r0;
-        let mut margin = f64::INFINITY;
-        for edge in &self.segments {
+        // An edge outside this expanded motion box is at least r_max + 1 mm
+        // from every center. Its clearance therefore exceeds 1 mm. Round the
+        // search outward; retain 1 mm as a conservative bound for skipped edges.
+        // Nearby edges still use the same continuous quadratic proof below.
+        let magnitude = self
+            .magnitude
+            .max(segment.start.x.abs())
+            .max(segment.start.y.abs())
+            .max(segment.end.x.abs())
+            .max(segment.end.y.abs());
+        let padding = r0.max(r1) + 1. + 1024. * f64::EPSILON * (magnitude + r0 + r1 + 1.);
+        let bounds = Aabb::new(segment.start, segment.end);
+        let bounds = Aabb::new(
+            Point::new(bounds.min.x - padding, bounds.min.y - padding),
+            Point::new(bounds.max.x + padding, bounds.max.y + padding),
+        );
+        if !bounds.min.finite() || !bounds.max.finite() {
+            return Err(Diagnostic::new(
+                "SWEEP_RANGE",
+                "sweep bounds exceed finite range",
+            ));
+        }
+        let mut margin: f64 = 1.;
+        self.index.visit(bounds, |i| {
+            let edge = &self.segments[i];
             let wx = edge.end.x - edge.start.x;
             let wy = edge.end.y - edge.start.y;
             let ww = wx * wx + wy * wy;
@@ -236,7 +265,8 @@ impl BoundaryQuery {
                 // A negative numerator is a rejection; its quotient is only a diagnostic.
                 margin = margin.min((least - reserve) / denom.max(f64::MIN_POSITIVE));
             }
-        }
+            Ok(())
+        })?;
         Ok(margin)
     }
 }

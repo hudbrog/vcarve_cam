@@ -346,6 +346,9 @@ fn cutter_limited_detail_is_measured_separately_from_missed_reachable_stock() {
 fn saved_combined_reports_recompute_and_reject_stale_motion_or_job_edits() {
     let p = planned("narrow-channel");
     let saved = p.to_json().unwrap();
+    let artifact: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert!(artifact.get("analysis").is_none());
+    assert!(artifact["endmill"].get("analysis").is_none());
     assert_eq!(
         CombinedPlan::from_json(&saved).unwrap().to_json().unwrap(),
         saved

@@ -1,15 +1,15 @@
 # Flat V-carve CAM: technical design
 
 Date: 2026-09-05\
-Status: M0–M5 implemented and tested, including both planners, combined previews, bounded continuous stock verification, and rounded-coordinate checks. Machine output remains M6 work.
+Status: M0–M5 implemented and tested. M6 linear LinuxCNC output, machine profiles, and numeric readback are implemented; actual controller validation remains pending.
 
 See [architecture](architecture.md) for scope and component boundaries, and [implementation plan](implementation-plan.md) for delivery order. Unless explicitly attributed to a source, the geometry below is derived for this project.
 
 The [M3 capability report](m3-capability-report.md) defines the current endmill-only implementation: offset loops with a numerical guard, explicit plunge/ramp entries, clearance-plane links, independent continuous segment clearance, and actual-motion stock comparisons at stepdown slices. M3 uses `verification_tolerance_mm` as the XY floor-coverage tolerance at those slices. An M3 `complete` stage does not claim the separate M5 adaptive stock/quality contract below.
 
-The [M4 capability report](m4-capability-report.md) defines the current combined planner: guarded full-depth boundaries, threshold-split medial paths, floor lanes, conservative air proofs against actual endmill sweeps, bounded cleanup, and a retained final finishing family. M4 checks continuous linear-radius cutter clearance, floor coverage at the ridge depth minus an explicit numerical budget, and a configurable sample lattice with independent reachability bounds. Its sampled quality maxima and fixed slices are not the adaptive global certification specified for M5.
+The [M4 capability report](m4-capability-report.md) records the original combined planner: guarded full-depth boundaries, threshold-split medial paths, floor lanes, conservative air proofs against actual endmill sweeps, bounded cleanup, and a retained final finishing family. Engine 0.7.1 replaces broad floor lanes with contours clipped to residual stock, described below. M4 checks continuous linear-radius cutter clearance, floor coverage at the ridge depth minus an explicit numerical budget, and a configurable sample lattice with independent reachability bounds. Its sampled quality maxima and fixed slices are not the adaptive global certification specified for M5.
 
-The [M5 capability report](m5-capability-report.md) defines the implemented continuous verifier. Independent analytical point and box bounds drive adaptive height-field/depth-band refinement over the normalized target and every cutting footprint. Reported maximum-error intervals satisfy the requested verification uncertainty before passing. Explicit floor/detail limits are not increased by M4's numerical allowance. Decimal coordinate formatting triggers independent semantic and stock revalidation; cached reports cannot authorize changed jobs or motions. Source conversion error is reported separately from normalized-target bounds. Physical machine and emitted-program verification remain M6.
+The [M5 capability report](m5-capability-report.md) defines the implemented continuous verifier. Independent analytical point and box bounds drive adaptive height-field/depth-band refinement over the normalized target and every cutting footprint. Reported maximum-error intervals satisfy the requested verification uncertainty before passing. Explicit floor/detail limits are not increased by M4's numerical allowance. Decimal coordinate formatting triggers independent semantic and stock revalidation; cached reports cannot authorize changed jobs or motions. Source conversion error is reported separately from normalized-target bounds. M6 adds emitted-program verification; actual physical-machine validation remains pending.
 
 ## 1. Coordinate and tolerance conventions
 
@@ -26,7 +26,7 @@ Separate these controls:
 | `verification_tolerance_mm` | Requested uncertainty bound for stock comparison. |
 | `max_floor_ridge_mm` | Permitted physical ridges above the target floor after V-bit clearing. |
 | `max_detail_residual_mm` | Permitted depth residual in nominal detail proved unreachable by the selected cutters; distinct from missed reachable material. |
-| `wall_allowance_mm` | Extra horizontal stock left by the endmill near the target wall. |
+| `wall_allowance_mm` | Configurable extra horizontal stock left by the endmill near the target wall; new jobs default to 0 mm. Saved values are preserved when opening jobs. |
 | Output precision | Decimal resolution of serialized machine coordinates. |
 
 No machining defaults are confirmed yet. Numerical tolerances are not substitutes for finishing allowances. The verifier must aggregate approximation bounds; rounding and each processing stage cannot independently consume the entire allowed error.
@@ -200,7 +200,9 @@ The initial implementation generates complete candidate paths and conservatively
 
 Add intermediate V-bit depth passes within the configured stepdown. Respect stock remaining before the V-bit stage rather than assuming that every channel was roughed by the endmill. Stepdown is a geometric limit, not a prediction of acceptable cutting forces.
 
-For floor cleanup, use clipped parallel lanes plus boundary coverage first. Recompute residuals after their actual sweeps. Narrow leftover regions require another valid path family or an explicit unreachable/unfinished diagnostic; reducing the lane spacing alone must not loop forever.
+For floor cleanup, subtract the conservative lower bound of recorded endmill removal at the depth cap from the target floor. Expand that residual region by the V-bit radius at the permitted ridge height plus the numerical guard, retaining centers that finish neighboring stock. Clip successive inward contours of the full-depth center region to this support region, preserving separate fragments and holes. The zero-offset contour belongs to the mandatory boundary family. Contour spacing is capped by the configured stepover and 90% of the permitted-ridge footprint radius; converging corners need more reserve than the parallel-lane half-spacing formula. A local raster covers a final thin core when the next offset has no area. Offset levels and output paths obey explicit resource limits.
+
+Recompute residuals after the actual sweeps and retain independent depth-pass air proofs and the final boundary/rising-medial finish. The stock mask selects candidate paths; it does not certify clearance or finish quality. M5 verifies the resulting continuous stock independently. Narrow leftover regions require another valid path family or an explicit unfinished diagnostic; reducing spacing alone must not loop forever.
 
 Finish with the complete achievable boundary, including island boundaries and rising corner paths. Output order is all endmill work followed by all V-bit work.
 
@@ -283,16 +285,17 @@ Use versioned JSON for jobs and planning artifacts. UI transport schemas are der
 
 A saved job can be incomplete while the user is editing it. Planning validates all required machining fields. Export additionally requires a complete machine profile and a successful verification of the required bounds.
 
-M2's schema-version-1 `Job` implements embedded artwork, import placement/precision, selected component IDs, nullable stock/operation/tool settings, tolerances, and an optional editable machine profile. It stores no trusted normalized-geometry cache. The implemented `import`, `inspect`, `select`, and `validate-job` commands rebuild/validate the source snapshot. M3 and M4 extend the job through schemas 2 and 3 and implement `plan`, `inspect`, and `verify` for endmill/combined artifacts. Export still requires M5 verification and the M6 machine profile.
+M2's schema-version-1 `Job` implements embedded artwork, import placement/precision, selected component IDs, nullable stock/operation/tool settings, tolerances, and an optional editable machine profile. It stores no trusted normalized-geometry cache. The implemented `import`, `inspect`, `select`, and `validate-job` commands rebuild/validate the source snapshot. M3 and M4 extend the job through schemas 2 and 3 and implement `plan`, `inspect`, and `verify` for endmill/combined artifacts. Export now requires M5 verification and a complete, separately versioned M6 LinuxCNC profile.
 
-CLI (`export` and `serve` remain planned):
+CLI (`serve` remains planned):
 
 ```text
 cam import artwork.svg --output job.json
 cam plan job.json --output job.plan.json
 cam inspect job.plan.json --output preview.svg
 cam verify job.plan.json --output verification.json
-cam export job.plan.json --output job.ngc
+cam export job.plan.json --profile machine.json --output new-export-directory
+cam verify-gcode job.plan.json --profile machine.json --program new-export-directory/combined.ngc --output new-readback.json
 cam serve
 ```
 
@@ -315,10 +318,14 @@ Before a tool change, retract according to the known current setup and stop the 
 
 The combined program groups both stages with descriptive comments and tool IDs. Separate per-tool exports contain complete setup/end sequences. Account for output rounding by regenerating the numeric move list from emitted words and validating it against the plan. The emitted-subset reader is not a general LinuxCNC interpreter; macro semantics are covered by the profile and machine tests.
 
+Engine 0.7.1 implements these software contracts in `post`. The separately versioned `LinuxCncProfile` adds explicit stock-top/stock-bottom datum translation, tool/H mapping, spindle direction/dwell/coolant, and M6 return policies. The user-described macro establishes Z-only TLO with stock-bottom/worktable zero; output adds stock thickness before formatting, preserving the internal stock-top model. The user-specified safe sequence is work-coordinate Z150 followed by X0 Y0. Its unknown initial sensor corridor is a machine-contract action, counted separately from geometrically checked motion.
+
+`export` accepts only an authenticated combined plan, checks original stock, emits and parses the selected combined/per-tool layout, compares every numeric motion, and rechecks decoded output stock. It publishes a new directory with reports and, only on success, G-code. Existing bundles are preserved. `verify-gcode` checks saved bytes and binds their hashes without interpreting arbitrary macros or expressions. See the [M6 report](m6-capability-report.md) for sequence, profile assumptions, strict grammar, evidence, and pending LinuxCNC integration.
+
 ## 10. Diagnostics and unresolved engineering work
 
 Diagnostics have a stable code, severity, stage, source region/operation, and optional geometric location. Expected cases include unsupported SVG features, collapsed regions, invalid tool geometry, unreachable detail, incomplete floor clearing, overcut, uncertain verification, missing machine settings, and cancellation.
 
 Planning may return a partial diagnostic preview, but it must label it incomplete. No automatic geometric repair or resource-limit fallback may silently remove requested detail.
 
-M4 implements bounded curved-medial paths and measured rest-floor coverage for the documented fixture workload. M5 adds adaptive global stock/quality bounds against normalized geometry and output-coordinate revalidation, independently of preview Boolean unions. Source topology/conversion error remains a separately reported input limitation. M6 must verify the emitted numeric program and actual machine-profile contract before usable machine output.
+M4 implements bounded curved-medial paths and measured rest-floor coverage for the documented fixture workload. M5 adds adaptive global stock/quality bounds against normalized geometry and output-coordinate revalidation, independently of preview Boolean unions. Source topology/conversion error remains a separately reported input limitation. M6 verifies the emitted numeric program under the declared profile; actual macro/configuration and controller validation remain pending.

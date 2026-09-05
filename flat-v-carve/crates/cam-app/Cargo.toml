@@ -10,6 +10,7 @@ name = "cam"
 path = "src/main.rs"
 
 [dependencies]
+serde.workspace = true
 cam-core = { path = "../cam-core" }
 serde_json.workspace = true
 
