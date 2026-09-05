@@ -1,0 +1,72 @@
+{
+  "schema_version": 3,
+  "name": "inkscape-export.svg",
+  "source": {
+    "filename": "inkscape-export.svg",
+    "svg": "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n<svg\n   width=\"100mm\"\n   height=\"60mm\"\n   viewBox=\"0 0 100 60\"\n   version=\"1.1\"\n   id=\"svg1\"\n   xmlns=\"http://www.w3.org/2000/svg\"\n   xmlns:svg=\"http://www.w3.org/2000/svg\">\n  <title\n     id=\"title1\">M2 Inkscape export coupon</title>\n  <defs\n     id=\"defs1\" />\n  <g\n     id=\"pockets\"\n     transform=\"translate(5,5)\"\n     style=\"fill:#123456;stroke:none\">\n    <path\n       id=\"letter-o\"\n       fill-rule=\"evenodd\"\n       d=\"M 0,0 H 20 V 20 H 0 Z M 5,5 H 15 V 15 H 5 Z\" />\n    <path\n       id=\"curves\"\n       d=\"M 30,0 C 30,8 35,8 40,0 S 50,0 50,8 Q 50,18 40,20 T 30,8 A 5,5 0 0 1 30,0 Z\" />\n    <rect\n       id=\"rounded\"\n       x=\"60\"\n       y=\"0\"\n       width=\"20\"\n       height=\"15\"\n       rx=\"2\" />\n    <circle\n       id=\"disk\"\n       cx=\"70\"\n       cy=\"32\"\n       r=\"7\" />\n    <rect\n       id=\"overlap-a\"\n       x=\"0\"\n       y=\"30\"\n       width=\"15\"\n       height=\"10\" />\n    <rect\n       id=\"overlap-b\"\n       x=\"10\"\n       y=\"30\"\n       width=\"15\"\n       height=\"10\" />\n    <path\n       d=\"M 36.464844,43 V 28.683594 h 5.371093 q 1.640625,0 2.626954,0.439453 0.996093,0.429687 1.552734,1.33789 0.566406,0.898438 0.566406,1.884766 0,0.917969 -0.498047,1.728516 -0.498047,0.810547 -1.503906,1.308593 1.298828,0.38086 1.992188,1.298829 0.703125,0.917968 0.703125,2.167968 0,1.00586 -0.429688,1.875 -0.419922,0.859375 -1.044922,1.328125 -0.625,0.46875 -1.572265,0.712891 Q 43.291016,43 41.923828,43 Z m 1.894531,-8.300781 h 3.095703 q 1.259766,0 1.806641,-0.166016 0.722656,-0.214844 1.083984,-0.712891 0.371094,-0.498046 0.371094,-1.25 0,-0.71289 -0.341797,-1.25 -0.341797,-0.546875 -0.976563,-0.742187 -0.634765,-0.205078 -2.177734,-0.205078 h -2.861328 z m 0,6.611328 h 3.564453 q 0.917969,0 1.289063,-0.06836 0.654296,-0.117187 1.09375,-0.390625 0.439453,-0.273437 0.722656,-0.791015 0.283203,-0.527344 0.283203,-1.210938 0,-0.800781 -0.410156,-1.386718 -0.410157,-0.595704 -1.142578,-0.830079 -0.722657,-0.24414 -2.089844,-0.24414 h -3.310547 z\"\n       id=\"letter-b\"\n       style=\"font-size:20px;font-family:Arial;fill:#000000\"\n       aria-label=\"B\" />\n  </g>\n  <g\n     id=\"hidden\"\n     style=\"display:none\">\n    <path\n       d=\"M 8.8457031,1 H 7.6855469 V -3.2714844 H 3.3320313 V 1 H 2.171875 v -8.7246094 h 1.1601563 v 3.421875 h 4.3535156 v -3.421875 h 1.1601562 z\"\n       id=\"text1\"\n       aria-label=\"H\" />\n  </g>\n</svg>\n"
+  },
+  "import": {
+    "geometry_tolerance_mm": 0.001,
+    "ticks_per_mm": null,
+    "placement": {
+      "origin_mm": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": 1.0,
+      "rotation_deg": 0.0
+    }
+  },
+  "selected_region_ids": [
+    "letter-o::0",
+    "curves::0",
+    "rounded::0",
+    "disk::0",
+    "overlap-a::0",
+    "overlap-b::0",
+    "letter-b::0"
+  ],
+  "stock": {
+    "thickness_mm": null
+  },
+  "operation": {
+    "id": "flat-v-carve",
+    "endmill_id": "endmill",
+    "vbit_id": "vbit",
+    "max_depth_mm": null,
+    "wall_allowance_mm": null,
+    "max_floor_ridge_mm": null,
+    "max_detail_residual_mm": null
+  },
+  "tools": [
+    {
+      "id": "endmill",
+      "geometry": null,
+      "spindle_rpm": null,
+      "cutting_feed_mm_min": null,
+      "plunge_feed_mm_min": null,
+      "max_stepdown_mm": null,
+      "stepover_mm": null,
+      "ramp_capable": null,
+      "plunge_capable": null
+    },
+    {
+      "id": "vbit",
+      "geometry": null,
+      "spindle_rpm": null,
+      "cutting_feed_mm_min": null,
+      "plunge_feed_mm_min": null,
+      "max_stepdown_mm": null,
+      "stepover_mm": null,
+      "ramp_capable": null,
+      "plunge_capable": null
+    }
+  ],
+  "tolerances": {
+    "motion_tolerance_mm": null,
+    "verification_tolerance_mm": null
+  },
+  "machine_profile": null,
+  "endmill_planning": null,
+  "vbit_planning": null
+}
