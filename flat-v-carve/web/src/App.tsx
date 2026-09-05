@@ -18,6 +18,7 @@ import { Fields } from './components/Fields';
 import { Viewport } from './components/Viewport';
 import { MachineSetup, StockSetup, ToolsSetup } from './components/SetupEditors';
 import { containDialogFocus } from './components/dialogFocus';
+import { ToolLibraryDialog, type LibraryOpen } from './components/ToolLibraryDialog';
 
 const steps = [
   { id: 'artwork', label: 'Artwork', description: 'Source & regions', number: '01' },
@@ -89,6 +90,7 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
   const [inspectorWidth, setInspectorWidth] = useState(340);
   const [planMode, setPlanMode] = useState<'combined' | 'endmill'>('combined');
   const [openError, setOpenError] = useState('');
+  const [libraryOpen, setLibraryOpen] = useState<LibraryOpen | null>(null);
   const fileRequest = useRef(0);
   const fileController = useRef<AbortController | null>(null);
   const [opening, setOpening] = useState(false);
@@ -275,13 +277,16 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
           {selectedComponent && <Group title="Inspected region"><dl><dt>Name</dt><dd>{selectedComponent.label}</dd><dt>Component ID</dt><dd><code>{selectedComponent.id}</code></dd><dt>Rings</dt><dd>{selectedComponent.rings.length}</dd></dl><button onClick={() => setInspected(null)}>Clear inspection</button></Group>}
         </>}
         {step === 'stock' && <StockSetup {...setupProps} />}
-        {step === 'tools' && <ToolsSetup {...setupProps} />}
+        {step === 'tools' && <ToolsSetup {...setupProps} openLibrary={capabilities.toolLibrary ? slot => setLibraryOpen(previous => ({ serial: (previous?.serial ?? 0) + 1, slot })) : undefined} />}
         {step === 'plan' && <PlanPanel planning={planning} capabilities={capabilities} job={draftResult.job} validation={validation.result} revision={state.revision} stage={planMode} onStage={setPlanMode} inspection={inspection} />}
         {step === 'verify' && <VerificationPanel verification={verification} planCurrent={planning.current} combined={planMode === 'combined'} />}
         {step === 'export' && <><ExportPanel output={output} job={job} planCurrent={planning.current && planMode === 'combined'} /><Group title="Portable job"><p className="hint">Download source and settings independently of machine output. The snapshot contains no display caches or verification claims.</p><button className="wide" onClick={download}>Download job snapshot</button></Group><details className="inspector-group"><summary>Job machine constraints (optional)</summary><MachineSetup {...setupProps} /></details></>}
         <div className="inspector-next"><button onClick={() => setStep(steps[Math.min(steps.findIndex(item => item.id === step) + 1, steps.length - 1)].id)} disabled={step === 'export'}>Next: {steps[Math.min(steps.findIndex(item => item.id === step) + 1, steps.length - 1)].label} <span>→</span></button></div>
       </aside>
     </div>
+    <ToolLibraryDialog request={libraryOpen} service={service} capabilities={capabilities}
+      job={draftResult.job && editableDownloadAllowed(validation.result, state.revision) ? { job: draftResult.job, revision: state.revision, documentFingerprint: validation.result!.documentFingerprint! } : null}
+      dispatch={dispatch} applied={() => setNotice('Library selection applied to the job. Undo restores the previous tool settings. Plan again to use the new snapshot.')} />
     <dialog ref={openDialog} aria-labelledby="open-dialog-title" onKeyDown={containDialogFocus} onClose={cancelOpen}>
       <div className="dialog-heading"><h2 id="open-dialog-title">Open artwork or job</h2><button onClick={() => openDialog.current?.close()} aria-label="Close open dialog">×</button></div>
       <p>{capabilities.openJob ? 'Rust checks job files and migrates schemas 1–2 to schema 3. Plans are not supported here yet.' : 'Open a schema 3 job snapshot. Other artwork and migrations need the local Rust service.'}</p>

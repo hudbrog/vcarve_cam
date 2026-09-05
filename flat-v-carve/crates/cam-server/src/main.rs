@@ -1,6 +1,6 @@
 use std::{path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Flat V-carve local browser workspace\nUsage: cam-web [--port <0..65535>] [--ui-dir <web/dist>]\n\nBuild the UI with pnpm build before starting. Bind is always 127.0.0.1.\nPort 0 selects an available port; otherwise the port must be free.\nImport, open/migrate, validation, and cancellable background planning are available.\nM5 combined-plan stock verification is available. Machine output and filesystem writes are not exposed.\nCtrl+C cancels computation workers and stops the service.\n";
+const HELP: &str = "Flat V-carve local browser workspace\nUsage: cam-web [--port <0..65535>] [--ui-dir <web/dist>] [--library-dir <directory>]\n\nBuild the UI with pnpm build before starting. Bind is always 127.0.0.1.\nPort 0 selects an available port; otherwise the port must be free.\nImport, open/migrate, validation, and cancellable background planning are available.\nM5 verification and checked LinuxCNC output are available.\nThe tool library uses local application data, or --library-dir. Creation is explicit in the UI.\nCtrl+C cancels computation workers and stops the service.\n";
 
 fn main() -> ExitCode {
     let result = if std::env::args().skip(1).eq(["--planning-worker"]) {
@@ -23,6 +23,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let mut port = None;
     let mut ui = None;
+    let mut library_dir = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" | "-h" => {
@@ -36,6 +37,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ui = Some(PathBuf::from(
                     args.next().ok_or("--ui-dir needs a directory")?,
                 ))
+            }
+            "--library-dir" if library_dir.is_none() => {
+                library_dir = Some(PathBuf::from(
+                    args.next().ok_or("--library-dir needs a directory")?,
+                ));
             }
             _ => return Err(format!("unknown/repeated argument {arg}; use --help").into()),
         }
@@ -52,7 +58,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
     let port = listener.local_addr()?.port();
     let planning = cam_server::planning::Planning::new()?;
-    let app = cam_server::router_with_planning(port, assets, planning.clone())?;
+    let directory = match library_dir {
+        Some(path) => path,
+        None => cam_server::library::default_directory()?,
+    };
+    let directory = std::path::absolute(directory)?;
+    let app = cam_server::router_with_library(port, assets, planning.clone(), Some(directory))?;
     println!("CAM_WEB_URL=http://127.0.0.1:{port}");
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {

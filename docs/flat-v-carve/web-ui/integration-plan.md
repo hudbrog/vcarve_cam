@@ -27,7 +27,7 @@ Integration runs in the `codex/web-integration` worktree. The frontend and `cam-
 | Machine profile/output | M6 profile editing, combined/per-tool output, exact-byte readback checks and gated downloads are integrated. | Native file lifecycle and actual machine/controller integration. |
 | Local browser service | `cam-web`, same-origin `ui-5` API, shared planning/verification/export queue and bundled UI are implemented. | Release lifecycle/file integration. |
 | 3D and arbitrary cross-sections | Debug SVGs and core geometric data exist; no browser display API. | Engine-derived display meshes/heightfields and section queries, with error/resolution metadata. |
-| Local tool library | [Rust API and CLI](../tool-library.md) implement named tools, cutting presets, revisioned persistence, import/export, and job snapshots. | Service transport, library management controls, changed-value review, and undoable application. |
+| Local tool library | [Rust API and CLI](../tool-library.md), plus [browser integration](tool-library-ui.md): named tools/presets, revisioned persistence, import/export, capture, changed-value review, and undoable application. | Durable recovery of unsaved library forms; separate setup/machine preset libraries. |
 
 Rust 0.7.2 supports 32 MB SVG sources and 64 MB job JSON. The service advertises these limits and a 128.1 MB request envelope limit through capabilities; saved plans and display responses retain separate bounds. Handle large result data separately from interactive summaries.
 

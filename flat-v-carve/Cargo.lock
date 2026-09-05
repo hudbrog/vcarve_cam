@@ -137,6 +137,7 @@ name = "cam-server"
 version = "0.7.2"
 dependencies = [
  "axum",
+ "cam-app",
  "cam-core",
  "getrandom 0.4.3",
  "serde",

@@ -21,6 +21,26 @@ function harness(change: (reply: Record<string, unknown>) => void = () => {}, st
   return { service, calls };
 }
 describe('checked same-origin Rust adapter', () => {
+  it.each(['reconnect','wrong request'] as const)('discards a library response after %s without replaying it', async mode => {
+    const instanceId='b'.repeat(32);
+    const libraryCaps={...caps,toolLibrary:{schemaVersion:1,maxBytes:8_000_000,maxTools:1000,maxPresetsPerTool:100,location:'isolated-test'},
+      planning:{instanceId,concurrentPlans:1,maxPending:4,maxTasks:128,retainedResults:4,timeoutSeconds:300,previewMotions:20_000,artifactBytes:16_000_000,stockSlices:true,sliceVertices:60_000,inspectionVertices:200_000}};
+    let finish!:()=>void, received!:()=>void, writes=0;
+    const requested=new Promise<void>(resolve=>{received=resolve;});
+    const service=createHttpService(async (url,init)=>{
+      if(String(url).endsWith('session')) return Response.json({apiVersion,engineVersion:caps.engineVersion,sessionToken:'a'.repeat(64)});
+      if(String(url).endsWith('capabilities')) return Response.json(libraryCaps);
+      writes++; const request=JSON.parse(String(init?.body));
+      return new Promise<Response>(resolve=>{finish=()=>resolve(Response.json({apiVersion,engineVersion:caps.engineVersion,instanceId,
+        requestId:mode==='wrong request'?'different':request.requestId,data:{state:'ready',library:{schema_version:1,revision:0,tools:[]}}})); received();});
+    });
+    await service.capabilities();
+    const pending=service.initializeLibrary!({instanceId,engineVersion:caps.engineVersion});
+    const rejected=expect(pending).rejects.toThrow(/connection changed|another request/);
+    await requested;
+    if(mode==='reconnect') await service.capabilities();
+    finish(); await rejected; expect(writes).toBe(1);
+  });
   it('downloads only a current authoritative editable-job receipt', () => {
     const result: Validation = { ...good, scope: 'editable-job-and-svg', revision: 5 };
     expect(editableDownloadAllowed(result, 5)).toBe(true);

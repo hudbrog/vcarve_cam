@@ -1,3 +1,4 @@
+import { acceptLibraryCandidate, librarySnapshotSchema, libraryCandidateSchema, type LibraryConnection, type LibraryJobInput } from '../contracts/library';
 import { acceptExport, exportTaskSchema, exportResultSchema, checkExportBytes } from '../contracts/export';
 import { z } from 'zod';
 import type { Job } from '../contracts/job';
@@ -72,8 +73,32 @@ export function createHttpService(fetcher: typeof fetch = (...args) => fetch(...
     signal?.throwIfAborted();
     return parse(schema, value);
   }
+  async function libraryRequest<T>(identity:LibraryConnection,command:object,schema:z.ZodType<T>,hasJob=false,signal?:AbortSignal):Promise<T> {
+    if (!connection || !connection.capabilities.toolLibrary) throw new Error('Reconnect to a service with a local tool library.');
+    const accepted=connection;
+    if (identity.instanceId!==accepted.capabilities.planning?.instanceId || identity.engineVersion!==accepted.capabilities.engineVersion)
+      throw new Error('The library service changed. Reload the library and review the latest record before saving.');
+    const requestId=crypto.randomUUID(),body=JSON.stringify({apiVersion,instanceId:identity.instanceId,requestId,command});
+    if (new TextEncoder().encode(body).length > (hasJob ? accepted.capabilities.limits!.requestBytes : 16_100_000)) throw new Error('Library request exceeds the service input limit.');
+    const {response,value}=await read(hasJob ? 'library/job' : 'library',{method:'POST',headers:{'Content-Type':'application/json','X-Cam-Session':accepted.token},body},signal);
+    if (!response.ok) throw new Error(`Library request failed (${response.status}). Reload before retrying a write.`);
+    const envelope=parse(z.object({apiVersion:z.literal(apiVersion),engineVersion:z.string(),instanceId:z.string(),requestId:z.string()}),value);
+    if (envelope.engineVersion!==identity.engineVersion || envelope.instanceId!==identity.instanceId || envelope.requestId!==requestId)
+      throw new Error('The library response belongs to another request or service. Reload before continuing.');
+    if (connection !== accepted) throw new Error('The library connection changed while the request was running. Reload before continuing; a write may have completed.');
+    signal?.throwIfAborted();return parse(schema,value);
+  }
+  const libraryJob=(input:LibraryJobInput) => ({json:JSON.stringify(input.job),revision:input.revision,document_fingerprint:input.documentFingerprint});
   return {
     capabilities,
+    library:(c,signal)=>libraryRequest(c,{operation:'load'},librarySnapshotSchema,false,signal),
+    initializeLibrary:(c,signal)=>libraryRequest(c,{operation:'initialize'},librarySnapshotSchema,false,signal),
+    changeLibrary:(c,revision,change,signal)=>libraryRequest(c,{operation:'change',expected_revision:revision,change_json:JSON.stringify(change)},librarySnapshotSchema,false,signal),
+    importLibrary:(c,revision,json,signal)=>libraryRequest(c,{operation:'import',expected_revision:revision,json},librarySnapshotSchema,false,signal),
+    captureLibraryTool:(c,input,signal)=>libraryRequest(c,{operation:'capture',expected_revision:input.expectedRevision,job:libraryJob(input),slot:input.slot,tool_id:input.toolId,name:input.name,preset:input.preset},librarySnapshotSchema,true,signal),
+    async applyLibraryTool(c,input,signal) {
+      return acceptLibraryCandidate(await libraryRequest(c,{operation:'apply',expected_revision:input.expectedRevision,job:libraryJob(input),slot:input.slot,tool_id:input.toolId,preset_id:input.presetId},libraryCandidateSchema,true,signal),input);
+    },
     async startExport(identity, signal) {
       return acceptExport(null, await taskRequest(identity, 'exports', exportTaskSchema, {
         apiVersion, instanceId:identity.instanceId, requestId:identity.taskId, revision:identity.revision,

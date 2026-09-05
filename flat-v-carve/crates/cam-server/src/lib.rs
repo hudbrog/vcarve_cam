@@ -1,6 +1,7 @@
 pub mod document;
 pub mod exporting;
 pub mod inspection;
+pub mod library;
 pub mod planning;
 pub mod planning_worker;
 pub mod verification;
@@ -100,6 +101,7 @@ struct AppState {
     workers: Arc<Semaphore>,
     requests: Arc<Semaphore>,
     planning: Arc<planning::Planning>,
+    library: Option<library::Library>,
 }
 pub fn router(port: u16, assets: Assets) -> io::Result<Router> {
     router_with_planning(port, assets, planning::Planning::new()?)
@@ -108,6 +110,14 @@ pub fn router_with_planning(
     port: u16,
     assets: Assets,
     planning: Arc<planning::Planning>,
+) -> io::Result<Router> {
+    router_with_library(port, assets, planning, None)
+}
+pub fn router_with_library(
+    port: u16,
+    assets: Assets,
+    planning: Arc<planning::Planning>,
+    directory: Option<std::path::PathBuf>,
 ) -> io::Result<Router> {
     let mut secret = [0u8; 32];
     getrandom::fill(&mut secret).map_err(io::Error::other)?;
@@ -120,11 +130,17 @@ pub fn router_with_planning(
         workers: Arc::new(Semaphore::new(WORKERS)),
         requests: Arc::new(Semaphore::new(8)),
         planning,
+        library: directory.map(library::Library::new),
     };
     Ok(Router::new()
         .route("/api/v1/session", get(session))
         .route("/api/v1/capabilities", get(capabilities))
         .route("/api/v1/document", post(document_request))
+        .route(
+            "/api/v1/library",
+            post(library_metadata).layer(DefaultBodyLimit::max(library::METADATA_BYTES)),
+        )
+        .route("/api/v1/library/job", post(library_job))
         .route("/api/v1/tasks", post(start_plan))
         .route(
             "/api/v1/verifications",
@@ -227,6 +243,7 @@ async fn capabilities(State(state): State<AppState>) -> Json<Value> {
     Json(
         json!({ "apiVersion": API_VERSION, "mode": "live", "engineVersion": ENGINE_VERSION,
         "importArtwork": true, "openJob": true, "validateDraft": true,
+        "toolLibrary": state.library.as_ref().map(|l|library::limits(l.location())),
         "planningStages": ["endmill", "combined"], "verificationScopes": ["continuous-stock"], "exportFormats": ["linuxcnc"],
         "export": {"profileBytes":exporting::PROFILE_BYTES,"programBytes":exporting::PROGRAM_BYTES,"layouts":["combined","per_tool"]},
         "verification": { "defaultOptions": cam_core::verification::VerificationOptions::default() },
@@ -420,6 +437,67 @@ async fn plan_artifact(
         )
             .into_response(),
         Err(failure) => task_error(failure),
+    }
+}
+async fn library_metadata(
+    State(state): State<AppState>,
+    body: Result<Json<library::Request>, JsonRejection>,
+) -> Response {
+    library_request(state, body, false).await
+}
+async fn library_job(
+    State(state): State<AppState>,
+    body: Result<Json<library::Request>, JsonRejection>,
+) -> Response {
+    library_request(state, body, true).await
+}
+async fn library_request(
+    state: AppState,
+    body: Result<Json<library::Request>, JsonRejection>,
+    has_job: bool,
+) -> Response {
+    let request = match body {
+        Ok(Json(r)) => r,
+        Err(e) => return error(e.status(), "REQUEST_JSON", &e.body_text()),
+    };
+    if let Err(e) = state.planning.validate_identity(
+        &request.api_version,
+        &request.instance_id,
+        &request.request_id,
+        0,
+    ) {
+        return task_error(e);
+    }
+    if request.command.has_job() != has_job {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "LIBRARY_ROUTE",
+            "This library operation belongs to another route.",
+        );
+    }
+    let Some(library) = state.library else {
+        return error(
+            StatusCode::NOT_IMPLEMENTED,
+            "LIBRARY_UNAVAILABLE",
+            "No local tool library is configured.",
+        );
+    };
+    let Ok(permit) = state.workers.clone().try_acquire_owned() else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "SERVICE_BUSY",
+            "The local service is handling other document or library requests. Retry shortly.",
+        );
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        library.execute(request.command)
+    })
+    .await;
+    match result {
+        Ok(Ok(data))=>Json(json!({"apiVersion":API_VERSION,"engineVersion":ENGINE_VERSION,"instanceId":request.instance_id,"requestId":request.request_id,"data":data})).into_response(),
+        Ok(Err(e))=>error(StatusCode::from_u16(e.0).unwrap(),&e.1,&e.2),
+        Err(_)=>error(StatusCode::INTERNAL_SERVER_ERROR,"LIBRARY_FAILURE","The library request could not finish. Reload before retrying a write; it may have completed."),
     }
 }
 async fn document_request(

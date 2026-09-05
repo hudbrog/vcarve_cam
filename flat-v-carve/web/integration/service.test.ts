@@ -16,6 +16,7 @@ const suffix = process.platform === 'win32' ? '.exe' : '';
 const executable = `${workspace}target/release/cam-web${suffix}`;
 const cli = `${workspace}target/release/cam${suffix}`;
 const output = `${web}test-results/live`;
+const libraryDirectory = `${output}/library-${crypto.randomUUID()}`;
 let child: ChildProcess;
 let base: string;
 let service: CamService;
@@ -27,7 +28,7 @@ function runCli(args: string[], expectedStatus = 0) {
 }
 beforeAll(async () => {
   mkdirSync(output, { recursive: true });
-  child = spawn(executable, ['--port', '0', '--ui-dir', `${web}dist`], { cwd: workspace, windowsHide: true });
+  child = spawn(executable, ['--port', '0', '--ui-dir', `${web}dist`, '--library-dir', libraryDirectory], { cwd: workspace, windowsHide: true });
   base = await new Promise<string>((resolve, reject) => {
     let stdout = ''; let stderr = '';
     const timer = setTimeout(() => reject(new Error(`Server did not start: ${stderr}`)), 15_000);
@@ -44,6 +45,73 @@ beforeAll(async () => {
   await service.capabilities();
 }, 20_000);
 afterAll(() => { child?.kill(); });
+
+describe('persistent tool library and CLI parity', () => {
+  it('captures, edits, reviews, and applies snapshots with transactional conflicts and imports', async () => {
+    const caps = await service.capabilities();
+    const connection = {instanceId:caps.planning!.instanceId,engineVersion:caps.engineVersion};
+    expect(caps.toolLibrary?.schemaVersion).toBe(1);
+    expect((await service.library!(connection)).data).toEqual({state:'missing',library:null});
+    expect((await service.initializeLibrary!(connection)).data.library?.revision).toBe(0);
+    await expect(service.initializeLibrary!(connection)).rejects.toThrow(/LIBRARY_EXISTS/);
+    const opened = await service.openJob!(readFileSync(`${workspace}fixtures/m4/finite-tip.json`,'utf8'),11);
+    opened.job.tools.reverse();
+    const validation = await service.validateDraft(opened.job,12);
+    const source = {job:opened.job,revision:12,documentFingerprint:validation.documentFingerprint!};
+    const captured = await service.captureLibraryTool!(connection,{...source,expectedRevision:0,slot:'endmill',toolId:'test-mill',name:'Synthetic test mill',
+      preset:{id:'test-preset',name:'Recorded test values',material:'Test material',machine:null}});
+    expect(captured.data.library?.revision).toBe(1);
+    const tool = captured.data.library!.tools[0];
+    expect(tool.geometry).toEqual(source.job.tools[1].geometry);
+    const exported = `${output}/library-${crypto.randomUUID()}.json`;
+    runCli(['tool-library','export',libraryDirectory,'--output',exported]);
+    expect(JSON.parse(readFileSync(exported,'utf8'))).toEqual(captured.data.library);
+    const selection={...source,expectedRevision:1,slot:'endmill' as const,toolId:'test-mill',presetId:null};
+    const candidate = await service.applyLibraryTool!(connection,selection);
+    for (const key of ['spindle_rpm','cutting_feed_mm_min','plunge_feed_mm_min','max_stepdown_mm','stepover_mm']) expect(candidate.data.job.tools[1]).toHaveProperty(key,null);
+    expect(candidate.data.job.tools[0]).toEqual(source.job.tools[0]);
+    expect(candidate.data.job.operation).toEqual(source.job.operation);
+    const jobPath=`${output}/library-source.job.json`; writeFileSync(jobPath,JSON.stringify(source.job));
+    const appliedPath=`${output}/library-applied-${crypto.randomUUID()}.job.json`;
+    runCli(['tool-library','apply',libraryDirectory,'--expected-revision','1','--job',jobPath,'--slot','endmill','--tool','test-mill','--output',appliedPath]);
+    expect(JSON.parse(readFileSync(appliedPath,'utf8'))).toEqual(candidate.data.job);
+    const withPreset=await service.applyLibraryTool!(connection,{...selection,presetId:'test-preset'});
+    expect(withPreset.data.job).toEqual(source.job);
+    await expect(service.applyLibraryTool!(connection,{...selection,slot:'vbit'})).rejects.toThrow(/LIBRARY_TOOL_KIND/);
+    await expect(service.applyLibraryTool!(connection,{...selection,documentFingerprint:'0'.repeat(64)})).rejects.toThrow(/STALE_DOCUMENT/);
+    await expect(service.library!({...connection,instanceId:'0'.repeat(32)})).rejects.toThrow(/service changed/);
+    // An independent CLI writer makes the open editor/review stale.
+    const changeFile=`${output}/library-change.json`;
+    writeFileSync(changeFile,JSON.stringify({kind:'duplicate_tool',tool_id:tool.id,new_id:'cli-copy',name:'CLI copy'}));
+    runCli(['tool-library','change',libraryDirectory,'--expected-revision','1','--input',changeFile]);
+    await expect(service.changeLibrary!(connection,1,{kind:'replace_tool',tool:{...tool,name:'Stale write'}})).rejects.toThrow(/LIBRARY_CONFLICT/);
+    await expect(service.applyLibraryTool!(connection,selection)).rejects.toThrow(/LIBRARY_CONFLICT/);
+    const current=(await service.library!(connection)).data.library!;
+    expect(current.revision).toBe(2); expect(current.tools[0].name).toBe(tool.name);
+    const before=readFileSync(`${libraryDirectory}/library.json`);
+    const imported={schema_version:1,revision:999,tools:[{...tool,id:'new-import'},tool]};
+    await expect(service.importLibrary!(connection,2,JSON.stringify(imported))).rejects.toThrow(/LIBRARY_DUPLICATE/);
+    await expect(service.importLibrary!(connection,2,'{"schema_version":1,"schema_version":1,"revision":0,"tools":[]}')).rejects.toThrow(/LIBRARY_JSON/);
+    expect(readFileSync(`${libraryDirectory}/library.json`)).toEqual(before);
+    const merged=await service.importLibrary!(connection,2,JSON.stringify({...imported,tools:[{...imported.tools[0],ramp_capable:undefined,plunge_capable:undefined,
+      cutting_presets:[{id:'blank',name:'Blank imported preset'}]}]}));
+    expect(merged.data.library?.revision).toBe(3);
+    expect(merged.data.library?.tools.find(t=>t.id==='new-import')?.cutting_presets[0].spindle_rpm).toBeNull();
+    const preset={...tool.cutting_presets[0],id:'partial',name:'Partial settings',spindle_rpm:null};
+    await service.changeLibrary!(connection,3,{kind:'add_preset',tool_id:tool.id,preset});
+    await service.changeLibrary!(connection,4,{kind:'replace_preset',tool_id:tool.id,preset:{...preset,material:null}});
+    await service.changeLibrary!(connection,5,{kind:'duplicate_preset',tool_id:tool.id,preset_id:preset.id,new_id:'preset-copy',name:'Copy'});
+    const partial=await service.applyLibraryTool!(connection,{...selection,expectedRevision:6,presetId:'partial'});
+    expect(partial.data.job.tools[1].spindle_rpm).toBeNull();
+    expect(partial.data.job.tools[1].cutting_feed_mm_min).toBe(source.job.tools[1].cutting_feed_mm_min);
+    await service.changeLibrary!(connection,6,{kind:'remove_preset',tool_id:tool.id,preset_id:'preset-copy'});
+    await service.changeLibrary!(connection,7,{kind:'remove_tool',tool_id:tool.id});
+    expect((await service.validateDraft(candidate.data.job,13)).valid).toBe(true);
+    const reopened=createHttpService((url,init)=>fetch(new URL(String(url),base),init));
+    await reopened.capabilities();
+    expect((await reopened.library!(connection)).data.library?.revision).toBe(8);
+  },30_000);
+});
 
 async function finishExport(id: ExportIdentity) {
   const deadline = Date.now() + 60_000;

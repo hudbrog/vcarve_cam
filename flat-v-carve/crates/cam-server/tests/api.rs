@@ -12,6 +12,136 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const SVG: &str = include_str!("../../../fixtures/m2/inkscape-export.svg");
+
+async fn library_call(app: &Router, command: Value, job: bool) -> (StatusCode, Value) {
+    let session = token(app).await;
+    let headers = [
+        ("host", "127.0.0.1:4848"),
+        ("x-cam-session", session.as_str()),
+        ("content-type", "application/json"),
+    ];
+    let caps = call(app, "GET", "/api/v1/capabilities", &headers, String::new())
+        .await
+        .1;
+    call(app, "POST", if job { "/api/v1/library/job" } else { "/api/v1/library" }, &headers,
+        json!({"apiVersion":API_VERSION,"instanceId":caps["planning"]["instanceId"],"requestId":"library-test","command":command}).to_string()).await
+}
+fn library_app() -> (Router, std::path::PathBuf) {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "cam-server-library-{}-{unique}",
+        std::process::id()
+    ));
+    let router = cam_server::router_with_library(
+        4848,
+        Default::default(),
+        cam_server::planning::Planning::new().unwrap(),
+        Some(dir.clone()),
+    )
+    .unwrap();
+    (router, dir)
+}
+
+#[tokio::test]
+async fn library_requires_explicit_initialization_and_never_resets_corrupt_data() {
+    let (app, dir) = library_app();
+    let (status, value) = library_call(&app, json!({"operation":"load"}), false).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["data"]["state"], "missing");
+    assert!(!dir.exists());
+    assert_eq!(
+        library_call(&app, json!({"operation":"initialize"}), false)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        library_call(&app, json!({"operation":"initialize"}), false)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    std::fs::write(dir.join("library.json"), b"{corrupt").unwrap();
+    assert_eq!(
+        library_call(&app, json!({"operation":"load"}), false)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        library_call(&app, json!({"operation":"initialize"}), false)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        std::fs::read(dir.join("library.json")).unwrap(),
+        b"{corrupt"
+    );
+}
+
+#[tokio::test]
+async fn library_routes_enforce_session_identity_strict_fields_and_metadata_limit() {
+    let (app, dir) = library_app();
+    let body = json!({"apiVersion":API_VERSION,"instanceId":"0".repeat(32),"requestId":"test","command":{"operation":"initialize"}}).to_string();
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/library",
+            &[
+                ("host", "127.0.0.1:4848"),
+                ("content-type", "application/json")
+            ],
+            body.clone()
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let session = token(&app).await;
+    let headers = [
+        ("host", "127.0.0.1:4848"),
+        ("x-cam-session", session.as_str()),
+        ("content-type", "application/json"),
+    ];
+    assert_eq!(
+        call(&app, "POST", "/api/v1/library", &headers, body)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert!(!dir.exists());
+    assert_eq!(
+        library_call(&app, json!({"operation":"load","path":"arbitrary"}), false)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        library_call(&app, json!({"operation":"initialize"}), true)
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/library",
+            &headers,
+            " ".repeat(cam_server::library::METADATA_BYTES + 1)
+        )
+        .await
+        .0,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert!(!dir.exists());
+}
+
 fn app() -> Router {
     cam_server::router(4848, Default::default()).unwrap()
 }

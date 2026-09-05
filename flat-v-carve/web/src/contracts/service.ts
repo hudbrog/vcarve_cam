@@ -1,3 +1,4 @@
+import type { LibraryConnection, LibrarySnapshot, LibraryChange, LibrarySelection, LibraryCapture, LibraryCandidate } from './library';
 import type { ExportIdentity, ExportTask, ExportResult } from './export';
 import type { Job, Point } from './job';
 import type { PlanningLimits, PlanTask, PlanResult, TaskIdentity, SliceResponse } from './planning';
@@ -7,7 +8,7 @@ import type { VerificationIdentity, VerificationTask, VerificationResult } from 
 
 // Versioned local UI API, deliberately separate from portable job/plan schemas.
 export interface Capabilities {
-  apiVersion: 'ui-5';
+  apiVersion: 'ui-6';
   mode: 'fixture' | 'live';
   engineVersion: string;
   importArtwork: boolean;
@@ -19,6 +20,7 @@ export interface Capabilities {
   limits?: { svgBytes: number; jobBytes: number; requestBytes: number; concurrentInspections: number };
   planning?: PlanningLimits;
   verification?: { defaultOptions: VerificationOptions };
+  toolLibrary?: {schemaVersion:1;maxBytes:number;maxTools:number;maxPresetsPerTool:number;location:string}|null;
   export?: { profileBytes: number; programBytes: number; layouts: ('combined' | 'per_tool')[] };
 }
 export interface DisplayComponent {
@@ -58,6 +60,12 @@ export function editableDownloadAllowed(validation: Validation | undefined, revi
     && !!validation.documentFingerprint;
 }
 export interface CamService {
+  library?(connection:LibraryConnection,signal?:AbortSignal):Promise<LibrarySnapshot>;
+  initializeLibrary?(connection:LibraryConnection,signal?:AbortSignal):Promise<LibrarySnapshot>;
+  changeLibrary?(connection:LibraryConnection,revision:number,change:LibraryChange,signal?:AbortSignal):Promise<LibrarySnapshot>;
+  importLibrary?(connection:LibraryConnection,revision:number,json:string,signal?:AbortSignal):Promise<LibrarySnapshot>;
+  captureLibraryTool?(connection:LibraryConnection,input:LibraryCapture,signal?:AbortSignal):Promise<LibrarySnapshot>;
+  applyLibraryTool?(connection:LibraryConnection,input:LibrarySelection,signal?:AbortSignal):Promise<LibraryCandidate>;
   capabilities(signal?: AbortSignal): Promise<Capabilities>;
   openExample(signal?: AbortSignal): Promise<{ job: Job; display: ArtworkDisplay }>;
   displayFor(job: Job, signal?: AbortSignal): Promise<ArtworkDisplay | null>;

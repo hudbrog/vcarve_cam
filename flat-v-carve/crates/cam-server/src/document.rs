@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub const API_VERSION: &str = "ui-5";
+pub const API_VERSION: &str = "ui-6";
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const JOB_BYTES: usize = 64_000_000;
 pub const REQUEST_BYTES: usize = 128_100_000;

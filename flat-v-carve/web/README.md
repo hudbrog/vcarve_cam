@@ -1,6 +1,6 @@
 # Flat V-carve web workspace
 
-The local TypeScript workspace from the [web UI design](../../docs/flat-v-carve/web-ui/README.md), connected to Rust for SVG import, job migration/opening, validation, cancellable background planning, recorded motion previews, 2D stock inspection, and M5 continuous verification. Development can still use the deterministic fixture adapter.
+The local TypeScript workspace from the [web UI design](../../docs/flat-v-carve/web-ui/README.md), connected to Rust for SVG import, job migration/opening, validation, cancellable background planning, recorded motion previews, 2D stock inspection, M5 continuous verification, M6 checked output, and the local tool library. Development can still use the deterministic fixture adapter.
 
 ## Run with Rust
 
@@ -18,6 +18,29 @@ Open the exact loopback URL printed by `cam-web`. Linux uses `./target/release/c
 The production bundle selects the live adapter. Import starts a new job with cutting settings unset and 0 mm wall allowance; open accepts editable jobs and migrates schemas 1/2 through Rust. Supplied invalid settings are reported without rewriting the draft. Downloads require a successful editable-job validation receipt for the current revision. This does not establish planning readiness or machining verification.
 
 The service runs as a separate `cam-web` executable to keep CLI/machining development independent. It binds only `127.0.0.1` and serves UI and API from one origin. It launches its own hidden compute worker for each plan, calls core planners directly, and kills/reaps that worker on cancellation. It never launches the CLI or a shell, writes jobs to local paths, or accepts filesystem paths from HTTP requests. File selection and portable downloads remain browser-owned.
+
+## Tool library location and workflow
+
+Live mode exposes **Carve & tools → Manage tool library**, plus a chooser beside
+each job tool. Create an empty library explicitly, then add or capture tools,
+manage cutting presets, or merge portable JSON. Search matches tool names/IDs
+and preset names/context. Applying a selection first shows changed values and
+then updates one job slot as a single undoable edit. Geometry-only selection
+clears all five cutting values; existing job IDs and machine mapping are retained.
+
+`cam-web --library-dir <directory>` selects an existing CLI library or another
+local directory. The default is `%LOCALAPPDATA%/FlatVCarve/tool-library` on Windows,
+`~/Library/Application Support/FlatVCarve/tool-library` on macOS, and
+`$XDG_DATA_HOME/flat-v-carve/tool-library` (or `~/.local/share/flat-v-carve/tool-library`)
+on Linux. Start/reload never creates or resets library data. Keep this directory
+on a local filesystem. Rust performs revision checks and atomic store writes.
+
+A conflict keeps the unfinished form. Reload updates the list, but saving that
+old form stays disabled until it is discarded and the latest record is opened.
+Closing the dialog keeps its form in memory; reloading the tab loses **unsaved
+library forms**. Saved records persist independently of job recovery. The
+[library report](../../docs/flat-v-carve/web-ui/tool-library-ui.md) records checks
+and transport limits. Fixture mode has no tool library.
 
 ## Develop against fixtures
 
@@ -65,13 +88,14 @@ The [U3 background-planning report](../../docs/flat-v-carve/web-ui/u3-background
 | File / directory | Responsibility |
 | --- | --- |
 | `src/contracts/job.ts` | Runtime structural checks and inferred TypeScript types for current portable jobs. |
-| `src/contracts/service.ts`, `wire.ts`, `planning.ts`, `stock.ts`, `verification.ts`, `machineProfile.ts`, `export.ts` | Replaceable service interface and runtime checks for the `ui-5` transport. |
+| `src/contracts/service.ts`, `wire.ts`, `planning.ts`, `stock.ts`, `verification.ts`, `machineProfile.ts`, `export.ts`, `library.ts` | Replaceable service interface and runtime checks for the `ui-6` transport. |
 | `src/service/fixture.ts` | Deterministic captured-artwork adapter; absent capabilities remain unavailable. |
 | `src/service/http.ts`, `useValidation.ts` | Same-origin session, checked responses, debounced validation, and stale-response guards. |
 | `src/service/usePlanning.ts`, `src/components/PlanPanel.tsx` | Immutable submissions, monotonic task tracking, cancellation, recovery, scoped outcomes, and stale-result gating. |
 | `src/service/useInspection.ts`, `src/components/StockInspector.tsx` | Identity-bound slice loading, depth/tool/layer controls, metrics, overlays, and geometry-linked findings. |
 | `src/service/useVerification.ts`, `src/components/VerificationPanel.tsx` | Recoverable verification settings/tasks, continuous bounds, coordinate scopes, and findings. |
 | `src/service/useExport.ts`, `src/components/ExportPanel.tsx` | Recoverable machine profiles, checked program/report review and stale-output/download gates. |
+| `src/components/ToolLibraryDialog.tsx`, `src/state/library.ts` | Library search/edit/import/capture, frozen edit revisions, candidate review, and one-slot job application. |
 | `../crates/cam-server/` | Loopback HTTP boundary, bounded engine workers, build assets, and engine-to-display projection. |
 | `src/state/` | Recoverable form text, candidate serialization, grouped edit history, monotonically increasing revisions. |
 | `src/components/Viewport.tsx` | Inert source and stock rings, recorded motion projection, overlay controls, and camera transforms. |
@@ -81,7 +105,7 @@ The [U3 background-planning report](../../docs/flat-v-carve/web-ui/u3-background
 
 Inject a `CamService` into `<App service={adapter} />` to replace the boundary. The live adapter validates wire data and request/revision/engine identities. Merely advertising a capability cannot enable machine output. Job schema, UI API version, engine version, draft revision, document receipts, and future plan/output identities are separate concepts.
 
-`pnpm check:contracts` checks 13 Rust struct field sets and job schema version read-only, then checks every projected display coordinate/ID/hole flag against the captured inspection. It is a drift alarm, not generated bindings or a full type-equivalence proof. Tests additionally round-trip all current M4 JSON jobs.
+`pnpm check:contracts` checks 16 Rust struct field sets and job schema version read-only, then checks every projected display coordinate/ID/hole flag against the captured inspection. It is a drift alarm, not generated bindings or a full type-equivalence proof. Tests additionally check the three library record field sets and round-trip all current M4 JSON jobs.
 
 An optional CLI parity check uses an **existing** executable without compiling Rust:
 
@@ -89,6 +113,6 @@ An optional CLI parity check uses an **existing** executable without compiling R
 node scripts/check-cli-roundtrip.mjs ../target/release/cam.exe
 ```
 
-After building both Rust executables and the UI, `pnpm check:live` starts its own server on an ephemeral loopback port and compares the actual HTTP adapter with the same-engine CLI. It also checks the shipped assets and wire schemas. `pnpm test` runs the frontend-only regressions. Run `cargo test --release --locked -p cam-server` for HTTP boundary and engine projection tests. Test output is under ignored `test-results/`.
+After building both Rust executables and the UI, `pnpm check:live` starts its own server on an ephemeral loopback port with an isolated library directory and compares the actual HTTP adapter with the same-engine CLI. It also checks the shipped assets and wire schemas. `pnpm test` runs the frontend-only regressions. Run `cargo test --release --locked -p cam-server` for HTTP boundary and engine projection tests. Test output is under ignored `test-results/`.
 
 The implementation history is in [U1 implementation](../../docs/flat-v-carve/web-ui/u1-implementation.md). The follow-up [setup and browser report](../../docs/flat-v-carve/web-ui/browser-checks.md) records 37 automated regressions and browser checks of all steps, keyboard/focus, recovery, file round-trips, themes, and 200% text. [React](https://react.dev/) provides the component/state layer; [Vite](https://vite.dev/guide/) produces a local static distribution without a server framework.

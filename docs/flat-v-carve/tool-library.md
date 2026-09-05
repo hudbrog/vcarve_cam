@@ -3,7 +3,8 @@
 The Rust backend stores named endmill/V-bit definitions and their optional cutting
 presets. It supports create, read, replace, duplicate, delete, import/export,
 capture from a job, and explicit application to a job. The CLI and reusable Rust
-API are implemented; browser controls and HTTP transport remain integration work.
+API are implemented, with [browser controls and local HTTP transport](web-ui/tool-library-ui.md)
+for the same records and revision checks.
 
 ## Data ownership
 
@@ -72,10 +73,10 @@ operations are:
 | `export_json()` | Return validated schema-versioned portable JSON. |
 | `apply_to_job(expected_revision, job, slot, tool_id, preset_id)` | Resolve a selection against the reviewed revision and return a candidate job. |
 
-The future local service can call this API directly, configure its own application
-data directory, and serialize `StoreError { code, message }`. It should not accept
-an arbitrary browser-provided filesystem path or invoke the CLI from the browser.
-This implementation adds no server, network access, or new dependencies.
+The local `cam-web` service calls this API directly, configures its application
+data directory, and returns `StoreError` codes/messages through its existing
+session-protected loopback boundary. It accepts no browser-provided filesystem
+paths and does not invoke the CLI. The core library and store add no network access.
 
 ## Persistence and conflicts
 

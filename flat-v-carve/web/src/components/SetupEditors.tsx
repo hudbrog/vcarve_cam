@@ -17,11 +17,13 @@ export function StockSetup({ fields }: Props) {
     <Group title="Travel">{fields(travelFields)}<p className="hint">Starting XY uses workpiece coordinates. Planning clearance is a positive Z above the stock top and applies to both tools. Entry, strategy, and resource limits are under Carve & tools.</p></Group>
   </>;
 }
-export function ToolsSetup({ draft, fields, dispatch }: Props) {
+export function ToolsSetup({ draft, fields, dispatch, openLibrary }: Props & { openLibrary?: (slot?: 'endmill' | 'vbit') => void }) {
   return <>
+    <Group title="Reusable tools"><button disabled={!openLibrary} onClick={() => openLibrary?.()}>Manage tool library</button><p className="hint">Save cutter geometry and cutting presets, then review a selection before applying it to this job.</p></Group>
     <Group title="Desired shape">{fields(shapeFields)}<p className="hint">Endmill wall allowance defaults to 0 mm. Increase it to leave stock for V-bit cleanup. Physical finish allowances are separate from numerical accuracy.</p></Group>
     {(['endmill', 'vbit'] as const).map((kind, index) => <details className="tool-section" key={kind} open>
       <summary><span className={`tool-index ${kind}`}>{index + 1}</span>{kind === 'endmill' ? 'Endmill clearing' : 'V-bit rest & finish'}</summary>
+      <button disabled={!openLibrary} onClick={() => openLibrary?.(kind)}>Choose {kind === 'endmill' ? 'endmill' : 'V-bit'} from library</button>
       {fields(toolFields(draft.base, kind))}
       <ClearBlock fields={toolFields(draft.base, kind).filter(field => field.path.includes('.geometry.'))} dispatch={dispatch} label={`Clear ${kind === 'endmill' ? 'endmill' : 'V-bit'} geometry`} />
       {kind === 'vbit' && <p className="hint">Included angle is the full tip angle. Enter 0 only for an actually pointed tip. V-bit planning uses direct plunge with an explicit capability and plunge feed.</p>}
