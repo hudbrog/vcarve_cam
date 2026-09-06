@@ -1,5 +1,9 @@
 # U3: stock slices and 2D inspection
 
+The later [plan artifact storage update](u7-plan-artifacts.md) replaces this
+report's 16 MB plan cap and full-plan worker transfer with streamed temporary
+files. The stock display budgets described here remain in effect.
+
 Date: 2026-09-05
 
 The integration branch was rebased without conflicts onto `d01ddc3` (Rust 0.7.2, including M5 verification and M6 LinuxCNC output). The two earlier web-integration commits became `a7dceb1` and `6b9a10b`. This slice adds bounded 2D stock inspection using existing core analysis; it changes the service and frontend, with no new machining calculations.

@@ -3,17 +3,17 @@
 use crate::{
     document::{API_VERSION, ENGINE_VERSION, UiDiagnostic},
     planning::{Failure, Planning, Snapshot, Status},
-    planning_worker::{ARTIFACT_BYTES, Input, Output, Stage},
+    planning_worker::{Input, Output, REPORT_BYTES, Stage},
 };
 use cam_core::{
-    post::{LinuxCncProfile, ProgramLayout, export_plan},
-    vcarve::CombinedPlan,
+    post::{LinuxCncProfile, ProgramLayout, export_authenticated_plan},
+    vcarve::AuthenticatedPlan,
     verification::VerificationOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc};
 
 pub const PROFILE_BYTES: usize = 64_000;
 pub const PROGRAM_BYTES: usize = 8_000_000;
@@ -41,7 +41,7 @@ pub struct Start {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Work {
-    pub artifact: String,
+    pub artifact: PathBuf,
     pub identity: Identity,
 }
 pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failure> {
@@ -89,14 +89,23 @@ pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failur
             "The requested plan differs from its accepted job or motions.",
         ));
     }
+    let artifact = result.plan_artifact.clone().ok_or_else(|| {
+        Failure::new(
+            410,
+            "PLAN_RESULT_UNAVAILABLE",
+            "The retained plan file is unavailable. Replan the job.",
+        )
+    })?;
     let input = Input {
         stage: Stage::Combined,
         job: String::new(),
         verification: None,
         export: Some(Work {
-            artifact: result.artifact.clone(),
+            artifact: artifact.path().to_owned(),
             identity: request.export.clone(),
         }),
+        output_path: None,
+        source_artifact: Some(artifact),
     };
     service.enqueue(
         Snapshot {
@@ -121,7 +130,10 @@ pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failur
 }
 pub fn calculate(work: Work) -> Result<Output, Value> {
     let convert = |d| json!(UiDiagnostic::from(d));
-    let plan = CombinedPlan::from_json(&work.artifact).map_err(convert)?;
+    let file = File::open(&work.artifact).map_err(|e| json!({"code":"EXPORT_ARTIFACT_IO", "severity":"error", "stage":"export", "message":format!("Could not read the local plan artifact: {e}")}))?;
+    let authenticated = AuthenticatedPlan::from_reader(BufReader::with_capacity(1024 * 1024, file))
+        .map_err(convert)?;
+    let plan = authenticated.plan();
     if plan.input_fingerprint != work.identity.input_fingerprint
         || plan.motion_fingerprint != work.identity.motion_fingerprint
     {
@@ -129,15 +141,15 @@ pub fn calculate(work: Work) -> Result<Output, Value> {
             json!({"code":"EXPORT_PLAN_IDENTITY","severity":"error","stage":"export","message":"Worker artifact differs from the accepted plan."}),
         );
     }
-    let result = export_plan(
-        &plan,
+    let result = export_authenticated_plan(
+        &authenticated,
         &work.identity.profile,
         work.identity.layout,
         &work.identity.options,
     )
     .map_err(convert)?;
     let artifact = serde_json::to_string(&result.report).unwrap();
-    if artifact.len() > ARTIFACT_BYTES
+    if artifact.len() > REPORT_BYTES
         || result.programs.iter().map(|p| p.gcode.len()).sum::<usize>() > PROGRAM_BYTES
     {
         return Err(
@@ -149,6 +161,7 @@ pub fn calculate(work: Work) -> Result<Output, Value> {
             "profileFingerprint":result.report.profile_fingerprint,"reportFingerprint":format!("{:x}",Sha256::digest(artifact.as_bytes())),
             "originalStatus":result.report.plan_verification.status,"emittedStatus":result.report.emitted_verification.as_ref().map(|v|v.status)}),
         artifact,
+        plan_artifact: None,
         programs: result.programs,
         motions: vec![],
         inspection: Default::default(),

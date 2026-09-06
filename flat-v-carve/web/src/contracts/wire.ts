@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { jobSchema, pointSchema } from './job';
 import { verificationOptionsSchema } from './verificationOptions';
 
-export const apiVersion = 'ui-6';
+export const apiVersion = 'ui-7';
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const sessionSchema = z.strictObject({
   apiVersion: z.literal(apiVersion), engineVersion: z.string().min(1), sessionToken: z.string().regex(/^[a-f0-9]{64}$/),
@@ -10,7 +10,7 @@ export const sessionSchema = z.strictObject({
 export const planningLimitsSchema = z.strictObject({
   instanceId: z.string().regex(/^[a-f0-9]{32}$/), concurrentPlans: integer.positive(),
   maxPending: integer.positive(), maxTasks: integer.positive(), retainedResults: integer.positive(),
-  timeoutSeconds: integer.positive(), previewMotions: integer.positive(), artifactBytes: integer.positive(),
+  timeoutSeconds: integer.positive(), previewMotions: integer.positive(), artifactBytes: integer.positive().nullable(),
   stockSlices: z.boolean(), sliceVertices: integer.positive(), inspectionVertices: integer.positive(),
 });
 export const capabilitiesSchema = z.strictObject({

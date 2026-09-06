@@ -10,10 +10,9 @@ use crate::{
     motion::Motion,
     svg::Bounds,
     target::Target,
-    vcarve::CombinedPlan,
+    vcarve::{AuthenticatedPlan, CombinedPlan},
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -168,12 +167,7 @@ fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("verification")
 }
 fn fingerprint(value: &impl Serialize) -> Result<String> {
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json::to_vec(value).map_err(|e| error("VERIFICATION_JSON", e.to_string()))?
-        )
-    ))
+    crate::plan_hash::hash(value).map_err(|e| error("VERIFICATION_JSON", e.to_string()))
 }
 fn status(a: VerificationStatus, b: VerificationStatus) -> VerificationStatus {
     use VerificationStatus::*;
@@ -344,7 +338,15 @@ pub fn verify_plan(
     plan: &CombinedPlan,
     options: &VerificationOptions,
 ) -> Result<VerificationReport> {
-    let plan = CombinedPlan::from_json(&plan.to_json()?)?;
+    verify_authenticated_plan(&AuthenticatedPlan::from_plan(plan)?, options)
+}
+
+/// Verify a freshly authenticated immutable plan without repeating M4 loading.
+pub fn verify_authenticated_plan(
+    plan: &AuthenticatedPlan,
+    options: &VerificationOptions,
+) -> Result<VerificationReport> {
+    let plan = plan.plan();
     let mut report = verify_motions(
         &plan.endmill.job,
         &plan.endmill.motions,

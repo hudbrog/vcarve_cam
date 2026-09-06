@@ -8,7 +8,7 @@ import type { VerificationIdentity, VerificationTask, VerificationResult } from 
 
 // Versioned local UI API, deliberately separate from portable job/plan schemas.
 export interface Capabilities {
-  apiVersion: 'ui-6';
+  apiVersion: 'ui-7';
   mode: 'fixture' | 'live';
   engineVersion: string;
   importArtwork: boolean;

@@ -19,7 +19,6 @@ pub use quality::{CombinedAnalysis, CombinedSlice, QualitySample};
 use serde::{Deserialize, Serialize};
 pub use settings::VBitPlanningSettings;
 use settings::{Context, error};
-use sha2::{Digest, Sha256};
 pub use verify::verify_vbit_motions;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +72,21 @@ pub struct CombinedPlan {
     #[serde(skip_serializing)]
     pub analysis: CombinedAnalysis,
 }
+
+/// Immutable proof of a fresh identity check and complete M4 reconstruction.
+/// Only these constructors can create it; callers cannot mutate the bound plan.
+pub struct AuthenticatedPlan(CombinedPlan);
+impl AuthenticatedPlan {
+    pub fn from_reader(reader: impl std::io::Read) -> Result<Self> {
+        CombinedPlan::from_reader(reader).map(Self)
+    }
+    pub fn from_plan(plan: &CombinedPlan) -> Result<Self> {
+        plan.revalidated().map(Self)
+    }
+    pub fn plan(&self) -> &CombinedPlan {
+        &self.0
+    }
+}
 #[derive(Deserialize)]
 struct Envelope {
     artifact_kind: String,
@@ -80,17 +94,14 @@ struct Envelope {
     engine_version: String,
     input_fingerprint: String,
     motion_fingerprint: String,
-    endmill: serde_json::Value,
+    endmill: crate::pocket::Envelope,
     transition: StageTransition,
     vbit_motions: Vec<Motion>,
     executions: Vec<Execution>,
     generation_issues: Vec<GenerationIssue>,
 }
 fn hash<T: Serialize>(v: &T) -> Result<String> {
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(v).map_err(|e| error("PLAN_JSON", e.to_string()))?)
-    ))
+    crate::plan_hash::hash(v).map_err(|e| error("PLAN_JSON", e.to_string()))
 }
 fn identity(endmill: &EndmillPlan) -> Result<String> {
     hash(&(
@@ -100,6 +111,20 @@ fn identity(endmill: &EndmillPlan) -> Result<String> {
     ))
 }
 impl CombinedPlan {
+    fn revalidated(&self) -> Result<Self> {
+        Self::from_envelope(Envelope {
+            artifact_kind: self.artifact_kind.clone(),
+            schema_version: self.schema_version,
+            engine_version: self.engine_version.clone(),
+            input_fingerprint: self.input_fingerprint.clone(),
+            motion_fingerprint: self.motion_fingerprint.clone(),
+            endmill: self.endmill.envelope(),
+            transition: self.transition.clone(),
+            vbit_motions: self.vbit_motions.clone(),
+            executions: self.executions.clone(),
+            generation_issues: self.generation_issues.clone(),
+        })
+    }
     pub fn to_json(&self) -> Result<String> {
         let json = serde_json::to_string(self)
             .map(|s| s + "\n")
@@ -118,6 +143,17 @@ impl CombinedPlan {
         }
         let e: Envelope =
             serde_json::from_str(json).map_err(|e| error("PLAN_JSON", e.to_string()))?;
+        Self::from_envelope(e)
+    }
+
+    /// Stream a plan from caller-owned storage, retaining all identity and
+    /// execution checks. Callers must bound untrusted input before using this API.
+    pub fn from_reader(reader: impl std::io::Read) -> Result<Self> {
+        let e = serde_json::from_reader(reader).map_err(|e| error("PLAN_JSON", e.to_string()))?;
+        Self::from_envelope(e)
+    }
+
+    fn from_envelope(e: Envelope) -> Result<Self> {
         if e.artifact_kind != "combined_plan"
             || e.schema_version != 1
             || e.engine_version != env!("CARGO_PKG_VERSION")
@@ -127,7 +163,7 @@ impl CombinedPlan {
                 "unsupported combined schema or engine; regenerate the plan",
             ));
         }
-        let endmill = EndmillPlan::from_json(&e.endmill.to_string())?;
+        let endmill = EndmillPlan::from_envelope(e.endmill)?;
         if e.input_fingerprint != identity(&endmill)?
             || e.motion_fingerprint
                 != hash(&(
@@ -181,7 +217,7 @@ impl CombinedPlan {
 /// checks fingerprints; this entry point independently checks motion semantics,
 /// execution order, stock, and required final finishing families.
 pub fn verify_combined_plan(plan: &CombinedPlan) -> Result<CombinedAnalysis> {
-    let endmill = EndmillPlan::from_json(&plan.endmill.to_json()?)?;
+    let endmill = plan.endmill.revalidated()?;
     let ctx = Context::new(&endmill.job)?;
     let (axis, candidates) = candidates(&ctx, &endmill)?;
     let checked = verify::executions(

@@ -353,8 +353,8 @@ async function identity(fixture: string, stage: TaskIdentity['stage'] = 'endmill
     engineVersion: caps.engineVersion, revision: 14, documentFingerprint: opened.documentFingerprint, stage };
   return { job: opened.job, id };
 }
-async function finish(id: TaskIdentity) {
-  const deadline = Date.now() + 30_000;
+async function finish(id: TaskIdentity, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
   let previous: PlanTask | null = null;
   while (Date.now() < deadline) {
     const task = await service.planTask!(id);
@@ -366,6 +366,98 @@ async function finish(id: TaskIdentity) {
   throw new Error('Planning did not finish within the test deadline');
 }
 describe('real background planning', () => {
+  it.skipIf(process.env.CAM_TEST_LARGE_PLAN !== '1')('plans and reopens two flower copies beyond 128 MB', async () => {
+    const original = JSON.parse(readFileSync(`${workspace}../real_data/flower_box-svg.job (2).json`, 'utf8'));
+    const paths = (original.source.svg as string).match(/<path\b[\s\S]*?\/>/g)!;
+    expect(paths.length).toBe(1);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400mm" height="100mm" viewBox="0 0 400 100">${paths[0]}<g transform="translate(200 0)">${paths[0].replace(/\bid="[^"]*"/g, 'id="flower-copy"')}</g></svg>`;
+    const imported = await service.importArtwork!('two-flowers.svg', svg, original.import, 50);
+    const job = {...original, name:'Two flower copies: transport regression', source:imported.job.source,
+      selected_region_ids:imported.job.selected_region_ids};
+    writeFileSync(`${output}/two-flowers.job.json`, JSON.stringify(job));
+    const checked = await service.validateDraft(job, 50);
+    expect(checked.valid).toBe(true);
+    const caps = await service.capabilities();
+    const id:TaskIdentity = {taskId:crypto.randomUUID(), instanceId:caps.planning!.instanceId,
+      engineVersion:caps.engineVersion, revision:50, documentFingerprint:checked.documentFingerprint!, stage:'combined'};
+    const started = Date.now();
+    await service.startPlan!(job, id);
+    const task = await finish(id, 300_000);
+    expect(task.state, JSON.stringify(task.diagnostic)).toBe('succeeded');
+    expect(task.summary!.status).toBe('complete');
+    const preview = await service.planResult!(id);
+    expect(preview.motions.length).toBe(20_000);
+    const previewBytes = Buffer.byteLength(JSON.stringify(preview));
+    expect(previewBytes).toBeLessThan(16_000_000);
+    const session = await (await fetch(`${base}/api/v1/session`)).json();
+    const response = await fetch(`${base}/api/v1/tasks/${id.taskId}/artifact`, {headers:{'X-Cam-Session':session.sessionToken}});
+    expect(response.status).toBe(200);
+    const artifactBytes = Number(response.headers.get('content-length'));
+    expect(artifactBytes).toBeGreaterThan(128_000_000);
+    // Consume the download incrementally, just as the server produces it.
+    const digest = createHash('sha256');
+    let downloaded = 0;
+    for await (const chunk of response.body!) { digest.update(chunk); downloaded += chunk.length; }
+    expect(downloaded).toBe(artifactBytes);
+    const planningMs = Date.now() - started;
+    const measurement = {planningMs, previewBytes, artifactBytes, artifactSha256:digest.digest('hex'), motionCount:task.summary!.motionCount};
+    console.info('Large plan generated and downloaded; reopening for verification:', measurement);
+    const verification = verificationIdentity(task, {...caps.verification!.defaultOptions, max_cells:1}, crypto.randomUUID());
+    await service.startVerification!(verification);
+    const verified = await finishVerification(verification, 300_000);
+    expect(verified.state, JSON.stringify(verified.diagnostic)).toBe('succeeded');
+    expect((await service.verificationResult!(verification)).report.status).toBe('inconclusive');
+    writeFileSync(`${output}/two-flowers-summary.json`, JSON.stringify({...measurement, verificationStatus:verified.summary?.status}, null, 2));
+  }, 700_000);
+  it.skipIf(process.env.CAM_TEST_REAL_DATA !== '1')('streams the unchanged real flower plan with a bounded browser preview', async () => {
+    const jobPath = `${workspace}../real_data/flower_box-svg.job (2).json`;
+    const original = readFileSync(jobPath, 'utf8');
+    const opened = await service.openJob!(original, 40);
+    expect(opened.job).toEqual(JSON.parse(original));
+    const svg = readFileSync(`${workspace}../real_data/flower_box.svg`, 'utf8');
+    expect(opened.job.source.svg.trim()).toBe(svg.trim());
+    const imported = await service.importArtwork!('flower_box.svg', svg, opened.job.import, 41);
+    expect(imported.display.components).toEqual(opened.display.components);
+    const caps = await service.capabilities();
+    expect(caps.planning!.artifactBytes).toBeNull();
+    const id: TaskIdentity = {taskId:crypto.randomUUID(), instanceId:caps.planning!.instanceId,
+      engineVersion:caps.engineVersion, revision:40, documentFingerprint:opened.documentFingerprint, stage:'combined'};
+    const started = Date.now();
+    await service.startPlan!(opened.job, id);
+    const task = await finish(id, 300_000);
+    expect(task.state, JSON.stringify(task.diagnostic)).toBe('succeeded');
+    expect(task.summary?.status).toBe('complete');
+    expect(task.summary!.motionCount).toBeGreaterThan(20_000);
+    const result = await service.planResult!(id);
+    expect(result.motions.length).toBe(20_000);
+    expect(task.summary!.omittedMotionCount).toBe(task.summary!.motionCount - 20_000);
+    const previewBytes = Buffer.byteLength(JSON.stringify(result));
+    expect(previewBytes).toBeLessThan(16_000_000);
+    const session = await (await fetch(`${base}/api/v1/session`)).json();
+    const response = await fetch(`${base}/api/v1/tasks/${id.taskId}/artifact`, {headers:{'X-Cam-Session':session.sessionToken}});
+    expect(response.status).toBe(200);
+    const artifact = Buffer.from(await response.arrayBuffer());
+    expect(Number(response.headers.get('content-length'))).toBe(artifact.length);
+    expect(artifact.length).toBeGreaterThan(100_000_000);
+    const path = `${output}/real-flower.plan.json`;
+    writeFileSync(path, artifact);
+    const planningMs = Date.now() - started;
+    const cliPath = `${output}/real-flower-cli.plan.json`;
+    runCli(['plan', jobPath, '--stage', 'combined', '--output', cliPath]);
+    const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+    // CLI adds one final newline; all plan data must otherwise match exactly.
+    expect(hash(Buffer.concat([artifact, Buffer.from('\n')]))).toBe(hash(readFileSync(cliPath)));
+    // Reopen the disk-backed plan for independent verification. A deliberately
+    // tiny verifier budget tests transport/reconstruction, not machining approval.
+    const verification = verificationIdentity(task, {...caps.verification!.defaultOptions, max_cells:1}, crypto.randomUUID());
+    await service.startVerification!(verification);
+    const verified = await finishVerification(verification, 300_000);
+    expect(verified.state, JSON.stringify(verified.diagnostic)).toBe('succeeded');
+    expect((await service.verificationResult!(verification)).report.status).toBe('inconclusive');
+    writeFileSync(`${output}/real-flower-summary.json`, JSON.stringify({planningMs, previewBytes,
+      artifactBytes:artifact.length, motionCount:task.summary!.motionCount, artifactSha256:hash(artifact),
+      verificationStatus:verified.summary?.status}, null, 2));
+  }, 900_000);
   it.each([
     ['m3/rectangle', 'endmill', 'complete'], ['m3/no-access', 'endmill', 'empty'],
     ['m3/unsupported-entry', 'endmill', 'incomplete'], ['m3/resource-limit', 'endmill', 'inconclusive'],
@@ -460,8 +552,8 @@ describe('real background planning', () => {
   }, 15_000);
 });
 
-async function finishVerification(id: VerificationIdentity) {
-  const deadline = Date.now() + 45_000;
+async function finishVerification(id: VerificationIdentity, timeoutMs = 45_000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const task = await service.verificationTask!(id);
     if (['succeeded','failed','cancelled'].includes(task.state)) return task;

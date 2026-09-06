@@ -3,16 +3,16 @@
 use crate::{
     document::{API_VERSION, ENGINE_VERSION, UiDiagnostic},
     planning::{Failure, Planning, Snapshot, Status},
-    planning_worker::{ARTIFACT_BYTES, Input, Output, Stage},
+    planning_worker::{Input, Output, REPORT_BYTES, Stage},
 };
 use cam_core::{
-    vcarve::CombinedPlan,
-    verification::{VerificationOptions, verify_plan},
+    vcarve::AuthenticatedPlan,
+    verification::{VerificationOptions, verify_authenticated_plan},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -35,7 +35,7 @@ pub struct Start {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Work {
-    pub artifact: String,
+    pub artifact: PathBuf,
     pub identity: Identity,
 }
 pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failure> {
@@ -77,14 +77,23 @@ pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failur
             "The requested plan differs from its accepted job or motion identity.",
         ));
     }
+    let artifact = result.plan_artifact.clone().ok_or_else(|| {
+        Failure::new(
+            410,
+            "PLAN_RESULT_UNAVAILABLE",
+            "The retained plan file is unavailable. Replan the job.",
+        )
+    })?;
     let input = Input {
         stage: Stage::Combined,
         job: String::new(),
         export: None,
         verification: Some(Work {
-            artifact: result.artifact.clone(),
+            artifact: artifact.path().to_owned(),
             identity: request.verification.clone(),
         }),
+        output_path: None,
+        source_artifact: Some(artifact),
     };
     service.enqueue(
         Snapshot {
@@ -109,7 +118,10 @@ pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failur
 }
 pub fn calculate(work: Work) -> Result<Output, Value> {
     let convert = |d| json!(UiDiagnostic::from(d));
-    let plan = CombinedPlan::from_json(&work.artifact).map_err(convert)?;
+    let file = File::open(&work.artifact).map_err(|e| json!({"code":"VERIFICATION_ARTIFACT_IO", "severity":"error", "stage":"verification", "message":format!("Could not read the local plan artifact: {e}")}))?;
+    let authenticated = AuthenticatedPlan::from_reader(BufReader::with_capacity(1024 * 1024, file))
+        .map_err(convert)?;
+    let plan = authenticated.plan();
     if plan.input_fingerprint != work.identity.input_fingerprint
         || plan.motion_fingerprint != work.identity.motion_fingerprint
     {
@@ -117,9 +129,10 @@ pub fn calculate(work: Work) -> Result<Output, Value> {
             json!({"code":"VERIFICATION_PLAN_IDENTITY", "severity":"error", "stage":"verification", "message":"Worker artifact identity does not match the accepted plan."}),
         );
     }
-    let report = verify_plan(&plan, &work.identity.options).map_err(convert)?;
+    let report =
+        verify_authenticated_plan(&authenticated, &work.identity.options).map_err(convert)?;
     let artifact = serde_json::to_string(&report).unwrap();
-    if artifact.len() > ARTIFACT_BYTES {
+    if artifact.len() > REPORT_BYTES {
         return Err(
             json!({"code":"VERIFICATION_RESULT_LIMIT", "severity":"error", "stage":"verification", "message":"Verification report exceeds the 16 MB service limit. Reduce report detail and run again."}),
         );
@@ -130,6 +143,7 @@ pub fn calculate(work: Work) -> Result<Output, Value> {
             "originalStatus": report.original.status, "roundedStatus": report.rounded.as_ref().map(|r| r.verification.status),
         }),
         artifact,
+        plan_artifact: None,
         motions: vec![],
         programs: vec![],
         inspection: Default::default(),

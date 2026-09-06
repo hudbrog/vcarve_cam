@@ -397,9 +397,17 @@ fn saved_combined_reports_recompute_and_reject_stale_motion_or_job_edits() {
     value["analysis"] = serde_json::json!({"status":"empty","samples":[]});
     value["vbit_spindle_rpm"] = serde_json::json!(1);
     let loaded = CombinedPlan::from_json(&value.to_string()).unwrap();
+    let streamed = CombinedPlan::from_reader(value.to_string().as_bytes()).unwrap();
+    assert_eq!(streamed.to_json().unwrap(), loaded.to_json().unwrap());
     assert_eq!(loaded.analysis.status, PlanStatus::Complete);
     assert_eq!(loaded.vbit_spindle_rpm, 12000.);
     value["vbit_motions"][0]["end"]["x"] = serde_json::json!(999.);
+    assert_eq!(
+        CombinedPlan::from_reader(value.to_string().as_bytes())
+            .unwrap_err()
+            .code,
+        "STALE_PLAN"
+    );
     assert_eq!(
         CombinedPlan::from_json(&value.to_string())
             .unwrap_err()
@@ -408,6 +416,12 @@ fn saved_combined_reports_recompute_and_reject_stale_motion_or_job_edits() {
     );
     value = serde_json::from_str(&saved).unwrap();
     value["endmill"]["job"]["operation"]["max_floor_ridge_mm"] = serde_json::json!(0.9);
+    assert_eq!(
+        CombinedPlan::from_reader(value.to_string().as_bytes())
+            .unwrap_err()
+            .code,
+        "STALE_PLAN"
+    );
     assert_eq!(
         CombinedPlan::from_json(&value.to_string())
             .unwrap_err()
@@ -423,6 +437,58 @@ fn saved_combined_reports_recompute_and_reject_stale_motion_or_job_edits() {
         "PLAN_VERSION"
     );
 }
+#[test]
+fn streamed_plan_loading_is_independent_of_the_string_api_size_limit() {
+    use std::io::{BufReader, Read};
+    let saved = planned("narrow-channel").to_json().unwrap();
+    // Valid trailing whitespace crosses 128 MB without creating a huge fixture
+    // or allocating a huge string. Identity and analysis must still be rebuilt.
+    let reader = saved
+        .as_bytes()
+        .chain(std::io::repeat(b' ').take(128_000_001));
+    let loaded = CombinedPlan::from_reader(BufReader::new(reader)).unwrap();
+    assert_eq!(loaded.to_json().unwrap(), saved);
+    let truncated = &saved.as_bytes()[..saved.len() / 2];
+    assert_eq!(
+        CombinedPlan::from_reader(truncated).unwrap_err().code,
+        "PLAN_JSON"
+    );
+}
+
+#[test]
+fn authenticated_plans_rebuild_cached_reports_and_bind_an_immutable_snapshot() {
+    use cam_core::{
+        vcarve::AuthenticatedPlan,
+        verification::{VerificationOptions, verify_authenticated_plan, verify_plan},
+    };
+    let mut source = planned("narrow-channel").clone();
+    source.analysis.finish_paths_executed = 0;
+    let authenticated = AuthenticatedPlan::from_plan(&source).unwrap();
+    assert_eq!(
+        authenticated.plan().analysis.finish_paths_executed,
+        planned("narrow-channel").analysis.finish_paths_executed
+    );
+    let options = VerificationOptions {
+        max_cells: 1,
+        ..Default::default()
+    };
+    let report = verify_authenticated_plan(&authenticated, &options).unwrap();
+    assert_eq!(
+        serde_json::to_value(&report).unwrap(),
+        serde_json::to_value(verify_plan(&source, &options).unwrap()).unwrap()
+    );
+    source.vbit_motions[0].end.x += 1.;
+    assert_eq!(
+        verify_plan(&source, &options).unwrap_err().code,
+        "STALE_PLAN"
+    );
+    assert!(AuthenticatedPlan::from_plan(&source).is_err());
+    assert_eq!(
+        serde_json::to_value(verify_authenticated_plan(&authenticated, &options).unwrap()).unwrap(),
+        serde_json::to_value(report).unwrap()
+    );
+}
+
 #[test]
 fn missing_final_finish_cannot_be_hidden_by_an_already_clean_stock_preview() {
     let mut p = planned("narrow-channel").clone();

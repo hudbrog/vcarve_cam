@@ -142,6 +142,7 @@ dependencies = [
  "axum",
  "cam-core",
  "cam-storage",
+ "futures-util",
  "getrandom 0.4.3",
  "serde",
  "serde_json",

@@ -167,6 +167,8 @@ impl Planning {
                 job: raw,
                 verification: None,
                 export: None,
+                output_path: None,
+                source_artifact: None,
             },
         )
     }
@@ -377,18 +379,37 @@ impl Planning {
         }
         // All task futures release their slots only after the child exits.
         let _ = self.pending.acquire_many(MAX_PENDING as u32).await;
+        let mut ledger = self.ledger.lock().unwrap();
+        for record in ledger.records.values_mut() {
+            record.result = None;
+            if record.snapshot.result_available {
+                record.snapshot.result_available = false;
+                record.snapshot.sequence += 1;
+            }
+        }
+        ledger.results.clear();
     }
 }
 fn diagnostic(code: &str, message: &str) -> Value {
     json!({ "code": code, "severity": "error", "stage": if code.starts_with("EXPORT_") {"export"} else if code.starts_with("VERIFICATION_") {"verification"} else {"planning"}, "message": message })
 }
 async fn run_worker(
-    input: Input,
+    mut input: Input,
     cancel: &mut watch::Receiver<bool>,
 ) -> Option<Result<Output, Value>> {
     let verifying = input.verification.is_some();
     let exporting = input.export.is_some();
+    // Keep the source lease until the child is reaped, including read errors,
+    // timeout and cancellation. Serde deliberately omits this parent-only field.
+    let _source_artifact = input.source_artifact.take();
     let operation = async {
+        let artifact = if !verifying && !exporting {
+            let file = crate::artifact::PlanFile::create()?;
+            input.output_path = Some(file.path().to_owned());
+            Some(file)
+        } else {
+            None
+        };
         let mut command = Command::new(std::env::current_exe()?);
         command
             .arg("--planning-worker")
@@ -415,7 +436,10 @@ async fn run_worker(
                     .read_to_end(&mut output)
                     .await?;
                 if output.len() > planning_worker::WORKER_BYTES {
-                    return Err(io::Error::other("Worker response exceeds 32 MB"));
+                    return Err(io::Error::other(format!(
+                        "Worker response exceeds the {} byte limit",
+                        planning_worker::WORKER_BYTES
+                    )));
                 }
                 Ok::<_, io::Error>(output)
             };
@@ -423,7 +447,15 @@ async fn run_worker(
             if !status.success() {
                 return Err(io::Error::other("Planning worker exited without a result"));
             }
-            serde_json::from_slice::<Result<Output, Value>>(&output).map_err(io::Error::other)
+            let mut reply = serde_json::from_slice::<Result<Output, Value>>(&output)
+                .map_err(io::Error::other)?;
+            if let (Ok(result), Some(artifact)) = (&mut reply, &artifact) {
+                if artifact.byte_len()? == 0 || !result.artifact.is_empty() {
+                    return Err(io::Error::other("Worker returned no complete plan file"));
+                }
+                result.plan_artifact = Some(artifact.clone());
+            }
+            Ok(reply)
         };
         let outcome = tokio::select! {
             biased;
@@ -543,6 +575,7 @@ mod tests {
             motions: vec![],
             programs: vec![],
             artifact: "{}".into(),
+            plan_artifact: Some(crate::artifact::PlanFile::create().unwrap()),
             inspection: crate::inspection::Inspection::default(),
         }))
     }
@@ -554,6 +587,7 @@ mod tests {
         let _worker = service.worker.acquire().await.unwrap();
         running(&service, "source");
         let mut output = result().unwrap().unwrap();
+        let artifact_path = output.plan_artifact.as_ref().unwrap().path().to_owned();
         output.summary =
             json!({"inputFingerprint":"a".repeat(64),"motionFingerprint":"b".repeat(64)});
         service.finish("source", Some(Ok(output)));
@@ -616,6 +650,7 @@ mod tests {
             service.finish(&id, result());
         }
         assert!(service.result("source").is_err());
+        assert!(artifact_path.exists()); // The queued verifier still owns a lease.
         assert!(verification::start(&service, make()).unwrap().state == Status::Queued);
         service.cancel("verify").unwrap();
         tokio::time::timeout(Duration::from_secs(2), service.shutdown())
@@ -623,6 +658,7 @@ mod tests {
             .unwrap();
         assert!(service.snapshot("verify").unwrap().state == Status::Cancelled);
         assert!(service.result("verify").is_err());
+        assert!(!artifact_path.exists());
     }
     #[test]
     fn cancellation_and_completion_have_one_authoritative_winner() {
@@ -650,6 +686,7 @@ mod tests {
         let _worker = service.worker.acquire().await.unwrap();
         running(&service, "source");
         let mut output = result().unwrap().unwrap();
+        let artifact_path = output.plan_artifact.as_ref().unwrap().path().to_owned();
         output.summary =
             json!({"inputFingerprint":"a".repeat(64),"motionFingerprint":"b".repeat(64)});
         service.finish("source", Some(Ok(output)));
@@ -717,6 +754,7 @@ mod tests {
             service.finish(&id, result());
         }
         assert!(service.result("source").is_err());
+        assert!(artifact_path.exists()); // The queued exporter still owns a lease.
         assert!(exporting::start(&service, make()).unwrap().state == Status::Queued);
         service.cancel("export").unwrap();
         tokio::time::timeout(Duration::from_secs(2), service.shutdown())
@@ -724,6 +762,7 @@ mod tests {
             .unwrap();
         assert!(service.snapshot("export").unwrap().state == Status::Cancelled);
         assert!(service.result("export").is_err());
+        assert!(!artifact_path.exists());
     }
     #[test]
     fn result_eviction_keeps_summary_identity_and_updates_sequence() {

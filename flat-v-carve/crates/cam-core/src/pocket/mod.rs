@@ -12,7 +12,6 @@ use crate::{
 use serde::{Deserialize, Serialize};
 pub use settings::{ClearingStrategy, EndmillPlanningSettings, EntryStrategy};
 use settings::{Context, error};
-use sha2::{Digest, Sha256};
 pub use verify::verify_endmill_motions;
 
 pub const PLAN_SCHEMA_VERSION: u32 = 1;
@@ -68,7 +67,7 @@ pub struct EndmillPlan {
     pub analysis: EndmillAnalysis,
 }
 #[derive(Deserialize)]
-struct Envelope {
+pub(crate) struct Envelope {
     artifact_kind: String,
     schema_version: u32,
     engine_version: String,
@@ -80,8 +79,7 @@ struct Envelope {
 }
 
 fn hash<T: Serialize>(value: &T) -> Result<String> {
-    let bytes = serde_json::to_vec(value).map_err(|e| error("PLAN_JSON", e.to_string()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    crate::plan_hash::hash(value).map_err(|e| error("PLAN_JSON", e.to_string()))
 }
 fn input_hash(job: &Job) -> Result<String> {
     hash(&(
@@ -91,6 +89,21 @@ fn input_hash(job: &Job) -> Result<String> {
     ))
 }
 impl EndmillPlan {
+    pub(crate) fn envelope(&self) -> Envelope {
+        Envelope {
+            artifact_kind: self.artifact_kind.clone(),
+            schema_version: self.schema_version,
+            engine_version: self.engine_version.clone(),
+            input_fingerprint: self.input_fingerprint.clone(),
+            motion_fingerprint: self.motion_fingerprint.clone(),
+            job: self.job.clone(),
+            motions: self.motions.clone(),
+            generation_issues: self.generation_issues.clone(),
+        }
+    }
+    pub(crate) fn revalidated(&self) -> Result<Self> {
+        Self::from_envelope(self.envelope())
+    }
     pub fn to_json(&self) -> Result<String> {
         let json = serde_json::to_string(self)
             .map(|s| s + "\n")
@@ -113,6 +126,17 @@ impl EndmillPlan {
         }
         let e: Envelope =
             serde_json::from_str(json).map_err(|e| error("PLAN_JSON", e.to_string()))?;
+        Self::from_envelope(e)
+    }
+
+    /// Stream a plan from caller-owned storage, authenticating and rebuilding
+    /// all analysis. Callers must bound untrusted input before using this API.
+    pub fn from_reader(reader: impl std::io::Read) -> Result<Self> {
+        let e = serde_json::from_reader(reader).map_err(|e| error("PLAN_JSON", e.to_string()))?;
+        Self::from_envelope(e)
+    }
+
+    pub(crate) fn from_envelope(e: Envelope) -> Result<Self> {
         if e.artifact_kind != "endmill_plan"
             || e.schema_version != PLAN_SCHEMA_VERSION
             || e.engine_version != env!("CARGO_PKG_VERSION")

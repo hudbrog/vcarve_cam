@@ -267,6 +267,7 @@ async fn capability_envelope_has_limits_and_no_unimplemented_operations() {
     assert_eq!(caps["planningStages"], json!(["endmill", "combined"]));
     assert_eq!(caps["planning"]["concurrentPlans"], 1);
     assert_eq!(caps["planning"]["maxPending"], 4);
+    assert!(caps["planning"]["artifactBytes"].is_null());
     for field in ["verificationScopes", "exportFormats"] {
         assert_eq!(
             caps[field],

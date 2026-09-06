@@ -7,10 +7,10 @@ pub use profile::*;
 use crate::{
     geometry::{Diagnostic, Result},
     motion::{Motion, MotionKind, Position},
-    vcarve::CombinedPlan,
+    vcarve::{AuthenticatedPlan, CombinedPlan},
     verification::{
         StockVerification, VerificationOptions, VerificationReport, VerificationStatus,
-        verify_emitted_motions, verify_plan,
+        verify_authenticated_plan, verify_emitted_motions,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -68,10 +68,7 @@ pub(super) fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("postprocessor")
 }
 fn hash(v: &impl Serialize) -> Result<String> {
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(v).map_err(|e| error("POST_JSON", e.to_string()))?)
-    ))
+    crate::plan_hash::hash(v).map_err(|e| error("POST_JSON", e.to_string()))
 }
 pub(super) fn rounded(v: f64, places: usize) -> f64 {
     format!("{v:.places$}")
@@ -262,6 +259,21 @@ pub fn export_plan(
     layout: ProgramLayout,
     options: &VerificationOptions,
 ) -> Result<ExportResult> {
+    export_authenticated_plan(
+        &AuthenticatedPlan::from_plan(plan)?,
+        profile,
+        layout,
+        options,
+    )
+}
+
+/// Export a freshly authenticated immutable plan without JSON round-trips.
+pub fn export_authenticated_plan(
+    plan: &AuthenticatedPlan,
+    profile: &LinuxCncProfile,
+    layout: ProgramLayout,
+    options: &VerificationOptions,
+) -> Result<ExportResult> {
     process(plan, profile, layout, options, None)
 }
 /// Recheck saved output bytes against the plan/profile. Comments never supply
@@ -273,10 +285,17 @@ pub fn verify_programs(
     options: &VerificationOptions,
     programs: &[Program],
 ) -> Result<ExportReport> {
-    Ok(process(plan, profile, layout, options, Some(programs))?.report)
+    Ok(process(
+        &AuthenticatedPlan::from_plan(plan)?,
+        profile,
+        layout,
+        options,
+        Some(programs),
+    )?
+    .report)
 }
 fn process(
-    plan: &CombinedPlan,
+    authenticated: &AuthenticatedPlan,
     profile: &LinuxCncProfile,
     layout: ProgramLayout,
     options: &VerificationOptions,
@@ -292,14 +311,14 @@ fn process(
             "output precision is owned by the machine profile",
         ));
     }
-    let plan = CombinedPlan::from_json(&plan.to_json()?)?;
+    let plan = authenticated.plan();
     profile.validate(&plan.endmill.job)?;
     let offset = profile.z_offset(&plan.endmill.job)?;
     let mut original_options = options.clone();
     // Output rounding must happen AFTER stock-datum translation. Ordinary M5
     // stock-top decimal rounding is not interchangeable at rounding ties.
     original_options.decimal_places = None;
-    let original = verify_plan(&plan, &original_options)?;
+    let original = verify_authenticated_plan(authenticated, &original_options)?;
     let mut report = ExportReport {
         artifact_kind: "linuxcnc_export_report".into(), schema_version: 1,
         engine_version: env!("CARGO_PKG_VERSION").into(), status: original.status,
@@ -318,7 +337,7 @@ fn process(
             report,
         });
     }
-    let all_stages = stages(&plan);
+    let all_stages = stages(plan);
     if all_stages.is_empty() {
         return Err(error("POST_EMPTY", "no executable motions"));
     }
@@ -343,7 +362,7 @@ fn process(
         for (i, (filename, group)) in groups.iter().enumerate() {
             let program = match supplied {
                 Some(s) => s[i].clone(),
-                None => emit(&plan, profile, group, filename, offset)?,
+                None => emit(plan, profile, group, filename, offset)?,
             };
             if &program.filename != filename {
                 return Err(error(

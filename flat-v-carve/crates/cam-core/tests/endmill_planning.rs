@@ -106,6 +106,8 @@ fn saved_reports_are_recomputed_and_identity_changes_rejected() {
     data["analysis"] = serde_json::json!({"status":"empty","layers":[]});
     data["spindle_rpm"] = serde_json::json!(1);
     let replay = EndmillPlan::from_json(&data.to_string()).unwrap();
+    let streamed = EndmillPlan::from_reader(data.to_string().as_bytes()).unwrap();
+    assert_eq!(streamed.to_json().unwrap(), replay.to_json().unwrap());
     assert_eq!(replay.analysis.status, PlanStatus::Complete);
     assert_eq!(replay.spindle_rpm, 10000.);
     assert_eq!(replay.analysis.layers.len(), 2);

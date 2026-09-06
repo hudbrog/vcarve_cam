@@ -1,3 +1,4 @@
+pub mod artifact;
 pub mod document;
 pub mod exporting;
 pub mod inspection;
@@ -288,7 +289,7 @@ async fn capabilities(State(state): State<AppState>) -> Json<Value> {
         "planning": { "instanceId": state.planning.instance_id, "concurrentPlans": 1,
             "maxPending": planning::MAX_PENDING, "maxTasks": planning::MAX_TASKS,
             "retainedResults": planning::RETAINED_RESULTS, "timeoutSeconds": planning::TIMEOUT_SECONDS,
-            "previewMotions": planning_worker::PREVIEW_MOTIONS, "artifactBytes": planning_worker::ARTIFACT_BYTES,
+            "previewMotions": planning_worker::PREVIEW_MOTIONS, "artifactBytes": null,
             "stockSlices": true, "sliceVertices": inspection::SLICE_VERTICES, "inspectionVertices": inspection::TOTAL_VERTICES },
         "limits": { "svgBytes": cam_core::svg::MAX_SVG_BYTES, "jobBytes": JOB_BYTES,
             "requestBytes": REQUEST_BYTES, "concurrentInspections": WORKERS } }),
@@ -457,6 +458,38 @@ async fn plan_artifact(
     RoutePath(id): RoutePath<String>,
 ) -> Response {
     match state.planning.result(&id) {
+        Ok((_, result)) if result.plan_artifact.is_some() => {
+            let artifact = result.plan_artifact.as_ref().unwrap().clone();
+            let length = match artifact.byte_len() {
+                Ok(length) => length,
+                Err(_) => {
+                    return error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "PLAN_ARTIFACT_IO",
+                        "The retained plan file could not be read.",
+                    );
+                }
+            };
+            match artifact.body().await {
+                Ok(body) => (
+                    [
+                        (header::CONTENT_TYPE, "application/json".to_owned()),
+                        (
+                            header::CONTENT_DISPOSITION,
+                            "attachment; filename=plan.json".to_owned(),
+                        ),
+                        (header::CONTENT_LENGTH, length.to_string()),
+                    ],
+                    body,
+                )
+                    .into_response(),
+                Err(_) => error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "PLAN_ARTIFACT_IO",
+                    "The retained plan file could not be read.",
+                ),
+            }
+        }
         Ok((snapshot, result)) => (
             [
                 (header::CONTENT_TYPE, "application/json"),

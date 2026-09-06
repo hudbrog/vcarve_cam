@@ -25,7 +25,15 @@ Open the exact loopback URL printed by the service, or add `--open`. Linux uses 
 
 The production bundle selects the live adapter. Import starts a new job with cutting settings unset and 0 mm wall allowance; open accepts editable jobs and migrates schemas 1/2 through Rust. Supplied invalid settings are reported without rewriting the draft. Downloads require a successful editable-job validation receipt for the current revision. This does not establish planning readiness or machining verification.
 
-The `cam-server` library is shared by `cam serve` and the `cam-web` development alias. It binds only `127.0.0.1` and serves UI and API from one origin. It relaunches the current executable in a hidden compute-worker mode for each task, calls core planners directly, and kills/reaps that worker on cancellation. Worker mode never loads UI files. It uses no shell, writes no jobs to local paths, and accepts no filesystem paths from HTTP requests. File selection and portable downloads remain browser-owned.
+The `cam-server` library is shared by `cam serve` and the `cam-web` development alias. It binds only `127.0.0.1` and serves UI and API from one origin. It relaunches the current executable in a hidden compute-worker mode for each task, calls core planners directly, and kills/reaps that worker on cancellation. Worker mode never loads UI files. It uses no shell and accepts no filesystem paths from HTTP requests. Complete plans are streamed into service-owned temporary files; verification/export use internal file references, while the browser receives bounded previews. File selection and portable downloads remain browser-owned.
+
+Wire version **ui-7** removes the per-plan JSON byte ceiling from the live service.
+The 32 MB worker reply and 20,000-motion preview budgets are independent of plan
+file size. Artifact downloads stream in 64 KiB chunks. The latest four results
+are retained; active verification, export, and downloads keep their source files
+alive until finished. Rebuild the UI and service together and restart after an
+update. See [plan artifact storage](../../docs/flat-v-carve/web-ui/u7-plan-artifacts.md)
+for lifecycle, remaining bounds, and real-artwork regression commands.
 
 ## Tool library location and workflow
 
