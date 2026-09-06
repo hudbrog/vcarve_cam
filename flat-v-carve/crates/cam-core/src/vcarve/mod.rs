@@ -712,7 +712,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
             if !issues.is_empty() {
                 break;
             }
-            let (quality, floor_points) = quality::cleanup(&ctx, &endmill, &moves)?;
+            let (quality, floor) = quality::cleanup(&ctx, &endmill, &moves)?;
             let mut points: Vec<_> = quality
                 .samples
                 .iter()
@@ -720,11 +720,15 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
                 .take(16)
                 .map(|p| p.best_tip_center)
                 .collect();
-            points.extend(floor_points);
+            points.extend(floor.points);
             points.dedup_by(|a, b| a.distance(*b) < ctx.guard);
             points.truncate(16);
             if points.is_empty() {
-                sample_reuse = Some(quality::SampleReuse::new(quality, &moves)?);
+                sample_reuse = Some(quality::SampleReuse::new(
+                    quality,
+                    &moves,
+                    Some(floor.slice),
+                )?);
                 break;
             }
             for p in points {

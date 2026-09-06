@@ -133,7 +133,7 @@ impl BoundaryQuery {
         }
         Ok(())
     }
-    pub fn sample(&self, p: Point) -> Result<Clearance> {
+    fn check_sample_point(&self, p: Point) -> Result<()> {
         self.check_point(p)?;
         if self.segments.is_empty() {
             return Err(Diagnostic::new(
@@ -141,6 +141,11 @@ impl BoundaryQuery {
                 "empty region has no finite boundary distance",
             ));
         }
+        Ok(())
+    }
+    /// Containment without an unused nearest-boundary distance search.
+    pub fn location(&self, p: Point) -> Result<PointLocation> {
+        self.check_sample_point(p)?;
         let mut inside = false;
         let mut boundary = false;
         self.index
@@ -160,16 +165,19 @@ impl BoundaryQuery {
                 }
                 Ok(())
             })?;
-        let distance = self
-            .index
-            .minimum(Aabb::new(p, p), |i| self.segments[i].distance(p));
-        let location = if boundary {
+        Ok(if boundary {
             PointLocation::Boundary
         } else if inside {
             PointLocation::Inside
         } else {
             PointLocation::Outside
-        };
+        })
+    }
+    pub fn sample(&self, p: Point) -> Result<Clearance> {
+        let location = self.location(p)?;
+        let distance = self
+            .index
+            .minimum(Aabb::new(p, p), |i| self.segments[i].distance(p));
         let signed_distance_mm = match location {
             PointLocation::Inside => distance,
             PointLocation::Outside => -distance,
@@ -186,8 +194,8 @@ impl BoundaryQuery {
     }
     /// Minimum clearance over a whole segment, including intersections between endpoints.
     pub fn segment_distance_mm(&self, segment: Segment) -> Result<f64> {
-        self.sample(segment.start)?;
-        self.sample(segment.end)?;
+        self.check_sample_point(segment.start)?;
+        self.check_point(segment.end)?;
         Ok(self
             .index
             .minimum(Aabb::new(segment.start, segment.end), |i| {
@@ -206,7 +214,7 @@ impl BoundaryQuery {
             ));
         }
         for p in [segment.start, segment.end] {
-            if self.sample(p)?.location != PointLocation::Inside {
+            if self.location(p)? != PointLocation::Inside {
                 return Err(Diagnostic::new(
                     "SWEEP_OUTSIDE",
                     "cutting centers must remain inside the normalized target",

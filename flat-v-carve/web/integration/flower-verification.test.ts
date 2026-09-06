@@ -39,7 +39,7 @@ describe.runIf(process.env.CAM_FLOWER_VERIFY === '1')('flower_box verification p
   afterAll(() => { child?.kill(); });
 
   it('conclusively verifies the unchanged flower job three times through the browser adapter in under 20 seconds', async () => {
-    const jobPath = `${workspace}../real_data/flower_box-svg.job (2).json`;
+    const jobPath = process.env.CAM_FLOWER_JOB ?? `${workspace}../real_data/flower_box-svg.job (2).json`;
     const jobText = readFileSync(jobPath, 'utf8');
     const opened = await service.openJob!(jobText, 71);
     const checked = await service.validateDraft(opened.job, 71);

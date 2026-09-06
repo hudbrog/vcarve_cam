@@ -63,26 +63,32 @@ pub(super) struct Samples {
 
 pub(super) struct SampleReuse {
     samples: Samples,
+    floor: Option<CombinedSlice>,
     prefix_len: usize,
     prefix_hash: String,
+}
+
+pub(super) struct FloorCleanup {
+    pub(super) slice: CombinedSlice,
+    pub(super) points: Vec<Point>,
 }
 
 pub(super) fn cleanup(
     ctx: &Context,
     endmill: &EndmillPlan,
     moves: &[Motion],
-) -> Result<(Samples, Vec<Point>)> {
+) -> Result<(Samples, FloorCleanup)> {
     // Both inspect the same immutable stock and neither adds motions. Running
     // the floor reconstruction beside the sample workers shortens the serial
     // cleanup stage; sample errors retain their original reporting priority.
     if moves.len() < 4096 || std::thread::available_parallelism().map_or(1, usize::from) < 2 {
         return Ok((
             sample(ctx, endmill, moves)?,
-            floor_cleanup_centers(ctx, endmill, moves)?,
+            floor_cleanup(ctx, endmill, moves)?,
         ));
     }
     std::thread::scope(|scope| {
-        let floor = scope.spawn(|| floor_cleanup_centers(ctx, endmill, moves));
+        let floor = scope.spawn(|| floor_cleanup(ctx, endmill, moves));
         let quality = sample(ctx, endmill, moves);
         let floor = floor
             .join()
@@ -92,19 +98,30 @@ pub(super) fn cleanup(
 }
 
 impl SampleReuse {
-    pub(super) fn new(samples: Samples, moves: &[Motion]) -> Result<Self> {
+    pub(super) fn new(
+        samples: Samples,
+        moves: &[Motion],
+        floor: Option<CombinedSlice>,
+    ) -> Result<Self> {
         Ok(Self {
             samples,
+            floor,
             prefix_len: moves.len(),
             prefix_hash: super::hash(&moves)?,
         })
     }
-    fn recover(self, moves: &[Motion]) -> Result<Option<Samples>> {
+    fn recover(self, moves: &[Motion]) -> Result<Option<(Samples, Option<CombinedSlice>)>> {
         let Some(prefix) = moves.get(..self.prefix_len) else {
             return Ok(None);
         };
         if super::hash(&prefix)? != self.prefix_hash {
             return Ok(None);
+        }
+        // Exact motion identity preserves the slice polygons and contributing
+        // IDs. Appended duplicates may reuse point samples below, but their
+        // slice IDs and polygon reconstruction must be computed afresh.
+        if moves.len() == self.prefix_len {
+            return Ok(Some((self.samples, self.floor)));
         }
         // Appended forward duplicates have exactly the same analytic removal
         // and sample witnesses. Anything new falls back to full sampling.
@@ -130,7 +147,7 @@ impl SampleReuse {
             .filter(|m| m.kind.cutting())
             .all(|m| seen.contains(&key(m)))
         {
-            Ok(Some(self.samples))
+            Ok(Some((self.samples, None)))
         } else {
             Ok(None)
         }
@@ -416,11 +433,7 @@ fn stock_slices(
     slices.into_iter().map(|(_, slice)| slice).collect()
 }
 
-pub(super) fn floor_cleanup_centers(
-    ctx: &Context,
-    endmill: &EndmillPlan,
-    moves: &[Motion],
-) -> Result<Vec<Point>> {
+fn floor_cleanup(ctx: &Context, endmill: &EndmillPlan, moves: &[Motion]) -> Result<FloorCleanup> {
     let cap = ctx.target.depth_cap().mm();
     let access = ctx.target.vbit_centers(&ctx.tool, Depth::new(cap)?)?;
     let floor = combined_slice(
@@ -468,7 +481,10 @@ pub(super) fn floor_cleanup_centers(
         )?;
         points.push(r.best_tip_center);
     }
-    Ok(points)
+    Ok(FloorCleanup {
+        slice: floor,
+        points,
+    })
 }
 pub(super) fn analyze(
     ctx: &Context,
@@ -480,9 +496,9 @@ pub(super) fn analyze(
     let _timing = crate::timing::Timer::new("combined analysis");
     let moves = checked.motions();
     let minimum = checked.minimum_margin();
-    let quality = match reuse.map(|r| r.recover(moves)).transpose()?.flatten() {
-        Some(samples) => samples,
-        None => sample(ctx, endmill, moves)?,
+    let (quality, reused_floor) = match reuse.map(|r| r.recover(moves)).transpose()?.flatten() {
+        Some(evidence) => evidence,
+        None => (sample(ctx, endmill, moves)?, None),
     };
     let cap = ctx.target.depth_cap().mm();
     let floor_check = (cap - ctx.ridge - ctx.tolerance / 2.).max(0.);
@@ -492,7 +508,19 @@ pub(super) fn analyze(
     depths.push(floor_check);
     depths.sort_by(f64::total_cmp);
     depths.dedup();
-    let slices = stock_slices(ctx, endmill, moves, &depths)?;
+    let retained = reused_floor.and_then(|floor| {
+        depths
+            .iter()
+            .position(|&d| d == floor.depth_mm)
+            .map(|i| (i, floor))
+    });
+    if let Some((i, _)) = &retained {
+        depths.remove(*i);
+    }
+    let mut slices = stock_slices(ctx, endmill, moves, &depths)?;
+    if let Some((i, floor)) = retained {
+        slices.insert(i, floor);
+    }
     let access = ctx.target.vbit_centers(&ctx.tool, Depth::new(cap)?)?;
     let accessible = accessible_area(&access, ctx.tool.tip_radius().mm())?.boolean(
         BooleanOp::Union,
@@ -589,6 +617,54 @@ mod slice_order_tests {
     use super::*;
 
     #[test]
+    fn cleanup_floor_reuse_matches_fresh_analysis_and_requires_exact_motion_identity() {
+        let job = crate::job::Job::from_json(include_str!("../../../../fixtures/m4/island.json"))
+            .unwrap();
+        let plan = super::super::plan_combined(&job).unwrap();
+        let ctx = Context::new(&job).unwrap();
+        let seed = || {
+            let (samples, floor) = cleanup(&ctx, &plan.endmill, &plan.vbit_motions).unwrap();
+            SampleReuse::new(samples, &plan.vbit_motions, Some(floor.slice)).unwrap()
+        };
+        let checked = || {
+            super::super::verify::executions(
+                &ctx,
+                &plan.endmill,
+                &plan.transition,
+                &plan.vbit_motions,
+                &plan.executions,
+            )
+            .unwrap()
+        };
+        let axis = &plan.analysis.medial_axis;
+        let fresh = analyze(&ctx, &plan.endmill, checked(), axis.clone(), None).unwrap();
+        let retained = analyze(&ctx, &plan.endmill, checked(), axis.clone(), Some(seed())).unwrap();
+        assert_eq!(
+            serde_json::to_value(fresh).unwrap(),
+            serde_json::to_value(retained).unwrap()
+        );
+        assert!(
+            seed()
+                .recover(&plan.vbit_motions)
+                .unwrap()
+                .unwrap()
+                .1
+                .is_some()
+        );
+
+        let mut changed = plan.vbit_motions.clone();
+        let repeated = changed.iter().find(|m| m.kind.cutting()).unwrap().clone();
+        changed.push(repeated);
+        assert!(
+            seed().recover(&changed).unwrap().unwrap().1.is_none(),
+            "even identical appended sweeps require fresh contributing-motion IDs"
+        );
+        changed.pop();
+        changed[2].end.z -= 0.01;
+        assert!(seed().recover(&changed).unwrap().is_none());
+    }
+
+    #[test]
     fn cleanup_samples_are_reused_only_for_unchanged_prefix_and_duplicate_finish() {
         let job = crate::job::Job::from_json(include_str!("../../../../fixtures/m4/island.json"))
             .unwrap();
@@ -598,6 +674,7 @@ mod slice_order_tests {
             SampleReuse::new(
                 sample(&ctx, &plan.endmill, &plan.vbit_motions).unwrap(),
                 &plan.vbit_motions,
+                None,
             )
             .unwrap()
         };
@@ -609,10 +686,11 @@ mod slice_order_tests {
             .clone();
         repeated.id = plan.endmill.motions.len() + moves.len();
         moves.push(repeated);
-        let cached = seed()
+        let (cached, floor) = seed()
             .recover(&moves)
             .unwrap()
             .expect("duplicate cuts must reuse samples");
+        assert!(floor.is_none(), "appended cuts must refresh slice IDs");
         let fresh = sample(&ctx, &plan.endmill, &moves).unwrap();
         assert_eq!(cached.limited, fresh.limited);
         assert_eq!(

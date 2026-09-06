@@ -176,13 +176,17 @@ impl Context {
     }
     pub fn safe_depth(&self, p: crate::geometry::Point) -> Result<f64> {
         let sample = self.target.boundary().sample(p)?;
+        Ok(self.safe_depth_from_sample(sample))
+    }
+    /// Reuse a sample from this immutable target at the requested center.
+    pub(super) fn safe_depth_from_sample(&self, sample: crate::geometry::Clearance) -> f64 {
         let available = sample.signed_distance_mm - self.tool.tip_radius().mm() - self.guard;
         // Threshold intersections can leave a few ulps of apparent positive
         // depth. Such a plunge has no established clearance and collapses when
         // formatted; retain the endpoint at stock top instead.
         if available <= sample.numerical_reserve_mm {
-            return Ok(0.);
+            return 0.;
         }
-        Ok((available / self.tool.angle().slope()).clamp(0., self.target.depth_cap().mm()))
+        (available / self.tool.angle().slope()).clamp(0., self.target.depth_cap().mm())
     }
 }

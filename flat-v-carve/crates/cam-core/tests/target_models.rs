@@ -237,10 +237,28 @@ fn independent_query_distinguishes_holes_boundaries_and_subgrid_points() {
     ] {
         let sample = t.boundary().sample(p).unwrap();
         assert_eq!(sample.location, location);
+        assert_eq!(t.boundary().location(p).unwrap(), location);
         near(sample.signed_distance_mm, distance, 1e-12);
     }
     assert_eq!(t.nominal_depth(Point::new(10.0, 10.0)).unwrap().mm(), 0.0);
     assert!(t.boundary().sample(Point::new(f64::NAN, 0.0)).is_err());
+    for p in [
+        Point::new(f64::NAN, 0.),
+        Point::new(f64::INFINITY, 0.),
+        Point::new(1e30, 0.),
+    ] {
+        assert_eq!(t.boundary().location(p).unwrap_err().code, "QUERY_RANGE");
+        assert_eq!(
+            t.boundary()
+                .segment_distance_mm(Segment {
+                    start: p,
+                    end: Point::new(1., 1.)
+                })
+                .unwrap_err()
+                .code,
+            "QUERY_RANGE"
+        );
+    }
     let nested = target(
         vec![
             rectangle(0.0, 0.0, 20.0, 20.0),

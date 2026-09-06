@@ -3,10 +3,41 @@ use super::{
     settings::{Context, error},
 };
 use crate::{
-    geometry::{Curve, Point, PointLocation, Result, Segment, Site, SiteKind},
+    geometry::{Clearance, Curve, Point, PointLocation, Result, Segment, Site, SiteKind},
     motion::Position,
 };
 use serde::Serialize;
+use std::collections::HashMap;
+
+/// Repeated branch endpoints and subdivision witnesses belong to one immutable
+/// target. Reuse exact samples, bounded independently of the curve budget.
+struct ClearanceReuse<'a> {
+    ctx: &'a Context,
+    samples: HashMap<[u64; 2], Clearance>,
+}
+impl<'a> ClearanceReuse<'a> {
+    fn new(ctx: &'a Context) -> Self {
+        Self {
+            ctx,
+            samples: HashMap::new(),
+        }
+    }
+    fn sample(&mut self, p: Point) -> Result<Clearance> {
+        let key = [p.x.to_bits(), p.y.to_bits()];
+        if let Some(&sample) = self.samples.get(&key) {
+            return Ok(sample);
+        }
+        let sample = self.ctx.target.boundary().sample(p)?;
+        if self.samples.len() < 131072 {
+            self.samples.insert(key, sample);
+        }
+        Ok(sample)
+    }
+    fn depth(&mut self, p: Point) -> Result<f64> {
+        let sample = self.sample(p)?;
+        Ok(self.ctx.safe_depth_from_sample(sample))
+    }
+}
 #[derive(Clone, Debug, Serialize)]
 pub struct MedialBranch {
     pub id: usize,
@@ -97,7 +128,7 @@ fn closest(site: Site, p: Point, sources: &[Segment]) -> Point {
     }
 }
 fn append_interval(
-    ctx: &Context,
+    queries: &mut ClearanceReuse<'_>,
     curve: &Curve,
     a: f64,
     b: f64,
@@ -105,10 +136,11 @@ fn append_interval(
     budget: &mut usize,
     level: usize,
 ) -> Result<()> {
+    let ctx = queries.ctx;
     let qa = curve.evaluate(a)?;
     let qb = curve.evaluate(b)?;
-    let pa = Position::new(qa, -ctx.safe_depth(qa)?);
-    let pb = Position::new(qb, -ctx.safe_depth(qb)?);
+    let pa = Position::new(qa, -queries.depth(qa)?);
+    let pb = Position::new(qb, -queries.depth(qb)?);
     let r = |p: Position| ctx.tool.tip_radius().mm() + p.depth() * ctx.tool.angle().slope();
     let margin = ctx.target.boundary().variable_radius_margin_mm(
         Segment { start: qa, end: qb },
@@ -118,11 +150,21 @@ fn append_interval(
     let slope = ctx.tool.angle().slope();
     let accuracy_radius =
         |p: Position| (r(p) + ctx.guard - ctx.motion_tolerance * slope / 4.).max(0.);
-    let accuracy_margin = ctx.target.boundary().variable_radius_margin_mm(
-        Segment { start: qa, end: qb },
-        accuracy_radius(pa),
-        accuracy_radius(pb),
-    )?;
+    let accuracy_margin = if margin >= 0.
+        && accuracy_radius(pa) <= r(pa) + ctx.guard / 2.
+        && accuracy_radius(pb) <= r(pb) + ctx.guard / 2.
+    {
+        // The first proof encloses a larger disk at both endpoints. Linear
+        // radius interpolation preserves that containment along the entire
+        // chord, so its clearance lower bound also proves this accuracy check.
+        margin
+    } else {
+        ctx.target.boundary().variable_radius_margin_mm(
+            Segment { start: qa, end: qb },
+            accuracy_radius(pa),
+            accuracy_radius(pb),
+        )?
+    };
     // Quadratic chord error on this interval, using the exact curve midpoint.
     let mid = curve.evaluate((a + b) / 2.)?;
     let chord = mid.distance(qa.lerp(qb, 0.5));
@@ -145,8 +187,8 @@ fn append_interval(
                 "bounded medial subdivision exhausted its budget",
             ));
         }
-        append_interval(ctx, curve, a, (a + b) / 2., points, budget, level + 1)?;
-        append_interval(ctx, curve, (a + b) / 2., b, points, budget, level + 1)?;
+        append_interval(queries, curve, a, (a + b) / 2., points, budget, level + 1)?;
+        append_interval(queries, curve, (a + b) / 2., b, points, budget, level + 1)?;
     } else {
         if *budget == 0 {
             return Err(error(
@@ -163,7 +205,9 @@ fn append_interval(
     Ok(())
 }
 pub(super) fn build(ctx: &Context) -> Result<(MedialAxis, Vec<Candidate>)> {
+    let _timing = crate::timing::Timer::new("vbit medial candidates");
     let diagram = ctx.target.diagram()?;
+    let mut queries = ClearanceReuse::new(ctx);
     let mut branches = vec![];
     let mut paths = vec![];
     let mut excluded = 0;
@@ -174,7 +218,7 @@ pub(super) fn build(ctx: &Context) -> Result<(MedialAxis, Vec<Candidate>)> {
             continue;
         };
         let mid = curve.evaluate(0.5)?;
-        let q = ctx.target.boundary().sample(mid)?;
+        let q = queries.sample(mid)?;
         if !edge.primary
             || q.location != PointLocation::Inside
             || closest(edge.sites[0], mid, &diagram.source_segments).distance(closest(
@@ -209,17 +253,25 @@ pub(super) fn build(ctx: &Context) -> Result<(MedialAxis, Vec<Candidate>)> {
         let mut all = vec![];
         for pair in splits.windows(2) {
             let t = (pair[0] + pair[1]) / 2.;
-            let depth = ctx.safe_depth(curve.evaluate(t)?)?;
+            let middle = queries.sample(curve.evaluate(t)?)?;
+            let depth = ctx.safe_depth_from_sample(middle);
             if depth <= 0. {
                 continue;
             }
             // Deep branches are redundant with the full-depth wall and floor families.
-            let middle = ctx.target.boundary().sample(curve.evaluate(t)?)?;
             if middle.distance_mm > high + middle.numerical_reserve_mm {
                 continue;
             }
             let mut points = vec![];
-            append_interval(ctx, curve, pair[0], pair[1], &mut points, &mut budget, 0)?;
+            append_interval(
+                &mut queries,
+                curve,
+                pair[0],
+                pair[1],
+                &mut points,
+                &mut budget,
+                0,
+            )?;
             all.extend(points.iter().copied());
             paths.push(Candidate {
                 family: PathFamily::Medial,
@@ -230,7 +282,7 @@ pub(super) fn build(ctx: &Context) -> Result<(MedialAxis, Vec<Candidate>)> {
         if !all.is_empty() {
             let radii = all
                 .iter()
-                .map(|p| ctx.target.boundary().sample(p.xy()).map(|q| q.distance_mm))
+                .map(|p| queries.sample(p.xy()).map(|q| q.distance_mm))
                 .collect::<Result<Vec<_>>>()?;
             branches.push(MedialBranch {
                 id,
