@@ -1,12 +1,41 @@
-use cam_core::{job::Job, pocket::plan_endmill, vcarve::plan_combined};
+use cam_core::{
+    job::Job,
+    pocket::plan_endmill,
+    vcarve::{CombinedPlan, plan_combined},
+};
 use std::{collections::BTreeMap, fs, time::Instant};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     if args.len() != 3 {
-        return Err("usage: benchmark_pipeline <job.json> <plan.json>".into());
+        return Err(
+            "usage: benchmark_pipeline <job.json> <plan.json> | --replay <plan.json>".into(),
+        );
     }
     let timer = Instant::now();
+    if args[1] == "--replay" {
+        let plan = CombinedPlan::from_json(&fs::read_to_string(&args[2])?)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "engine_version": plan.engine_version,
+                "replay_seconds": timer.elapsed().as_secs_f64(),
+                "combined_status": plan.analysis.status,
+                "endmill_motions": plan.endmill.motions.len(),
+                "vbit_motions": plan.vbit_motions.len(),
+                "quality_samples": plan.analysis.samples.len(),
+                "finish_paths_expected": plan.analysis.finish_paths_expected,
+                "finish_paths_executed": plan.analysis.finish_paths_executed,
+                "missing_floor_area_mm2": plan.analysis.missing_floor_beyond_tolerance.area_mm2(),
+                "max_sampled_missed_reachable_mm": plan.analysis.max_sampled_missed_reachable_mm,
+                "diagnostics": plan.analysis.diagnostics,
+                "slices": plan.analysis.slices.iter().map(|s| serde_json::json!({"depth_mm": s.depth_mm, "overcut_bound_area_mm2": s.possible_overcut.area_mm2(), "remaining_area_mm2": s.remaining_target.area_mm2()})).collect::<Vec<_>>(),
+                "generation_issues": plan.generation_issues,
+                "motion_fingerprint": plan.motion_fingerprint,
+            }))?
+        );
+        return Ok(());
+    }
     let job = Job::from_json(&fs::read_to_string(&args[1])?)?;
     eprintln!("Job loaded: {:.3} s", timer.elapsed().as_secs_f64());
     let timer = Instant::now();
@@ -61,6 +90,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "vbit_motions": plan.vbit_motions.len(),
             "combined_status": plan.analysis.status,
             "diagnostics": plan.analysis.diagnostics,
+            "slices": plan.analysis.slices.iter().map(|slice| serde_json::json!({
+                "depth_mm": slice.depth_mm,
+                "overcut_bound_area_mm2": slice.possible_overcut.area_mm2(),
+                "remaining_area_mm2": slice.remaining_target.area_mm2(),
+            })).collect::<Vec<_>>(),
             "generation_issues": plan.generation_issues,
             "finish_paths_expected": plan.analysis.finish_paths_expected,
             "finish_paths_executed": plan.analysis.finish_paths_executed,

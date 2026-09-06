@@ -8,7 +8,10 @@ use crate::{
 };
 pub use access::{CenterSet, CenterSetStatus, FitStatus, PoseFit};
 pub use reachability::{Reachability, ReachabilityOptions, ReachabilityStatus};
-use std::sync::OnceLock;
+use std::{
+    collections::VecDeque,
+    sync::{Mutex, OnceLock},
+};
 
 pub struct Target {
     region: Region,
@@ -16,10 +19,13 @@ pub struct Target {
     depth_cap: Depth,
     angle: IncludedAngle,
     diagram: OnceLock<Result<VoronoiDiagram>>,
+    center_sets: Mutex<VecDeque<(f64, CenterSet, usize)>>,
+    input_snap_bound_mm: f64,
 }
 
 impl Target {
     pub fn new(region: Region, depth_cap: Depth, angle: IncludedAngle) -> Result<Self> {
+        let input_snap_bound_mm = region.grid().snap_bound_mm();
         if region.rings().is_empty() {
             return Err(error(
                 "EMPTY_GEOMETRY",
@@ -48,7 +54,22 @@ impl Target {
             depth_cap,
             angle,
             diagram: OnceLock::new(),
+            center_sets: Mutex::new(VecDeque::new()),
+            input_snap_bound_mm,
         })
+    }
+    /// Planning refines only construction arithmetic; the normalized input
+    /// boundary and its reported source snapping uncertainty stay unchanged.
+    pub fn for_planning(region: Region, depth_cap: Depth, angle: IncludedAngle) -> Result<Self> {
+        let input_snap_bound_mm = region.grid().snap_bound_mm();
+        let region = if depth_cap.mm() * angle.slope() <= region.grid().max_coordinate_mm() / 16. {
+            region.refine_construction_grid()
+        } else {
+            region
+        };
+        let mut target = Self::new(region, depth_cap, angle)?;
+        target.input_snap_bound_mm = input_snap_bound_mm;
+        Ok(target)
     }
     pub fn region(&self) -> &Region {
         &self.region
@@ -75,6 +96,11 @@ impl Target {
     pub fn section(&self, depth: Depth) -> Result<CenterSet> {
         self.validate_depth(depth)?;
         self.center_set(Length::new(depth.mm() * self.angle.slope())?)
+    }
+    /// Area-only stock comparisons do not need Voronoi contact/witness analysis.
+    pub(crate) fn section_area(&self, depth: Depth) -> Result<Region> {
+        self.validate_depth(depth)?;
+        self.region.erode(depth.mm() * self.angle.slope())
     }
     pub fn endmill_centers(
         &self,

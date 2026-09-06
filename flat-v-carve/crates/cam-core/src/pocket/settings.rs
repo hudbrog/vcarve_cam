@@ -141,7 +141,7 @@ impl Context {
         };
         let vbit = VBit::try_from(spec.clone())?;
         vbit.validate_depth(Depth::new(depth)?)?;
-        let target = Target::new(geometry.selected, Depth::new(depth)?, vbit.angle())?;
+        let target = Target::for_planning(geometry.selected, Depth::new(depth)?, vbit.angle())?;
         let stepdown = required(tool.max_stepdown_mm, "endmill.max_stepdown_mm")?;
         let stepover = required(tool.stepover_mm, "endmill.stepover_mm")?;
         let feed = required(tool.cutting_feed_mm_min, "endmill.cutting_feed_mm_min")?;

@@ -110,9 +110,11 @@ Resource controls are `--max-cells` (default 1,000,000; total across refinement 
 
 M5 enforces the explicit ridge and detail limits without adding M4's numerical allowance. Consequently, the M4 zero-ridge `contact-line` and `contact-point` examples do not pass M5: their guarded cap motions leave about 0.01 mm. The [M5 fixtures](fixtures/m5/README.md) record these expected failures alongside successful and resource-limited cases. Endmill-only `verify` retains its M3 stage contract; the new M5 options require a combined plan.
 
-Engine **0.7.2** invalidates plans created by older engines. Regenerate plans from saved jobs; job schema 3 still accepts schemas 1 and 2. The [M5 capability report](../docs/flat-v-carve/m5-capability-report.md) records the methods, regression evidence, Windows performance measurements, and remaining limits. Run `scripts/benchmark-m5.ps1` from PowerShell 7 after a release build to reproduce the ten release cases and their JSON/SVG artifacts.
+Engine **0.7.3** invalidates plans created by older engines. Regenerate plans from saved jobs; job schema 3 still accepts schemas 1 and 2. The [M5 capability report](../docs/flat-v-carve/m5-capability-report.md) records the methods, regression evidence, Windows performance measurements, and remaining limits. Run `scripts/benchmark-m5.ps1` from PowerShell 7 after a release build to reproduce the ten release cases and their JSON/SVG artifacts.
 
 ## Real artwork and scalability
+
+Engine **0.7.3** reduces repeated stock construction, uses small spatially ordered footprint unions, and caches immutable access geometry. The unchanged saved flower job completes combined CLI planning in 52–54 seconds on the measured Windows machine; see the [saved flower CLI performance report](../docs/flat-v-carve/flower-performance.md). Run `scripts/benchmark-flower.ps1` from PowerShell 7 after a release build, or set `CAM_TIMINGS=1` for stage timings on stderr. Replan artifacts from older engines; saved jobs remain compatible.
 
 Engine 0.7.2 imports `../real_data/flower_box.svg` at 0.005 mm tolerance without editing the source. Spatial indexes replace repeated all-edge topology, containment, distance, and stock-query scans; selected regions use a batch union and recorded cutter sweeps use bounded batches with balanced merges. Consecutive vertices may coalesce on the precision grid only after local topology checks; erased rings, new nonlocal contacts, and changed crossings still fail.
 

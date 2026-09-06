@@ -55,6 +55,49 @@ fn options(tolerance: f64) -> ReachabilityOptions {
         max_cells: 100_000,
     }
 }
+
+#[test]
+fn planning_grid_refinement_preserves_source_coordinates_and_uncertainty() {
+    for x in [0.1234, 95000.] {
+        let grid = Grid::new(0.001, x + 20.).unwrap();
+        let region = Region::from_rings(grid, &[rectangle(x, 0.5678, 20., 15.)]).unwrap();
+        let t = Target::for_planning(region.clone(), depth(2.), IncludedAngle::new(90.).unwrap())
+            .unwrap();
+        assert_eq!(t.region().rings_mm(), region.rings_mm());
+        assert_eq!(t.region().area_mm2(), region.area_mm2());
+        assert_eq!(t.region().grid().tolerance_mm(), grid.tolerance_mm());
+        assert_eq!(
+            t.region().grid().arc_tolerance_mm(),
+            grid.arc_tolerance_mm()
+        );
+        assert_eq!(
+            t.region().grid().scale(),
+            grid.scale() * if x < 1. { 16. } else { 1. }
+        );
+        assert_eq!(
+            t.center_set(length(2.)).unwrap().input_snap_bound_mm,
+            grid.snap_bound_mm()
+        );
+    }
+}
+
+#[test]
+fn repeated_center_sets_preserve_contacts_and_isolate_returned_geometry() {
+    let t = target(vec![rectangle(0., 0., 40., 20.)], 2., 90.);
+    for radius in [1., 2., 10., 11., 1.] {
+        let mut first = t.center_set(length(radius)).unwrap();
+        let expected = serde_json::to_value(&first).unwrap();
+        first.area = Region::from_rings(first.area.grid(), &[]).unwrap();
+        first.contact_points.clear();
+        first.contact_segments.clear();
+        let repeated = t.center_set(length(radius)).unwrap();
+        assert_eq!(serde_json::to_value(&repeated).unwrap(), expected);
+        let fresh = target(vec![rectangle(0., 0., 40., 20.)], 2., 90.)
+            .center_set(length(radius))
+            .unwrap();
+        assert_eq!(serde_json::to_value(fresh).unwrap(), expected);
+    }
+}
 fn model(id: &str) -> ModelInput {
     let raw = match id {
         "wide_channel" => include_str!("../../../fixtures/m1/wide_channel.json"),

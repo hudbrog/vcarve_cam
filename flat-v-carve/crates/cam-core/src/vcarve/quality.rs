@@ -4,7 +4,7 @@ use crate::{
     model::{Depth, Length},
     motion::Motion,
     pocket::{EndmillPlan, PlanStatus},
-    stock::{SliceRemoval, StockQuery, capsule_bounds, removal_at_slice, vbit_removal_at_slice},
+    stock::{SliceRemoval, StockQuery, capsule_bounds, vbit_removal_at_slice},
     svg::Bounds,
     target::{CenterSet, CenterSetStatus, ReachabilityOptions, ReachabilityStatus},
 };
@@ -61,6 +61,7 @@ pub(super) struct Samples {
     pub limited: bool,
 }
 pub(super) fn sample(ctx: &Context, endmill: &EndmillPlan, moves: &[Motion]) -> Result<Samples> {
+    let _timing = crate::timing::Timer::new("quality samples");
     let bounds = Bounds::of(ctx.target.region()).unwrap();
     let step = ctx.settings.quality_sample_spacing_mm;
     let nx = ((bounds.max.x - bounds.min.x) / step).ceil().max(1.);
@@ -171,12 +172,17 @@ fn combined_slice(
     moves: &[Motion],
     depth: f64,
 ) -> Result<CombinedSlice> {
+    let mut timing = crate::timing::Timer::new("combined stock slice");
     let grid = ctx.target.region().grid();
-    let e = removal_at_slice(grid, &endmill.motions, ctx.mill.radius().mm(), depth)?;
+    let e = super::endmill_slice(ctx, endmill, depth)?;
+    timing.lap("endmill");
     let v = vbit_removal_at_slice(grid, moves, &ctx.tool, depth)?;
+    timing.lap("vbit");
     let lower = e.lower.boolean(BooleanOp::Union, &v.lower)?;
     let upper = e.upper.boolean(BooleanOp::Union, &v.upper)?;
-    let nominal = ctx.target.section(Depth::new(depth)?)?.area;
+    timing.lap("merge tools");
+    let nominal = ctx.target.section_area(Depth::new(depth)?)?;
+    timing.lap("nominal section");
     let remaining = nominal.boolean(BooleanOp::Difference, &lower)?;
     let overcut = upper.boolean(BooleanOp::Difference, &nominal)?;
     let mut ids = e.contributing_motion_ids;
@@ -212,6 +218,52 @@ fn accessible_area(access: &CenterSet, radius: f64) -> Result<Region> {
         }
     }
     Ok(area)
+}
+
+fn stock_slices(
+    ctx: &Context,
+    endmill: &EndmillPlan,
+    moves: &[Motion],
+    depths: &[f64],
+) -> Result<Vec<CombinedSlice>> {
+    // Each slice owns its unions. Bound concurrency/memory and retain depth
+    // order (including which error is reported), independent of scheduling.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(8)
+        .min(depths.len());
+    if workers <= 1 {
+        return depths
+            .iter()
+            .map(|&d| combined_slice(ctx, endmill, moves, d))
+            .collect();
+    }
+    let batches = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| {
+                scope.spawn(move || {
+                    depths
+                        .iter()
+                        .enumerate()
+                        .skip(worker)
+                        .step_by(workers)
+                        .map(|(i, &d)| (i, combined_slice(ctx, endmill, moves, d)))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| error("STOCK_WORKER_PANIC", "stock reconstruction worker failed"))
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
+    let mut slices: Vec<_> = batches.into_iter().flatten().collect();
+    slices.sort_by_key(|(i, _)| *i);
+    slices.into_iter().map(|(_, slice)| slice).collect()
 }
 
 pub(super) fn floor_cleanup_centers(
@@ -274,7 +326,9 @@ pub(super) fn analyze(
     moves: &[Motion],
     axis: MedialAxis,
 ) -> Result<CombinedAnalysis> {
+    let mut timing = crate::timing::Timer::new("combined analysis");
     let minimum = super::verify::verify_vbit_motions(&endmill.job, &endmill.motions, moves)?;
+    timing.lap("verify motions");
     let quality = sample(ctx, endmill, moves)?;
     let cap = ctx.target.depth_cap().mm();
     let floor_check = (cap - ctx.ridge - ctx.tolerance / 2.).max(0.);
@@ -284,10 +338,7 @@ pub(super) fn analyze(
     depths.push(floor_check);
     depths.sort_by(f64::total_cmp);
     depths.dedup();
-    let slices = depths
-        .into_iter()
-        .map(|d| combined_slice(ctx, endmill, moves, d))
-        .collect::<Result<Vec<_>>>()?;
+    let slices = stock_slices(ctx, endmill, moves, &depths)?;
     let access = ctx.target.vbit_centers(&ctx.tool, Depth::new(cap)?)?;
     let ea = ctx.target.endmill_centers(
         &ctx.mill,
@@ -311,6 +362,7 @@ pub(super) fn analyze(
         ));
     }
     if access.status == CenterSetStatus::Unresolved {
+        diagnostics.extend(access.diagnostics.clone());
         diagnostics.push(error(
             "VBIT_CENTER_UNRESOLVED",
             "full-depth V-bit center geometry is unresolved",
@@ -381,4 +433,30 @@ pub(super) fn analyze(
         samples:quality.samples,minimum_center_margin_lower_bound_mm:minimum,finish_paths_expected:0,finish_paths_executed:0,pruned_air_paths:0,cleanup_paths:0,diagnostics,
         meaning:"M4 candidate-family completion, continuous segment clearance, floor slice coverage, and sampled combined finish-quality evidence.".into(),
         limitations:vec!["Quality maxima are measured at the configured lattice and motion witnesses, not certified over the entire height field; adaptive full-volume verification remains M5.".into(),"Individual variable-radius capsule brackets include snapping. Repeated polygon Boolean errors and topology are not a formal interval proof.".into(),"Guarded V-bit depths/contours reserve geometric clearance; normalized source error is reported separately by job inspection.".into(),"Tool transitions here are planning markers only; machine output requires M6 export. Fixture/holder clearance and cutting loads remain outside this planning analysis.".into()]})
+}
+
+#[cfg(test)]
+mod slice_order_tests {
+    use super::*;
+
+    #[test]
+    fn parallel_slices_match_sequential_geometry_and_error_order() {
+        let job = crate::job::Job::from_json(include_str!("../../../../fixtures/m4/island.json"))
+            .unwrap();
+        let plan = super::super::plan_combined(&job).unwrap();
+        let ctx = Context::new(&job).unwrap();
+        let depths = [0.25, 0.5, 1., 1.5, 1.875, 2.];
+        let parallel = stock_slices(&ctx, &plan.endmill, &plan.vbit_motions, &depths).unwrap();
+        let sequential: Vec<_> = depths
+            .iter()
+            .map(|&d| combined_slice(&ctx, &plan.endmill, &plan.vbit_motions, d).unwrap())
+            .collect();
+        assert_eq!(
+            serde_json::to_value(parallel).unwrap(),
+            serde_json::to_value(sequential).unwrap()
+        );
+        let error =
+            stock_slices(&ctx, &plan.endmill, &plan.vbit_motions, &[0.5, -1., 3.]).unwrap_err();
+        assert_eq!(error.code, "STOCK_DEPTH");
+    }
 }

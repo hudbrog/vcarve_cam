@@ -242,7 +242,7 @@ impl<'a> Context<'a> {
             + inspection.geometry.source_snap_bound_mm
             + inspection.geometry.grid.snap_bound_mm())
             / vbit.angle().slope();
-        let target = Target::new(inspection.geometry.selected, depth, vbit.angle())?;
+        let target = Target::for_planning(inspection.geometry.selected, depth, vbit.angle())?;
         let bounds = Bounds::of(target.region()).unwrap();
         let magnitude = [
             bounds.min.x.abs(),

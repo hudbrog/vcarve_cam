@@ -34,6 +34,7 @@ pub fn verify_endmill_motions(job: &Job, motions: &[Motion]) -> Result<EndmillAn
 }
 
 pub(super) fn analyze(ctx: &Context, job: &Job, motions: &[Motion]) -> Result<EndmillAnalysis> {
+    let mut timing = crate::timing::Timer::new("endmill analysis");
     let levels = depths(ctx)?;
     if motions.len() > ctx.settings.max_motions {
         return Err(error(
@@ -137,6 +138,7 @@ pub(super) fn analyze(ctx: &Context, job: &Job, motions: &[Motion]) -> Result<En
             "stage must end at the clearance plane",
         ));
     }
+    timing.lap("verify motions");
     let layers = levels
         .into_iter()
         .map(|d| layer_stock(ctx, d, motions))

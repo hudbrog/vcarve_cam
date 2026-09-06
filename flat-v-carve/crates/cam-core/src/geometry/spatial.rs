@@ -67,6 +67,10 @@ impl SpatialIndex {
         }
         index
     }
+    /// Nearby boxes occupy contiguous ranges, suitable for balanced unions.
+    pub fn into_spatial_order(self) -> Vec<usize> {
+        self.order
+    }
     fn build(&mut self, start: usize, end: usize) -> usize {
         let bounds = self.order[start..end]
             .iter()

@@ -6,6 +6,8 @@ M0–M5 implement SVG jobs, endmill clearing, V-bit finishing/rest machining, co
 
 Engine 0.7.2 adds spatial indexing, batched stock unions, and compact plan files for larger artwork. The [scalability report](docs/flat-v-carve/scalability-report.md) records the real flower import and 1×/10×/100× measurements, with full-pipeline limits tracked separately.
 
+Engine 0.7.3 completes the unchanged saved flower job in 52–54 seconds for combined CLI planning and about 7 seconds for endmill alone on the measured Windows machine. The [CLI performance report](docs/flat-v-carve/flower-performance.md) documents the bottlenecks and reproducible profiling commands. Regenerate older plans from their saved jobs.
+
 The Rust workspace lives in [`flat-v-carve/`](flat-v-carve/README.md). Import and inspect a bundled Inkscape export with the pinned Rust toolchain:
 
 ```sh

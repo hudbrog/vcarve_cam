@@ -105,7 +105,7 @@ impl Context {
             ));
         };
         let mill = Endmill::try_from(spec.clone())?;
-        let target = Target::new(
+        let target = Target::for_planning(
             geometry.selected,
             Depth::new(required(
                 job.operation.max_depth_mm,

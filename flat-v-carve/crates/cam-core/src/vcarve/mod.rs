@@ -11,7 +11,7 @@ use crate::{
     model::Depth,
     motion::{Motion, MotionKind, Position},
     pocket::{EndmillPlan, GenerationIssue, PlanStatus, plan_endmill},
-    stock::{removal_at_slice, vbit_air_in_endmill},
+    stock::{SliceRemoval, removal_at_slice, vbit_air_in_endmill},
     svg::Bounds,
 };
 pub use medial::{MedialAxis, MedialBranch};
@@ -304,8 +304,33 @@ fn lanes(region: &Region, spacing: f64, max: usize) -> Result<Vec<Candidate>> {
     }
     Ok(paths)
 }
+/// These callers own a freshly generated or authenticated/rebuilt endmill plan.
+/// Reuse a rebuilt slice only if every actual clipped XY sweep is identical.
+/// In particular, ramps and motions that stop above the new slice must differ.
+fn endmill_slice(ctx: &Context, endmill: &EndmillPlan, depth: f64) -> Result<SliceRemoval> {
+    for layer in &endmill.analysis.layers {
+        if endmill
+            .motions
+            .iter()
+            .all(|m| m.at_depth(depth) == m.at_depth(layer.depth_mm))
+        {
+            let mut removal = layer.removal.clone();
+            removal.depth_mm = depth;
+            return Ok(removal);
+        }
+    }
+    removal_at_slice(
+        ctx.target.region().grid(),
+        &endmill.motions,
+        ctx.mill.radius().mm(),
+        depth,
+    )
+}
+
 fn candidates(ctx: &Context, endmill: &EndmillPlan) -> Result<(MedialAxis, Vec<Candidate>)> {
+    let mut timing = crate::timing::Timer::new("vbit candidates");
     let (axis, medial) = medial::build(ctx)?;
+    timing.lap("medial axis");
     let cap = ctx.target.depth_cap().mm();
     let full = ctx.target.vbit_centers(&ctx.tool, Depth::new(cap)?)?;
     let centers = ctx
@@ -314,12 +339,7 @@ fn candidates(ctx: &Context, endmill: &EndmillPlan) -> Result<(MedialAxis, Vec<C
         .erode(ctx.tool.tip_radius().mm() + cap * ctx.tool.angle().slope() + ctx.guard)?;
     let mut paths = vec![];
     if !centers.rings().is_empty() {
-        let before = removal_at_slice(
-            ctx.target.region().grid(),
-            &endmill.motions,
-            ctx.mill.radius().mm(),
-            cap,
-        )?;
+        let before = endmill_slice(ctx, endmill, cap)?;
         let needed = full
             .area
             .erode(ctx.tolerance)?
@@ -512,9 +532,13 @@ fn execute(
     Ok(())
 }
 pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
+    let mut timing = crate::timing::Timer::new("combined");
     let ctx = Context::new(job)?;
+    timing.lap("context");
     let endmill = plan_endmill(job)?;
+    timing.lap("endmill");
     let (axis, candidates) = candidates(&ctx, &endmill)?;
+    timing.lap("candidates");
     let start = endmill.motions.last().map_or(
         Position::new(
             job.endmill_planning.as_ref().unwrap().start_xy_mm,
@@ -552,6 +576,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
                 }
             }
         }
+        timing.lap("depth passes");
         for _ in 0..ctx.settings.max_cleanup_iterations {
             if !issues.is_empty() {
                 break;
@@ -596,6 +621,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
                 }
             }
         }
+        timing.lap("cleanup");
         if issues.is_empty() {
             for c in candidates.iter().filter(|c| c.family != PathFamily::Floor) {
                 if let Err(e) = execute(
@@ -616,8 +642,11 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
             }
         }
     }
+    timing.lap("final finish");
     verify::executions(&ctx, &endmill, &transition, &moves, &executions)?;
+    timing.lap("verify executions");
     let mut analysis = quality::analyze(&ctx, &endmill, &moves, axis)?;
+    timing.lap("analyze");
     finish_status(&mut analysis, &candidates, &executions, &issues)?;
     let input_fingerprint = identity(&endmill)?;
     let motion_fingerprint = hash(&(
@@ -642,4 +671,53 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
         generation_issues: issues,
         analysis,
     })
+}
+
+#[cfg(test)]
+mod slice_reuse_tests {
+    use super::*;
+    use crate::pocket::EntryStrategy;
+
+    #[test]
+    fn reused_stock_matches_fresh_sweeps_for_plunges_ramps_and_multiple_layers() {
+        for ramp in [false, true] {
+            let mut job =
+                Job::from_json(include_str!("../../../../fixtures/m4/island.json")).unwrap();
+            if ramp {
+                job.tools[0].ramp_capable = Some(true);
+                job.endmill_planning.as_mut().unwrap().entry = EntryStrategy::Ramp {
+                    max_angle_deg: 10.,
+                    feed_mm_min: 100.,
+                };
+            }
+            let endmill = plan_endmill(&job).unwrap();
+            let ctx = Context::new(&job).unwrap();
+            assert_eq!(endmill.analysis.layers.len(), 2);
+            for depth in [0.25, 0.5, 1., 1.25, 1.875, 2., 2.25] {
+                let reused = endmill_slice(&ctx, &endmill, depth).unwrap();
+                let fresh = removal_at_slice(
+                    ctx.target.region().grid(),
+                    &endmill.motions,
+                    ctx.mill.radius().mm(),
+                    depth,
+                )
+                .unwrap();
+                assert_eq!(
+                    serde_json::to_value(reused).unwrap(),
+                    serde_json::to_value(fresh).unwrap(),
+                    "ramp={ramp}, depth={depth}"
+                );
+            }
+            let matches_layer = endmill.analysis.layers.iter().any(|layer| {
+                endmill
+                    .motions
+                    .iter()
+                    .all(|m| m.at_depth(0.5) == m.at_depth(layer.depth_mm))
+            });
+            assert_eq!(
+                matches_layer, !ramp,
+                "a partially clipped ramp must not reuse a deeper footprint"
+            );
+        }
+    }
 }

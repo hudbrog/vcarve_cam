@@ -48,6 +48,37 @@ pub enum WindingRule {
 }
 
 impl Region {
+    /// Reserve extra integer precision for constructed offsets/sweeps while
+    /// preserving every normalized boundary coordinate exactly. Power-of-two
+    /// scaling preserves both integer topology and the resulting f64 points.
+    pub(crate) fn refine_construction_grid(mut self) -> Self {
+        const FACTOR: i64 = 16;
+        let max_tick = self
+            .rings
+            .iter()
+            .flat_map(|r| &r.points)
+            .map(|p| p.x.abs().max(p.y.abs()))
+            .max()
+            .unwrap_or(0);
+        if max_tick > super::precision::MAX_GRID_COORD / FACTOR
+            || self.grid.scale() > 1e12 / FACTOR as f64
+        {
+            return self;
+        }
+        let Ok(grid) = Grid::with_scale(
+            self.grid.tolerance_mm(),
+            max_tick as f64 / self.grid.scale(),
+            self.grid.scale() * FACTOR as f64,
+        ) else {
+            return self;
+        };
+        for p in self.rings.iter_mut().flat_map(|r| &mut r.points) {
+            p.x *= FACTOR;
+            p.y *= FACTOR;
+        }
+        self.grid = grid;
+        self
+    }
     /// Resolve filled SVG contours before passing nonintersecting boundaries downstream.
     /// Intentional contour crossings are allowed; snapping must preserve their relations.
     pub fn from_filled_paths(grid: Grid, input: &[Vec<Point>], rule: WindingRule) -> Result<Self> {
@@ -457,6 +488,54 @@ impl Region {
     /// Disk erosion: round joins are essential around holes and reflex corners.
     /// Positive-area output only; Target::center_set also retains exact-fit lines/points.
     pub fn erode(&self, radius_mm: f64) -> Result<Self> {
+        // A positive-radius disk cannot cross the empty gap between disjoint
+        // filled components. Erode each component (with its holes) independently
+        // before collecting the result, avoiding one dense offset arrangement.
+        if radius_mm > 0.
+            && self.component_count() > 1
+            && self.rings.iter().map(|r| r.points.len()).sum::<usize>() > 4096
+        {
+            let components = self.components();
+            let workers = std::thread::available_parallelism()
+                .map_or(1, usize::from)
+                .min(4)
+                .min(components.len());
+            let batches = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..workers)
+                    .map(|worker| {
+                        let components = &components;
+                        scope.spawn(move || {
+                            components
+                                .iter()
+                                .enumerate()
+                                .skip(worker)
+                                .step_by(workers)
+                                .map(|(i, c)| (i, c.offset(radius_mm, false)))
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join().map_err(|_| {
+                            Diagnostic::new("OFFSET_WORKER_PANIC", "component offset worker failed")
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?;
+            let mut results: Vec<_> = batches.into_iter().flatten().collect();
+            results.sort_by_key(|(i, _)| *i);
+            let results = results
+                .into_iter()
+                .map(|(_, r)| r)
+                .collect::<Result<Vec<_>>>()?;
+            let mut output = Self::union_all(self.grid, &results.iter().collect::<Vec<_>>())?;
+            if output.rings.is_empty() {
+                output.diagnostics.push(Diagnostic::new("OFFSET_EMPTY_AREA", "erosion has no positive-area output; this does not rule out exact-fit centerlines or points"));
+            }
+            return Ok(output);
+        }
         self.offset(radius_mm, false)
     }
 
@@ -573,6 +652,10 @@ impl Region {
     }
 
     fn from_tree(grid: Grid, tree: PolyTree64) -> Result<Self> {
+        Self::from_tree_checked(grid, tree, 0)
+    }
+
+    fn from_tree_checked(grid: Grid, tree: PolyTree64, normalization_pass: usize) -> Result<Self> {
         fn visit(tree: &PolyTree64, node: usize, parent: Option<usize>, rings: &mut Vec<Ring>) {
             let index = rings.len();
             let path = &tree.nodes[node];
@@ -601,13 +684,153 @@ impl Region {
                 ring.points.reverse();
             }
         }
-        validate_boundaries(grid, &rings, None)?;
+        if let Err(error) = validate_boundaries(grid, &rings, None) {
+            if error.code != "OUTPUT_INTERSECTION" {
+                return Err(error);
+            }
+            // Rounding a constructed intersection to integer coordinates can
+            // make neighboring output edges cross again. Resolve the same
+            // nonzero filled paths and revalidate; never accept crossed rings.
+            // This applies only to backend output, not invalid source rings.
+            let moved_intersection = split_rounded_crossings(grid, &mut rings)?;
+            if !moved_intersection && validate_boundaries(grid, &rings, None).is_ok() {
+                // Inserting a vertex on an existing edge changes neither its
+                // geometry nor the tree hierarchy. Keep exact point contacts.
+                return Ok(Self {
+                    grid,
+                    rings,
+                    diagnostics: vec![
+                        Diagnostic::new(
+                            "OUTPUT_RENORMALIZED",
+                            "split exact backend point contacts and revalidated polygon boundaries",
+                        )
+                        .warning(),
+                    ],
+                });
+            }
+            if normalization_pass == 2 {
+                return Err(error);
+            }
+            let mut engine = Clipper64::new();
+            let paths: Paths64 = rings
+                .iter()
+                .map(|r| r.points.iter().map(|p| Point64::new(p.x, p.y)).collect())
+                .collect();
+            engine.add_subject(&paths);
+            let mut normalized = PolyTree64::new();
+            if !engine.execute_tree(
+                ClipType::Union,
+                FillRule::NonZero,
+                &mut normalized,
+                &mut vec![],
+            ) || engine.error_code() != 0
+            {
+                return Err(error);
+            }
+            let mut result = Self::from_tree_checked(grid, normalized, normalization_pass + 1)?;
+            result.diagnostics.push(Diagnostic::new("OUTPUT_RENORMALIZED", "resolved rounded backend intersections with an additional checked polygon union").warning());
+            return Ok(result);
+        }
         Ok(Self {
             grid,
             rings,
             diagnostics: vec![],
         })
     }
+}
+
+/// Integer output edges can cross between grid points even after Clipper's
+/// cleanup. Give both edges the same exactly rounded rational intersection
+/// before re-running the fill operation. Each inserted vertex is within the
+/// grid's existing snap bound of its intersection; no input paths are edited.
+fn split_rounded_crossings(grid: Grid, rings: &mut [Ring]) -> Result<bool> {
+    let edges: Vec<_> = rings
+        .iter()
+        .enumerate()
+        .flat_map(|(r, ring)| {
+            (0..ring.points.len()).map(move |i| {
+                (
+                    r,
+                    i,
+                    ring.points[i],
+                    ring.points[(i + 1) % ring.points.len()],
+                )
+            })
+        })
+        .collect();
+    let index = SpatialIndex::new(
+        edges
+            .iter()
+            .map(|&(_, _, a, b)| Aabb::new(grid.point(a), grid.point(b)))
+            .collect(),
+    );
+    let mut splits = vec![Vec::new(); edges.len()];
+    let mut count = edges.len();
+    let mut moved_intersection = false;
+    index.pairs(|left, right| {
+        let (_, _, a, b) = edges[left];
+        let (_, _, c, d) = edges[right];
+        let mut add = |edge: usize, p| {
+            count += 1;
+            if count > MAX_EDGES {
+                return Err(Diagnostic::new(
+                    "GEOMETRY_LIMIT",
+                    "rounded output intersections exceed the boundary vertex limit",
+                ));
+            }
+            splits[edge].push(p);
+            Ok(())
+        };
+        for p in [a, b] {
+            if p != c && p != d && on_segment(p, c, d) {
+                add(right, p)?;
+            }
+        }
+        for p in [c, d] {
+            if p != a && p != b && on_segment(p, a, b) {
+                add(left, p)?;
+            }
+        }
+        let opposite = |x: i128, y: i128| x != 0 && y != 0 && (x < 0) != (y < 0);
+        if !opposite(cross(a, b, c), cross(a, b, d)) || !opposite(cross(c, d, a), cross(c, d, b)) {
+            return Ok(());
+        }
+        let (rx, ry) = ((b.x - a.x) as i128, (b.y - a.y) as i128);
+        let (sx, sy) = ((d.x - c.x) as i128, (d.y - c.y) as i128);
+        let den = rx * sy - ry * sx;
+        let t = (c.x - a.x) as i128 * sy - (c.y - a.y) as i128 * sx;
+        let round = |n: i128| {
+            let (n, den) = if den < 0 { (-n, -den) } else { (n, den) };
+            (n / den
+                + if (n % den).abs() * 2 >= den {
+                    n.signum()
+                } else {
+                    0
+                }) as i64
+        };
+        let p = GridPoint {
+            x: round(a.x as i128 * den + rx * t),
+            y: round(a.y as i128 * den + ry * t),
+        };
+        moved_intersection = true;
+        add(left, p)?;
+        add(right, p)?;
+        Ok(())
+    })?;
+    let mut output = vec![vec![]; rings.len()];
+    for (edge, (r, _, a, b)) in edges.into_iter().enumerate() {
+        output[r].push(a);
+        let points = &mut splits[edge];
+        points.sort_by_key(|p| {
+            (p.x - a.x) as i128 * (b.x - a.x) as i128 + (p.y - a.y) as i128 * (b.y - a.y) as i128
+        });
+        points.dedup();
+        output[r].extend(points.iter().copied().filter(|&p| p != a && p != b));
+    }
+    for (ring, points) in rings.iter_mut().zip(output) {
+        ring.points = points;
+    }
+    Ok(moved_intersection)
 }
 
 /// Exact i128 predicates on snapped coordinates, robust predicates on source f64s.
@@ -698,7 +921,7 @@ fn validate_boundaries(grid: Grid, rings: &[Ring], originals: Option<&[Vec<Point
                     } else {
                         "OUTPUT_INTERSECTION"
                     },
-                    format!("edges {r}:{i} and {s}:{j} intersect or overlap"),
+                    format!("edges {r}:{i} ({a:?} to {b:?}) and {s}:{j} ({c:?} to {d:?}) intersect or overlap"),
                 ));
             }
         Ok(())
@@ -734,4 +957,202 @@ fn raw_overlaps(a: Point, b: Point, c: Point, d: Point) -> bool {
             || (raw_on(b, c, d) && b != c && b != d)
             || (a == c && b == d)
             || (a == d && b == c))
+}
+
+#[cfg(test)]
+mod output_normalization_tests {
+    use super::*;
+
+    #[test]
+    fn partitioned_erosion_preserves_boundaries_and_holes_within_grid_rounding() {
+        let grid = Grid::new(0.001, 300.).unwrap();
+        let circle = |x: f64, radius: f64, count: usize| {
+            (0..count)
+                .map(|i| {
+                    let angle = std::f64::consts::TAU * i as f64 / count as f64;
+                    Point::new(x + radius * angle.cos(), radius * angle.sin())
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut rings: Vec<_> = (0..8).map(|i| circle(i as f64 * 30., 10., 720)).collect();
+        rings.push(circle(0., 3., 120));
+        let region = Region::from_rings(grid, &rings).unwrap();
+        let partitioned = region.erode(1.5).unwrap();
+        let whole = region.offset(1.5, false).unwrap();
+        // Clipper's final union order may round intersections differently.
+        // Compare boundary geometry in both directions, including the hole,
+        // with the reserve for two independently rounded constructions.
+        let reserve = 2. * grid.snap_bound_mm();
+        for (a, b) in [(&partitioned, &whole), (&whole, &partitioned)] {
+            let query = crate::geometry::BoundaryQuery::new(b);
+            for segment in a.segments() {
+                for p in [segment.start, segment.start.lerp(segment.end, 0.5)] {
+                    let sample = query.sample(p).unwrap();
+                    assert!(
+                        sample.distance_mm <= reserve + sample.numerical_reserve_mm,
+                        "boundary moved {} mm",
+                        sample.distance_mm
+                    );
+                }
+            }
+        }
+        let perimeter: f64 = whole
+            .segments()
+            .iter()
+            .map(|s| s.start.distance(s.end))
+            .sum();
+        assert!(
+            partitioned
+                .boolean(BooleanOp::Xor, &whole)
+                .unwrap()
+                .area_mm2()
+                <= perimeter * reserve
+        );
+        assert_eq!(partitioned.component_count(), 8);
+        assert_eq!(partitioned.hole_count(), 1);
+        assert_eq!(
+            serde_json::to_value(region.erode(20.).unwrap()).unwrap(),
+            serde_json::to_value(region.offset(20., false).unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn flower_point_contact_splits_the_other_edge_without_moving_geometry() {
+        let grid = Grid::with_scale(0.001, 200., 10000.).unwrap();
+        let a = vec![
+            Point64::new(193819, 412610),
+            Point64::new(193442, 412545),
+            Point64::new(193600, 412500),
+        ];
+        let b = vec![
+            Point64::new(193442, 412544),
+            Point64::new(193442, 412546),
+            Point64::new(193440, 412545),
+        ];
+        let expected = [&a, &b]
+            .iter()
+            .map(|path| {
+                twice_area(
+                    &path
+                        .iter()
+                        .map(|p| GridPoint { x: p.x, y: p.y })
+                        .collect::<Vec<_>>(),
+                )
+                .abs() as f64
+                    / 2.
+                    / grid.scale().powi(2)
+            })
+            .sum::<f64>();
+        let mut tree = PolyTree64::new();
+        tree.add_child(0, a);
+        tree.add_child(0, b);
+        let result = Region::from_tree(grid, tree).unwrap();
+        assert!((result.area_mm2() - expected).abs() <= f64::EPSILON * expected);
+        assert_eq!(result.component_count(), 2);
+        assert!(result.rings().iter().all(|r| r.points.contains(&GridPoint {
+            x: 193442,
+            y: 412545
+        })));
+        validate_boundaries(grid, result.rings(), None).unwrap();
+    }
+
+    #[test]
+    fn flower_rounding_crossing_gets_one_shared_exactly_rounded_vertex() {
+        let grid = Grid::with_scale(0.001, 200., 10000.).unwrap();
+        let point = |x, y| GridPoint { x, y };
+        let a = point(1497736, 505359);
+        let b = point(1497851, 505467);
+        let c = point(1497926, 505558);
+        let d = point(1497826, 505437);
+        let mut rings = vec![
+            Ring {
+                points: vec![a, b, point(1497000, 505600)],
+                parent: None,
+                is_hole: false,
+            },
+            Ring {
+                points: vec![c, d, point(1499000, 505000)],
+                parent: None,
+                is_hole: false,
+            },
+        ];
+        assert!(validate_boundaries(grid, &rings, None).is_err());
+        split_rounded_crossings(grid, &mut rings).unwrap();
+        let shared = point(1497850, 505466);
+        assert!(rings.iter().all(|r| r.points.contains(&shared)));
+        for (a, b) in [(a, b), (c, d)] {
+            let edge = Segment {
+                start: grid.point(a),
+                end: grid.point(b),
+            };
+            assert!(edge.distance(grid.point(shared)) <= grid.snap_bound_mm());
+        }
+        let mut tree = PolyTree64::new();
+        for ring in rings {
+            tree.add_child(
+                0,
+                ring.points.iter().map(|p| Point64::new(p.x, p.y)).collect(),
+            );
+        }
+        let result = Region::from_tree(grid, tree).unwrap();
+        validate_boundaries(grid, result.rings(), None).unwrap();
+    }
+
+    #[test]
+    fn crossed_backend_paths_are_revalidated_with_holes_and_area_preserved() {
+        let grid = Grid::with_scale(0.001, 20., 10000.).unwrap();
+        let rectangle = |x0, y0, x1, y1| {
+            vec![
+                Point64::new(x0, y0),
+                Point64::new(x1, y0),
+                Point64::new(x1, y1),
+                Point64::new(x0, y1),
+            ]
+        };
+        let tree = || {
+            let mut tree = PolyTree64::new();
+            let left = tree.add_child(0, rectangle(0, 0, 100000, 100000));
+            tree.add_child(left, rectangle(20000, 20000, 30000, 30000));
+            tree.add_child(0, rectangle(50000, -10000, 150000, 90000));
+            tree
+        };
+        // 100 + 100 - 45 overlapping mm² - 1 mm² hole.
+        let normalized = Region::from_tree(grid, tree()).unwrap();
+        assert_eq!(normalized.area_mm2(), 154.);
+        assert_eq!(normalized.component_count(), 1);
+        assert_eq!(normalized.hole_count(), 1);
+        assert!(
+            normalized
+                .diagnostics()
+                .iter()
+                .any(|d| d.code == "OUTPUT_RENORMALIZED")
+        );
+        validate_boundaries(grid, normalized.rings(), None).unwrap();
+        // Exhausting normalization must still reject crossed boundaries.
+        assert_eq!(
+            Region::from_tree_checked(grid, tree(), 2).unwrap_err().code,
+            "OUTPUT_INTERSECTION"
+        );
+        // The source-ring constructor still rejects intersecting input.
+        assert!(
+            Region::from_rings(
+                grid,
+                &[
+                    vec![
+                        Point::new(0., 0.),
+                        Point::new(10., 0.),
+                        Point::new(10., 10.),
+                        Point::new(0., 10.)
+                    ],
+                    vec![
+                        Point::new(5., -1.),
+                        Point::new(15., -1.),
+                        Point::new(15., 9.),
+                        Point::new(5., 9.)
+                    ],
+                ]
+            )
+            .is_err()
+        );
+    }
 }

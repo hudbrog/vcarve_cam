@@ -75,15 +75,22 @@ impl Target {
             required_clearance_mm: required,
             margin_mm: margin,
             numerical_reserve_mm: reserve,
-            input_snap_bound_mm: self.region.grid().snap_bound_mm(),
+            input_snap_bound_mm: self.input_snap_bound_mm,
         })
     }
 
     /// The authoritative predicate is signed boundary distance >= required radius.
     /// Polygon area is accompanied by exact-fit contacts and representation diagnostics.
     pub fn center_set(&self, radius: Length) -> Result<CenterSet> {
+        let mut timing = crate::timing::Timer::new("target center set");
         let required = radius.mm();
+        if let Ok(cache) = self.center_sets.lock()
+            && let Some((_, result, _)) = cache.iter().find(|(r, _, _)| *r == required)
+        {
+            return Ok(result.clone());
+        }
         let area = self.region.erode(required)?;
+        timing.lap("erode");
         let mut result = CenterSet {
             required_clearance_mm: required,
             diagnostics: area.diagnostics().to_vec(),
@@ -91,13 +98,14 @@ impl Target {
             contact_segments: vec![],
             contact_points: vec![],
             status: CenterSetStatus::Empty,
-            input_snap_bound_mm: self.region.grid().snap_bound_mm(),
+            input_snap_bound_mm: self.input_snap_bound_mm,
         };
         if required == 0.0 {
             result.status = CenterSetStatus::Area;
             return Ok(result);
         }
         let diagram = self.diagram()?;
+        timing.lap("diagram");
         let mut witnesses = vec![];
         let mut candidates = vec![];
         let mut interior_vertices = 0;
@@ -207,6 +215,26 @@ impl Target {
         }
         if contacts {
             result.diagnostics.push(error("EXACT_FIT_CONTACT","zero-margin tool-center contacts are retained; input snapping, entry capability and motion verification still need accounting").warning());
+        }
+        // Target geometry is immutable. Bound both cache entry count and total
+        // retained geometry; unusually large results are simply not cached.
+        let weight = result
+            .area
+            .rings()
+            .iter()
+            .map(|r| r.points().len())
+            .sum::<usize>()
+            + result.contact_points.len()
+            + 2 * result.contact_segments.len();
+        if weight <= 131072
+            && let Ok(mut cache) = self.center_sets.lock()
+        {
+            while cache.len() >= 8
+                || cache.iter().map(|(_, _, n)| n).sum::<usize>() + weight > 131072
+            {
+                cache.pop_front();
+            }
+            cache.push_back((required, result.clone(), weight));
         }
         Ok(result)
     }

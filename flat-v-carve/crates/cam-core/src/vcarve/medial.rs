@@ -112,8 +112,8 @@ fn append_interval(
     let r = |p: Position| ctx.tool.tip_radius().mm() + p.depth() * ctx.tool.angle().slope();
     let margin = ctx.target.boundary().variable_radius_margin_mm(
         Segment { start: qa, end: qb },
-        r(pa),
-        r(pb),
+        r(pa) + ctx.guard / 2.,
+        r(pb) + ctx.guard / 2.,
     )?;
     let slope = ctx.tool.angle().slope();
     let accuracy_radius =
@@ -133,6 +133,11 @@ fn append_interval(
             "curve reconstruction cannot meet the requested XYZ motion tolerance",
         ));
     }
+    // Endpoint depths reserve two geometry tolerances. Keep half that
+    // clearance along the entire chord as well: otherwise a safe but nearly
+    // tangent chord can leave its conservative polygon bracket outside the
+    // nominal stock section. Subdivision retains the requested path accuracy
+    // without relaxing either the motion or stock verification.
     if margin < 0. || accuracy_margin < 0. || chord + curve.reconstruction_bound_mm() > xy_budget {
         if level >= 32 || *budget < 2 {
             return Err(error(

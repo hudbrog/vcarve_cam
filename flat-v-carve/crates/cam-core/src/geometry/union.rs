@@ -23,7 +23,10 @@ impl UnionAccumulator {
             .map(|r| r.points().len())
             .sum::<usize>();
         self.pending.push(region);
-        if self.vertices >= 32768 || self.pending.len() >= 256 {
+        // Adjacent fine toolpath capsules overlap almost completely. Large
+        // batches create dense intersection arrangements before the union
+        // discards their interiors; small batches collapse these early.
+        if self.vertices >= 32768 || self.pending.len() >= 8 {
             self.flush()?;
         }
         Ok(())

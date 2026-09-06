@@ -5,6 +5,64 @@ use crate::{
     motion::Motion,
 };
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
+
+/// Exact duplicate footprints (often depth pass + final finish). This only
+/// avoids repeated polygon construction/union; every motion ID is retained.
+/// Bound memory independently of the caller's motion budget.
+#[derive(Default)]
+struct Footprints(HashSet<[u64; 6]>);
+impl Footprints {
+    fn repeated(&mut self, a: Point, ra: f64, b: Point, rb: f64) -> bool {
+        let a = [a.x.to_bits(), a.y.to_bits(), ra.to_bits()];
+        let b = [b.x.to_bits(), b.y.to_bits(), rb.to_bits()];
+        let (a, b) = if a <= b { (a, b) } else { (b, a) };
+        let key = [a[0], a[1], a[2], b[0], b[1], b[2]];
+        // Sweeps arrive in spatial order, so an old full cache is unlikely to
+        // help in the next neighborhood. Clearing can only miss duplicates.
+        if self.0.len() >= 65536 {
+            self.0.clear();
+        }
+        !self.0.insert(key)
+    }
+}
+
+struct SliceSweep {
+    id: usize,
+    a: Point,
+    b: Point,
+    ra: f64,
+    rb: f64,
+}
+fn sweep_order(sweeps: &[SliceSweep]) -> Vec<usize> {
+    SpatialIndex::new(sweeps.iter().map(|s| Aabb::new(s.a, s.b)).collect()).into_spatial_order()
+}
+
+fn moving_endpoint_radii(sweeps: &[SliceSweep]) -> HashMap<(u64, u64), f64> {
+    let mut endpoints = HashMap::<_, f64>::new();
+    for s in sweeps.iter().filter(|s| s.a != s.b) {
+        for (p, r) in [(s.a, s.ra), (s.b, s.rb)] {
+            let key = (p.x.to_bits(), p.y.to_bits());
+            if let Some(prior) = endpoints.get_mut(&key) {
+                *prior = prior.max(r);
+            } else if endpoints.len() < 131072 {
+                endpoints.insert(key, r);
+            }
+        }
+    }
+    endpoints
+}
+
+fn covered_stationary(s: &SliceSweep, endpoints: &HashMap<(u64, u64), f64>) -> bool {
+    // A plunge's slice is a disk. A nonstationary sweep with an equally large
+    // endpoint disk at exactly the same center already contains all of it.
+    // Its conservative outer bound therefore also covers the omitted disk;
+    // retaining fewer inner polygons remains a conservative lower bound.
+    s.a == s.b
+        && endpoints
+            .get(&(s.a.x.to_bits(), s.a.y.to_bits()))
+            .is_some_and(|&r| r >= s.ra.max(s.rb))
+}
 
 enum QueryTool<'a> {
     Endmill(f64),
@@ -98,6 +156,148 @@ mod indexed_query_tests {
         model::{VBit, VBitSpec},
         motion::{MotionKind, Position},
     };
+    #[test]
+    fn covered_plunge_disks_are_redundant_but_deeper_plunges_are_retained() {
+        let grid = Grid::new(0.001, 100.).unwrap();
+        let tool = VBit::try_from(VBitSpec {
+            included_angle_deg: 90.,
+            tip_diameter_mm: 0.5,
+            max_cutting_diameter_mm: 12.,
+            cutting_height_mm: 5.,
+        })
+        .unwrap();
+        let cut = Motion {
+            id: 20,
+            tool_id: "vbit".into(),
+            operation_id: "test".into(),
+            layer: 0,
+            kind: MotionKind::Cut,
+            start: Position::new(Point::new(10., 10.), -1.),
+            end: Position::new(Point::new(14., 10.), -1.5),
+            feed_mm_min: Some(100.),
+        };
+        let mut plunge = cut.clone();
+        plunge.id = 10;
+        plunge.kind = MotionKind::Plunge;
+        plunge.start.z = 0.;
+        plunge.end = cut.start;
+        let expected = vbit_removal_at_slice(grid, std::slice::from_ref(&cut), &tool, 0.5).unwrap();
+        let actual =
+            vbit_removal_at_slice(grid, &[plunge.clone(), cut.clone()], &tool, 0.5).unwrap();
+        assert_eq!(actual.contributing_motion_ids, [10, 20]);
+        assert_eq!(
+            serde_json::to_value(actual.lower).unwrap(),
+            serde_json::to_value(&expected.lower).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(actual.upper).unwrap(),
+            serde_json::to_value(&expected.upper).unwrap()
+        );
+        plunge.end.z = -2.5;
+        let deeper = vbit_removal_at_slice(grid, &[plunge, cut], &tool, 0.5).unwrap();
+        assert!(deeper.lower.area_mm2() > expected.upper.area_mm2());
+        assert_eq!(deeper.contributing_motion_ids, [10, 20]);
+    }
+    #[test]
+    fn subgrid_apex_inner_sweeps_may_be_empty_but_outer_bounds_are_retained() {
+        let grid = Grid::new(0.001, 100.).unwrap();
+        let radius = 2.1 * grid.snap_bound_mm();
+        let a = Point::new(10., 10.);
+        for b in [a, Point::new(14., 10.)] {
+            let bounds = variable_capsule_bounds(grid, a, radius, b, radius).unwrap();
+            assert!(bounds.lower.rings().is_empty());
+            let analytic_area =
+                std::f64::consts::PI * radius * radius + 2. * radius * a.distance(b);
+            assert!(bounds.upper.area_mm2() >= analytic_area);
+            assert!(bounds.radial_error_mm >= radius);
+            let query = crate::geometry::BoundaryQuery::new(&bounds.upper);
+            for p in [a, a.lerp(b, 0.5), b] {
+                assert_ne!(
+                    query.sample(p).unwrap().location,
+                    crate::geometry::PointLocation::Outside
+                );
+            }
+        }
+    }
+    #[test]
+    fn dense_short_sweeps_bracket_a_single_analytic_capsule() {
+        let grid = Grid::new(0.001, 100.).unwrap();
+        let motions: Vec<_> = (0..1000)
+            .map(|i| Motion {
+                id: i,
+                tool_id: "test".into(),
+                operation_id: "test".into(),
+                layer: 0,
+                kind: MotionKind::Cut,
+                start: Position::new(Point::new(10. + i as f64 / 1000., 10.), -2.),
+                end: Position::new(Point::new(10. + (i + 1) as f64 / 1000., 10.), -2.),
+                feed_mm_min: Some(100.),
+            })
+            .collect();
+        let removal = removal_at_slice(grid, &motions, 1.5, 2.).unwrap();
+        let analytic_area = std::f64::consts::PI * 1.5_f64.powi(2) + 3.;
+        assert!(removal.lower.area_mm2() <= analytic_area);
+        assert!(removal.upper.area_mm2() >= analytic_area);
+        assert!(removal.upper.area_mm2() - removal.lower.area_mm2() < 0.01);
+        assert_eq!(removal.lower.component_count(), 1);
+        assert_eq!(removal.lower.hole_count(), 0);
+        assert_eq!(removal.contributing_motion_ids.len(), 1000);
+    }
+    #[test]
+    fn duplicate_and_reversed_sweeps_keep_all_ids_and_the_same_bounds() {
+        let grid = Grid::new(0.001, 100.).unwrap();
+        let tool = VBit::try_from(VBitSpec {
+            included_angle_deg: 90.,
+            tip_diameter_mm: 0.5,
+            max_cutting_diameter_mm: 12.,
+            cutting_height_mm: 5.,
+        })
+        .unwrap();
+        let motion = Motion {
+            id: 0,
+            tool_id: "test".into(),
+            operation_id: "test".into(),
+            layer: 0,
+            kind: MotionKind::Cut,
+            start: Position::new(Point::new(10., 10.), -1.),
+            end: Position::new(Point::new(13., 11.), -2.),
+            feed_mm_min: Some(100.),
+        };
+        let mut repeated = vec![motion.clone(); 600];
+        for (i, m) in repeated.iter_mut().enumerate() {
+            m.id = i;
+            if i % 2 == 1 {
+                std::mem::swap(&mut m.start, &mut m.end);
+            }
+        }
+        for depth in [0.5, 1., 1.5, 2.] {
+            for vbit in [false, true] {
+                let compute = |motions: &[Motion]| {
+                    if vbit {
+                        vbit_removal_at_slice(grid, motions, &tool, depth)
+                    } else {
+                        removal_at_slice(grid, motions, 1.5, depth)
+                    }
+                    .unwrap()
+                };
+                let expected = compute(std::slice::from_ref(&motion));
+                let actual = compute(&repeated);
+                assert_eq!(actual.contributing_motion_ids, (0..600).collect::<Vec<_>>());
+                assert_eq!(
+                    serde_json::to_value(actual.lower).unwrap(),
+                    serde_json::to_value(expected.lower).unwrap()
+                );
+                assert_eq!(
+                    serde_json::to_value(actual.upper).unwrap(),
+                    serde_json::to_value(expected.upper).unwrap()
+                );
+                assert_eq!(
+                    actual.capsule_radial_error_mm,
+                    expected.capsule_radial_error_mm
+                );
+            }
+        }
+    }
     #[test]
     fn cached_queries_match_full_scans_at_flanks_endpoints_and_flat_tip_edges() {
         let motions: Vec<_> = (0..200)
@@ -214,6 +414,7 @@ pub fn removal_at_slice(
     radius: f64,
     depth: f64,
 ) -> Result<SliceRemoval> {
+    let _timing = crate::timing::Timer::new("endmill stock slice");
     validate_motions(motions)?;
     if !radius.is_finite() || radius <= 0. {
         return Err(
@@ -229,22 +430,38 @@ pub fn removal_at_slice(
     }
     let mut lower = UnionAccumulator::new(grid);
     let mut upper = UnionAccumulator::new(grid);
-    let mut ids = vec![];
     let mut error: f64 = 0.;
-    for m in motions {
-        if let Some((a, b)) = m.at_depth(depth) {
-            let capsule = capsule_bounds(grid, a, b, radius)?;
-            error = error.max(capsule.radial_error_mm);
-            lower.push(capsule.lower)?;
-            upper.push(capsule.upper)?;
-            ids.push(m.id);
+    let mut footprints = Footprints::default();
+    let sweeps: Vec<_> = motions
+        .iter()
+        .filter_map(|m| {
+            m.at_depth(depth).map(|(a, b)| SliceSweep {
+                id: m.id,
+                a,
+                b,
+                ra: radius,
+                rb: radius,
+            })
+        })
+        .collect();
+    let endpoints = moving_endpoint_radii(&sweeps);
+    // Merge neighbors in space, not widely separated depth/final-pass records.
+    // This avoids repeatedly intersecting large overlapping stock prefixes.
+    for i in sweep_order(&sweeps) {
+        let s = &sweeps[i];
+        if covered_stationary(s, &endpoints) || footprints.repeated(s.a, radius, s.b, radius) {
+            continue;
         }
+        let capsule = capsule_bounds(grid, s.a, s.b, radius)?;
+        error = error.max(capsule.radial_error_mm);
+        lower.push(capsule.lower)?;
+        upper.push(capsule.upper)?;
     }
     Ok(SliceRemoval {
         depth_mm: depth,
         lower: lower.finish()?,
         upper: upper.finish()?,
-        contributing_motion_ids: ids,
+        contributing_motion_ids: sweeps.iter().map(|s| s.id).collect(),
         capsule_radial_error_mm: error,
     })
 }
@@ -371,14 +588,26 @@ pub fn variable_capsule_bounds(
         if points.is_empty() {
             Region::from_rings(grid, &[])
         } else {
-            Region::convex_hull(grid, &points)
+            match Region::convex_hull(grid, &points) {
+                // A near-apex inner disk can disappear on the grid. Empty is
+                // still a conservative lower bound; the outer sweep remains
+                // mandatory and must construct successfully.
+                Err(e) if !upper && e.code == "CONVEX_HULL_COLLAPSE" => {
+                    Region::from_rings(grid, &[])
+                }
+                result => result,
+            }
         }
     };
+    let lower = hull(false)?;
+    let upper = hull(true)?;
+    let collapsed_reserve = if lower.rings().is_empty() { r } else { 0. };
     Ok(CapsuleBounds {
-        lower: hull(false)?,
-        upper: hull(true)?,
+        lower,
+        upper,
         radial_error_mm: (r - (r - 2. * snap).max(0.) * cosine + snap)
             .max((r + 2. * snap) / cosine + snap - r)
+            .max(collapsed_reserve)
             + ta.2.max(tb.2),
     })
 }
@@ -389,6 +618,7 @@ pub fn vbit_removal_at_slice(
     tool: &crate::model::VBit,
     depth: f64,
 ) -> Result<SliceRemoval> {
+    let mut timing = crate::timing::Timer::new("vbit stock slice");
     validate_motions(motions)?;
     if motions.iter().filter(|m| m.kind.cutting()).any(|m| {
         m.start.depth() > tool.cutting_height().mm() || m.end.depth() > tool.cutting_height().mm()
@@ -407,8 +637,9 @@ pub fn vbit_removal_at_slice(
     }
     let mut lower = UnionAccumulator::new(grid);
     let mut upper = UnionAccumulator::new(grid);
-    let mut ids = vec![];
     let mut error: f64 = 0.;
+    let mut footprints = Footprints::default();
+    let mut sweeps = vec![];
     for m in motions.iter().filter(|m| m.kind.cutting()) {
         let da = m.start.depth();
         let db = m.end.depth();
@@ -425,18 +656,41 @@ pub fn vbit_removal_at_slice(
         let a = m.start.lerp(m.end, lo);
         let b = m.start.lerp(m.end, hi);
         let radius = |d: f64| tool.tip_radius().mm() + (d - depth).max(0.) * tool.angle().slope();
-        let c =
-            variable_capsule_bounds(grid, a.xy(), radius(a.depth()), b.xy(), radius(b.depth()))?;
+        sweeps.push(SliceSweep {
+            id: m.id,
+            a: a.xy(),
+            b: b.xy(),
+            ra: radius(a.depth()),
+            rb: radius(b.depth()),
+        });
+    }
+    let order = sweep_order(&sweeps);
+    let endpoints = moving_endpoint_radii(&sweeps);
+    timing.lap("prepare sweeps");
+    let mut hull_time = std::time::Duration::ZERO;
+    let mut union_time = std::time::Duration::ZERO;
+    for i in order {
+        let s = &sweeps[i];
+        if covered_stationary(s, &endpoints) || footprints.repeated(s.a, s.ra, s.b, s.rb) {
+            continue;
+        }
+        let start = timing.start_sample();
+        let c = variable_capsule_bounds(grid, s.a, s.ra, s.b, s.rb)?;
+        hull_time += start.map_or(std::time::Duration::ZERO, |s| s.elapsed());
+        let start = timing.start_sample();
         lower.push(c.lower)?;
         upper.push(c.upper)?;
+        union_time += start.map_or(std::time::Duration::ZERO, |s| s.elapsed());
         error = error.max(c.radial_error_mm);
-        ids.push(m.id);
     }
+    timing.accumulated("capsule construction", hull_time);
+    timing.accumulated("polygon unions", union_time);
+    timing.lap("accumulate footprints");
     Ok(SliceRemoval {
         depth_mm: depth,
         lower: lower.finish()?,
         upper: upper.finish()?,
-        contributing_motion_ids: ids,
+        contributing_motion_ids: sweeps.iter().map(|s| s.id).collect(),
         capsule_radial_error_mm: error,
     })
 }

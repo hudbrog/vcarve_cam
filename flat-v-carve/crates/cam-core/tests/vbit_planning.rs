@@ -308,6 +308,46 @@ fn medial_branches_preserve_curves_radii_and_join_full_depth_families() {
     }
 }
 #[test]
+fn medial_chords_retain_clearance_for_conservative_stock_brackets() {
+    for name in ["curved-medial", "finite-tip", "island"] {
+        let plan = planned(name);
+        let region = plan.endmill.job.inspect().unwrap().geometry.selected;
+        let query = BoundaryQuery::new(&region);
+        let bit = if name == "finite-tip" {
+            tool(0.5)
+        } else {
+            tool(0.)
+        };
+        let reserve = region.grid().tolerance_mm();
+        let mut checked = 0;
+        for execution in &plan.executions {
+            if execution.candidate.family != PathFamily::Medial {
+                continue;
+            }
+            for pair in execution.candidate.points.windows(2) {
+                let radius =
+                    |p: Position| bit.tip_radius().mm() + p.depth() * bit.angle().slope() + reserve;
+                let margin = query
+                    .variable_radius_margin_mm(
+                        Segment {
+                            start: pair[0].xy(),
+                            end: pair[1].xy(),
+                        },
+                        radius(pair[0]),
+                        radius(pair[1]),
+                    )
+                    .unwrap();
+                assert!(
+                    margin >= 0.,
+                    "{name}: medial chord fails the reserved-clearance check: {margin}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+    }
+}
+#[test]
 fn zero_ridge_is_rejected_only_when_pointed_area_clearing_is_needed() {
     assert_eq!(
         plan_combined(&fixture("zero-ridge")).unwrap_err().code,

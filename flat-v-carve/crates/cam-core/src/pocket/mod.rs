@@ -169,7 +169,9 @@ fn strategy_depth(ctx: &Context, depth: f64) -> f64 {
 }
 
 pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
+    let mut timing = crate::timing::Timer::new("endmill");
     let ctx = Context::new(job)?;
+    timing.lap("context");
     let levels = depths(&ctx)?;
     let mut motions = vec![];
     let mut diagnostics = vec![];
@@ -281,7 +283,9 @@ pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
             "loop/motion budget was exhausted; retained motions are a partial plan",
         ));
     }
+    timing.lap("generate motions");
     let mut analysis = verify::analyze(&ctx, job, &motions)?;
+    timing.lap("analyze");
     let generation_issues: Vec<_> = diagnostics
         .into_iter()
         .map(|d| GenerationIssue {
@@ -411,7 +415,7 @@ fn layer_stock(ctx: &Context, depth: f64, motions: &[Motion]) -> Result<LayerRep
         Depth::new(eval_depth)?,
         Length::new(ctx.allowance)?,
     )?;
-    let nominal = ctx.target.section(Depth::new(depth)?)?;
+    let nominal = ctx.target.section_area(Depth::new(depth)?)?;
     let accessible = access.area.dilate(ctx.mill.radius().mm())?;
     let removal = removal_at_slice(
         ctx.target.region().grid(),
@@ -422,12 +426,8 @@ fn layer_stock(ctx: &Context, depth: f64, motions: &[Motion]) -> Result<LayerRep
     let missing = accessible
         .erode(ctx.coverage_tolerance)?
         .boolean(BooleanOp::Difference, &removal.lower)?;
-    let remaining = nominal
-        .area
-        .boolean(BooleanOp::Difference, &removal.lower)?;
-    let overcut = removal
-        .upper
-        .boolean(BooleanOp::Difference, &nominal.area)?;
+    let remaining = nominal.boolean(BooleanOp::Difference, &removal.lower)?;
+    let overcut = removal.upper.boolean(BooleanOp::Difference, &nominal)?;
     let mut diagnostics = vec![];
     if access.status == CenterSetStatus::Unresolved {
         diagnostics.push(error(
@@ -466,7 +466,7 @@ fn layer_stock(ctx: &Context, depth: f64, motions: &[Motion]) -> Result<LayerRep
     Ok(LayerReport {
         depth_mm: depth,
         requested_centers: access.area,
-        nominal_section: nominal.area,
+        nominal_section: nominal,
         accessible_floor: accessible,
         removal,
         remaining_target: remaining,
