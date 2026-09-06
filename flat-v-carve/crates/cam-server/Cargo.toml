@@ -1,0 +1,26 @@
+[package]
+name = "cam-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cam-web"
+path = "src/main.rs"
+
+[dependencies]
+cam-core = { path = "../cam-core" }
+cam-app = { path = "../cam-app" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "process", "io-util"] }
+getrandom = "=0.4.3"
+
+[dev-dependencies]
+tower = { version = "=0.5.3", features = ["util"] }
+
+[lints]
+workspace = true

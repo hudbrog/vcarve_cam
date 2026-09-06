@@ -40,7 +40,11 @@ The backend now stores reusable named tools and explicit cutting presets. Use
 configured job, import/export, and application to a new job file. Library edits
 use revision checks and atomic file replacement. Applying a tool copies its
 settings into the existing job schema; later library edits never change saved
-jobs. Browser controls and HTTP transport remain integration work.
+jobs. The browser includes library management, job capture, and changed-value
+review under **Carve & tools → Manage tool library**. Start `cam-web` with
+`--library-dir <directory>` to use an existing library; otherwise it uses the
+platform's local application-data directory. The browser explicitly creates an
+empty library on first use.
 
 See the [tool library guide](../docs/flat-v-carve/tool-library.md) for the Rust API,
 CLI examples, validation, persistence, and snapshot behavior.

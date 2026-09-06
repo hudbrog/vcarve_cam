@@ -1,10 +1,10 @@
 # Web UI: product and interaction design
 
 Date: 2026-09-05\
-Status: first design baseline; implementation has not started.\
+Status: product design baseline; U1/U2, bounded U3 planning/2D inspection, U5 M5/M6 integration, and the local tool library are implemented.\
 Confirmed direction: a persistent CAM workspace with guided setup steps.
 
-This is a separate planning track alongside the Rust milestones. It expands M7 into a complete product experience without changing M4–M6 scope or claiming those future capabilities exist. Read the [integration and delivery plan](integration-plan.md) for service contracts, dependencies, and acceptance scenarios.
+This design expands M7 into a complete product experience. Read the [integration and delivery plan](integration-plan.md) for current implementation status, remaining service work, and acceptance scenarios, and the [M5 verification report](u5-verification.md) for the latest checked slice. Features described below remain product targets unless the implementation reports mark them delivered.
 
 ## 1. Product intent
 
@@ -26,10 +26,10 @@ Included: portable jobs; SVG inspection and region selection; physical placement
 
 Local reusable tool, setup, and machine presets are proposed conveniences. Applying one copies a snapshot into the job, previews the changed values, and invalidates affected output. Editing a preset must never silently alter existing jobs. No feed or spindle recommendations are generated. Imported jobs retain unset machining values until the user supplies them or explicitly applies a preset.
 
-The [local tool library backend](../tool-library.md) now implements tool definitions,
-optional cutting presets, persistence, and explicit snapshot application through
-Rust and the CLI. Its frontend controls and local-service transport are pending;
-setup and machine preset libraries remain proposed.
+The [local tool library](tool-library-ui.md) implements tool definitions, optional
+cutting presets, persistence, browser management, job capture, and reviewed,
+undoable snapshot application through the Rust store. Setup and machine preset
+libraries remain proposed.
 
 The established product boundaries still apply: one flat endmill, one V-bit, one depth cap across selected regions, uniform flat stock, and XYZ motion. CAD drawing, SVG repair/tracing, multiple depths, arbitrary tool stacks, automatic feeds and speeds, cloud accounts, collaboration, and direct machine control remain outside this release. Stock footprint/clamp visualization is an optional future extension; current stock data contains thickness only, so the UI must not imply fixture collision coverage.
 

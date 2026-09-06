@@ -1,4 +1,5 @@
 import { importSchema, jobSchema, type Job } from '../contracts/job';
+import { computationDefaults } from './computation';
 
 export interface Field {
   path: string; label: string; unit?: string;
@@ -138,8 +139,9 @@ export function fieldIsActive(draft: Draft, field: Field) {
   return !field.when || fieldText(draft, { path: field.when.path, label: '' }) === field.when.value;
 }
 function parseField(draft: Draft, field: Field, errors: Record<string, string>): unknown {
-  if (!(field.path in draft.text)) return readPath(draft.base, field.path) ?? null;
+  if (!(field.path in draft.text)) return readPath(draft.base, field.path) ?? computationDefaults[field.path] ?? null;
   const raw = draft.text[field.path];
+  if (!raw.trim() && computationDefaults[field.path] !== undefined) return computationDefaults[field.path];
   if (field.kind === 'text' || field.kind === 'multiline') return raw.trim() === '' ? null : raw;
   if (field.kind === 'choice') {
     if (raw === '') return null;
@@ -168,16 +170,16 @@ export function materialize(draft: Draft): { job: Job | null; previewJob: Job; e
   const fields = allFields(draft.base);
   for (const field of fields) {
     if (setupGroups.some(group => field.path.startsWith(`${group.path}.`))) continue;
-    if (!(field.path in draft.text)) continue;
+    if (!(field.path in draft.text) && computationDefaults[field.path] === undefined) continue;
     const value = parseField(draft, field, errors);
     if (errors[field.path]) continue;
     if (value === null && field.required) { errors[field.path] = 'This import field cannot be empty.'; continue; }
     writePath(candidate, field.path, value);
   }
   for (const group of setupGroups) {
-    if (!group.fields.some(field => field.path in draft.text)) continue;
+    if (!group.fields.some(field => field.path in draft.text || computationDefaults[field.path] !== undefined)) continue;
     const activeFields = group.fields.filter(field => fieldIsActive(draft, field));
-    if (activeFields.every(field => fieldText(draft, field).trim() === '')) {
+    if (group.path !== 'vbit_planning' && activeFields.every(field => fieldText(draft, field).trim() === '')) {
       writePath(candidate, group.path, null);
       continue;
     }
