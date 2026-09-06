@@ -35,10 +35,12 @@ impl UnionAccumulator {
         if self.pending.is_empty() {
             return Ok(());
         }
-        let mut region = Region::union_all(self.grid, &self.pending.iter().collect::<Vec<_>>())?;
+        let region = Region::union_all(self.grid, &self.pending.iter().collect::<Vec<_>>())?;
         self.pending.clear();
         self.vertices = 0;
-        let mut level = 0;
+        self.merge_level(region, 0)
+    }
+    fn merge_level(&mut self, mut region: Region, mut level: usize) -> Result<()> {
         loop {
             if level == self.levels.len() {
                 self.levels.push(Some(region));
@@ -51,6 +53,33 @@ impl UnionAccumulator {
                 self.levels[level] = Some(region);
                 break;
             }
+        }
+        Ok(())
+    }
+    /// Join independently constructed, batch-aligned subtrees without finishing
+    /// or re-normalizing them. This retains the sequential Boolean tree exactly.
+    pub fn append_aligned(&mut self, other: Self) -> Result<()> {
+        if self.grid != other.grid || !self.pending.is_empty() {
+            return Err(super::Diagnostic::new(
+                "UNION_ALIGNMENT",
+                "stock union subtrees must share a grid and a completed batch boundary",
+            ));
+        }
+        for (level, region) in other.levels.into_iter().enumerate().rev() {
+            let Some(region) = region else { continue };
+            if self.levels.iter().take(level).any(Option::is_some) {
+                return Err(super::Diagnostic::new(
+                    "UNION_ALIGNMENT",
+                    "stock union subtree is not aligned with the sequential merge tree",
+                ));
+            }
+            while self.levels.len() < level {
+                self.levels.push(None);
+            }
+            self.merge_level(region, level)?;
+        }
+        for region in other.pending {
+            self.push(region)?;
         }
         Ok(())
     }
@@ -71,6 +100,35 @@ impl UnionAccumulator {
 mod tests {
     use super::*;
     use crate::geometry::Point;
+    #[test]
+    fn misaligned_subtrees_are_rejected() {
+        let grid = Grid::new(0.001, 100.).unwrap();
+        let region = Region::from_rings(
+            grid,
+            &[vec![
+                Point::new(0., 0.),
+                Point::new(1., 0.),
+                Point::new(1., 1.),
+                Point::new(0., 1.),
+            ]],
+        )
+        .unwrap();
+        let build = |n| {
+            let mut a = UnionAccumulator::new(grid);
+            for _ in 0..n {
+                a.push(region.clone()).unwrap();
+            }
+            a
+        };
+        assert_eq!(
+            build(1).append_aligned(build(8)).unwrap_err().code,
+            "UNION_ALIGNMENT"
+        );
+        assert_eq!(
+            build(8).append_aligned(build(64)).unwrap_err().code,
+            "UNION_ALIGNMENT"
+        );
+    }
     #[test]
     fn batched_footprints_preserve_analytic_union_across_merge_levels() {
         let grid = Grid::new(0.001, 2000.).unwrap();

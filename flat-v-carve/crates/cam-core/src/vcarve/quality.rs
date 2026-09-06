@@ -4,7 +4,9 @@ use crate::{
     model::{Depth, Length},
     motion::Motion,
     pocket::{EndmillPlan, PlanStatus},
-    stock::{SliceRemoval, StockQuery, capsule_bounds, vbit_removal_at_slice},
+    stock::{
+        SliceRemoval, StockQuery, capsule_bounds, vbit_removal_at_slice, vbit_removal_at_slices,
+    },
     svg::Bounds,
     target::{CenterSet, CenterSetStatus, ReachabilityOptions, ReachabilityStatus},
 };
@@ -314,12 +316,18 @@ fn combined_slice(
     moves: &[Motion],
     depth: f64,
 ) -> Result<CombinedSlice> {
+    let vbit = vbit_removal_at_slice(ctx.target.region().grid(), moves, &ctx.tool, depth)?;
+    combined_slice_with_vbit(ctx, endmill, depth, &vbit)
+}
+fn combined_slice_with_vbit(
+    ctx: &Context,
+    endmill: &EndmillPlan,
+    depth: f64,
+    v: &SliceRemoval,
+) -> Result<CombinedSlice> {
     let mut timing = crate::timing::Timer::new("combined stock slice");
-    let grid = ctx.target.region().grid();
     let e = super::endmill_slice(ctx, endmill, depth)?;
     timing.lap("endmill");
-    let v = vbit_removal_at_slice(grid, moves, &ctx.tool, depth)?;
-    timing.lap("vbit");
     let lower = e.lower.boolean(BooleanOp::Union, &v.lower)?;
     let upper = e.upper.boolean(BooleanOp::Union, &v.upper)?;
     timing.lap("merge tools");
@@ -328,7 +336,7 @@ fn combined_slice(
     let remaining = nominal.boolean(BooleanOp::Difference, &lower)?;
     let overcut = upper.boolean(BooleanOp::Difference, &nominal)?;
     let mut ids = e.contributing_motion_ids;
-    ids.extend(v.contributing_motion_ids);
+    ids.extend(v.contributing_motion_ids.iter().copied());
     Ok(CombinedSlice {
         depth_mm: depth,
         nominal_section: nominal,
@@ -386,6 +394,7 @@ fn stock_slices(
     moves: &[Motion],
     depths: &[f64],
 ) -> Result<Vec<CombinedSlice>> {
+    let vbit = vbit_removal_at_slices(ctx.target.region().grid(), moves, &ctx.tool, depths)?;
     // Each slice owns its unions. Bound concurrency/memory and retain depth
     // order (including which error is reported), independent of scheduling.
     let workers = std::thread::available_parallelism()
@@ -395,7 +404,8 @@ fn stock_slices(
     if workers <= 1 {
         return depths
             .iter()
-            .map(|&d| combined_slice(ctx, endmill, moves, d))
+            .zip(&vbit)
+            .map(|(&d, v)| combined_slice_with_vbit(ctx, endmill, d, v))
             .collect();
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
@@ -403,6 +413,7 @@ fn stock_slices(
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 let next = &next;
+                let vbit = &vbit;
                 scope.spawn(move || {
                     // A shallow slice is much more expensive than a deep one.
                     // Let the first available worker take the next depth rather
@@ -413,7 +424,7 @@ fn stock_slices(
                         let Some(&depth) = depths.get(i) else {
                             break;
                         };
-                        results.push((i, combined_slice(ctx, endmill, moves, depth)));
+                        results.push((i, combined_slice_with_vbit(ctx, endmill, depth, &vbit[i])));
                     }
                     results
                 })

@@ -6,6 +6,8 @@ use crate::{
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+mod slices;
+pub(crate) use slices::vbit_removal_at_slices;
 
 /// Exact duplicate footprints (often depth pass + final finish). This only
 /// avoids repeated polygon construction/union; every motion ID is retained.
@@ -925,7 +927,15 @@ pub fn vbit_removal_at_slice(
     tool: &crate::model::VBit,
     depth: f64,
 ) -> Result<SliceRemoval> {
-    let mut timing = crate::timing::Timer::new("vbit stock slice");
+    let _timing = crate::timing::Timer::new("vbit stock slice");
+    Ok(vbit_removal_at_slices(grid, motions, tool, &[depth])?.remove(0))
+}
+
+fn prepare_vbit_slice(
+    motions: &[Motion],
+    tool: &crate::model::VBit,
+    depth: f64,
+) -> Result<(Vec<SliceSweep>, Vec<usize>)> {
     validate_motions(motions)?;
     if motions.iter().filter(|m| m.kind.cutting()).any(|m| {
         m.start.depth() > tool.cutting_height().mm() || m.end.depth() > tool.cutting_height().mm()
@@ -942,9 +952,6 @@ pub fn vbit_removal_at_slice(
                 .at_stage("stock"),
         );
     }
-    let mut lower = UnionAccumulator::new(grid);
-    let mut upper = UnionAccumulator::new(grid);
-    let mut error: f64 = 0.;
     let mut footprints = Footprints::default();
     let mut sweeps = vec![];
     for m in motions.iter().filter(|m| m.kind.cutting()) {
@@ -971,35 +978,15 @@ pub fn vbit_removal_at_slice(
             rb: radius(b.depth()),
         });
     }
-    let order = sweep_order(&sweeps);
     let endpoints = moving_endpoint_radii(&sweeps);
-    timing.lap("prepare sweeps");
-    let mut hull_time = std::time::Duration::ZERO;
-    let mut union_time = std::time::Duration::ZERO;
-    for i in order {
-        let s = &sweeps[i];
-        if covered_stationary(s, &endpoints) || footprints.repeated(s.a, s.ra, s.b, s.rb) {
-            continue;
-        }
-        let start = timing.start_sample();
-        let c = variable_capsule_bounds(grid, s.a, s.ra, s.b, s.rb)?;
-        hull_time += start.map_or(std::time::Duration::ZERO, |s| s.elapsed());
-        let start = timing.start_sample();
-        lower.push(c.lower)?;
-        upper.push(c.upper)?;
-        union_time += start.map_or(std::time::Duration::ZERO, |s| s.elapsed());
-        error = error.max(c.radial_error_mm);
-    }
-    timing.accumulated("capsule construction", hull_time);
-    timing.accumulated("polygon unions", union_time);
-    timing.lap("accumulate footprints");
-    Ok(SliceRemoval {
-        depth_mm: depth,
-        lower: lower.finish()?,
-        upper: upper.finish()?,
-        contributing_motion_ids: sweeps.iter().map(|s| s.id).collect(),
-        capsule_radial_error_mm: error,
-    })
+    let order = sweep_order(&sweeps)
+        .into_iter()
+        .filter(|&i| {
+            let s = &sweeps[i];
+            !covered_stationary(s, &endpoints) && !footprints.repeated(s.a, s.ra, s.b, s.rb)
+        })
+        .collect();
+    Ok((sweeps, order))
 }
 
 /// Maximize the concave linear-depth-minus-cone-height function analytically.
