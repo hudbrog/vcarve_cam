@@ -195,20 +195,64 @@ impl LinuxCncProfile {
         let mut numbers = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for t in &self.tools {
-            if !ids.insert(&t.tool_id)
-                || !numbers.insert(t.tool_number)
-                || !(1..=99999).contains(&t.tool_number)
-                || !job.tools.iter().any(|j| j.id == t.tool_id)
-                || match self.length_compensation {
-                    LengthCompensation::MacroManaged => t.length_offset_number.is_some(),
-                    LengthCompensation::ToolTable => !t
-                        .length_offset_number
-                        .is_some_and(|h| (1..=99999).contains(&h)),
-                }
+            if !ids.insert(&t.tool_id) {
+                return Err(error(
+                    "POST_TOOL_MAPPING",
+                    format!(
+                        "job tool ID {:?} is mapped more than once; map the endmill and V-bit once each",
+                        t.tool_id
+                    ),
+                ));
+            }
+            if t.tool_id != job.operation.endmill_id && t.tool_id != job.operation.vbit_id {
+                return Err(error(
+                    "POST_TOOL_MAPPING",
+                    format!(
+                        "job tool ID {:?} is not used by this operation; select endmill ID {:?} or V-bit ID {:?}. The LinuxCNC T number is a separate field",
+                        t.tool_id, job.operation.endmill_id, job.operation.vbit_id
+                    ),
+                ));
+            }
+            if !(1..=99999).contains(&t.tool_number) {
+                return Err(error(
+                    "POST_TOOL_MAPPING",
+                    format!(
+                        "job tool {:?}: LinuxCNC T number must be between 1 and 99999; got {}",
+                        t.tool_id, t.tool_number
+                    ),
+                ));
+            }
+            if !numbers.insert(t.tool_number) {
+                return Err(error(
+                    "POST_TOOL_MAPPING",
+                    format!(
+                        "LinuxCNC T{} is assigned to more than one job tool; use a different T number for the endmill and V-bit",
+                        t.tool_number
+                    ),
+                ));
+            }
+            if self.length_compensation == LengthCompensation::MacroManaged
+                && t.length_offset_number.is_some()
             {
                 return Err(error(
                     "POST_TOOL_MAPPING",
-                    "tool IDs/numbers must be unique; tool-table compensation requires a positive H mapping, macro-managed compensation forbids H mappings",
+                    format!(
+                        "job tool {:?} (T{}): macro-managed compensation requires length_offset_number to be null; the M6 macro owns tool length compensation",
+                        t.tool_id, t.tool_number
+                    ),
+                ));
+            }
+            if self.length_compensation == LengthCompensation::ToolTable
+                && !t
+                    .length_offset_number
+                    .is_some_and(|h| (1..=99999).contains(&h))
+            {
+                return Err(error(
+                    "POST_TOOL_MAPPING",
+                    format!(
+                        "job tool {:?} (T{}): tool-table compensation requires an H number between 1 and 99999 in length_offset_number; select the tool-table entry containing this tool's measured length",
+                        t.tool_id, t.tool_number
+                    ),
                 ));
             }
         }

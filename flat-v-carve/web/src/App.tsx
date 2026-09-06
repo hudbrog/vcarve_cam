@@ -111,7 +111,7 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
   const planning = usePlanning(service, capabilities, validation.result, state.revision, planMode, refresh);
   const inspection = useInspection(service, planning.result, planning.current, job, refresh);
   const verification = useVerification(service, capabilities, planning.result?.task ?? null, planning.current, refresh);
-  const output = useExport(service, capabilities, planning.result?.task ?? null, planning.current, verification.options, refresh);
+  const output = useExport(service, capabilities, planning.result?.task ?? null, planning.current, verification.options, refresh, job);
   const [displayError, setDisplayError] = useState('');
   const jobForDisplay = useRef(job);
   jobForDisplay.current = job;

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CamService, Capabilities } from '../contracts/service';
 import type { PlanTask } from '../contracts/planning';
+import type { Job } from '../contracts/job';
 import { acceptExport, currentExport, exportIdentity, exportIdentitySchema, type ExportIdentity, type ExportTask, type ExportResult,
   type ProgramLayout } from '../contracts/export';
 import type { VerificationOptions } from '../contracts/verificationOptions';
@@ -12,9 +13,9 @@ function recover():ExportIdentity|null {
   catch { return null; }
 }
 export function useExport(service:CamService, capabilities:Capabilities, plan:PlanTask|null, planCurrent:boolean,
-  verificationOptions:VerificationOptions|null, refresh:number) {
+  verificationOptions:VerificationOptions|null, refresh:number, job:Job) {
   const [draft,setDraft] = useState(() => recoverProfile({getItem:key => sessionStorage.getItem(key)}));
-  const {profile,errors} = useMemo(() => parseProfileDraft(draft),[draft]);
+  const {profile,errors} = useMemo(() => parseProfileDraft(draft,job),[draft,job]);
   const [layout,setLayout] = useState<ProgramLayout>(() => { try { return sessionStorage.getItem('flat-v-carve:u6:layout') === 'per_tool' ? 'per_tool' : 'combined'; } catch { return 'combined'; } });
   const [recoveryError,setRecoveryError] = useState('');
   useEffect(() => {

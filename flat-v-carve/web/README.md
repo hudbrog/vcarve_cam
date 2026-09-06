@@ -89,6 +89,28 @@ The production bundle is in `dist/`, with a generated `.bundle-manifest.json` re
 
 Live mode supports endmill and combined background planning, task cancellation/recovery, engine outcomes and diagnostics, and bounded recorded-motion previews. Stock inspection shows engine-produced depth slices after the endmill or both tools, lower/upper removal bounds, remaining target, possible overcut, and endmill floor coverage. Area and supported diagnostic links fit the affected region. Tool and path-layer filters change only the motion overlay. M5 verifies current combined plans with continuous error and depth-band bounds, optional rounded-coordinate checks, locatable findings, cancellation, and stale-report protection. M6 adds a separate LinuxCNC profile editor, cancellable generation, original/emitted verification review, combined/per-tool program previews, and hash-checked downloads gated by the current plan/profile/settings. 3D simulation remains unavailable. Fixture mode has no planning, verification or output capability.
 
+## Export tool mapping
+
+The Export editor selects job tool IDs from the current operation. For an endmill
+using machine tool 1 and a V-bit using machine tool 2, choose the endmill job ID
+(often `endmill`) with **T number 1**, and the V-bit job ID (often `vbit`) with
+**T number 2**. A job tool ID identifies the cutter in the saved job; a T number
+identifies it on the controller. The **Copy job tool IDs and planning clearance**
+button fills the IDs from the current job. It does not choose machine numbers.
+
+With **G43 H from tool table**, enter each tool's measured-length table entry as
+its H number. H1/H2 are appropriate only when those table entries contain the
+corresponding lengths. With **Managed by M6 macro**, the tool-change routine owns
+length compensation, H fields are hidden, and submitted profiles contain null H
+mappings. Switching modes retains unfinished H text for later editing. Select
+the mode that matches the actual controller configuration.
+
+Unknown or duplicate job IDs, duplicate T numbers, and missing/invalid H entries
+receive field-specific guidance before export. Rust also returns a specific
+`POST_TOOL_MAPPING` reason when rejecting a submitted profile. The editor
+explains coordinates, formatting, spindle delay, startup and M6 declarations;
+these machine settings still require values from the user's setup.
+
 ## Boundaries and next work
 
 Rust remains authoritative for migration, normalization, numeric ranges, machining rules, planning, geometry/stock, identity, verification, and output. The Zod schema checks portable **structure**; it does not certify machining settings. Live mode runs Rust validation after representable edits and discards stale responses. Unknown fields and unsupported schemas are rejected. Fixture mode cannot migrate or validate through Rust.

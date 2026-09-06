@@ -12,8 +12,8 @@ export function downloadText(filename:string, text:string, type='application/jso
   setTimeout(() => URL.revokeObjectURL(url),1000);
 }
 const groups = [
-  {title:'Machine coordinates & formatting',match:(p:string) => !p.startsWith('tools.') && !p.startsWith('m6.') && !p.startsWith('program_start') && p !== 'start_mode'},
-  {title:'Tool mapping',match:(p:string) => p.startsWith('tools.')},
+  {title:'Machine coordinates & formatting',match:(p:string) => !p.startsWith('tools.') && !p.startsWith('m6.') && !p.startsWith('program_start') && p !== 'start_mode' && p !== 'length_compensation'},
+  {title:'Tool mapping & length compensation',match:(p:string) => p.startsWith('tools.') || p === 'length_compensation'},
   {title:'Startup & M6 positioning',match:(p:string) => p.startsWith('program_start') || p === 'start_mode' || p.startsWith('m6.return_position.')},
   {title:'Declared M6 contract',match:(p:string) => p.startsWith('m6.') && !p.startsWith('m6.return_position.')},
 ];
@@ -25,6 +25,7 @@ export function ExportPanel({output:o,job,planCurrent}:{output:Export;job:Job;pl
   const [notice,setNotice] = useState('');
   const [scope,setScope] = useState<'original'|'emitted'>('emitted');
   const [shown,setShown] = useState(20);
+  const jobToolChoices:[string,string][] = [[job.operation.endmill_id,`Endmill · ${job.operation.endmill_id}`],[job.operation.vbit_id,`V-bit · ${job.operation.vbit_id}`]];
   const report = o.result?.report;
   const evidence = report ? scope === 'original' ? report.plan_verification.original : report.emitted_verification : null;
   async function open(file:File|undefined) {
@@ -55,21 +56,29 @@ export function ExportPanel({output:o,job,planCurrent}:{output:Export;job:Job;pl
         'tools.0.tool_id':job.operation.endmill_id,'tools.1.tool_id':job.operation.vbit_id,
         clearance_z_mm:String(job.endmill_planning?.clearance_z_mm ?? ''),
       }))}>Copy job tool IDs and planning clearance</button>
-      {groups.map(group => <details key={group.title} open={group.title === 'Machine coordinates & formatting' ? true : undefined}>
+      {groups.map(group => <details key={group.title} open={group.title === 'Machine coordinates & formatting' || group.title === 'Tool mapping & length compensation' ? true : undefined}>
         <summary>{group.title}</summary>
-        {group.title === 'Startup & M6 positioning' && <p className="hint">Startup and return positions use the selected work frame and the new compensated tool tip. Safe retract declares a clear upward corridor to Z and clear XY travel at that plane. An unknown startup requires this retract contract.</p>}
-        {group.title === 'Declared M6 contract' && <p className="hint">Record the actual macro/configuration reference. Reviewing a declaration does not establish machine testing.</p>}
+        {group.title === 'Tool mapping & length compensation' && <>
+          <p className="hint">For endmill → T1 and V-bit → T2, select job tool <strong>{job.operation.endmill_id}</strong> with T number <strong>1</strong>, and job tool <strong>{job.operation.vbit_id}</strong> with T number <strong>2</strong>. Each job tool and T number must appear once.</p>
+          {o.draft.length_compensation === 'macro_managed' && <p className="hint">Your M6 macro applies tool length compensation. H fields are unused in this mode; the exported profile contains no H mappings and the program adds no G43 H commands.</p>}
+          {o.draft.length_compensation === 'tool_table' && <p className="hint">This program applies G43 H after each tool change. Both tools need an H number. T selects the machine tool; H selects its measured length entry in the tool table.</p>}
+        </>}
+        {group.title === 'Startup & M6 positioning' && <p className="hint">M6 is the controller’s tool-change routine. Enter tool-tip positions in the selected work coordinate system, with tool length compensation active. A known startup Z equals planning clearance for stock-top zero, or stock thickness plus clearance for stock-bottom zero.</p>}
+        {group.title === 'Declared M6 contract' && <p className="hint">These declarations describe your actual tool-change routine. Confirm each statement after reviewing that routine and its controller configuration.</p>}
         <div className="fields">{profileFields.filter(f => group.match(f.path) && profileFieldActive(f.path,o.draft)).map(field => {
           const value = o.draft[field.path] ?? '';
-          const error = value ? o.errors[field.path] : undefined;
+          const error = value || field.path.endsWith('.length_offset_number') ? o.errors[field.path] : undefined;
           const edit = (text:string) => o.setDraft(previous => ({...previous,[field.path]:text}));
           const id = `profile-${field.path}`;
+          const choices = field.path.endsWith('.tool_id') ? jobToolChoices : field.choices;
+          const describedBy = [field.help ? `${id}-help` : '',error ? `${id}-error` : ''].filter(Boolean).join(' ') || undefined;
           return <div className="field" key={field.path}>
             {field.kind === 'boolean' ? <label className="profile-check"><input id={id} type="checkbox" checked={value === 'true'} onChange={e => edit(String(e.target.checked))} />{field.label}</label> : <>
               <label htmlFor={id}>{field.label}</label>
-              {field.choices ? <select id={id} value={value} onChange={e => edit(e.target.value)}><option value="">Choose…</option>{field.choices.map(([v,label]) => <option value={v} key={v}>{label}</option>)}</select>
-                : field.kind === 'multiline' ? <textarea id={id} rows={5} value={value} onChange={e => edit(e.target.value)} />
-                : <input id={id} value={value} placeholder="Not specified" inputMode={field.kind === 'number' ? 'decimal' : 'text'} aria-invalid={!!error} aria-describedby={error ? `${id}-error` : undefined} onChange={e => edit(e.target.value)} />}
+              {choices ? <select id={id} value={value} aria-invalid={!!error} aria-describedby={describedBy} onChange={e => edit(e.target.value)}><option value="">Choose…</option>{value && !choices.some(([v]) => v === value) && <option value={value} disabled>{value} · unavailable</option>}{choices.map(([v,label]) => <option value={v} key={v}>{label}</option>)}</select>
+                : field.kind === 'multiline' ? <textarea id={id} rows={5} value={value} aria-invalid={!!error} aria-describedby={describedBy} onChange={e => edit(e.target.value)} />
+                : <input id={id} value={value} placeholder="Not specified" inputMode={field.kind === 'number' ? 'decimal' : 'text'} aria-invalid={!!error} aria-describedby={describedBy} onChange={e => edit(e.target.value)} />}
+              {field.help && <span className="hint" id={`${id}-help`}>{field.help}</span>}
               {error && <span className="field-error" id={`${id}-error`}>{error}</span>}
             </>}
           </div>;

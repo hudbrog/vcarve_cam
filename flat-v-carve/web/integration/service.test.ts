@@ -218,6 +218,22 @@ async function finishExport(id: ExportIdentity) {
   throw new Error('Export did not finish within the test deadline');
 }
 describe('checked LinuxCNC output', () => {
+  it('reports an unknown job ID separately from valid T1/T2 machine numbers', async () => {
+    const {job,id} = await identity('m4/narrow-channel','combined');
+    await service.startPlan!(job,id); const plan = await finish(id);
+    const caps = await service.capabilities();
+    const profile = profileSchema.parse(JSON.parse(readFileSync(`${workspace}fixtures/m6/macro-stock-bottom.json`,'utf8')));
+    profile.tools[0].tool_id = '1';
+    profile.tools[1].tool_id = '2';
+    const accepted = exportIdentity(plan,profile,'combined',caps.verification!.defaultOptions,crypto.randomUUID());
+    await service.startExport!(accepted);
+    const task = await finishExport(accepted);
+    expect(task.state).toBe('failed');
+    expect(task.diagnostic?.code).toBe('POST_TOOL_MAPPING');
+    expect(task.diagnostic?.message).toContain('select endmill ID "endmill" or V-bit ID "vbit"');
+    expect(task.diagnostic?.message).not.toContain('compensation');
+    await expect(service.exportResult!(accepted)).rejects.toThrow(/PLAN_RESULT_UNAVAILABLE/);
+  },60_000);
   it.each([
     ['combined','narrow-channel','macro-stock-bottom','combined',6,1_000_000,'passed'],
     ['per-tool','wide-floor','macro-stock-bottom','per_tool',6,1_000_000,'passed'],

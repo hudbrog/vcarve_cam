@@ -1,6 +1,9 @@
 use cam_core::{
     job::Job,
-    post::{LinuxCncProfile, M6Return, Program, ProgramLayout, export_plan, verify_programs},
+    post::{
+        LengthCompensation, LinuxCncProfile, M6Return, Program, ProgramLayout, export_plan,
+        verify_programs,
+    },
     vcarve::{CombinedPlan, plan_combined},
     verification::{VerificationOptions, VerificationStatus},
 };
@@ -259,6 +262,57 @@ fn comments_are_not_motion_authority_and_no_cached_pass_is_trusted() {
     let mut altered = plan().clone();
     altered.vbit_motions[3].end.z -= 0.2;
     assert!(export_plan(&altered, &profile(), ProgramLayout::Combined, &options()).is_err());
+}
+
+#[test]
+fn one_to_one_tool_numbers_accept_job_ids_and_report_each_mapping_problem() {
+    let job = Job::from_json(include_str!("../../../fixtures/m4/narrow-channel.json")).unwrap();
+    let mut p = profile();
+    assert_eq!(p.tools[0].tool_number, 1);
+    assert_eq!(p.tools[1].tool_number, 2);
+    p.validate(&job).unwrap();
+    p.tools.swap(0, 1);
+    p.validate(&job).unwrap();
+
+    let check = |p: &LinuxCncProfile, message: &str| {
+        let diagnostic = p.validate(&job).unwrap_err();
+        assert_eq!(diagnostic.code, "POST_TOOL_MAPPING");
+        assert!(
+            diagnostic.message.contains(message),
+            "{}",
+            diagnostic.message
+        );
+    };
+    let mut p = profile();
+    p.tools[0].tool_id = "1".into();
+    check(&p, "select endmill ID \"endmill\" or V-bit ID \"vbit\"");
+    let mut p = profile();
+    p.tools[1].tool_id = p.tools[0].tool_id.clone();
+    check(&p, "job tool ID \"endmill\" is mapped more than once");
+    let mut p = profile();
+    p.tools[1].tool_number = 1;
+    check(&p, "LinuxCNC T1 is assigned to more than one job tool");
+    for number in [0, 100000] {
+        let mut p = profile();
+        p.tools[0].tool_number = number;
+        check(&p, "LinuxCNC T number must be between 1 and 99999");
+    }
+    let mut p = profile();
+    p.tools[0].length_offset_number = Some(1);
+    check(
+        &p,
+        "macro-managed compensation requires length_offset_number to be null",
+    );
+    p.length_compensation = LengthCompensation::ToolTable;
+    for h in [None, Some(0), Some(100000)] {
+        p.tools[1].length_offset_number = h;
+        check(
+            &p,
+            "job tool \"vbit\" (T2): tool-table compensation requires an H number",
+        );
+    }
+    p.tools[1].length_offset_number = Some(2);
+    p.validate(&job).unwrap();
 }
 
 #[test]

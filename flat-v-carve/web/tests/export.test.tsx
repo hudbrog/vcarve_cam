@@ -43,6 +43,37 @@ describe('LinuxCNC profile and checked output', () => {
     for (const patch of [{revision:plan.revision+1},{taskId:'other'},{instanceId:'b'.repeat(32)},{engineVersion:'other'}])
       expect(currentExport(result,{...plan,...patch},true,profile,layout,options)).toBe(false);
   });
+  it('distinguishes job IDs from machine numbers before export, including recovered and changed jobs', () => {
+    const draft = profileDraft(profile);
+    expect(parseProfileDraft(draft,job).profile).toEqual(profile);
+    const wrongIds = {...draft,'tools.0.tool_id':'1','tools.1.tool_id':'2'};
+    const recovered = recoverProfile({getItem:()=>JSON.stringify(wrongIds)});
+    const invalid = parseProfileDraft(recovered,job);
+    expect(invalid.profile).toBeNull();
+    expect(invalid.errors['tools.0.tool_id']).toContain('Select endmill “endmill” or V-bit “vbit”');
+    expect(invalid.errors['tools.1.tool_id']).toContain('enter the machine number in the T field');
+    expect(recovered).toEqual(wrongIds);
+    expect(parseProfileDraft({...draft,'tools.1.tool_id':'endmill'},job).errors['tools.1.tool_id']).toContain('mapped twice');
+    expect(parseProfileDraft({...draft,'tools.1.tool_number':'01'},job).errors['tools.1.tool_number']).toContain('T1 is assigned twice');
+    const changedJob = {...job,operation:{...job.operation,endmill_id:'cutter-a',vbit_id:'cutter-b'}};
+    expect(parseProfileDraft(draft,changedJob).profile).toBeNull();
+    const numericIds = {...job,operation:{...job.operation,endmill_id:'1',vbit_id:'2'}};
+    expect(parseProfileDraft(wrongIds,numericIds).profile?.tools.map(t=>t.tool_id)).toEqual(['1','2']);
+    expect(parseProfileDraft(profileDraft({...profile,tools:[profile.tools[1],profile.tools[0]]}),job).profile).not.toBeNull();
+  });
+  it('requires measured-length H entries only in tool-table mode and preserves them across mode changes', () => {
+    const draft = {...profileDraft(profile),length_compensation:'tool_table','tools.0.length_offset_number':'1','tools.1.length_offset_number':'2'};
+    expect(parseProfileDraft(draft,job).profile?.tools.map(t=>t.length_offset_number)).toEqual([1,2]);
+    for (const h of ['', '0', '100000', '1e-']) {
+      const invalid = parseProfileDraft({...draft,'tools.1.length_offset_number':h},job);
+      expect(invalid.profile).toBeNull();
+      expect(invalid.errors['tools.1.length_offset_number']).toContain('Tool-table compensation requires an H number');
+    }
+    const macro = {...draft,length_compensation:'macro_managed'};
+    expect(parseProfileDraft(macro,job).profile?.tools.map(t=>t.length_offset_number)).toEqual([null,null]);
+    expect(macro['tools.0.length_offset_number']).toBe('1');
+    expect(parseProfileDraft({...macro,length_compensation:'tool_table'},job).profile?.tools.map(t=>t.length_offset_number)).toEqual([1,2]);
+  });
   it('checks exact bytes and authenticates the source plan using the core report identity', async () => {
     await expect(checkExportBytes(result)).resolves.toBeUndefined();
     await expect(checkExportBytes(failed)).resolves.toBeUndefined();
@@ -88,5 +119,18 @@ describe('LinuxCNC profile and checked output', () => {
     expect(markup).toContain('Previous output · stale');
     expect(markup).toMatch(/disabled="">Download combined.ngc/);
     expect(markup).toContain('Download export report');
+    expect(markup).toContain('<select id="profile-tools.0.tool_id"');
+    expect(markup).toContain('Endmill · endmill');
+    expect(markup).toContain('V-bit · vbit');
+    expect(markup).toContain('the exported profile contains no H mappings');
+    expect(markup).not.toContain('id="profile-tools.0.length_offset_number"');
+
+    const draft = {...profileDraft(profile),length_compensation:'tool_table','tools.0.tool_id':'1'};
+    const parsed = parseProfileDraft(draft,job);
+    const invalidMarkup = renderToStaticMarkup(<ExportPanel output={{...output,draft,...parsed,canStart:false}} job={job} planCurrent={true} />);
+    expect(invalidMarkup).toContain('<option value="1" disabled="" selected="">1 · unavailable</option>');
+    expect(invalidMarkup).toContain('id="profile-tools.0.tool_id-error"');
+    expect(invalidMarkup).toContain('id="profile-tools.0.length_offset_number-error"');
+    expect(invalidMarkup).toContain('Both tools need an H number');
   });
 });
