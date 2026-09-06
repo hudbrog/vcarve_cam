@@ -1,0 +1,107 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows x64 portable app
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: flat-v-carve
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_TARGET: x86_64-pc-windows-msvc
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Set up pnpm and dependency cache
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+        with:
+          package_json_file: flat-v-carve/web/package.json
+          run_install: false
+          cache: true
+          cache_dependency_path: flat-v-carve/web/pnpm-lock.yaml
+
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: flat-v-carve -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      # Build the frontend before any bundled-ui Cargo command so its asset
+      # manifest is available. This also installs both sets of locked dependencies.
+      - name: Build portable executable and embedded UI
+        run: ./scripts/build-portable.ps1
+
+      - name: Check Rust with Clippy
+        run: cargo clippy --workspace --all-targets --locked --features cam-app/bundled-ui -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --workspace --release --locked --features cam-app/bundled-ui
+
+      - name: Run frontend tests
+        working-directory: flat-v-carve/web
+        run: pnpm test
+
+      - name: Check frontend and backend contracts
+        working-directory: flat-v-carve/web
+        run: pnpm check:contracts
+
+      - name: Test CLI and local server from the packaged executable
+        working-directory: flat-v-carve/web
+        run: |
+          $env:CAM_TEST_EXE = (Resolve-Path ../artifacts/portable/cam.exe).Path
+          pnpm check:live
+
+      - name: Write executable checksum
+        run: |
+          $camHash = (Get-FileHash artifacts/portable/cam.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$camHash *cam.exe" | Set-Content artifacts/portable/SHA256SUMS -Encoding utf8NoBOM
+          @"
+          Built from commit $env:GITHUB_SHA on Windows x64.
+          Download the flat-v-carve-windows-x64 artifact and extract cam.exe.
+          Run ``cam.exe serve --open`` for the browser UI, or use a CLI command.
+          SHA-256: ``$camHash``
+          "@ | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload portable Windows application
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: flat-v-carve-windows-x64
+          path: |
+            flat-v-carve/artifacts/portable/cam.exe
+            flat-v-carve/artifacts/portable/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30

@@ -4,6 +4,17 @@ An isolated Rust workspace for the combined endmill/V-bit planner described in t
 
 ## Portable Windows application
 
+GitHub Actions builds and tests the portable app on pushes to `main`, pull
+requests targeting `main`, and manual runs. Open [Build and test](https://github.com/hudbrog/vcarve_cam/actions/workflows/build.yml),
+choose a successful run, and download the `flat-v-carve-windows-x64` artifact.
+Extract `cam.exe` and run `cam.exe serve --open`, or use any CLI command. Each
+artifact includes `SHA256SUMS` and is retained for 30 days.
+
+CI uses the pinned Rust toolchain and pnpm version, Node.js 24, and frozen
+dependency lockfiles. It checks formatting, Clippy, Rust tests, frontend tests
+and contracts, then exercises CLI and HTTP behavior using the packaged EXE
+with its embedded UI. The build runs on a fresh Windows x64 runner.
+
 Build one executable containing the CLI, local HTTP service, compute-worker mode,
 and production browser assets:
 
