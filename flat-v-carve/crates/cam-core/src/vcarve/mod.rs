@@ -78,6 +78,8 @@ pub struct CombinedPlan {
 /// Immutable proof of a fresh identity check and complete M4 reconstruction.
 /// Only these constructors can create it; callers cannot mutate the bound plan.
 pub struct AuthenticatedPlan(CombinedPlan);
+mod retained;
+pub use retained::{VerificationReceipt, plan_combined_with_receipt, verify_retained_plan};
 impl AuthenticatedPlan {
     pub fn from_reader(reader: impl std::io::Read) -> Result<Self> {
         CombinedPlan::from_reader(reader).map(Self)
@@ -106,10 +108,13 @@ fn hash<T: Serialize>(v: &T) -> Result<String> {
     crate::plan_hash::hash(v).map_err(|e| error("PLAN_JSON", e.to_string()))
 }
 fn identity(endmill: &EndmillPlan) -> Result<String> {
+    identity_for_endmill(&endmill.input_fingerprint)
+}
+fn identity_for_endmill(input_fingerprint: &str) -> Result<String> {
     hash(&(
         env!("CARGO_PKG_VERSION"),
         "combined-v1;clipper2-rust=1.1.0;boostvoronoi=0.12.1",
-        &endmill.input_fingerprint,
+        input_fingerprint,
     ))
 }
 impl CombinedPlan {

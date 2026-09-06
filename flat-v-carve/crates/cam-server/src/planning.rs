@@ -580,6 +580,7 @@ mod tests {
     }
     fn result() -> Option<Result<Output, Value>> {
         Some(Ok(Output {
+            verification_receipt: None,
             summary: json!({ "status": "complete" }),
             motions: vec![],
             programs: vec![],
@@ -647,6 +648,12 @@ mod tests {
             verification::start(&service, wrong),
             Err(Failure(422, "VERIFICATION_OPTIONS", _))
         ));
+        let mut forged = serde_json::to_value(make()).unwrap();
+        forged["verification"]["receipt"] = json!({"incomplete": false});
+        assert!(serde_json::from_value::<verification::Start>(forged).is_err());
+        let mut forged = serde_json::to_value(make()).unwrap();
+        forged["receipt"] = json!({"incomplete": false});
+        assert!(serde_json::from_value::<verification::Start>(forged).is_err());
         assert!(verification::start(&service, make()).unwrap().state == Status::Queued);
         assert_eq!(service.pending.available_permits(), MAX_PENDING - 1);
         let mut reused = make();

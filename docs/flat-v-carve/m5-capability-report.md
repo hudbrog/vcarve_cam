@@ -38,7 +38,7 @@ For the V-bit, actual removal is the maximum over each motion parameter of
 max(0, depth(t) - max(0, distance(x,center(t)) - tip_radius) / m).
 ```
 
-Endpoint, closest-point, flat-tip transition, and stationary candidates solve the point query analytically. The swept removal surface is `1/m`-Lipschitz. Its unclamped surface is also concave for linear cutting motion; if all box corners are cut, corner minima enclose removal throughout the box. An affine boundary-distance upper bound for the target preserves target/sweep correlation along straight walls. These bounds greatly reduce refinement without sampling away gaps.
+Endpoint, closest-point, flat-tip transition, and stationary candidates solve the point query analytically. The swept removal surface is `1/m`-Lipschitz. Its unclamped surface is also concave for linear cutting motion; if all box corners are cut by that same sweep, corner minima enclose removal throughout the box. Distance to any boundary segment is a convex upper roof for the target (after division by `m`). Subtracting the concave sweep gives a convex residual upper roof whose maximum is at a box corner. This remains valid beyond segment endpoints and across changes of the closest target feature; it does not require a cell to fit beside one straight face. Nearby boundary candidates are found through the boundary index with an outward-rounded search distance. Different sweeps covering the four corners do not by themselves establish interior coverage.
 
 Continuous variable-radius segment clearance proves a global overcut bound for admissible sweeps. Ambiguous clearance margins fall back to the adaptive stock comparison; a negative analytical *lower* margin is not by itself labeled a measured gouge. Independent motion point witnesses can establish failures immediately. All formulas include explicit floating-point reserves.
 
@@ -54,7 +54,7 @@ The separate comparisons are `max(A-T,0)` for overcut, `max(T-H,0)` for cutter-l
 
 The existing stock adapters construct inner/outer capsules for endmill motion and convex hulls of unequal endpoint disks for V-bit motion, clipping each linear XYZ move at the requested depth first. The existing rest-pruning proof requires whole-cutter containment in an actual endmill sweep.
 
-M5 acceptance does not depend on repeated integer polygon unions. Terminal height-field cells instead supply independent lower/upper occupancy areas valid throughout each closed depth band. Bands include stock top, the depth cap, the requested ridge depth, and every cutting endpoint depth; unresolved bands subdivide to the verification depth tolerance. Budget exhaustion retains the whole remaining band and returns `inconclusive`.
+M5 acceptance does not depend on repeated integer polygon unions. Terminal height-field cells instead supply independent lower/upper occupancy areas valid throughout each closed depth band. Bands include stock top, the depth cap, the requested ridge depth, and the deepest cutting endpoint; unresolved bands subdivide to the verification depth tolerance. Continuous XYZ sweeps do not require a separate band at every endpoint depth. Budget exhaustion retains the whole remaining band and returns `inconclusive`.
 
 Cell integration also bounds residual and overcut volume. Area/volume bounds retain spatial uncertainty and are not claimed to meet a depth tolerance in square/cubic millimeters. Point/line cap contacts remain represented by motions and maximum-error checks even though their planar area is zero.
 

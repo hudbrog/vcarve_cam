@@ -158,6 +158,7 @@ pub fn calculate(work: Work) -> Result<Output, Value> {
         );
     }
     Ok(Output {
+        verification_receipt: None,
         summary: json!({"engineVersion":ENGINE_VERSION,"status":result.report.status,
             "profileFingerprint":result.report.profile_fingerprint,"reportFingerprint":format!("{:x}",Sha256::digest(artifact.as_bytes())),
             "originalStatus":result.report.plan_verification.status,"emittedStatus":result.report.emitted_verification.as_ref().map(|v|v.status)}),

@@ -71,10 +71,10 @@ pub(crate) struct Envelope {
     artifact_kind: String,
     schema_version: u32,
     engine_version: String,
-    input_fingerprint: String,
-    motion_fingerprint: String,
-    job: Job,
-    motions: Vec<Motion>,
+    pub(crate) input_fingerprint: String,
+    pub(crate) motion_fingerprint: String,
+    pub(crate) job: Job,
+    pub(crate) motions: Vec<Motion>,
     generation_issues: Vec<GenerationIssue>,
 }
 
@@ -137,24 +137,7 @@ impl EndmillPlan {
     }
 
     pub(crate) fn from_envelope(e: Envelope) -> Result<Self> {
-        if e.artifact_kind != "endmill_plan"
-            || e.schema_version != PLAN_SCHEMA_VERSION
-            || e.engine_version != env!("CARGO_PKG_VERSION")
-        {
-            return Err(error(
-                "PLAN_VERSION",
-                "unsupported plan schema or engine version; regenerate the plan",
-            ));
-        }
-        if input_hash(&e.job)? != e.input_fingerprint
-            || hash(&(&e.input_fingerprint, &e.motions, &e.generation_issues))?
-                != e.motion_fingerprint
-        {
-            return Err(error(
-                "STALE_PLAN",
-                "job settings or motions changed; regenerate the plan",
-            ));
-        }
+        e.check_identity()?;
         let ctx = Context::new(&e.job)?;
         let mut analysis = verify::analyze(&ctx, &e.job, &e.motions)?;
         apply_generation(&mut analysis, &e.generation_issues);
@@ -170,6 +153,35 @@ impl EndmillPlan {
             generation_issues: e.generation_issues,
             analysis,
         })
+    }
+}
+
+impl Envelope {
+    /// Identity checks for a service-retained plan whose planning evidence was
+    /// already established. This does not reconstruct stock or sampled reports.
+    pub(crate) fn check_identity(&self) -> Result<()> {
+        if self.artifact_kind != "endmill_plan"
+            || self.schema_version != PLAN_SCHEMA_VERSION
+            || self.engine_version != env!("CARGO_PKG_VERSION")
+        {
+            return Err(error(
+                "PLAN_VERSION",
+                "unsupported plan schema or engine version; regenerate the plan",
+            ));
+        }
+        if input_hash(&self.job)? != self.input_fingerprint
+            || hash(&(
+                &self.input_fingerprint,
+                &self.motions,
+                &self.generation_issues,
+            ))? != self.motion_fingerprint
+        {
+            return Err(error(
+                "STALE_PLAN",
+                "job settings or motions changed; regenerate the plan",
+            ));
+        }
+        Ok(())
     }
 }
 

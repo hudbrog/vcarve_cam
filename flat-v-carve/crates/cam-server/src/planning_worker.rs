@@ -2,7 +2,12 @@
 use crate::artifact::PlanFile;
 use crate::document::{ENGINE_VERSION, JOB_BYTES, UiDiagnostic};
 use crate::inspection::Inspection;
-use cam_core::{job::Job, motion::Motion, pocket::plan_endmill, vcarve::plan_combined};
+use cam_core::{
+    job::Job,
+    motion::Motion,
+    pocket::plan_endmill,
+    vcarve::{VerificationReceipt, plan_combined_with_receipt},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -41,6 +46,7 @@ pub struct Input {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Output {
+    pub verification_receipt: Option<VerificationReceipt>,
     pub summary: Value,
     pub motions: Vec<Motion>,
     pub artifact: String,
@@ -96,6 +102,7 @@ pub fn calculate(input: Input) -> Result<Output, Value> {
         .ok_or_else(|| artifact_error("Missing service-owned plan file".into()))?;
     // Readiness is decided by the selected core planner, including its stage-specific
     // settings checks. Editable-job validation alone never implies readiness.
+    let mut verification_receipt = None;
     let (mut summary, motions, inspection) = match input.stage {
         Stage::Endmill => {
             let plan = plan_endmill(&job).map_err(|d| json!(UiDiagnostic::from(d)))?;
@@ -113,7 +120,9 @@ pub fn calculate(input: Input) -> Result<Output, Value> {
             (summary, plan.motions, inspection)
         }
         Stage::Combined => {
-            let plan = plan_combined(&job).map_err(|d| json!(UiDiagnostic::from(d)))?;
+            let (plan, receipt) =
+                plan_combined_with_receipt(&job).map_err(|d| json!(UiDiagnostic::from(d)))?;
+            verification_receipt = Some(receipt);
             let diagnostics = plan
                 .endmill
                 .analysis
@@ -158,6 +167,7 @@ pub fn calculate(input: Input) -> Result<Output, Value> {
     let motion_pages = crate::motion_preview::write(&motion_path, &motions)
         .map_err(|e| artifact_error(e.to_string()))?;
     Ok(Output {
+        verification_receipt,
         summary,
         motions: motions.into_iter().take(PREVIEW_MOTIONS).collect(),
         artifact: String::new(),
@@ -239,6 +249,7 @@ mod tests {
         write_plan(artifact.path(), &vec![chunk.as_str(); 2048]).unwrap();
         assert!(artifact.byte_len().unwrap() > 128_000_000);
         let result = Output {
+            verification_receipt: None,
             summary: json!({"status": "complete"}),
             motions: vec![],
             artifact: String::new(),
@@ -266,6 +277,7 @@ mod tests {
             stage: Stage::Combined,
             job: String::new(),
             verification: Some(crate::verification::Work {
+                receipt: None,
                 artifact: artifact.path().to_owned(),
                 identity: crate::verification::Identity {
                     plan_task_id: "a".repeat(128),

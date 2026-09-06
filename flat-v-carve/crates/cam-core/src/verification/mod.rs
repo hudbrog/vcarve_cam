@@ -353,17 +353,29 @@ pub fn verify_authenticated_plan(
         &plan.vbit_motions,
         options,
     )?;
-    report.authenticated_plan_fingerprint = Some(fingerprint(&(
+    bind_plan_report(
+        &mut report,
         &plan.input_fingerprint,
         &plan.motion_fingerprint,
-    ))?);
+        plan.analysis.finish_paths_expected != plan.analysis.finish_paths_executed
+            || !plan.generation_issues.is_empty(),
+    )?;
+    Ok(report)
+}
+
+pub(crate) fn bind_plan_report(
+    report: &mut VerificationReport,
+    input_fingerprint: &str,
+    motion_fingerprint: &str,
+    incomplete: bool,
+) -> Result<()> {
+    report.authenticated_plan_fingerprint =
+        Some(fingerprint(&(input_fingerprint, motion_fingerprint))?);
     report.verification_fingerprint = fingerprint(&(
         &report.verification_fingerprint,
         &report.authenticated_plan_fingerprint,
     ))?;
-    if plan.analysis.finish_paths_expected != plan.analysis.finish_paths_executed
-        || !plan.generation_issues.is_empty()
-    {
+    if incomplete {
         let finding = Finding {
             code: "INCOMPLETE_EXECUTION".into(),
             status: VerificationStatus::Inconclusive,
@@ -380,5 +392,5 @@ pub fn verify_authenticated_plan(
         report.original.findings.push(finding);
         report.status = status(report.status, VerificationStatus::Inconclusive);
     }
-    Ok(report)
+    Ok(())
 }

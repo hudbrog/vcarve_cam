@@ -4,6 +4,9 @@ use crate::{
     target::ReachabilityOptions,
 };
 
+#[cfg(test)]
+mod tests;
+
 struct Sweep<'a> {
     endmill: bool,
     motion: &'a Motion,
@@ -79,10 +82,11 @@ fn evaluate(
     let variation = radius / slope;
     let distance = ctx.target.boundary().sample(p)?;
     let target_at = (distance.signed_distance_mm / slope).clamp(0., cap);
-    let (distance_lower, distance_upper) = ctx
-        .target
-        .boundary()
-        .box_signed_distance_bounds(cell.bounds.min, cell.bounds.max)?;
+    let (distance_lower, distance_upper) = ctx.target.boundary().box_bounds_with_center_sample(
+        cell.bounds.min,
+        cell.bounds.max,
+        distance,
+    )?;
     let target = Interval::positive(
         (distance_lower / slope).clamp(0., cap),
         (distance_upper / slope).clamp(0., cap),
@@ -119,8 +123,9 @@ fn evaluate(
     let mut residual_upper = (target.upper - actual.lower).max(0.);
     // A single linear V-bit sweep has a concave *unclamped* depth surface.
     // Where all four corners are cut, its minimum is at a corner. Subtracting
-    // it from an affine target roof is convex, so the maximum is also at a
-    // corner. This retains target/sweep correlation along long sloping walls.
+    // it from distance to any boundary segment (a convex target upper roof)
+    // is convex, so the maximum is also at a corner. The roof remains valid
+    // beyond segment endpoints and across changes of the nearest feature.
     if let Some(i) = best_vbit {
         let corners = [
             cell.bounds.min,
@@ -137,31 +142,24 @@ fn evaluate(
                 .lower
                 .max(depths.iter().copied().fold(f64::INFINITY, f64::min) - ctx.reserve);
             residual_upper = residual_upper.min((target.upper - actual.lower).max(0.));
-            for edge in ctx.target.boundary().segments() {
-                let dx = edge.end.x - edge.start.x;
-                let dy = edge.end.y - edge.start.y;
-                let length = dx.hypot(dy);
-                let signed =
-                    |p: Point| ((p.x - edge.start.x) * dy - (p.y - edge.start.y) * dx) / length;
-                let sign = signed(p).signum();
-                if sign == 0. {
-                    continue;
-                }
-                let on_face = |p: Point| {
-                    let along = ((p.x - edge.start.x) * dx + (p.y - edge.start.y) * dy) / length;
-                    along >= ctx.reserve
-                        && along <= length - ctx.reserve
-                        && sign * signed(p) >= ctx.reserve
-                };
-                if corners.iter().all(|&p| on_face(p)) {
+            // An improving segment-distance roof must be within slope *
+            // (corner depth + current residual bound) of every corner. Edges
+            // outside this expanded box cannot improve the existing bound.
+            // Round the search outward before BVH pruning.
+            let padding = (depths.iter().copied().fold(0., f64::max) + residual_upper) * slope
+                + 16. * ctx.reserve * (1. + slope);
+            ctx.target.boundary().visit_segments(
+                Point::new(cell.bounds.min.x - padding, cell.bounds.min.y - padding),
+                Point::new(cell.bounds.max.x + padding, cell.bounds.max.y + padding),
+                |edge| {
                     let upper = corners
                         .iter()
                         .zip(&depths)
-                        .map(|(&p, &d)| sign * signed(p) / slope - d + 4. * ctx.reserve)
+                        .map(|(&p, &d)| edge.distance(p) / slope - d + 4. * ctx.reserve)
                         .fold(0., f64::max);
                     residual_upper = residual_upper.min(upper);
-                }
-            }
+                },
+            )?;
         }
     }
     let tip = ctx.vbit.tip_radius().mm();
@@ -268,8 +266,9 @@ fn bands(
     let mut depths = critical.to_vec();
     depths.sort_by(f64::total_cmp);
     depths.dedup();
-    // Every endpoint tip depth is a critical event (including ramp entries).
-    // Budget truncation cannot erase an interval: retain [0,max] and mark it.
+    // Height-field leaves enclose the entire continuous sweep. Their occupancy
+    // bounds below hold throughout any closed band; motion endpoint depths do
+    // not need separate bands. Retain the complete range when a budget ends.
     let mut limited = depths.len() - 1 > limit;
     if limited {
         depths = vec![depths[0], *depths.last().unwrap()];
@@ -440,7 +439,9 @@ fn run(
     mut findings: Vec<Finding>,
     caps: Option<[f64; 4]>,
 ) -> Result<StockVerification> {
+    let mut timing = crate::timing::Timer::new("M5 continuous");
     let (clear_count, motion_findings) = super::motion::check(ctx, endmill, vbit, places);
+    timing.lap("motion checks");
     findings.extend(motion_findings);
     let all_clear = clear_count
         == endmill
@@ -452,6 +453,7 @@ fn run(
     let mut sweeps = vec![];
     let cap = ctx.target.depth_cap().mm();
     let mut critical = vec![0., cap, (cap - ctx.ridge).max(0.)];
+    let mut maximum_depth = cap;
     for (is_endmill, moves) in [(true, endmill), (false, vbit)] {
         for m in moves {
             if !m.start.finite() || !m.end.finite() {
@@ -487,9 +489,11 @@ fn run(
                 motion: m,
                 bounds,
             });
-            critical.extend([m.start.depth(), m.end.depth()]);
+            maximum_depth = maximum_depth.max(m.start.depth()).max(m.end.depth());
         }
     }
+    critical.push(maximum_depth);
+    timing.lap("prepare sweeps");
     let mut result_status = findings
         .iter()
         .fold(VerificationStatus::Passed, |s, f| status(s, f.status));
@@ -632,7 +636,9 @@ fn run(
             actual: evaluation.actual,
         });
     }
+    timing.lap("adaptive cells");
     let (depth_bands, limited) = bands(&leaves, &critical, ctx.tolerance, options.max_depth_bands);
+    timing.lap("depth bands");
     let sum_reserve = 32. * f64::EPSILON * (leaves.len() as f64 + 1.);
     for b in [
         &mut bounds.residual_volume_mm3,

@@ -48,6 +48,20 @@ impl BoundaryQuery {
     pub fn segments(&self) -> &[Segment] {
         &self.segments
     }
+    /// Visit boundary edges whose boxes intersect a caller's conservative search box.
+    /// Exact geometric predicates, including any proof for omitted edges, remain
+    /// the caller's responsibility.
+    pub(crate) fn visit_segments(
+        &self,
+        min: Point,
+        max: Point,
+        mut visitor: impl FnMut(&Segment),
+    ) -> Result<()> {
+        self.index.visit(Aabb::new(min, max), |i| {
+            visitor(&self.segments[i]);
+            Ok(())
+        })
+    }
     /// Signed-distance enclosure over a complete axis-aligned rectangle.
     /// Distance to a segment is convex, so its maximum is at a box vertex.
     /// A boundary intersecting/contained in the box forces a mixed-sign bound.
@@ -57,8 +71,20 @@ impl BoundaryQuery {
         }
         let center = min.lerp(max, 0.5);
         let sample = self.sample(center)?;
-        self.sample(min)?;
-        self.sample(max)?;
+        self.box_bounds_with_center_sample(min, max, sample)
+    }
+    /// Reuse an exact sample of min.lerp(max, 0.5), taken from this same query.
+    pub(crate) fn box_bounds_with_center_sample(
+        &self,
+        min: Point,
+        max: Point,
+        sample: Clearance,
+    ) -> Result<(f64, f64)> {
+        if min.x > max.x || min.y > max.y {
+            return Err(Diagnostic::new("QUERY_BOX", "ordered finite box required"));
+        }
+        self.check_point(min)?;
+        self.check_point(max)?;
         let corners = [min, Point::new(max.x, min.y), max, Point::new(min.x, max.y)];
         let bounds = Aabb::new(min, max);
         let mut lower = self.index.minimum(bounds, |i| {
@@ -98,13 +124,17 @@ impl BoundaryQuery {
             (-upper, -lower)
         })
     }
-    pub fn sample(&self, p: Point) -> Result<Clearance> {
+    fn check_point(&self, p: Point) -> Result<()> {
         if !p.finite() || p.x.abs() > self.query_limit || p.y.abs() > self.query_limit {
             return Err(Diagnostic::new(
                 "QUERY_RANGE",
                 "distance query must be finite and within four times the shared grid coordinate range",
             ));
         }
+        Ok(())
+    }
+    pub fn sample(&self, p: Point) -> Result<Clearance> {
+        self.check_point(p)?;
         if self.segments.is_empty() {
             return Err(Diagnostic::new(
                 "EMPTY_GEOMETRY",

@@ -6,7 +6,7 @@ use crate::{
     planning_worker::{Input, Output, REPORT_BYTES, Stage},
 };
 use cam_core::{
-    vcarve::AuthenticatedPlan,
+    vcarve::{AuthenticatedPlan, VerificationReceipt, verify_retained_plan},
     verification::{VerificationOptions, verify_authenticated_plan},
 };
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,7 @@ pub struct Start {
 pub struct Work {
     pub artifact: PathBuf,
     pub identity: Identity,
+    pub receipt: Option<VerificationReceipt>,
 }
 pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failure> {
     service.validate_identity(
@@ -91,6 +92,7 @@ pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failur
         verification: Some(Work {
             artifact: artifact.path().to_owned(),
             identity: request.verification.clone(),
+            receipt: result.verification_receipt.clone(),
         }),
         output_path: None,
         motion_output_path: None,
@@ -120,18 +122,35 @@ pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failur
 pub fn calculate(work: Work) -> Result<Output, Value> {
     let convert = |d| json!(UiDiagnostic::from(d));
     let file = File::open(&work.artifact).map_err(|e| json!({"code":"VERIFICATION_ARTIFACT_IO", "severity":"error", "stage":"verification", "message":format!("Could not read the local plan artifact: {e}")}))?;
-    let authenticated = AuthenticatedPlan::from_reader(BufReader::with_capacity(1024 * 1024, file))
-        .map_err(convert)?;
-    let plan = authenticated.plan();
-    if plan.input_fingerprint != work.identity.input_fingerprint
-        || plan.motion_fingerprint != work.identity.motion_fingerprint
-    {
-        return Err(
-            json!({"code":"VERIFICATION_PLAN_IDENTITY", "severity":"error", "stage":"verification", "message":"Worker artifact identity does not match the accepted plan."}),
-        );
-    }
-    let report =
-        verify_authenticated_plan(&authenticated, &work.identity.options).map_err(convert)?;
+    let report = if let Some(receipt) = &work.receipt {
+        if !receipt.matches_plan(
+            &work.identity.input_fingerprint,
+            &work.identity.motion_fingerprint,
+        ) {
+            return Err(
+                json!({"code":"VERIFICATION_PLAN_IDENTITY", "severity":"error", "stage":"verification", "message":"Retained receipt does not match the accepted plan."}),
+            );
+        }
+        verify_retained_plan(
+            BufReader::with_capacity(1024 * 1024, file),
+            receipt,
+            &work.identity.options,
+        )
+        .map_err(convert)?
+    } else {
+        let authenticated =
+            AuthenticatedPlan::from_reader(BufReader::with_capacity(1024 * 1024, file))
+                .map_err(convert)?;
+        let plan = authenticated.plan();
+        if plan.input_fingerprint != work.identity.input_fingerprint
+            || plan.motion_fingerprint != work.identity.motion_fingerprint
+        {
+            return Err(
+                json!({"code":"VERIFICATION_PLAN_IDENTITY", "severity":"error", "stage":"verification", "message":"Worker artifact identity does not match the accepted plan."}),
+            );
+        }
+        verify_authenticated_plan(&authenticated, &work.identity.options).map_err(convert)?
+    };
     let artifact = serde_json::to_string(&report).unwrap();
     if artifact.len() > REPORT_BYTES {
         return Err(
@@ -139,6 +158,7 @@ pub fn calculate(work: Work) -> Result<Output, Value> {
         );
     }
     Ok(Output {
+        verification_receipt: None,
         summary: json!({"engineVersion": ENGINE_VERSION, "status": report.status,
             "verificationFingerprint": report.verification_fingerprint,
             "originalStatus": report.original.status, "roundedStatus": report.rounded.as_ref().map(|r| r.verification.status),
