@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Job } from '../contracts/job';
 import type { CamService, Capabilities, Validation } from '../contracts/service';
 import { acceptTask, currentPlan, taskIdentitySchema, terminal, type PlanResult, type PlanTask, type PlanningStage, type TaskIdentity } from '../contracts/planning';
+import { missingPlanningSettings } from '../state/setupNeeds';
 
 const recoveryKey = 'flat-v-carve:u3:task';
 type Handle = { identity: TaskIdentity; restored: boolean };
@@ -73,6 +74,7 @@ export function usePlanning(service: CamService, capabilities: Capabilities, val
   }
   function start(job: Job) {
     if (!capabilities.planning || !validation?.valid || !validation.authoritative || validation.revision !== revision || !validation.documentFingerprint) return;
+    if (missingPlanningSettings(job,validation,stage).length) return;
     void submit(job, { restored: false, identity: { taskId: crypto.randomUUID(), instanceId: capabilities.planning.instanceId,
       engineVersion: capabilities.engineVersion, revision, documentFingerprint: validation.documentFingerprint, stage } });
   }

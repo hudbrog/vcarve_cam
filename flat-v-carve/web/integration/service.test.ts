@@ -8,6 +8,10 @@ import { terminal, type PlanTask, type TaskIdentity } from '../src/contracts/pla
 import { verificationIdentity, type VerificationIdentity } from '../src/contracts/verification';
 import { exportIdentity, profileSchema, type ExportIdentity } from '../src/contracts/export';
 import { createHash } from 'node:crypto';
+import { computationDefaults, defaultVbitComputation, defaultTolerances } from '../src/state/computation';
+import { materialize, newDraft } from '../src/state/draft';
+import { missingPlanningSettings } from '../src/state/setupNeeds';
+import { applyLibraryToolToDraft, resolveDraftLibraryTool } from '../src/state/library';
 
 // Runs the actual Rust server and the same-engine CLI; no fixture HTTP responses.
 const workspace = fileURLToPath(new URL('../../', import.meta.url));
@@ -46,6 +50,46 @@ beforeAll(async () => {
 }, 20_000);
 afterAll(() => { child?.kill(); });
 
+describe('guided setup to combined plan',()=>{
+  it('supplies omitted computation and tolerance defaults before submission and completes planning',async()=>{
+    const opened=await service.openJob!(readFileSync(`${workspace}fixtures/m4/wide-floor.json`,'utf8'),30);
+    opened.job.vbit_planning=null;
+    const before=await service.validateDraft(opened.job,30);
+    expect(before.valid).toBe(true);
+    expect(missingPlanningSettings(opened.job,before,'combined').map(n=>n.path)).toEqual(['vbit_planning']);
+    opened.job.tolerances={motion_tolerance_mm:null,verification_tolerance_mm:null};
+    const draft=newDraft(opened.job);
+    for(const path of Object.keys(computationDefaults).filter(path=>path.startsWith('endmill_planning.'))) draft.text[path]='';
+    const configured=materialize(draft).job!;
+    expect(configured.vbit_planning).toEqual(defaultVbitComputation);
+    expect(configured.tolerances).toEqual(defaultTolerances);
+    const checked=await service.validateDraft(configured,31);
+    expect(checked.valid).toBe(true); expect(missingPlanningSettings(configured,checked,'combined')).toEqual([]);
+    const caps=await service.capabilities();
+    const id:TaskIdentity={taskId:crypto.randomUUID(),instanceId:caps.planning!.instanceId,engineVersion:caps.engineVersion,revision:31,documentFingerprint:checked.documentFingerprint!,stage:'combined'};
+    await service.startPlan!(configured,id); const task=await finish(id);
+    expect(task.state,JSON.stringify(task.diagnostic)).toBe('succeeded'); expect(task.summary?.status).toBe('complete');
+  },60_000);
+  it('removes a deliberately low work override without changing the cut or accuracy requirements',async()=>{
+    const opened=await service.openJob!(readFileSync(`${workspace}fixtures/m4/wide-floor.json`,'utf8'),32);
+    opened.job.endmill_planning!.max_layers=1;
+    const caps=await service.capabilities();
+    async function plan(job:typeof opened.job,revision:number) {
+      const checked=await service.validateDraft(job,revision);
+      expect(checked.valid).toBe(true);
+      const id:TaskIdentity={taskId:crypto.randomUUID(),instanceId:caps.planning!.instanceId,engineVersion:caps.engineVersion,revision,documentFingerprint:checked.documentFingerprint!,stage:'combined'};
+      await service.startPlan!(job,id); return finish(id);
+    }
+    const limited=await plan(opened.job,32);
+    expect(limited.state).toBe('failed'); expect(limited.diagnostic?.code).toBe('PLANNING_RESOURCE_LIMIT');
+    const draft=newDraft(opened.job); draft.text['endmill_planning.max_layers']='';
+    const resolved=materialize(draft).job!;
+    expect(resolved.tools).toEqual(opened.job.tools); expect(resolved.operation).toEqual(opened.job.operation); expect(resolved.tolerances).toEqual(opened.job.tolerances);
+    const completed=await plan(resolved,33);
+    expect(completed.state,JSON.stringify(completed.diagnostic)).toBe('succeeded'); expect(completed.summary?.status).toBe('complete');
+  },60_000);
+});
+
 describe('persistent tool library and CLI parity', () => {
   it('captures, edits, reviews, and applies snapshots with transactional conflicts and imports', async () => {
     const caps = await service.capabilities();
@@ -68,6 +112,8 @@ describe('persistent tool library and CLI parity', () => {
     expect(JSON.parse(readFileSync(exported,'utf8'))).toEqual(captured.data.library);
     const selection={...source,expectedRevision:1,slot:'endmill' as const,toolId:'test-mill',presetId:null};
     const candidate = await service.applyLibraryTool!(connection,selection);
+    const draftSelection={connection,expectedRevision:1,draftRevision:12,slot:'endmill' as const,jobToolId:source.job.tools[1].id,toolId:tool.id,presetId:null};
+    expect(resolveDraftLibraryTool(captured,draftSelection).settings).toEqual(candidate.data.job.tools[1]);
     for (const key of ['spindle_rpm','cutting_feed_mm_min','plunge_feed_mm_min','max_stepdown_mm','stepover_mm']) expect(candidate.data.job.tools[1]).toHaveProperty(key,null);
     expect(candidate.data.job.tools[0]).toEqual(source.job.tools[0]);
     expect(candidate.data.job.operation).toEqual(source.job.operation);
@@ -77,6 +123,7 @@ describe('persistent tool library and CLI parity', () => {
     expect(JSON.parse(readFileSync(appliedPath,'utf8'))).toEqual(candidate.data.job);
     const withPreset=await service.applyLibraryTool!(connection,{...selection,presetId:'test-preset'});
     expect(withPreset.data.job).toEqual(source.job);
+    expect(resolveDraftLibraryTool(captured,{...draftSelection,presetId:'test-preset'}).settings).toEqual(withPreset.data.job.tools[1]);
     await expect(service.applyLibraryTool!(connection,{...selection,slot:'vbit'})).rejects.toThrow(/LIBRARY_TOOL_KIND/);
     await expect(service.applyLibraryTool!(connection,{...selection,documentFingerprint:'0'.repeat(64)})).rejects.toThrow(/STALE_DOCUMENT/);
     await expect(service.library!({...connection,instanceId:'0'.repeat(32)})).rejects.toThrow(/service changed/);
@@ -86,7 +133,9 @@ describe('persistent tool library and CLI parity', () => {
     runCli(['tool-library','change',libraryDirectory,'--expected-revision','1','--input',changeFile]);
     await expect(service.changeLibrary!(connection,1,{kind:'replace_tool',tool:{...tool,name:'Stale write'}})).rejects.toThrow(/LIBRARY_CONFLICT/);
     await expect(service.applyLibraryTool!(connection,selection)).rejects.toThrow(/LIBRARY_CONFLICT/);
-    const current=(await service.library!(connection)).data.library!;
+    const refreshed=await service.library!(connection);
+    expect(()=>resolveDraftLibraryTool(refreshed,draftSelection)).toThrow(/library changed/);
+    const current=refreshed.data.library!;
     expect(current.revision).toBe(2); expect(current.tools[0].name).toBe(tool.name);
     const before=readFileSync(`${libraryDirectory}/library.json`);
     const imported={schema_version:1,revision:999,tools:[{...tool,id:'new-import'},tool]};
@@ -104,6 +153,7 @@ describe('persistent tool library and CLI parity', () => {
     const partial=await service.applyLibraryTool!(connection,{...selection,expectedRevision:6,presetId:'partial'});
     expect(partial.data.job.tools[1].spindle_rpm).toBeNull();
     expect(partial.data.job.tools[1].cutting_feed_mm_min).toBe(source.job.tools[1].cutting_feed_mm_min);
+    expect(resolveDraftLibraryTool(await service.library!(connection),{...draftSelection,expectedRevision:6,presetId:'partial'}).settings).toEqual(partial.data.job.tools[1]);
     await service.changeLibrary!(connection,6,{kind:'remove_preset',tool_id:tool.id,preset_id:'preset-copy'});
     await service.changeLibrary!(connection,7,{kind:'remove_tool',tool_id:tool.id});
     expect((await service.validateDraft(candidate.data.job,13)).valid).toBe(true);
@@ -111,6 +161,31 @@ describe('persistent tool library and CLI parity', () => {
     await reopened.capabilities();
     expect((await reopened.library!(connection)).data.library?.revision).toBe(8);
   },30_000);
+  it('loads a V-bit into an invalid draft with Rust-equivalent settings, leaving planning validation intact',async()=>{
+    const caps=await service.capabilities(),connection={instanceId:caps.planning!.instanceId,engineVersion:caps.engineVersion};
+    const snapshot=await service.library!(connection),expectedRevision=snapshot.data.library!.revision;
+    const opened=await service.openJob!(readFileSync(`${workspace}fixtures/m4/finite-tip.json`,'utf8'),20);
+    const source={job:opened.job,revision:20,documentFingerprint:(await service.validateDraft(opened.job,20)).documentFingerprint!};
+    const saved=await service.captureLibraryTool!(connection,{...source,expectedRevision,slot:'vbit',toolId:'draft-vbit',name:'Draft V-bit',
+      preset:{id:'cut',name:'Recorded cut',material:null,machine:null}});
+    const libraryRevision=saved.data.library!.revision,index=source.job.tools.findIndex(t=>t.id===source.job.operation.vbit_id);
+    for (const presetId of [null,'cut']) {
+      const selection={connection,expectedRevision:libraryRevision,draftRevision:20,slot:'vbit' as const,jobToolId:source.job.tools[index].id,toolId:'draft-vbit',presetId};
+      const settings=resolveDraftLibraryTool(await service.library!(connection),selection).settings;
+      const rust=await service.applyLibraryTool!(connection,{...source,expectedRevision:libraryRevision,slot:'vbit',toolId:'draft-vbit',presetId});
+      expect(settings).toEqual(rust.data.job.tools[index]);
+      const draft=newDraft(source.job);
+      draft.text={[`tools.${index}.geometry.dimensions.included_angle_deg`]:'1e','stock.thickness_mm':'-1'};
+      expect(materialize(draft).job).toBeNull();
+      const applied=applyLibraryToolToDraft(draft,'vbit',settings);
+      expect(applied.text).toEqual({'stock.thickness_mm':'-1'});
+      expect((await service.validateDraft(materialize(applied).job!,21)).valid).toBe(false);
+      delete applied.text['stock.thickness_mm'];
+      const checked=await service.validateDraft(materialize(applied).job!,22);
+      expect(checked.valid).toBe(true);
+      if (presetId === null) expect(checked.missingMachiningFields).toContain(`tools.${selection.jobToolId}.spindle_rpm`);
+    }
+  });
 });
 
 async function finishExport(id: ExportIdentity) {

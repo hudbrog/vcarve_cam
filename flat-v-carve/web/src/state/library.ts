@@ -1,6 +1,6 @@
-import { cuttingPresetSchema, libraryToolSchema, onlyToolChanged, slotIndex, type CuttingPreset, type LibraryTool, type ToolSlot } from '../contracts/library';
-import type { Job } from '../contracts/job';
-import { parseNumeric, readPath, type Draft } from './draft';
+import { cuttingPresetSchema, libraryToolSchema, onlyToolChanged, slotIndex, type CuttingPreset, type LibraryTool, type ToolSlot, type LibraryConnection, type LibrarySnapshot } from '../contracts/library';
+import { toolSchema, type Job } from '../contracts/job';
+import { fieldText, parseNumeric, readPath, toolFields, type Draft } from './draft';
 
 export type LibraryFields = Record<string,string>;
 export interface LibraryField {path:string;label:string;kind?:'number'|'boolean';required?:boolean}
@@ -50,7 +50,36 @@ export function parseLibraryPreset(text:LibraryFields):CuttingPreset|null {
 export function applyLibraryDraft(draft:Draft,original:Job,candidate:Job,slot:ToolSlot):Draft {
   if (!onlyToolChanged(original,candidate,slot)) throw new Error('Library selection changed unrelated job settings.');
   const prefix=`tools.${slotIndex(original,slot)}.`;
-  return {base:structuredClone(candidate),text:Object.fromEntries(Object.entries(draft.text).filter(([key]) => !key.startsWith(prefix)))};
+  const base = structuredClone(draft.base);
+  base.tools[slotIndex(base,slot)] = structuredClone(candidate.tools[slotIndex(candidate,slot)]);
+  return {...draft,base,text:Object.fromEntries(Object.entries(draft.text).filter(([key]) => !key.startsWith(prefix)))};
+}
+export interface DraftLibrarySelection {
+  connection:LibraryConnection; expectedRevision:number; draftRevision:number; slot:ToolSlot;
+  jobToolId:string; toolId:string; presetId:string|null;
+}
+export interface DraftLibraryReview extends DraftLibrarySelection {
+  settings:Job['tools'][number]; changes:ReturnType<typeof draftToolChanges>; toolName:string; presetName:string|null;
+}
+// The store validates records on load. This copies its immutable snapshot into
+// an editor slot; validation of the entire machining setup remains a later step.
+export function resolveDraftLibraryTool(snapshot:LibrarySnapshot, selection:DraftLibrarySelection) {
+  if (snapshot.instanceId !== selection.connection.instanceId || snapshot.engineVersion !== selection.connection.engineVersion
+    || snapshot.data.library?.revision !== selection.expectedRevision) throw new Error('The library changed. Reload it and review the selection again.');
+  const tool = snapshot.data.library.tools.find(tool => tool.id === selection.toolId);
+  if (!tool || tool.geometry.kind !== selection.slot) throw new Error('The selected tool does not match this job slot. Choose a matching cutter.');
+  const preset = selection.presetId === null ? null : tool.cutting_presets.find(preset => preset.id === selection.presetId);
+  if (preset === undefined) throw new Error('The cutting preset is unavailable. Reload and select it again.');
+  const settings = toolSchema.parse({id:selection.jobToolId,geometry:structuredClone(tool.geometry),ramp_capable:tool.ramp_capable,plunge_capable:tool.plunge_capable,
+    spindle_rpm:preset?.spindle_rpm ?? null,cutting_feed_mm_min:preset?.cutting_feed_mm_min ?? null,plunge_feed_mm_min:preset?.plunge_feed_mm_min ?? null,
+    max_stepdown_mm:preset?.max_stepdown_mm ?? null,stepover_mm:preset?.stepover_mm ?? null});
+  return {settings,toolName:tool.name,presetName:preset?.name ?? null};
+}
+export function applyLibraryToolToDraft(draft:Draft,slot:ToolSlot,settings:Job['tools'][number]):Draft {
+  const index=slotIndex(draft.base,slot),checked=toolSchema.parse(settings);
+  if (index < 0 || draft.base.tools[index].id !== checked.id || checked.geometry?.kind !== slot) throw new Error('The library tool does not match this job slot.');
+  const base=structuredClone(draft.base); base.tools[index]=checked;
+  return {...draft,base,text:Object.fromEntries(Object.entries(draft.text).filter(([path]) => !path.startsWith(`tools.${index}.`)))};
 }
 const labels:Record<string,string> = Object.fromEntries([...presetFields,...libraryToolFields('endmill'),...libraryToolFields('vbit')].map(f => [f.path,f.label]));
 labels['geometry.kind']='Cutter type';
@@ -61,8 +90,22 @@ function leaves(value:unknown,prefix=''):string[] {
 export const displayLibraryValue = (value:unknown) => value === null || value === undefined ? 'Not specified' : value === true ? 'Yes' : value === false ? 'No' : String(value);
 export function toolChanges(original:Job,candidate:Job,slot:ToolSlot) {
   const index=slotIndex(original,slot),before=original.tools[index],after=candidate.tools[index];
+  return changesBetween(before,after);
+}
+function changesBetween(before:unknown,after:unknown) {
   return [...new Set([...leaves(before),...leaves(after)])].filter(path => {
     const a=readPath(before,path),b=readPath(after,path);
     return a !== b && !(a && typeof a === 'object') && !(b && typeof b === 'object');
   }).map(path => ({label:labels[path] ?? path,before:displayLibraryValue(readPath(before,path)),after:displayLibraryValue(readPath(after,path))}));
+}
+export function draftToolChanges(draft:Draft,settings:Job['tools'][number],slot:ToolSlot) {
+  const index=slotIndex(draft.base,slot),before:Record<string,unknown>=structuredClone(draft.base.tools[index]);
+  for (const field of toolFields(draft.base,slot)) {
+    if (!(field.path in draft.text)) continue;
+    const raw=fieldText(draft,field),parsed=field.kind === 'boolean' ? raw === '' ? null : raw === 'true' ? true : raw === 'false' ? false : 'invalid' : parseNumeric(raw);
+    const path=field.path.slice(`tools.${index}.`.length).split('.'); let target=before;
+    for (const part of path.slice(0,-1)) {target[part]??={};target=target[part] as Record<string,unknown>;}
+    target[path.at(-1)!]=parsed === 'invalid' ? raw : parsed;
+  }
+  return changesBetween(before,settings);
 }

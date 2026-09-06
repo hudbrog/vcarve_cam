@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { acceptTask, currentPlan, planResultSchema, taskSchema, type Motion, type PlanTask, type TaskIdentity } from '../src/contracts/planning';
+import { acceptTask, currentPlan, planningInputMatches, planResultSchema, taskSchema, type Motion, type PlanTask, type TaskIdentity } from '../src/contracts/planning';
 import type { Capabilities, Validation } from '../src/contracts/service';
 import { apiVersion } from '../src/contracts/wire';
 import { createHttpService } from '../src/service/http';
@@ -68,6 +68,14 @@ describe('stock inspection', () => {
 });
 
 describe('task identity and evidence', () => {
+  it('keeps a failed budget task in history without treating it as a current issue after edits',()=>{
+    const failed:PlanTask={...finished,state:'failed',summary:null,resultAvailable:false,diagnostic:{code:'PLANNING_RESOURCE_LIMIT',message:'Layer limit',severity:'error'}};
+    expect(planningInputMatches(failed,validation,7,'combined',caps)).toBe(true);
+    expect(currentPlan(failed,validation,7,'combined',caps)).toBe(false);
+    expect(planningInputMatches(failed,{...validation,revision:8},8,'combined',caps)).toBe(false);
+    expect(planningInputMatches(failed,undefined,7,'combined',caps)).toBe(false);
+    expect(planningInputMatches(failed,validation,7,'endmill',caps)).toBe(false);
+  });
   it('keeps task success separate from the engine outcome', () => {
     for (const status of ['complete', 'empty', 'incomplete', 'inconclusive']) expect(taskSchema.parse({ ...finished, summary: { ...summary, status } }).state).toBe('succeeded');
     expect(taskSchema.safeParse({ ...finished, state: 'cancelled' }).success).toBe(false);

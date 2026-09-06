@@ -25,11 +25,14 @@ raw JSON import and portable library download, and capture from either job slot.
 New libraries are empty; geometry and cutting settings are entered or captured
 explicitly. Context labels make no machine/material suitability claims.
 
-Apply performs two read-only Rust resolutions: the first produces the visible
-before/after review; the final click rechecks the same library revision and
-candidate fingerprint. Job revision/source receipt checks reject intervening
-edits, and the reducer enforces the revision again. Only the intended tool can
-change. No-op selections are disabled. Actual changes are one undo entry, retain
+Apply loads Rust-validated library records for review, then reloads them on the
+final click to recheck the library revision, service identity and selected tool
+settings. The browser copies only the chosen geometry, capabilities and cutting
+values into the draft; it does not require a valid whole-job receipt to edit a
+tool. Draft revision checks reject intervening edits, and the reducer enforces
+the revision again. Only the intended tool can
+change. Matching selections can be confirmed to associate the library tool and
+preset names without a job revision or undo entry. Actual changes are one undo entry, retain
 unrelated/inactive draft text, and invalidate the existing plan/output as normal.
 
 ### Service contract
@@ -83,3 +86,107 @@ forms have in-memory retention while the dialog is closed, not durable recovery
 after a tab reload. Saved library data is durable through the existing Rust store.
 Native file/save conflict UX, general durable job recovery, packaging, 3D/playback,
 and separate setup/machine preset libraries remain outside this feature.
+
+## Workflow follow-up (2026-09-06)
+
+The initial explicit computation-starter action described below was subsequently
+replaced by automatic defaults; see the defaults follow-up at the end.
+
+The library's apply panel now comes before the geometry and management details.
+It requires an explicit cutting-preset or geometry-only choice, separates review
+from final application, and labels the selected record as selected for review.
+After applying, Carve & tools shows the tool and preset names beside the job's
+values. These display labels survive same-tab draft recovery; changing the tool
+values marks the association as edited. They are not serialized into portable
+jobs or used as machining evidence.
+
+Rust's missing-setting list is now visible in Issues and before Generate, with
+human-readable labels and links that open the right editor. Missing V-bit
+computation settings block combined submission up front; endmill-only guidance
+omits V-bit cutting/computation settings, and ramp entry omits the unused endmill
+plunge feed. Tool-ID paths are resolved to editor indices after role lookup.
+Unreferenced tools do not block the selected stage. Actual feasibility remains
+the Rust planner's responsibility.
+
+The V-bit computation group explains why library cutting presets do not fill
+it. Its explicit starter action fills only blank resource/sampling fields as one
+undoable edit. It preserves entered values, including zero and partial text,
+and becomes disabled once no blanks remain. No cutting parameters are supplied.
+Native select options and their controls use matching theme background/text
+colors, including in the library.
+
+Validation: 82 frontend tests, 23 live service tests, typecheck/production build,
+and 16 Rust field-set/display contract checks pass. The added live regression
+starts with only `vbit_planning` missing and completes a combined plan after the
+explicit starter action. Browser checks in a separate synthetic-job tab confirm
+the visible issue and disabled Generate button, linked editor focus, explicit
+preset selection, matching-value confirmation, geometry-only five-field review,
+applied labels, and one-step Undo. The combined browser plan completed with 392
+recorded motions. Dark select and option computed colors are `rgb(28,38,49)` and
+`rgb(224,232,242)`; visible controls and the apply panel were inspected. The
+embedded browser did not expose a native popup screenshot, so popup rendering
+was checked through option styles rather than a captured open menu. No browser
+errors or warnings were reported. These synthetic checks did not modify saved
+library records or the user's open job tab.
+
+## Automatic computation defaults (2026-09-06)
+
+Empty planning-budget and numerical-tolerance fields now resolve to visible
+defaults before Rust validation, submission and portable download. This removes
+the manual computation-block setup step. Existing numbers, zero and partial
+numeric text retain their meaning. Endmill travel and entry remain explicit;
+budget defaults do not create an incomplete travel block by themselves. Library
+application preserves unrelated draft defaults rather than freezing them into
+overrides. Portable downloads intentionally freeze resolved numeric values.
+
+The work ceilings use the current Rust-supported maxima instead of the smaller
+starter caps. One **Use default planning budgets** button resets work overrides
+without changing sampling, cleanup, cutting values, tolerances or finish targets.
+Advanced sections explain each override and provide separate reset actions.
+Defaults are 0.01 mm motion tolerance and 0.05 mm verification tolerance, with
+1 mm planning sample spacing, 2 cleanup iterations and 8 stock slices. Accuracy
+defaults stay fixed across geometry/tool edits and are never relaxed on failure.
+The Rust API/CLI job schema and engine resource protections are unchanged.
+
+Budget/precision diagnostics link to their editors, including issues attached to
+partial results. A failed task from an older revision no longer appears as a
+current issue after the setup changes; its diagnostic remains in task history.
+
+Validation: 87 frontend tests and 24 live service tests pass, including missing
+computation/tolerances resolving automatically, a deliberately low layer limit
+followed by successful planning after resetting that override, preservation of
+cut/accuracy settings, undo, portable round-trip, and unrelated library apply.
+Typecheck and build pass; the main minified bundle is about 504 kB and triggers
+Vite's advisory 500 kB chunk warning. No build checks were disabled.
+
+The separate synthetic browser check also confirmed default labels and advanced
+help in dark theme, same-tab recovery of automatic values, the low-layer-limit
+failure linking to its editor, reset to defaults, and a complete 392-motion
+combined plan. The previous failure stayed out of current Issues after editing.
+No browser console errors or warnings were reported.
+
+## Library selection on unfinished drafts (2026-09-06)
+
+Review previously required successful validation of the entire editable job.
+Incomplete travel, partial numeric input, or an invalid supplied setting could
+therefore disable tool loading even when a library selection would repair it.
+Review and Apply now work on the draft directly using freshly loaded,
+Rust-validated records. The comparison includes partial target-tool text. Other
+unfinished fields and automatic computation defaults are retained, and ordinary
+Rust job validation still gates planning. Capturing a job tool into the library
+continues to require the current valid job receipt. The Rust apply API is unchanged.
+
+Applied labels compare the tool's draft fields, so unrelated unfinished settings
+no longer mark a library tool as edited. Matching selections do not create a new
+revision. Library/connection changes and intervening draft edits reject stale
+reviews; target job IDs and machine mappings remain unchanged.
+
+Validation: 92 frontend tests, 25 live service tests, typecheck/build and contract
+checks pass. Live checks compare draft copies with Rust application for both
+cutter kinds, full/partial presets and geometry-only clearing, and verify that
+remaining invalid settings still fail Rust validation. A separate browser tab
+confirmed enabled Review and Apply with unfinished travel and a `1e` diameter,
+partial-value comparison, correct applied labels, one-step Undo/Redo, preserved
+clearance and blank start positions, and disabled planning until setup is ready.
+Matching confirmation kept the same revision; no browser errors or warnings
+were reported. Saved library records and the user's open job tab were unchanged.

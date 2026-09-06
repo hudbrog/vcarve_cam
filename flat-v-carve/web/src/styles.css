@@ -13,6 +13,9 @@
   button.primary { color: #fff; background: #175cc6; border-color: #175cc6; }
   button.primary:hover:not(:disabled) { background: #124b9f; }
   input, select, textarea { border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--ink); min-width: 0; padding: .5rem .65rem; width: 100%; font-size: .875rem; }
+  select option, select optgroup { background-color: var(--panel); color: var(--ink); }
+  .field-default { display: block; margin-top: .3rem; color: var(--accent); font-size: .75rem; }
+  .field > .hint { display: block; margin-top: .2rem; }
   textarea { resize: vertical; min-height: 7rem; line-height: 1.5; }
   .input-wrap textarea { border: 0; background: transparent; }
   .inspector-group > h2 { font-size: .9375rem; margin-bottom: 1rem; }
@@ -133,6 +136,15 @@
 .library-checkbox { display: flex; align-items: center; gap: .5rem; margin: 1rem 0; font-size: .875rem; }
 .library-changes td { padding-left: .7rem; }
 .library-details h3 { overflow-wrap: anywhere; }
+.input-wrap select { background-color: var(--panel); color: var(--ink); }
+.library-apply { border: 1px solid var(--accent); border-radius: 6px; padding: 1rem; margin: 1rem 0; background: var(--accent-soft); }
+.library-apply h3 { margin-top: 0; }
+.library-apply > button { margin-top: .5rem; }
+.library-selection-badge { color: var(--accent); font-size: .75rem; }
+.tool-assignment { margin: .8rem 0; padding: .7rem; border-left: 3px solid var(--accent); background: var(--accent-soft); font-size: .8rem; }
+.tool-assignment span { display: block; margin-top: .4rem; }
+.planning-needs { margin: 1rem 0; }
+.planning-needs .issue { width: 100%; }
 .library-form { border: 0; margin: 0; padding: 0; min-width: 0; }
 .library-form legend { font-weight: 650; font-size: 1.05rem; }
 @media (max-width: 720px) { .library-layout { grid-template-columns: 1fr; } .library-details { border-left: 0; border-top: 1px solid var(--line); padding: 1rem 0 0; } }

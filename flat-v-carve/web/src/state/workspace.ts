@@ -1,4 +1,4 @@
-import { applyLibraryDraft } from './library';
+import { applyLibraryDraft, applyLibraryToolToDraft } from './library';
 import type { Job } from '../contracts/job';
 import type { ToolSlot } from '../contracts/library';
 import type { Draft } from './draft';
@@ -12,6 +12,7 @@ export type WorkspaceAction =
   | { type: 'commit' }
   | { type: 'replace'; draft: Draft }
   | {type:'apply-library';expectedRevision:number;original:Job;candidate:Job;slot:ToolSlot}
+  | {type:'apply-library-tool';expectedRevision:number;settings:Job['tools'][number];slot:ToolSlot}
   | { type: 'name'; value: string }
   | { type: 'include'; ids: string[] }
   | { type: 'clear-fields'; paths: string[] }
@@ -36,6 +37,12 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
       if (action.expectedRevision !== state.revision) return state;
       if (JSON.stringify(action.original) === JSON.stringify(action.candidate)) return state;
       return workspaceReducer(state,{type:'replace',draft:applyLibraryDraft(state.draft,action.original,action.candidate,action.slot)});
+    case 'apply-library-tool': {
+      if (action.expectedRevision !== state.revision) return state;
+      const draft=applyLibraryToolToDraft(state.draft,action.slot,action.settings);
+      if (JSON.stringify(draft) === JSON.stringify(state.draft)) return state;
+      return workspaceReducer(state,{type:'replace',draft});
+    }
     case 'replace': {
       const current = commit(state);
       return { ...current, draft: action.draft, revision: state.revision + 1,

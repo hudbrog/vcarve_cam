@@ -63,9 +63,12 @@ export function acceptTask(previous: PlanTask | null, next: PlanTask, identity: 
   if (previous && terminal(previous) && next.state !== previous.state) throw new Error('A finished task changed state. Reconnect to check the service.');
   return next;
 }
-export function currentPlan(task: PlanTask | null, validation: Validation | undefined, revision: number, stage: PlanningStage, capabilities: Capabilities): boolean {
-  return !!task && task.state === 'succeeded' && task.instanceId === capabilities.planning?.instanceId
+export function planningInputMatches(task: PlanTask | null, validation: Validation | undefined, revision: number, stage: PlanningStage, capabilities: Capabilities): boolean {
+  return !!task && task.instanceId === capabilities.planning?.instanceId
     && task.engineVersion === capabilities.engineVersion && task.stage === stage && task.revision === revision
     && validation?.revision === revision && validation.authoritative && validation.valid === true
     && validation.documentFingerprint === task.documentFingerprint;
+}
+export function currentPlan(task: PlanTask | null, validation: Validation | undefined, revision: number, stage: PlanningStage, capabilities: Capabilities): boolean {
+  return task?.state === 'succeeded' && planningInputMatches(task,validation,revision,stage,capabilities);
 }

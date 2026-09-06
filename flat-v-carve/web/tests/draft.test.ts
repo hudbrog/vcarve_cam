@@ -4,12 +4,13 @@ import example from '../src/fixtures/inkscape.job.json';
 import { jobSchema, parseJob } from '../src/contracts/job';
 import { materialize, newDraft, parseNumeric } from '../src/state/draft';
 import { initialWorkspace, workspaceReducer } from '../src/state/workspace';
+import { defaultTolerances, defaultVbitComputation } from '../src/state/computation';
 
 describe('portable job and draft boundary', () => {
   it('retains an incomplete imported job without inventing machining values', () => {
     const { job, errors } = materialize(newDraft(parseJob(example)));
     expect(errors).toEqual({});
-    expect(job).toEqual(example);
+    expect(job).toEqual({...example,tolerances:defaultTolerances,vbit_planning:defaultVbitComputation});
     expect(job?.stock.thickness_mm).toBeNull();
     expect(job?.tools.every(tool => tool.geometry === null && tool.spindle_rpm === null)).toBe(true);
   });

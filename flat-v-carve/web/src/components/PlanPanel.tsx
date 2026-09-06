@@ -1,31 +1,38 @@
 import type { Job } from '../contracts/job';
 import type { Capabilities, Validation } from '../contracts/service';
-import type { PlanningStage } from '../contracts/planning';
+import { planningInputMatches, type PlanningStage } from '../contracts/planning';
 import type { usePlanning } from '../service/usePlanning';
 import { StockInspector, type Inspection } from './StockInspector';
+import { missingPlanningSettings, planningIssueField } from '../state/setupNeeds';
 
 type Planning = ReturnType<typeof usePlanning>;
-export function PlanPanel({ planning, capabilities, job, validation, revision, stage, onStage, inspection }: {
+export function PlanPanel({ planning, capabilities, job, validation, revision, stage, onStage, inspection, onFix }: {
   planning: Planning; capabilities: Capabilities; job: Job | null; validation: Validation | undefined;
   revision: number; stage: PlanningStage; onStage: (stage: PlanningStage) => void;
   inspection: Inspection;
+  onFix: (path: string) => void;
 }) {
   const { task, result } = planning;
   const checked = !!job && validation?.valid && validation.authoritative && validation.revision === revision && !!validation.documentFingerprint;
   const enabled = capabilities.planningStages.includes(stage) && !!capabilities.planning;
+  const needs = job ? missingPlanningSettings(job, validation, stage) : [];
+  const taskFix = job && task?.diagnostic ? planningIssueField(job,task.diagnostic) : null;
+  const taskCurrent = planningInputMatches(task,validation,revision,stage,capabilities);
   return <>
     <section className="inspector-group"><h2>Planning stage</h2><label className="field-label" htmlFor="plan-mode">Tool sequence</label>
       <select id="plan-mode" value={stage} onChange={event => onStage(event.target.value as PlanningStage)}><option value="combined">Combined · endmill then V-bit</option><option value="endmill">Endmill only</option></select>
       <p className="hint">{stage === 'combined' ? 'Combined planning needs explicit settings for both tools.' : 'Endmill planning still needs V-bit geometry to define the target.'} Rust checks the selected stage before calculating.</p>
-      <button className="primary wide" disabled={!enabled || !checked || planning.active || planning.submitting} onClick={() => planning.start(job!)}>{planning.submitting ? 'Submitting…' : enabled ? 'Check setup & generate plan' : 'Planning unavailable'}</button>
+      {needs.length > 0 && <section className="planning-needs" aria-label="Missing planning settings"><h3>Complete setup before planning</h3><p className="hint">{needs.length === 1 ? 'One setting or group is unset.' : `${needs.length} settings or groups are unset.`} Open each item to fill it in.</p>{needs.map(need => <button key={need.path} className="issue issue-button" onClick={() => onFix(need.path)}><span><strong>{need.label}</strong><span>{need.message}</span></span><span aria-hidden="true">→</span></button>)}</section>}
+      <button className="primary wide" disabled={!enabled || !checked || needs.length > 0 || planning.active || planning.submitting} onClick={() => planning.start(job!)}>{planning.submitting ? 'Submitting…' : enabled ? 'Check setup & generate plan' : 'Planning unavailable'}</button>
       {!checked && <p className="hint">Resolve unfinished fields and wait for the current Rust document check.</p>}
       <p className="hint">You can keep editing during calculation. Results belong to the submitted snapshot. Planning alone does not authorize machine output.</p>
     </section>
-    {(task || planning.active || planning.error || planning.lost) && <section className="inspector-group"><h2>Background task</h2>
+    {(task || planning.active || planning.error || planning.lost) && <section className="inspector-group"><h2>{task && !taskCurrent ? 'Previous task · different setup' : 'Background task'}</h2>
       <p role="status" className="task-state">{planning.lost ? 'Service restarted · task lost' : task ? ({ queued: 'Queued · waiting for the planner', running: `Running ${task.stage} planner`, cancelling: 'Cancelling · waiting for worker exit', cancelled: 'Cancelled · calculation stopped', succeeded: 'Calculation finished · review its outcome', failed: 'Planning failed' }[task.state]) : planning.submitting ? 'Submitting immutable snapshot…' : 'Checking task status…'}</p>
       {task && <dl><dt>Submitted revision</dt><dd>{task.revision}</dd><dt>Stage</dt><dd>{task.stage}</dd><dt>Task</dt><dd><code>{task.taskId}</code></dd></dl>}
       {planning.active && <button className="wide" disabled={!task || task.state === 'cancelling'} onClick={() => void planning.cancel()}>Cancel calculation</button>}
       {task?.diagnostic && <p role="alert" className="inline-warning"><strong>{task.diagnostic.code}</strong> · {task.diagnostic.message}</p>}
+      {taskFix && <button onClick={() => onFix(taskFix.path)}>Open {taskFix.label}</button>}
       {planning.error && <><p role="alert" className="inline-warning">{planning.error}</p><p className="hint">A disconnected request does not stop a worker. Reconnect or check this task to learn its state.</p><button onClick={planning.check}>Check task</button>{planning.retrySubmission && <button onClick={planning.retrySubmission}>Retry same submission</button>}</>}
       {planning.lost && <p className="hint">Previous tasks are never replayed automatically. Generate a new plan when the current draft is checked.</p>}
       {planning.restored && <p className="hint">Recovered task from this tab. Regenerate any recovered plan to bind its motion preview to this visit’s draft revision.</p>}
@@ -38,8 +45,7 @@ export function PlanPanel({ planning, capabilities, job, validation, revision, s
       <dl><dt>Stage / revision</dt><dd>{result.task.stage} / {result.task.revision}</dd><dt>Recorded motions</dt><dd>{result.task.summary.motionCount}</dd><dt>Cutting motions</dt><dd>{result.task.summary.cuttingMotionCount}</dd><dt>Previewed motions</dt><dd>{result.task.summary.previewMotionCount}</dd></dl>
       {result.task.summary.omittedMotionCount > 0 && <p className="inline-warning">Preview shows the first {result.task.summary.previewMotionCount} motions; {result.task.summary.omittedMotionCount} are omitted.</p>}
       <p>{result.task.summary.meaning}</p>
-      {result.task.summary.diagnostics.map((d, i) => <p className="inline-warning" key={`d${i}`}><strong>{d.code}</strong> · {d.message}</p>)}
-      {result.task.summary.generationIssues.map((d, i) => <p className="inline-warning" key={`g${i}`}><strong>{d.code}</strong> · {d.message}</p>)}
+      {[...result.task.summary.diagnostics,...result.task.summary.generationIssues].map((d, i) => { const fix = job ? planningIssueField(job,d) : null; return <div key={i}><p className="inline-warning"><strong>{d.code}</strong> · {d.message}</p>{fix && <button onClick={() => onFix(fix.path)}>Open {fix.label}</button>}</div>; })}
       {(result.task.summary.omittedDiagnostics + result.task.summary.omittedGenerationIssues > 0) && <p className="hint">Additional diagnostics remain in the engine plan artifact.</p>}
       <details><summary>Evidence limits & identity</summary><ul>{result.task.summary.limitations.map((text, i) => <li key={i}>{text}</li>)}</ul><dl><dt>Engine</dt><dd>{result.task.engineVersion}</dd><dt>Input fingerprint</dt><dd><code>{result.task.summary.inputFingerprint}</code></dd><dt>Motion fingerprint</dt><dd><code>{result.task.summary.motionFingerprint}</code></dd></dl></details>
       <p className="hint">Recorded motions are shown in workpiece coordinates. This view is not a stock simulation or a geometric certificate.</p>
