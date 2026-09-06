@@ -1,3 +1,4 @@
+mod bundled_ui;
 mod combined_svg;
 mod job_cli;
 mod job_svg;
@@ -29,12 +30,22 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let Some(command) = args.next() else {
         print!("{HELP}");
+        print!("\n{}", cam_server::serve::HELP);
         print!("\n{}", tool_library_cli::HELP);
         return Ok(true);
     };
     if command == "--help" || command == "-h" {
         print!("{HELP}");
+        print!("\n{}", cam_server::serve::HELP);
         print!("\n{}", tool_library_cli::HELP);
+        return Ok(true);
+    }
+    if command == "--planning-worker" && args.len() == 0 {
+        cam_server::planning_worker::run()?;
+        return Ok(true);
+    }
+    if command == "serve" {
+        cam_server::serve::run(args, bundled_ui::assets())?;
         return Ok(true);
     }
     if command == "tool-library" {

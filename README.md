@@ -2,6 +2,11 @@
 
 A Rust project for combined endmill and V-bit carving toward a shared target: sloped walls, flat floors in broad regions, and shallower narrow details.
 
+The [portable Windows build](flat-v-carve/README.md#portable-windows-application)
+packages the CLI, local browser service, and web assets into one `cam.exe`.
+From `flat-v-carve`, run `./scripts/build-portable.ps1`, then
+`./artifacts/portable/cam.exe serve --open` to use the integrated workspace.
+
 M0–M5 implement SVG jobs, endmill clearing, V-bit finishing/rest machining, combined stock previews, and bounded continuous stock verification. M6 adds LinuxCNC output with explicit machine profiles and numeric readback; actual controller validation remains pending.
 
 Engine 0.7.2 adds spatial indexing, batched stock unions, and compact plan files for larger artwork. The [scalability report](docs/flat-v-carve/scalability-report.md) records the real flower import and 1×/10×/100× measurements, with full-pipeline limits tracked separately.

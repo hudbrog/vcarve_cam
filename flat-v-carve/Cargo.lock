@@ -114,8 +114,11 @@ name = "cam-app"
 version = "0.7.3"
 dependencies = [
  "cam-core",
+ "cam-server",
+ "cam-storage",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -134,17 +137,25 @@ dependencies = [
 
 [[package]]
 name = "cam-server"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "axum",
- "cam-app",
  "cam-core",
+ "cam-storage",
  "getrandom 0.4.3",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "cam-storage"
+version = "0.7.3"
+dependencies = [
+ "cam-core",
+ "serde",
 ]
 
 [[package]]

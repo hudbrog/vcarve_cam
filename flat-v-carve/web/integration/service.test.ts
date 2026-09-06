@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
 import { createHttpService } from '../src/service/http';
 import type { CamService } from '../src/contracts/service';
 import { terminal, type PlanTask, type TaskIdentity } from '../src/contracts/planning';
@@ -17,8 +18,10 @@ import { applyLibraryToolToDraft, resolveDraftLibraryTool } from '../src/state/l
 const workspace = fileURLToPath(new URL('../../', import.meta.url));
 const web = fileURLToPath(new URL('../', import.meta.url));
 const suffix = process.platform === 'win32' ? '.exe' : '';
-const executable = `${workspace}target/release/cam-web${suffix}`;
-const cli = `${workspace}target/release/cam${suffix}`;
+// Set CAM_TEST_EXE to exercise one copied portable executable with no UI directory.
+const portable = process.env.CAM_TEST_EXE;
+const executable = portable ?? `${workspace}target/release/cam-web${suffix}`;
+const cli = portable ?? `${workspace}target/release/cam${suffix}`;
 const output = `${web}test-results/live`;
 const libraryDirectory = `${output}/library-${crypto.randomUUID()}`;
 let child: ChildProcess;
@@ -32,7 +35,9 @@ function runCli(args: string[], expectedStatus = 0) {
 }
 beforeAll(async () => {
   mkdirSync(output, { recursive: true });
-  child = spawn(executable, ['--port', '0', '--ui-dir', `${web}dist`, '--library-dir', libraryDirectory], { cwd: workspace, windowsHide: true });
+  const args = portable ? ['serve'] : ['--ui-dir', `${web}dist`];
+  const env = portable ? { ...process.env, PATH: process.platform === 'win32' ? `${process.env.SystemRoot}\\System32;${process.env.SystemRoot}` : '/usr/bin:/bin' } : process.env;
+  child = spawn(executable, [...args, '--port', '0', '--library-dir', libraryDirectory], { cwd: portable ? dirname(portable) : workspace, env, windowsHide: true });
   base = await new Promise<string>((resolve, reject) => {
     let stdout = ''; let stderr = '';
     const timer = setTimeout(() => reject(new Error(`Server did not start: ${stderr}`)), 15_000);
@@ -49,6 +54,21 @@ beforeAll(async () => {
   await service.capabilities();
 }, 20_000);
 afterAll(() => { child?.kill(); });
+
+describe('packaged browser assets', () => {
+  it('serves the complete production bundle with the expected bytes and content types', async () => {
+    const manifest = JSON.parse(readFileSync(`${web}dist/.bundle-manifest.json`, 'utf8')) as { assets: Record<string, string> };
+    for (const [path, hash] of Object.entries(manifest.assets)) {
+      const response = await fetch(new URL(path === 'index.html' ? '/' : `/${path}`, base));
+      expect(response.status, path).toBe(200);
+      expect(createHash('sha256').update(new Uint8Array(await response.arrayBuffer())).digest('hex'), path).toBe(hash);
+      const mime = path.endsWith('.html') ? 'text/html' : path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : null;
+      if (mime) expect(response.headers.get('content-type')).toContain(mime);
+    }
+    expect((await fetch(`${base}/.bundle-manifest.json`)).status).toBe(404);
+    expect((await fetch(`${base}/missing.js`)).status).toBe(404);
+  });
+});
 
 describe('guided setup to combined plan',()=>{
   it('supplies omitted computation and tolerance defaults before submission and completes planning',async()=>{
@@ -419,10 +439,11 @@ describe('real background planning', () => {
   });
   it('keeps validation responsive, reconnects without replay, and cancels running work', async () => {
     const { job, id } = await identity('m4/finite-tip', 'combined');
-    // The 0.7.2 spatial index finishes small fixtures before a browser roundtrip.
-    // Use a real, bounded sampling workload to exercise active cancellation.
-    job.vbit_planning!.quality_sample_spacing_mm = 0.12;
-    job.vbit_planning!.max_quality_samples = 50_000;
+    // Keep enough real work after the stock/sample reuse optimizations to cover
+    // validation and reconnect roundtrips before cancelling the running worker.
+    // The 30 x 20 mm target has about 667k samples, below the explicit ceiling.
+    job.vbit_planning!.quality_sample_spacing_mm = 0.03;
+    job.vbit_planning!.max_quality_samples = 1_000_000;
     id.documentFingerprint = (await service.validateDraft(job, id.revision)).documentFingerprint!;
     await service.startPlan!(job, id);
     let task = await service.planTask!(id);

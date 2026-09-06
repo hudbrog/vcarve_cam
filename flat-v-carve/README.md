@@ -2,6 +2,36 @@
 
 An isolated Rust workspace for the combined endmill/V-bit planner described in the [project docs](../docs/flat-v-carve/architecture.md). M0–M5 implement geometry, SVG jobs, both planners, recorded-motion previews, and bounded continuous stock verification. M6 implements LinuxCNC output and numeric readback; actual controller validation remains pending. The integrated browser workflow follows in M7.
 
+## Portable Windows application
+
+Build one executable containing the CLI, local HTTP service, compute-worker mode,
+and production browser assets:
+
+```powershell
+./scripts/build-portable.ps1
+# Add -Offline when frontend and Cargo dependencies are already cached.
+.\artifacts\portable\cam.exe serve --open
+```
+
+Copy `artifacts/portable/cam.exe` to another directory or supported Windows x64
+machine. It needs no adjacent UI directory, Node.js, Rust, or separately installed
+Visual C++ runtime. Browser mode uses your default browser; CLI commands retain
+their existing arguments and exit codes. The EXE still uses Windows system DLLs.
+
+`cam serve` binds to `127.0.0.1:4848`; `--port 0` chooses an available port and
+prints the URL, and `--port <number>` requires that port to be free. `--open`
+opens the browser. Ctrl+C cancels compute workers and stops the service. Job
+files, downloads, and tool-library data remain separate writable user data;
+`--library-dir <directory>` selects a portable library location.
+
+For development, ordinary Cargo builds retain `cam serve --ui-dir web/dist` and
+the `cam-web` alias. To embed assets directly with Cargo, first run `pnpm build`
+in `web`, then build `cam-app` with `--features bundled-ui`. The build checks
+source and asset hashes and refuses stale or incomplete UI bundles. The Windows
+release script also links the C runtime statically. See the
+[packaging notes](../docs/flat-v-carve/single-executable.md) and the
+[live UI guide](web/README.md) for validation commands and current capabilities.
+
 ## Run
 
 Install [Rust with rustup](https://www.rust-lang.org/tools/install). The workspace pins Rust **1.95.0**; rustup selects it when running Cargo here. Tested native targets are **x86_64-pc-windows-msvc** on Windows and **x86_64-unknown-linux-gnu** on Ubuntu 24.04.4 under WSL2. See [Windows setup](#windows-setup) for prerequisites and PowerShell commands. WebAssembly builds have not been tested.

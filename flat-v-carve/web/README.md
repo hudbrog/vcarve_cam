@@ -2,22 +2,30 @@
 
 The local TypeScript workspace from the [web UI design](../../docs/flat-v-carve/web-ui/README.md), connected to Rust for SVG import, job migration/opening, validation, cancellable background planning, recorded motion previews, 2D stock inspection, M5 continuous verification, M6 checked output, and the local tool library. Development can still use the deterministic fixture adapter.
 
-## Run with Rust
+## Run the portable application
+
+From `flat-v-carve/`, run `./scripts/build-portable.ps1` and then
+`./artifacts/portable/cam.exe serve --open`. The executable contains this UI,
+the HTTP service, and all CLI operations. It can run outside the checkout with
+no Node.js or separate `dist` directory. Add `-Offline` to the build script when
+dependencies are already cached. Rebuild the executable after UI changes.
+
+## Develop with Rust
 
 From `flat-v-carve/`, with Node.js 24+, pnpm 11.19.0, and the workspace's Rust 1.95.0 toolchain:
 
 ```powershell
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
-cargo build --release --locked -p cam-server -p cam-app
-.\target\release\cam-web.exe --port 4848
+cargo build --release --locked -p cam-app
+.\target\release\cam.exe serve --ui-dir web/dist --port 4848
 ```
 
-Open the exact loopback URL printed by `cam-web`. Linux uses `./target/release/cam-web`. `--port 0` selects an available port; a specified occupied port fails explicitly. `--ui-dir` selects the built UI directory (default `web/dist`). The service loads build assets at startup, so rebuild and restart after changes. Ctrl+C stops it.
+Open the exact loopback URL printed by the service, or add `--open`. Linux uses `./target/release/cam serve`. `--port 0` selects an available port; a specified occupied port fails explicitly. `--ui-dir` selects a development UI directory, overriding any embedded assets. A build without `bundled-ui` falls back to `web/dist`. Rebuild and restart after changes. Ctrl+C stops it. The `cam-web` development alias remains available with `cargo build --release --locked -p cam-server` and accepts the same flags without the `serve` subcommand.
 
 The production bundle selects the live adapter. Import starts a new job with cutting settings unset and 0 mm wall allowance; open accepts editable jobs and migrates schemas 1/2 through Rust. Supplied invalid settings are reported without rewriting the draft. Downloads require a successful editable-job validation receipt for the current revision. This does not establish planning readiness or machining verification.
 
-The service runs as a separate `cam-web` executable to keep CLI/machining development independent. It binds only `127.0.0.1` and serves UI and API from one origin. It launches its own hidden compute worker for each plan, calls core planners directly, and kills/reaps that worker on cancellation. It never launches the CLI or a shell, writes jobs to local paths, or accepts filesystem paths from HTTP requests. File selection and portable downloads remain browser-owned.
+The `cam-server` library is shared by `cam serve` and the `cam-web` development alias. It binds only `127.0.0.1` and serves UI and API from one origin. It relaunches the current executable in a hidden compute-worker mode for each task, calls core planners directly, and kills/reaps that worker on cancellation. Worker mode never loads UI files. It uses no shell, writes no jobs to local paths, and accepts no filesystem paths from HTTP requests. File selection and portable downloads remain browser-owned.
 
 ## Tool library location and workflow
 
@@ -28,7 +36,7 @@ and preset names/context. Applying a selection first shows changed values and
 then updates one job slot as a single undoable edit. Geometry-only selection
 clears all five cutting values; existing job IDs and machine mapping are retained.
 
-`cam-web --library-dir <directory>` selects an existing CLI library or another
+`cam serve --library-dir <directory>` selects an existing CLI library or another
 local directory. The default is `%LOCALAPPDATA%/FlatVCarve/tool-library` on Windows,
 `~/Library/Application Support/FlatVCarve/tool-library` on macOS, and
 `$XDG_DATA_HOME/flat-v-carve/tool-library` (or `~/.local/share/flat-v-carve/tool-library`)
@@ -60,7 +68,7 @@ pnpm check:contracts
 pnpm build
 ```
 
-The production bundle is in `dist/`. `pnpm preview` serves it on loopback port 4173; use `http://127.0.0.1:4173/?mode=fixture` for an explicit static demonstration. Without that query the production UI expects `cam-web`. Fonts, scripts, and fixture artwork are bundled or use system resources; ordinary use makes no external requests. No hosting infrastructure is configured.
+The production bundle is in `dist/`, with a generated `.bundle-manifest.json` recording source/asset hashes and engine version for native embedding. The manifest is not served to browsers. `pnpm preview` serves the UI on loopback port 4173; use `http://127.0.0.1:4173/?mode=fixture` for an explicit static demonstration. Without that query the production UI expects the local Rust service. Fonts, scripts, and fixture artwork are bundled or use system resources; ordinary use makes no external requests. No hosting infrastructure is configured.
 
 ## What works
 
@@ -124,5 +132,11 @@ node scripts/check-cli-roundtrip.mjs ../target/release/cam.exe
 ```
 
 After building both Rust executables and the UI, `pnpm check:live` starts its own server on an ephemeral loopback port with an isolated library directory and compares the actual HTTP adapter with the same-engine CLI. It also checks the shipped assets and wire schemas. `pnpm test` runs the frontend-only regressions. Run `cargo test --release --locked -p cam-server` for HTTP boundary and engine projection tests. Test output is under ignored `test-results/`.
+
+To exercise the single-file distribution instead, set `CAM_TEST_EXE` to the
+absolute path of a portable `cam.exe`, then run `pnpm check:live`. The tests use
+that EXE for both CLI and `serve`, start the server from its own directory with
+only OS directories on `PATH`, and supply no `--ui-dir`. They compare every
+embedded asset to the current build manifest and run the full live workflow.
 
 The implementation history is in [U1 implementation](../../docs/flat-v-carve/web-ui/u1-implementation.md). The follow-up [setup and browser report](../../docs/flat-v-carve/web-ui/browser-checks.md) records 37 automated regressions and browser checks of all steps, keyboard/focus, recovery, file round-trips, themes, and 200% text. [React](https://react.dev/) provides the component/state layer; [Vite](https://vite.dev/guide/) produces a local static distribution without a server framework.

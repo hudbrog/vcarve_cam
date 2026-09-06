@@ -1,10 +1,10 @@
 //! Local tool-library adapter. Browser inputs never select filesystem paths.
 use crate::document::{JOB_BYTES, fingerprint};
-use cam_app::tool_library::{StoreError, ToolLibraryStore};
 use cam_core::{
     job::Job,
     tool_library::{CuttingPreset, LibraryChange, LibraryTool, MAX_LIBRARY_BYTES, ToolSlot},
 };
+use cam_storage::tool_library::{StoreError, ToolLibraryStore};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{fs, io, path::PathBuf};

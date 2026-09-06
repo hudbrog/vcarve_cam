@@ -60,7 +60,9 @@ returns a validated next revision or an error; it never partly changes the input
 `CuttingPreset::from_settings` separately captures its cutting values. Both
 validate supplied data. Core code still has no filesystem or process access.
 
-`cam_app::tool_library::ToolLibraryStore` owns filesystem persistence. Its public
+`cam_storage::tool_library::ToolLibraryStore` owns filesystem persistence shared
+by the CLI and server. `cam_app::tool_library` re-exports the same API for
+compatibility. Its public
 operations are:
 
 | Method | Behavior |

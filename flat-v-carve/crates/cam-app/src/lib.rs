@@ -1,2 +1,2 @@
-//! Local application services, reusable by the CLI and future HTTP adapter.
-pub mod tool_library;
+//! Local application services. Keep the public persistence API compatible.
+pub use cam_storage::tool_library;

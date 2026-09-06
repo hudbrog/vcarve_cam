@@ -4,6 +4,7 @@ pub mod inspection;
 pub mod library;
 pub mod planning;
 pub mod planning_worker;
+pub mod serve;
 pub mod verification;
 
 use axum::{
@@ -28,7 +29,44 @@ use std::{
 use tokio::sync::Semaphore;
 
 const WORKERS: usize = 2;
-type Assets = HashMap<String, (&'static str, Bytes)>;
+pub type Assets = HashMap<String, (&'static str, Bytes)>;
+
+/// Assets compiled into the host executable; bytes are shared without copying.
+pub fn embedded_assets(files: &[(&'static str, &'static [u8])]) -> Assets {
+    files
+        .iter()
+        .map(|&(path, bytes)| {
+            let key = if path == "index.html" {
+                "/".into()
+            } else {
+                format!("/{path}")
+            };
+            (key, (content_type(path), Bytes::from_static(bytes)))
+        })
+        .collect()
+}
+
+fn content_type(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js" | "mjs") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("avif") => "image/avif",
+        Some("ico") => "image/x-icon",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("ttf") => "font/ttf",
+        Some("wasm") => "application/wasm",
+        Some("txt") => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
 
 /// Read only build assets at startup. HTTP paths never become filesystem paths.
 pub fn load_assets(directory: &Path) -> io::Result<Assets> {
@@ -187,7 +225,7 @@ async fn boundary(State(state): State<AppState>, request: Request, next: Next) -
         error(
             StatusCode::FORBIDDEN,
             "LOCAL_ORIGIN",
-            "Use the exact loopback URL printed by cam-web.",
+            "Use the exact loopback URL printed by the local service.",
         )
     } else if request.uri().path().starts_with("/api/")
         && request.uri().path() != "/api/v1/session"
