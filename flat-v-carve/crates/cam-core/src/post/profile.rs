@@ -81,6 +81,8 @@ pub struct LinuxCncProfile {
     /// Clearance above stock TOP, matching the planner. Emitted Z also
     /// includes stock thickness when the machine datum is stock bottom.
     pub clearance_z_mm: f64,
+    /// Minimum coordinate precision. Export may increase it through nine
+    /// places to preserve motion, recording the effective precision separately.
     pub decimal_places: usize,
     /// Required operator setup, expressed AFTER modal setup and G92.1.
     /// With None, startup is macro-owned; no axis move precedes the first M6.

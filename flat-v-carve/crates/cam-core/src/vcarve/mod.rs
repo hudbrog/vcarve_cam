@@ -79,7 +79,9 @@ pub struct CombinedPlan {
 /// Only these constructors can create it; callers cannot mutate the bound plan.
 pub struct AuthenticatedPlan(CombinedPlan);
 mod retained;
-pub use retained::{VerificationReceipt, plan_combined_with_receipt, verify_retained_plan};
+pub use retained::{
+    VerificationReceipt, export_retained_plan, plan_combined_with_receipt, verify_retained_plan,
+};
 impl AuthenticatedPlan {
     pub fn from_reader(reader: impl std::io::Read) -> Result<Self> {
         CombinedPlan::from_reader(reader).map(Self)

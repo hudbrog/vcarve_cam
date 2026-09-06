@@ -758,6 +758,15 @@ mod tests {
             exporting::start(&service, wrong),
             Err(Failure(422, "EXPORT_OPTIONS", _))
         ));
+        for pointer in ["receipt", "export"] {
+            let mut forged = serde_json::to_value(make()).unwrap();
+            if pointer == "receipt" {
+                forged["receipt"] = json!({"incomplete": false});
+            } else {
+                forged["export"]["receipt"] = json!({"incomplete": false});
+            }
+            assert!(serde_json::from_value::<exporting::Start>(forged).is_err());
+        }
         assert!(exporting::start(&service, make()).unwrap().state == Status::Queued);
         assert_eq!(service.pending.available_permits(), MAX_PENDING - 1);
         let mut changed = make();

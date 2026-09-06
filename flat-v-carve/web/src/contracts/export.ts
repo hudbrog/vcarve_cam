@@ -15,13 +15,14 @@ const filename = z.enum(['combined.ngc','endmill.ngc','vbit.ngc']);
 export const exportReportSchema = z.strictObject({
   artifact_kind: z.literal('linuxcnc_export_report'), schema_version: z.literal(1), engine_version: z.string(), status,
   profile: profileSchema, profile_fingerprint: fingerprint, layout: layoutSchema, machine_z_offset_mm: coordinate,
+  output_decimal_places: z.number().int().min(0).max(9),
   plan_verification: verificationReportSchema, emitted_verification: stockVerificationSchema.nullable(),
   emitted_motion_fingerprint: fingerprint.nullable(),
   programs: z.array(z.strictObject({ filename, sha256: fingerprint, motion_count: count, clearance_link_count: count,
     contract_positioning_blocks: count, tool_changes: count, prerequisites: z.array(z.string()) })).max(2),
   diagnostics: z.array(z.strictObject({ code: z.string(), severity: z.enum(['warning','error']), stage: z.string(),
     message: z.string(), source_id: z.string().optional() })), limitations: z.array(z.string()),
-}).refine(r => r.plan_verification.rounded === null && r.plan_verification.engine_version === r.engine_version
+}).refine(r => r.output_decimal_places >= r.profile.decimal_places && r.plan_verification.rounded === null && r.plan_verification.engine_version === r.engine_version
   && (r.status !== 'passed' || (r.plan_verification.status === 'passed' && r.emitted_verification?.status === 'passed'
     && r.emitted_motion_fingerprint !== null && r.programs.length > 0 && !r.diagnostics.some(d => d.severity === 'error')))
   && new Set(r.programs.map(p => p.filename)).size === r.programs.length

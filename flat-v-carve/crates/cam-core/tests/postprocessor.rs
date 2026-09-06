@@ -356,7 +356,7 @@ fn profile_contracts_mapping_clearance_and_numeric_precision_are_required() {
 }
 
 #[test]
-fn resource_exhaustion_and_output_collapse_return_no_executable_programs() {
+fn resource_exhaustion_blocks_output_and_precision_increases_preserve_motions() {
     let result = export_plan(
         plan(),
         &profile(),
@@ -372,9 +372,85 @@ fn resource_exhaustion_and_output_collapse_return_no_executable_programs() {
     let mut p = profile();
     p.decimal_places = 0;
     let result = export_plan(plan(), &p, ProgramLayout::Combined, &options()).unwrap();
-    assert_eq!(result.report.status, VerificationStatus::Failed);
-    assert!(result.programs.is_empty());
-    assert_eq!(result.report.diagnostics[0].code, "POST_ROUNDING");
+    assert_eq!(result.report.status, VerificationStatus::Passed);
+    assert!(result.report.output_decimal_places > p.decimal_places);
+    assert_eq!(result.report.profile.decimal_places, 0);
+    assert_eq!(
+        result.report.diagnostics[0].code,
+        "POST_PRECISION_INCREASED"
+    );
+    assert_eq!(
+        result.report.programs[0].motion_count,
+        plan().endmill.motions.len() + plan().vbit_motions.len()
+    );
+    assert_eq!(
+        verify_programs(
+            plan(),
+            &p,
+            ProgramLayout::Combined,
+            &options(),
+            &result.programs
+        )
+        .unwrap()
+        .status,
+        VerificationStatus::Passed
+    );
+}
+
+#[test]
+fn retained_export_matches_full_replay_and_rejects_changed_artifacts() {
+    use cam_core::vcarve::{export_retained_plan, plan_combined_with_receipt};
+    for name in ["narrow-channel", "finite-tip", "resource-limit"] {
+        let job = Job::from_json(
+            &std::fs::read_to_string(format!("../../fixtures/m4/{name}.json")).unwrap(),
+        )
+        .unwrap();
+        let (plan, receipt) = plan_combined_with_receipt(&job).unwrap();
+        let json = plan.to_json().unwrap();
+        let opts = if name == "resource-limit" {
+            VerificationOptions {
+                max_cells: 1,
+                ..options()
+            }
+        } else {
+            options()
+        };
+        for layout in [ProgramLayout::Combined, ProgramLayout::PerTool] {
+            let retained =
+                export_retained_plan(json.as_bytes(), &receipt, &profile(), layout, &opts).unwrap();
+            let replayed = export_plan(&plan, &profile(), layout, &opts).unwrap();
+            assert_eq!(
+                serde_json::to_value(&retained.report).unwrap(),
+                serde_json::to_value(&replayed.report).unwrap(),
+                "{name}"
+            );
+            assert_eq!(
+                serde_json::to_value(&retained.programs).unwrap(),
+                serde_json::to_value(&replayed.programs).unwrap()
+            );
+        }
+        let original: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for pointer in [
+            "/endmill/job/tools/1/spindle_rpm",
+            "/vbit_motions/0/end/x",
+            "/executions/0/pass_depth_mm",
+        ] {
+            let mut changed = original.clone();
+            *changed.pointer_mut(pointer).unwrap() = serde_json::json!(99.);
+            assert_eq!(
+                export_retained_plan(
+                    serde_json::to_vec(&changed).unwrap().as_slice(),
+                    &receipt,
+                    &profile(),
+                    ProgramLayout::Combined,
+                    &options()
+                )
+                .unwrap_err()
+                .code,
+                "STALE_PLAN"
+            );
+        }
+    }
 }
 
 #[test]

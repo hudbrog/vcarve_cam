@@ -1,6 +1,43 @@
 use super::*;
 use crate::motion::{MotionKind, Position};
 
+#[test]
+fn parallel_cells_preserve_serial_results_and_global_resource_limits() {
+    let job = job();
+    let plan = crate::vcarve::plan_combined(&job).unwrap();
+    let ctx = Context::new(&job).unwrap();
+    for cells in [1, 63, 4096] {
+        let options = VerificationOptions {
+            max_cells: cells,
+            max_findings: 1,
+            ..Default::default()
+        };
+        let check = |workers| {
+            run_with_workers(
+                &ctx,
+                &plan.endmill.motions,
+                &plan.vbit_motions,
+                &options,
+                None,
+                vec![],
+                None,
+                workers,
+            )
+            .unwrap()
+        };
+        let serial = check(0);
+        assert!(serial.evaluated_cells <= cells);
+        assert!(serial.findings.len() <= options.max_findings);
+        if cells == 1 {
+            assert_eq!(serial.status, VerificationStatus::Inconclusive);
+        }
+        assert_eq!(
+            serde_json::to_vec(&serial).unwrap(),
+            serde_json::to_vec(&check(4)).unwrap()
+        );
+    }
+}
+
 fn job() -> Job {
     Job::from_json(include_str!(
         "../../../../../fixtures/m4/curved-medial.json"

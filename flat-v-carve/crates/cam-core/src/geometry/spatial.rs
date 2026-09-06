@@ -33,11 +33,23 @@ impl Aabb {
         let y = (self.min.y - other.max.y)
             .max(other.min.y - self.max.y)
             .max(0.);
+        // Overlapping boxes have exactly zero separation. Axis-aligned gaps
+        // need no general hypotenuse calculation (the reserve is unchanged).
+        if x == 0. && y == 0. {
+            return 0.;
+        }
+        let distance = if x == 0. {
+            y
+        } else if y == 0. {
+            x
+        } else {
+            x.hypot(y)
+        };
         let magnitude = [self.min, self.max, other.min, other.max]
             .iter()
             .map(|p| p.x.abs().max(p.y.abs()))
             .fold(1., f64::max);
-        (x.hypot(y) - 32. * f64::EPSILON * magnitude).max(0.)
+        (distance - 32. * f64::EPSILON * magnitude).max(0.)
     }
 }
 

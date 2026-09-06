@@ -101,7 +101,7 @@ fn export_bundle_contains_verified_bytes_and_saved_program_can_be_rechecked() {
 }
 
 #[test]
-fn failed_and_inconclusive_exports_publish_report_only_and_do_not_overwrite() {
+fn inconclusive_exports_publish_only_reports_and_low_precision_is_adapted() {
     let s = Scratch::new("failure");
     let plan = s.plan();
     let out = s.0.join("limited");
@@ -133,9 +133,12 @@ fn failed_and_inconclusive_exports_publish_report_only_and_do_not_overwrite() {
         .arg(&failed)
         .output()
         .unwrap();
-    assert_eq!(result.status.code(), Some(1));
-    assert_eq!(json(&failed.join("export-report.json"))["status"], "failed");
-    assert_eq!(fs::read_dir(&failed).unwrap().count(), 1);
+    assert_eq!(result.status.code(), Some(0));
+    let report = json(&failed.join("export-report.json"));
+    assert_eq!(report["status"], "passed");
+    assert!(report["output_decimal_places"].as_u64().unwrap() > 0);
+    assert_eq!(report["profile"]["decimal_places"], 0);
+    assert_eq!(fs::read_dir(&failed).unwrap().count(), 2);
 }
 
 #[test]

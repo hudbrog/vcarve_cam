@@ -4,6 +4,7 @@ use crate::{
     target::ReachabilityOptions,
 };
 
+mod parallel;
 #[cfg(test)]
 mod tests;
 
@@ -82,11 +83,21 @@ fn evaluate(
     let variation = radius / slope;
     let distance = ctx.target.boundary().sample(p)?;
     let target_at = (distance.signed_distance_mm / slope).clamp(0., cap);
-    let (distance_lower, distance_upper) = ctx.target.boundary().box_bounds_with_center_sample(
-        cell.bounds.min,
-        cell.bounds.max,
-        distance,
-    )?;
+    // Signed distance is 1-Lipschitz. Entirely exterior boxes and deep floor
+    // boxes already have an exact clamped target (0 or cap) and reachability.
+    // Reserve exact edge/rectangle searches for boxes near a surface transition.
+    let loose_lower = distance.signed_distance_mm - radius - 4. * distance.numerical_reserve_mm;
+    let loose_upper = distance.signed_distance_mm + radius + 4. * distance.numerical_reserve_mm;
+    let (distance_lower, distance_upper) =
+        if loose_upper <= 0. || loose_lower >= ctx.vbit.tip_radius().mm() + cap * slope {
+            (loose_lower, loose_upper)
+        } else {
+            ctx.target.boundary().box_bounds_with_center_sample(
+                cell.bounds.min,
+                cell.bounds.max,
+                distance,
+            )?
+        };
     let target = Interval::positive(
         (distance_lower / slope).clamp(0., cap),
         (distance_upper / slope).clamp(0., cap),
@@ -436,8 +447,29 @@ fn run(
     vbit: &[Motion],
     options: &VerificationOptions,
     places: Option<usize>,
+    findings: Vec<Finding>,
+    caps: Option<[f64; 4]>,
+) -> Result<StockVerification> {
+    let workers = if endmill.len() + vbit.len() >= 1024 && options.max_cells >= 4096 {
+        std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(8)
+    } else {
+        0
+    };
+    run_with_workers(ctx, endmill, vbit, options, places, findings, caps, workers)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_with_workers(
+    ctx: &Context<'_>,
+    endmill: &[Motion],
+    vbit: &[Motion],
+    options: &VerificationOptions,
+    places: Option<usize>,
     mut findings: Vec<Finding>,
     caps: Option<[f64; 4]>,
+    worker_count: usize,
 ) -> Result<StockVerification> {
     let mut timing = crate::timing::Timer::new("M5 continuous");
     let (clear_count, motion_findings) = super::motion::check(ctx, endmill, vbit, places);
@@ -525,117 +557,153 @@ fn run(
         "M5_UNREACHABLE_DETAIL",
         "M5_REACHABLE_RESIDUAL",
     ];
-    while let Some(cell) = queue.pop() {
-        let p = cell.bounds.min.lerp(cell.bounds.max, 0.5);
-        // Unprocessed cells keep full conservative bounds when the budget ends.
-        let budget = evaluated >= options.max_cells;
-        let evaluation = if budget {
-            let maximum = critical.iter().copied().fold(cap, f64::max) + ctx.reserve;
-            Evaluation {
-                target: Interval::positive(0., cap),
-                actual: Interval::positive(0., maximum),
-                errors: [
-                    Interval::positive(0., maximum),
-                    Interval::positive(0., cap),
-                    Interval::positive(0., cap),
-                    Interval::positive(0., cap),
-                    Interval::positive(0., cap),
-                ],
-                reachability_cells: 0,
-            }
-        } else {
-            evaluated += 1;
-            evaluate(ctx, &cell, &sweeps, options, all_clear)?
-        };
-        deepest = deepest.max(cell.depth);
-        reachability_cells += evaluation.reachability_cells;
-        if caps.is_some() {
-            for i in 0..4 {
-                acceptance[i] = acceptance[i]
-                    .max(evaluation.errors[i].lower + ctx.tolerance * 0.99)
-                    .min(limits[i]);
-            }
-        }
-        let failure = (0..4).find(|&i| evaluation.errors[i].lower > limits[i]);
-        let ambiguous = budget || (0..4).any(|i| evaluation.errors[i].upper > acceptance[i]);
-        if failure.is_none()
-            && ambiguous
-            && !budget
-            && cell.depth < options.max_depth
-            && evaluated + queue.len() + 4 <= options.max_cells
-            && p.x > cell.bounds.min.x
-            && p.x < cell.bounds.max.x
-            && p.y > cell.bounds.min.y
-            && p.y < cell.bounds.max.y
-        {
-            // Fixed quadrant order and depth-first traversal keep artifacts stable.
-            for b in children(cell.bounds) {
-                queue.push(Cell {
-                    bounds: b,
-                    depth: cell.depth + 1,
-                    sweeps: cell
-                        .sweeps
-                        .iter()
-                        .copied()
-                        .filter(|&i| overlap(b, sweeps[i].bounds))
-                        .collect(),
-                });
-            }
-            continue;
-        }
-        let finding = if let Some(i) = failure {
-            Some(Finding { code:codes[i].into(), status:VerificationStatus::Failed,
+    std::thread::scope(|scope| -> Result<()> {
+        let evaluator =
+            parallel::Evaluator::new(scope, ctx, &sweeps, options, all_clear, worker_count);
+        while !queue.is_empty() {
+            // Batch order and all decisions are independent of worker completion
+            // order and CPU count. Pending cells stay charged to the global budget.
+            let count = queue
+                .len()
+                .min(512)
+                .min(options.max_cells.saturating_sub(evaluated).max(1));
+            let mut batch = queue.split_off(queue.len() - count);
+            batch.reverse();
+            let results = if evaluated < options.max_cells {
+                evaluator.batch(batch)?
+            } else {
+                batch
+                    .into_iter()
+                    .map(|cell| {
+                        (
+                            cell,
+                            Ok(Evaluation {
+                                target: Interval::default(),
+                                actual: Interval::default(),
+                                errors: [Interval::default(); 5],
+                                reachability_cells: 0,
+                            }),
+                        )
+                    })
+                    .collect()
+            };
+            let mut pending = results.len();
+            for (cell, result) in results {
+                pending -= 1;
+                let p = cell.bounds.min.lerp(cell.bounds.max, 0.5);
+                // Unprocessed cells keep full conservative bounds when the budget ends.
+                let budget = evaluated >= options.max_cells;
+                let evaluation = if budget {
+                    let maximum = critical.iter().copied().fold(cap, f64::max) + ctx.reserve;
+                    Evaluation {
+                        target: Interval::positive(0., cap),
+                        actual: Interval::positive(0., maximum),
+                        errors: [
+                            Interval::positive(0., maximum),
+                            Interval::positive(0., cap),
+                            Interval::positive(0., cap),
+                            Interval::positive(0., cap),
+                            Interval::positive(0., cap),
+                        ],
+                        reachability_cells: 0,
+                    }
+                } else {
+                    evaluated += 1;
+                    result?
+                };
+                deepest = deepest.max(cell.depth);
+                reachability_cells += evaluation.reachability_cells;
+                if caps.is_some() {
+                    for i in 0..4 {
+                        acceptance[i] = acceptance[i]
+                            .max(evaluation.errors[i].lower + ctx.tolerance * 0.99)
+                            .min(limits[i]);
+                    }
+                }
+                let failure = (0..4).find(|&i| evaluation.errors[i].lower > limits[i]);
+                let ambiguous =
+                    budget || (0..4).any(|i| evaluation.errors[i].upper > acceptance[i]);
+                if failure.is_none()
+                    && ambiguous
+                    && !budget
+                    && cell.depth < options.max_depth
+                    && evaluated + queue.len() + pending + 4 <= options.max_cells
+                    && p.x > cell.bounds.min.x
+                    && p.x < cell.bounds.max.x
+                    && p.y > cell.bounds.min.y
+                    && p.y < cell.bounds.max.y
+                {
+                    // Fixed quadrant order and depth-first traversal keep artifacts stable.
+                    for b in children(cell.bounds) {
+                        queue.push(Cell {
+                            bounds: b,
+                            depth: cell.depth + 1,
+                            sweeps: cell
+                                .sweeps
+                                .iter()
+                                .copied()
+                                .filter(|&i| overlap(b, sweeps[i].bounds))
+                                .collect(),
+                        });
+                    }
+                    continue;
+                }
+                let finding = if let Some(i) = failure {
+                    Some(Finding { code:codes[i].into(), status:VerificationStatus::Failed,
                 message:"an independent point witness exceeds the criterion; upper bound covers the whole cell".into(),
                 location:p,cell:Some(cell.bounds),motion_id:None,measured_mm:Some(evaluation.errors[i]),limit_mm:Some(limits[i]) })
-        } else if ambiguous {
-            unresolved += 1;
-            let i = (0..4)
-                .find(|&i| evaluation.errors[i].upper > limits[i])
-                .unwrap_or(3);
-            Some(Finding {
-                code: "M5_UNRESOLVED_CELL".into(),
-                status: VerificationStatus::Inconclusive,
-                message: format!(
-                    "{} bound remains unresolved at the cell, depth, or arithmetic limit",
-                    codes[i]
-                ),
-                location: p,
-                cell: Some(cell.bounds),
-                motion_id: None,
-                measured_mm: Some(evaluation.errors[i]),
-                limit_mm: Some(limits[i]),
-            })
-        } else {
-            None
-        };
-        if let Some(f) = finding {
-            result_status = status(result_status, f.status);
-            if findings.len() < options.max_findings {
-                findings.push(f);
-            } else {
-                omitted += 1;
+                } else if ambiguous {
+                    unresolved += 1;
+                    let i = (0..4)
+                        .find(|&i| evaluation.errors[i].upper > limits[i])
+                        .unwrap_or(3);
+                    Some(Finding {
+                        code: "M5_UNRESOLVED_CELL".into(),
+                        status: VerificationStatus::Inconclusive,
+                        message: format!(
+                            "{} bound remains unresolved at the cell, depth, or arithmetic limit",
+                            codes[i]
+                        ),
+                        location: p,
+                        cell: Some(cell.bounds),
+                        motion_id: None,
+                        measured_mm: Some(evaluation.errors[i]),
+                        limit_mm: Some(limits[i]),
+                    })
+                } else {
+                    None
+                };
+                if let Some(f) = finding {
+                    result_status = status(result_status, f.status);
+                    if findings.len() < options.max_findings {
+                        findings.push(f);
+                    } else {
+                        omitted += 1;
+                    }
+                }
+                bounds.overcut_mm.maximum(evaluation.errors[0]);
+                bounds.floor_ridge_mm.maximum(evaluation.errors[1]);
+                bounds.unreachable_detail_mm.maximum(evaluation.errors[2]);
+                bounds
+                    .other_reachable_residual_mm
+                    .maximum(evaluation.errors[3]);
+                bounds.total_residual_mm.maximum(evaluation.errors[4]);
+                let size = area(cell.bounds);
+                bounds.residual_volume_mm3.lower +=
+                    size * (evaluation.target.lower - evaluation.actual.upper).max(0.);
+                bounds.residual_volume_mm3.upper += size * evaluation.errors[4].upper;
+                bounds.overcut_volume_mm3.lower +=
+                    size * (evaluation.actual.lower - evaluation.target.upper).max(0.);
+                bounds.overcut_volume_mm3.upper += size * evaluation.errors[0].upper;
+                leaves.push(Leaf {
+                    area: size,
+                    target: evaluation.target,
+                    actual: evaluation.actual,
+                });
             }
         }
-        bounds.overcut_mm.maximum(evaluation.errors[0]);
-        bounds.floor_ridge_mm.maximum(evaluation.errors[1]);
-        bounds.unreachable_detail_mm.maximum(evaluation.errors[2]);
-        bounds
-            .other_reachable_residual_mm
-            .maximum(evaluation.errors[3]);
-        bounds.total_residual_mm.maximum(evaluation.errors[4]);
-        let size = area(cell.bounds);
-        bounds.residual_volume_mm3.lower +=
-            size * (evaluation.target.lower - evaluation.actual.upper).max(0.);
-        bounds.residual_volume_mm3.upper += size * evaluation.errors[4].upper;
-        bounds.overcut_volume_mm3.lower +=
-            size * (evaluation.actual.lower - evaluation.target.upper).max(0.);
-        bounds.overcut_volume_mm3.upper += size * evaluation.errors[0].upper;
-        leaves.push(Leaf {
-            area: size,
-            target: evaluation.target,
-            actual: evaluation.actual,
-        });
-    }
+        Ok(())
+    })?;
     timing.lap("adaptive cells");
     let (depth_bands, limited) = bands(&leaves, &critical, ctx.tolerance, options.max_depth_bands);
     timing.lap("depth bands");

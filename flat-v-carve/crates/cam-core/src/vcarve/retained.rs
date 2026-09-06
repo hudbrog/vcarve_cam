@@ -43,8 +43,23 @@ pub fn verify_retained_plan(
     receipt: &VerificationReceipt,
     options: &VerificationOptions,
 ) -> Result<VerificationReport> {
-    let mut timing = crate::timing::Timer::new("M5 retained plan");
     options.validate()?;
+    let e = read_retained_plan(reader, receipt)?;
+    let mut report = verify_motions(&e.endmill.job, &e.endmill.motions, &e.vbit_motions, options)?;
+    bind_plan_report(
+        &mut report,
+        &e.input_fingerprint,
+        &e.motion_fingerprint,
+        receipt.incomplete,
+    )?;
+    Ok(report)
+}
+
+fn read_retained_plan(
+    reader: impl std::io::Read,
+    receipt: &VerificationReceipt,
+) -> Result<Envelope> {
+    let _timing = crate::timing::Timer::new("retained plan decode and authenticate");
     let e: Envelope =
         serde_json::from_reader(reader).map_err(|e| error("PLAN_JSON", e.to_string()))?;
     if e.artifact_kind != "combined_plan"
@@ -76,13 +91,31 @@ pub fn verify_retained_plan(
             "retained settings, motions or execution records changed",
         ));
     }
-    timing.lap("decode and authenticate");
-    let mut report = verify_motions(&e.endmill.job, &e.endmill.motions, &e.vbit_motions, options)?;
-    bind_plan_report(
-        &mut report,
-        &e.input_fingerprint,
-        &e.motion_fingerprint,
-        receipt.incomplete,
-    )?;
-    Ok(report)
+    Ok(e)
+}
+
+/// Export only with a receipt retained separately by the generating service.
+/// User-supplied receipts must never authorize imported artifacts.
+pub fn export_retained_plan(
+    reader: impl std::io::Read,
+    receipt: &VerificationReceipt,
+    profile: &crate::post::LinuxCncProfile,
+    layout: crate::post::ProgramLayout,
+    options: &VerificationOptions,
+) -> Result<crate::post::ExportResult> {
+    options.validate()?;
+    let e = read_retained_plan(reader, receipt)?;
+    crate::post::export_source(
+        crate::post::SourcePlan {
+            job: &e.endmill.job,
+            input_fingerprint: &e.input_fingerprint,
+            motion_fingerprint: &e.motion_fingerprint,
+            endmill: &e.endmill.motions,
+            vbit: &e.vbit_motions,
+            incomplete: receipt.incomplete,
+        },
+        profile,
+        layout,
+        options,
+    )
 }

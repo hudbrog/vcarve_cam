@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "printnc",
+  "work_offset": "G54",
+  "z_datum": "stock_bottom",
+  "clearance_z_mm": 5,
+  "decimal_places": 3,
+  "program_start_position_mm": null,
+  "length_compensation": "macro_managed",
+  "tools": [
+    {
+      "tool_id": "endmill",
+      "tool_number": 1,
+      "length_offset_number": null,
+      "spindle_direction": "clockwise"
+    },
+    {
+      "tool_id": "vbit",
+      "tool_number": 2,
+      "length_offset_number": null,
+      "spindle_direction": "clockwise"
+    }
+  ],
+  "spindle_spinup_seconds": 0.5,
+  "coolant": "off",
+  "m6": {
+    "reference": "hi",
+    "reviewed": true,
+    "return_position": {
+      "kind": "safe_retract",
+      "z_mm": 150,
+      "transit_xy_mm": {
+        "x": 0,
+        "y": 0
+      }
+    },
+    "preserves_work_datum": true,
+    "local_offsets_unused": true,
+    "tool_offsets_z_only": true
+  }
+}

@@ -64,7 +64,7 @@ impl From<Depth> for f64 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "f64", into = "f64")]
-pub struct IncludedAngle(f64);
+pub struct IncludedAngle(f64, f64);
 impl IncludedAngle {
     pub fn new(degrees: f64) -> Result<Self> {
         let slope = (degrees.to_radians() / 2.0).tan();
@@ -79,13 +79,15 @@ impl IncludedAngle {
                 "included angle must be finite and strictly between 0 and 180 degrees",
             ));
         }
-        Ok(Self(degrees))
+        Ok(Self(degrees, slope))
     }
     pub fn degrees(self) -> f64 {
         self.0
     }
     pub fn slope(self) -> f64 {
-        (self.0.to_radians() / 2.0).tan()
+        // Validated and immutable; analytic stock queries reuse this millions
+        // of times. Serialization still contains only the original degrees.
+        self.1
     }
 }
 impl TryFrom<f64> for IncludedAngle {

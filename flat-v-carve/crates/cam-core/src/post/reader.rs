@@ -244,6 +244,7 @@ pub(super) fn read(
                 + (decoded.end.z - decoded.start.z) * (expected.end.z - expected.start.z);
             if decoded.start == decoded.end
                 || dot <= 0.
+                || expected.kind == MotionKind::Cut && decoded.start.xy() == decoded.end.xy()
                 || matches!(
                     expected.kind,
                     MotionKind::Approach
@@ -256,8 +257,8 @@ pub(super) fn read(
                 return Err(error(
                     "POST_ROUNDING",
                     format!(
-                        "motion {} collapses, reverses, or loses required Z travel after output formatting",
-                        expected.id
+                        "motion {} (tool {}, {} decimal places) collapses, reverses, or loses required travel after output formatting: {:?} -> {:?}",
+                        expected.id, expected.tool_id, p.decimal_places, current, end
                     ),
                 ));
             }

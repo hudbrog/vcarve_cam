@@ -28,6 +28,11 @@ The [flower settings study](docs/flat-v-carve/flower-settings-study.md) compares
 19 configurations for an approximately 0.1 mm wood finish. Saved balanced and
 finer-floor job presets generate in 8.2–10.5 seconds on the measured machine.
 
+Flower G-code export now preserves tiny motions by increasing output precision
+when needed and reports the precision used. Retained-plan authentication and
+parallel stock verification reduce export latency; see the
+[postprocessing investigation](docs/flat-v-carve/flower-postprocessing.md).
+
 Live browser planning now keeps complete plans in temporary files and loads every
 recorded motion through bounded pages. Verification and export reopen those files directly;
 plan size no longer controls worker-message size. See the

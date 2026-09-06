@@ -2,15 +2,18 @@
 //! readback. No filesystem, machine connection, or arbitrary G-code templates.
 mod profile;
 mod reader;
+#[cfg(test)]
+mod tests;
 pub use profile::*;
 
 use crate::{
     geometry::{Diagnostic, Result},
+    job::Job,
     motion::{Motion, MotionKind, Position},
     vcarve::{AuthenticatedPlan, CombinedPlan},
     verification::{
         StockVerification, VerificationOptions, VerificationReport, VerificationStatus,
-        verify_authenticated_plan, verify_emitted_motions,
+        bind_plan_report, verify_emitted_motions, verify_motions,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -51,6 +54,8 @@ pub struct ExportReport {
     pub profile_fingerprint: String,
     pub layout: ProgramLayout,
     pub machine_z_offset_mm: f64,
+    /// At least the profile precision; increased when needed to preserve motion.
+    pub output_decimal_places: usize,
     pub plan_verification: VerificationReport,
     pub emitted_verification: Option<StockVerification>,
     pub emitted_motion_fingerprint: Option<String>,
@@ -113,24 +118,77 @@ struct ProgramReadback {
     vbit: Vec<Motion>,
     evidence: Vec<ProgramEvidence>,
 }
-fn stages(plan: &CombinedPlan) -> Vec<Stage<'_>> {
-    [
+pub(crate) struct SourcePlan<'a> {
+    pub job: &'a Job,
+    pub input_fingerprint: &'a str,
+    pub motion_fingerprint: &'a str,
+    pub endmill: &'a [Motion],
+    pub vbit: &'a [Motion],
+    pub incomplete: bool,
+}
+impl<'a> From<&'a CombinedPlan> for SourcePlan<'a> {
+    fn from(plan: &'a CombinedPlan) -> Self {
+        Self {
+            job: &plan.endmill.job,
+            input_fingerprint: &plan.input_fingerprint,
+            motion_fingerprint: &plan.motion_fingerprint,
+            endmill: &plan.endmill.motions,
+            vbit: &plan.vbit_motions,
+            incomplete: plan.analysis.finish_paths_expected != plan.analysis.finish_paths_executed
+                || !plan.generation_issues.is_empty(),
+        }
+    }
+}
+fn stages<'a>(plan: &SourcePlan<'a>) -> Result<Vec<Stage<'a>>> {
+    let spindle = |id: &str| {
+        plan.job
+            .tools
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.spindle_rpm)
+            .ok_or_else(|| error("POST_SPINDLE", "tool spindle speed is required"))
+    };
+    Ok([
         Stage {
             role: "endmill",
-            id: &plan.endmill.job.operation.endmill_id,
-            motions: &plan.endmill.motions,
-            spindle: plan.endmill.spindle_rpm,
+            id: &plan.job.operation.endmill_id,
+            motions: plan.endmill,
+            spindle: spindle(&plan.job.operation.endmill_id)?,
         },
         Stage {
             role: "vbit",
-            id: &plan.endmill.job.operation.vbit_id,
-            motions: &plan.vbit_motions,
-            spindle: plan.vbit_spindle_rpm,
+            id: &plan.job.operation.vbit_id,
+            motions: plan.vbit,
+            spindle: spindle(&plan.job.operation.vbit_id)?,
         },
     ]
     .into_iter()
     .filter(|s| !s.motions.is_empty())
-    .collect()
+    .collect())
+}
+fn preserves_motions(stages: &[Stage<'_>], profile: &LinuxCncProfile, offset: f64) -> bool {
+    stages.iter().all(|stage| {
+        let mut start = machine_position(stage.motions[0].start, profile, offset);
+        stage.motions.iter().all(|m| {
+            let end = machine_position(m.end, profile, offset);
+            let dot = (end.x - start.x) * (m.end.x - m.start.x)
+                + (end.y - start.y) * (m.end.y - m.start.y)
+                + (end.z - start.z) * (m.end.z - m.start.z);
+            let valid = start != end
+                && dot > 0.
+                && (m.kind != MotionKind::Cut || start.xy() != end.xy())
+                && (!matches!(
+                    m.kind,
+                    MotionKind::Approach
+                        | MotionKind::Plunge
+                        | MotionKind::Ramp
+                        | MotionKind::RapidRetract
+                ) || m.start.z == m.end.z
+                    || start.z != end.z);
+            start = end;
+            valid
+        })
+    })
 }
 fn modal(lines: &mut Vec<String>, p: &LinuxCncProfile) {
     lines.extend([
@@ -140,7 +198,7 @@ fn modal(lines: &mut Vec<String>, p: &LinuxCncProfile) {
     ]);
 }
 fn emit(
-    plan: &CombinedPlan,
+    plan: &SourcePlan<'_>,
     p: &LinuxCncProfile,
     stages: &[&Stage<'_>],
     filename: &str,
@@ -156,7 +214,7 @@ fn emit(
         format!("(CAM Plan {})", plan.motion_fingerprint),
         "(CAM Start ready for M6 under the profile startup and clearance contract)".into(),
     ];
-    if filename == "vbit.ngc" && !plan.endmill.motions.is_empty() {
+    if filename == "vbit.ngc" && !plan.endmill.is_empty() {
         lines.push(
             "(CAM Prerequisite: endmill.ngc from this export must already have run on this stock)"
                 .into(),
@@ -222,7 +280,11 @@ fn emit(
             .into(),
         );
         for m in stage.motions {
-            let end = machine_position(m.end, p, offset);
+            // Format once in xyz; avoid an intermediate format/parse/format.
+            let end = Position {
+                z: m.end.z + offset,
+                ..m.end
+            };
             let feed = match m.feed_mm_min {
                 Some(v) => format!(" F{}", scalar(v)?),
                 None => String::new(),
@@ -233,9 +295,12 @@ fn emit(
                 xyz(end, p.decimal_places),
                 feed
             ));
-            current = end;
         }
-        previous_stage_end = Some(current);
+        previous_stage_end = Some(machine_position(
+            stage.motions.last().unwrap().end,
+            p,
+            offset,
+        ));
     }
     lines.extend(["M5".into(), "M9".into(), "M2".into()]);
     if lines.iter().any(|l| l.len() > 240) {
@@ -274,6 +339,14 @@ pub fn export_authenticated_plan(
     layout: ProgramLayout,
     options: &VerificationOptions,
 ) -> Result<ExportResult> {
+    export_source(SourcePlan::from(plan.plan()), profile, layout, options)
+}
+pub(crate) fn export_source(
+    plan: SourcePlan<'_>,
+    profile: &LinuxCncProfile,
+    layout: ProgramLayout,
+    options: &VerificationOptions,
+) -> Result<ExportResult> {
     process(plan, profile, layout, options, None)
 }
 /// Recheck saved output bytes against the plan/profile. Comments never supply
@@ -286,7 +359,7 @@ pub fn verify_programs(
     programs: &[Program],
 ) -> Result<ExportReport> {
     Ok(process(
-        &AuthenticatedPlan::from_plan(plan)?,
+        SourcePlan::from(AuthenticatedPlan::from_plan(plan)?.plan()),
         profile,
         layout,
         options,
@@ -295,12 +368,13 @@ pub fn verify_programs(
     .report)
 }
 fn process(
-    authenticated: &AuthenticatedPlan,
+    plan: SourcePlan<'_>,
     profile: &LinuxCncProfile,
     layout: ProgramLayout,
     options: &VerificationOptions,
     supplied: Option<&[Program]>,
 ) -> Result<ExportResult> {
+    let mut timing = crate::timing::Timer::new("M6 export");
     options.validate()?;
     if options
         .decimal_places
@@ -311,19 +385,25 @@ fn process(
             "output precision is owned by the machine profile",
         ));
     }
-    let plan = authenticated.plan();
-    profile.validate(&plan.endmill.job)?;
-    let offset = profile.z_offset(&plan.endmill.job)?;
+    profile.validate(plan.job)?;
+    let offset = profile.z_offset(plan.job)?;
     let mut original_options = options.clone();
     // Output rounding must happen AFTER stock-datum translation. Ordinary M5
     // stock-top decimal rounding is not interchangeable at rounding ties.
     original_options.decimal_places = None;
-    let original = verify_authenticated_plan(authenticated, &original_options)?;
+    let mut original = verify_motions(plan.job, plan.endmill, plan.vbit, &original_options)?;
+    bind_plan_report(
+        &mut original,
+        plan.input_fingerprint,
+        plan.motion_fingerprint,
+        plan.incomplete,
+    )?;
+    timing.lap("original verification");
     let mut report = ExportReport {
         artifact_kind: "linuxcnc_export_report".into(), schema_version: 1,
         engine_version: env!("CARGO_PKG_VERSION").into(), status: original.status,
         profile: profile.clone(), profile_fingerprint: hash(profile)?, layout,
-        machine_z_offset_mm: offset, plan_verification: original,
+        machine_z_offset_mm: offset, output_decimal_places: profile.decimal_places, plan_verification: original,
         emitted_verification: None, emitted_motion_fingerprint: None, programs: vec![], diagnostics: vec![],
         limitations: vec![
             "Acceptance covers authenticated modeled stock and the exact emitted linear subset under the declared machine contract; it is not LinuxCNC simulation or physical-machine approval.".into(),
@@ -337,10 +417,27 @@ fn process(
             report,
         });
     }
-    let all_stages = stages(plan);
+    let all_stages = stages(&plan)?;
     if all_stages.is_empty() {
         return Err(error("POST_EMPTY", "no executable motions"));
     }
+    // Treat profile precision as the minimum. Preserve every segment and its
+    // entry semantics before verification of the actual output coordinates.
+    let mut output_profile = profile.clone();
+    while output_profile.decimal_places < 9
+        && !preserves_motions(&all_stages, &output_profile, offset)
+    {
+        output_profile.decimal_places += 1;
+    }
+    report.output_decimal_places = output_profile.decimal_places;
+    if output_profile.decimal_places != profile.decimal_places {
+        report.diagnostics.push(error("POST_PRECISION_INCREASED", format!(
+            "Output precision increased from {} to {} decimal places to preserve all motions and required Z travel; no motions were discarded",
+            profile.decimal_places, output_profile.decimal_places,
+        )).warning());
+    }
+    let profile = &output_profile;
+    timing.lap("select output precision");
     let groups: Vec<(String, Vec<&Stage<'_>>)> = match layout {
         ProgramLayout::Combined => vec![("combined.ngc".into(), all_stages.iter().collect())],
         ProgramLayout::PerTool => all_stages
@@ -362,7 +459,7 @@ fn process(
         for (i, (filename, group)) in groups.iter().enumerate() {
             let program = match supplied {
                 Some(s) => s[i].clone(),
-                None => emit(plan, profile, group, filename, offset)?,
+                None => emit(&plan, profile, group, filename, offset)?,
             };
             if &program.filename != filename {
                 return Err(error(
@@ -385,14 +482,14 @@ fn process(
                     0
                 },
                 tool_changes: group.len(),
-                prerequisites: if filename == "vbit.ngc" && !plan.endmill.motions.is_empty() {
+                prerequisites: if filename == "vbit.ngc" && !plan.endmill.is_empty() {
                     vec!["Run endmill.ngc from this exact export on the same stock first.".into()]
                 } else {
                     vec![]
                 },
             });
             for m in read.motions {
-                if m.tool_id == plan.endmill.job.operation.endmill_id {
+                if m.tool_id == plan.job.operation.endmill_id {
                     endmill.push(m);
                 } else {
                     vbit.push(m);
@@ -423,7 +520,8 @@ fn process(
             });
         }
     };
-    let s = plan.endmill.job.endmill_planning.as_ref().unwrap();
+    timing.lap("emit and read back");
+    let s = plan.job.endmill_planning.as_ref().unwrap();
     let start = stock_position(
         machine_position(
             Position::new(s.start_xy_mm, s.clearance_z_mm),
@@ -432,8 +530,8 @@ fn process(
         ),
         offset,
     );
-    let emitted =
-        verify_emitted_motions(&plan.endmill.job, &endmill, &vbit, &original_options, start)?;
+    let emitted = verify_emitted_motions(plan.job, &endmill, &vbit, &original_options, start)?;
+    timing.lap("emitted verification");
     report.status = emitted.status;
     report.emitted_motion_fingerprint = Some(hash(&(&endmill, &vbit))?);
     report.emitted_verification = Some(emitted);

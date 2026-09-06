@@ -8,7 +8,7 @@ export const profileFields: ProfileField[] = [
   {path:'work_offset',label:'Work offset',help:'Select the work coordinate system where you set the job origin on the controller.',choices:['G54','G55','G56','G57','G58','G59','G59.1','G59.2','G59.3'].map(v => [v,v])},
   {path:'z_datum',label:'Work Z zero',help:'Where Z = 0 is set on the machine. Stock bottom requires the job’s stock thickness.',choices:[['stock_top','Stock top'],['stock_bottom','Stock bottom / table']]},
   {path:'clearance_z_mm',label:'Planning clearance above stock top (mm)',kind:'number',help:'Must match the clearance used to generate the plan. Use the copy button above to copy it from the job.'},
-  {path:'decimal_places',label:'Output coordinate decimal places (0–9)',kind:'number',help:'Digits after the decimal point in output coordinates. Too few can change the cuts; export checks the rounded program.'},
+  {path:'decimal_places',label:'Minimum coordinate decimal places (0–9)',kind:'number',help:'Export increases precision up to 9 places when needed to preserve motion, reports the digits used, and verifies the rounded program.'},
   {path:'spindle_spinup_seconds',label:'Spindle spin-up delay (seconds)',kind:'number',help:'Pause after starting the spindle, before moving to cut. Use the time your spindle needs to reach speed.'},
   {path:'coolant',label:'Coolant',choices:[['off','Off'],['flood','Flood'],['mist','Mist']]},
   {path:'length_compensation',label:'Tool length compensation',help:'Choose who applies each tool’s measured length: your M6 tool-change macro, or this program using G43 H. This must match your controller setup.',choices:[['macro_managed','Managed by M6 macro'],['tool_table','G43 H from tool table']]},

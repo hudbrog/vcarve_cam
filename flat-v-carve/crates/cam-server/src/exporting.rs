@@ -7,7 +7,7 @@ use crate::{
 };
 use cam_core::{
     post::{LinuxCncProfile, ProgramLayout, export_authenticated_plan},
-    vcarve::AuthenticatedPlan,
+    vcarve::{AuthenticatedPlan, VerificationReceipt, export_retained_plan},
     verification::VerificationOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,7 @@ pub struct Start {
 pub struct Work {
     pub artifact: PathBuf,
     pub identity: Identity,
+    pub receipt: Option<VerificationReceipt>,
 }
 pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failure> {
     service.validate_identity(
@@ -103,6 +104,7 @@ pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failur
         export: Some(Work {
             artifact: artifact.path().to_owned(),
             identity: request.export.clone(),
+            receipt: result.verification_receipt.clone(),
         }),
         output_path: None,
         motion_output_path: None,
@@ -132,23 +134,43 @@ pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failur
 pub fn calculate(work: Work) -> Result<Output, Value> {
     let convert = |d| json!(UiDiagnostic::from(d));
     let file = File::open(&work.artifact).map_err(|e| json!({"code":"EXPORT_ARTIFACT_IO", "severity":"error", "stage":"export", "message":format!("Could not read the local plan artifact: {e}")}))?;
-    let authenticated = AuthenticatedPlan::from_reader(BufReader::with_capacity(1024 * 1024, file))
-        .map_err(convert)?;
-    let plan = authenticated.plan();
-    if plan.input_fingerprint != work.identity.input_fingerprint
-        || plan.motion_fingerprint != work.identity.motion_fingerprint
-    {
-        return Err(
-            json!({"code":"EXPORT_PLAN_IDENTITY","severity":"error","stage":"export","message":"Worker artifact differs from the accepted plan."}),
-        );
-    }
-    let result = export_authenticated_plan(
-        &authenticated,
-        &work.identity.profile,
-        work.identity.layout,
-        &work.identity.options,
-    )
-    .map_err(convert)?;
+    let result = if let Some(receipt) = &work.receipt {
+        if !receipt.matches_plan(
+            &work.identity.input_fingerprint,
+            &work.identity.motion_fingerprint,
+        ) {
+            return Err(
+                json!({"code":"EXPORT_PLAN_IDENTITY","severity":"error","stage":"export","message":"Retained receipt does not match the accepted plan."}),
+            );
+        }
+        export_retained_plan(
+            BufReader::with_capacity(1024 * 1024, file),
+            receipt,
+            &work.identity.profile,
+            work.identity.layout,
+            &work.identity.options,
+        )
+        .map_err(convert)?
+    } else {
+        let authenticated =
+            AuthenticatedPlan::from_reader(BufReader::with_capacity(1024 * 1024, file))
+                .map_err(convert)?;
+        let plan = authenticated.plan();
+        if plan.input_fingerprint != work.identity.input_fingerprint
+            || plan.motion_fingerprint != work.identity.motion_fingerprint
+        {
+            return Err(
+                json!({"code":"EXPORT_PLAN_IDENTITY","severity":"error","stage":"export","message":"Worker artifact differs from the accepted plan."}),
+            );
+        }
+        export_authenticated_plan(
+            &authenticated,
+            &work.identity.profile,
+            work.identity.layout,
+            &work.identity.options,
+        )
+        .map_err(convert)?
+    };
     let artifact = serde_json::to_string(&result.report).unwrap();
     if artifact.len() > REPORT_BYTES
         || result.programs.iter().map(|p| p.gcode.len()).sum::<usize>() > PROGRAM_BYTES

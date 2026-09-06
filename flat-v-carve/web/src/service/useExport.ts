@@ -56,7 +56,7 @@ export function useExport(service:CamService, capabilities:Capabilities, plan:Pl
         if (next.state === 'succeeded' && next.resultAvailable && service.exportResult) {
           const ready = await service.exportResult(handle!,controller.signal);
           if (!controller.signal.aborted) { accept(ready.task,handle!); setResult(ready); }
-        } else if (!['cancelled','failed','succeeded'].includes(next.state)) timer = setTimeout(() => void poll(),700);
+        } else if (!['cancelled','failed','succeeded'].includes(next.state)) timer = setTimeout(() => void poll(),200);
       } catch(e) { if (!controller.signal.aborted) { setError(String(e)); setMissing(String(e).includes('TASK_NOT_FOUND')); } }
     }
     void poll(); return () => { controller.abort(); clearTimeout(timer); };

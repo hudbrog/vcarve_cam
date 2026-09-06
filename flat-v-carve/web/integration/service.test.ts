@@ -238,7 +238,7 @@ describe('checked LinuxCNC output', () => {
     ['combined','narrow-channel','macro-stock-bottom','combined',6,1_000_000,'passed'],
     ['per-tool','wide-floor','macro-stock-bottom','per_tool',6,1_000_000,'passed'],
     ['tool-table','finite-tip','tool-table-synthetic','combined',6,1_000_000,'passed'],
-    ['coarse','narrow-channel','macro-stock-bottom','combined',0,1_000_000,'failed'],
+    ['coarse','narrow-channel','macro-stock-bottom','combined',0,1_000_000,'passed'],
     ['limited','narrow-channel','macro-stock-bottom','combined',6,1,'inconclusive'],
   ] as const)('matches CLI reports and every program byte for %s', async (name,fixture,profileName,layout,precision,cells,status) => {
     const {job,id} = await identity(`m4/${fixture}`,'combined');
@@ -276,7 +276,7 @@ describe('checked LinuxCNC output', () => {
     await expect(service.verificationResult!({...accepted,verification:verificationIdentity(plan,accepted.export.options,'unused').verification})).rejects.toThrow(/TASK_KIND/);
     expect((await service.startExport!(accepted)).taskId).toBe(accepted.taskId);
     expect((await service.cancelExport!(accepted)).state).toBe('succeeded');
-    // A captured failed emitted check supplies real report shapes to offline tests.
+    // Capture precision adaptation separately from the historical failure fixture.
     if (name === 'coarse') writeFileSync(`${output}/m6-coarse.json`,JSON.stringify({result,plan},null,2));
     if (name === 'combined') writeFileSync(`${output}/m6-passed.json`,JSON.stringify({result,plan},null,2));
   },120_000);

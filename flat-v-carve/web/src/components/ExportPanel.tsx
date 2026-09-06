@@ -92,7 +92,7 @@ export function ExportPanel({output:o,job,planCurrent}:{output:Export;job:Job;pl
       {!o.available && <p className="inline-warning">Connect a service with LinuxCNC export support.</p>}
       {!planCurrent && <p className="inline-warning">Generate a current combined plan first.</p>}
       <label className="field-label" htmlFor="export-layout">Program layout</label><select id="export-layout" value={o.layout} onChange={e => o.setLayout(e.target.value as ProgramLayout)}><option value="combined">Combined program</option><option value="per_tool">Separate files per tool</option></select>
-      <p className="hint">Rust rechecks the original plan, emits the program, independently reads it back and verifies the emitted motions. Verification cell and report budgets come from the Verification step; output precision comes from this profile.</p>
+      <p className="hint">Rust rechecks the original plan, emits the program, independently reads it back and verifies the emitted motions. Verification budgets come from the Verification step. Profile precision is the minimum; extra digits preserve small moves when needed.</p>
       <p className="hint">The drawing shows recorded plan paths. The program preview below shows emitted machine coordinates.</p>
       {!o.options && <p className="inline-warning">Complete the verification settings before generating output.</p>}
       <button className="primary wide" disabled={!o.canStart} onClick={o.start}>{o.submitting ? 'Submitting export…' : 'Generate checked LinuxCNC output'}</button>
@@ -104,6 +104,7 @@ export function ExportPanel({output:o,job,planCurrent}:{output:Export;job:Job;pl
     </section>
     {report && <section className="inspector-group verification-report"><h2>{o.current ? 'Current checked output' : 'Previous output · stale'}</h2>
       <p className={`plan-outcome ${report.status}`}>Output outcome: {report.status}</p>
+      <p>Output coordinates use {report.output_decimal_places} decimal places.</p>
       {!o.current && <p className="inline-warning">The plan, machine profile, layout or verification settings changed. Program downloads are disabled.</p>}
       <dl><dt>Original plan</dt><dd>{report.plan_verification.status}</dd><dt>Emitted program</dt><dd>{report.emitted_verification?.status ?? 'Not reached'}</dd><dt>Output Z offset</dt><dd>{report.machine_z_offset_mm} mm</dd><dt>Profile</dt><dd>{report.profile.id} · {report.profile.work_offset} · {report.profile.z_datum === 'stock_top' ? 'stock top' : 'stock bottom'}</dd></dl>
       {report.status !== 'passed' && <p className="inline-warning">No machine programs are available for this outcome. Review the findings and download the report.</p>}

@@ -1,6 +1,6 @@
 use cam_core::{
-    post::{LinuxCncProfile, Program, ProgramLayout, export_plan, verify_programs},
-    vcarve::CombinedPlan,
+    post::{LinuxCncProfile, Program, ProgramLayout, export_authenticated_plan, verify_programs},
+    vcarve::AuthenticatedPlan,
     verification::{VerificationOptions, VerificationStatus},
 };
 use std::{
@@ -119,9 +119,10 @@ pub fn run(command: &str, args: Vec<String>) -> Result<bool> {
         return Err("output already exists; choose a new output path".into());
     }
     let profile = LinuxCncProfile::from_json(&read(&profile_path, 64_000)?)?;
-    let plan = CombinedPlan::from_json(&read(&input, 128_000_000)?)?;
+    let authenticated = AuthenticatedPlan::from_reader(read(&input, 128_000_000)?.as_bytes())?;
+    let plan = authenticated.plan();
     let report = if command == "export" {
-        let result = export_plan(&plan, &profile, layout, &options)?;
+        let result = export_authenticated_plan(&authenticated, &profile, layout, &options)?;
         let json = serde_json::to_string_pretty(&result.report)? + "\n";
         bundle(&output, &json, &result.programs)?;
         result.report
@@ -145,7 +146,7 @@ pub fn run(command: &str, args: Vec<String>) -> Result<bool> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let report = verify_programs(&plan, &profile, layout, &options, &programs)?;
+        let report = verify_programs(plan, &profile, layout, &options, &programs)?;
         if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent)?;
         }
