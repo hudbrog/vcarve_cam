@@ -3,6 +3,7 @@ pub mod document;
 pub mod exporting;
 pub mod inspection;
 pub mod library;
+pub mod motion_preview;
 pub mod planning;
 pub mod planning_worker;
 pub mod serve;
@@ -194,6 +195,7 @@ pub fn router_with_library(
         .route("/api/v1/tasks/{id}", get(task_snapshot))
         .route("/api/v1/tasks/{id}/cancel", post(cancel_plan))
         .route("/api/v1/tasks/{id}/result", get(plan_result))
+        .route("/api/v1/tasks/{id}/motions/{offset}", get(motion_page))
         .route("/api/v1/tasks/{id}/slices/{slice}", get(stock_slice))
         .route("/api/v1/tasks/{id}/artifact", get(plan_artifact))
         .fallback(asset)
@@ -424,13 +426,58 @@ async fn cancel_plan(State(state): State<AppState>, RoutePath(id): RoutePath<Str
 }
 async fn plan_result(State(state): State<AppState>, RoutePath(id): RoutePath<String>) -> Response {
     match state.planning.result(&id) {
-        Ok((snapshot, _)) if snapshot.verification.is_some() || snapshot.export.is_some() => error(StatusCode::UNPROCESSABLE_ENTITY, "TASK_KIND", "This task contains report evidence, not a plan preview."),
+        Ok((snapshot, _)) if snapshot.verification.is_some() || snapshot.export.is_some() => error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "TASK_KIND",
+            "This task contains report evidence, not a plan preview.",
+        ),
         Ok((snapshot, result)) => Json(
             json!({ "task": snapshot, "coordinateSpace": "workpiece-mm-z-up",
-            "motions": result.motions, "stockSlices": result.inspection.slices.iter().map(|s| &s.info).collect::<Vec<_>>() }),
+            "motions": result.motions,
+            "nextMotionOffset": next_motion_offset(&result, result.motions.len()),
+            "stockSlices": result.inspection.slices.iter().map(|s| &s.info).collect::<Vec<_>>() }),
         )
         .into_response(),
         Err(failure) => task_error(failure),
+    }
+}
+fn next_motion_offset(result: &planning_worker::Output, end: usize) -> Option<usize> {
+    (end < result.summary["motionCount"].as_u64().unwrap_or(0) as usize).then_some(end)
+}
+async fn motion_page(
+    State(state): State<AppState>,
+    RoutePath((id, offset)): RoutePath<(String, usize)>,
+) -> Response {
+    let (snapshot, result) = match state.planning.result(&id) {
+        Ok(value) => value,
+        Err(failure) => return task_error(failure),
+    };
+    if snapshot.verification.is_some() || snapshot.export.is_some() {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "TASK_KIND",
+            "This task has no motion preview.",
+        );
+    }
+    let page = result
+        .motion_pages
+        .get(offset / motion_preview::PAGE_MOTIONS);
+    let Some((page, artifact)) = page
+        .zip(result.motion_artifact.as_ref())
+        .filter(|_| offset.is_multiple_of(motion_preview::PAGE_MOTIONS))
+    else {
+        return error(
+            StatusCode::NOT_FOUND,
+            "MOTION_PAGE_NOT_FOUND",
+            "This plan has no motion page at that offset.",
+        );
+    };
+    // The result lease keeps the file alive through reads and ledger eviction.
+    match motion_preview::read(artifact.path(), page).await {
+        Ok(motions) => Json(json!({ "task": snapshot, "coordinateSpace": "workpiece-mm-z-up",
+            "offset": offset, "nextMotionOffset": next_motion_offset(&result, offset + motions.len()),
+            "motions": motions })).into_response(),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "PLAN_ARTIFACT_IO", "The retained motion preview could not be read."),
     }
 }
 async fn stock_slice(

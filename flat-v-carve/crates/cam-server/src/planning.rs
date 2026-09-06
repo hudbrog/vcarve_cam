@@ -168,6 +168,7 @@ impl Planning {
                 verification: None,
                 export: None,
                 output_path: None,
+                motion_output_path: None,
                 source_artifact: None,
             },
         )
@@ -410,6 +411,13 @@ async fn run_worker(
         } else {
             None
         };
+        let motion_artifact = if artifact.is_some() {
+            let file = crate::artifact::PlanFile::create()?;
+            input.motion_output_path = Some(file.path().to_owned());
+            Some(file)
+        } else {
+            None
+        };
         let mut command = Command::new(std::env::current_exe()?);
         command
             .arg("--planning-worker")
@@ -454,6 +462,7 @@ async fn run_worker(
                     return Err(io::Error::other("Worker returned no complete plan file"));
                 }
                 result.plan_artifact = Some(artifact.clone());
+                result.motion_artifact = motion_artifact.clone();
             }
             Ok(reply)
         };
@@ -576,6 +585,8 @@ mod tests {
             programs: vec![],
             artifact: "{}".into(),
             plan_artifact: Some(crate::artifact::PlanFile::create().unwrap()),
+            motion_artifact: None,
+            motion_pages: vec![],
             inspection: crate::inspection::Inspection::default(),
         }))
     }

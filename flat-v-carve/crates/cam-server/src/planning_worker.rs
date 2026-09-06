@@ -12,7 +12,7 @@ use std::{
     sync::Arc,
 };
 
-pub const PREVIEW_MOTIONS: usize = 20_000;
+pub const PREVIEW_MOTIONS: usize = crate::motion_preview::PAGE_MOTIONS;
 pub const REPORT_BYTES: usize = 16_000_000;
 // Only bounded display/report data crosses stdout. Complete plans stay on disk.
 pub const WORKER_BYTES: usize = 32_000_000;
@@ -33,6 +33,7 @@ pub struct Input {
     pub export: Option<crate::exporting::Work>,
     // Created by the parent service, never supplied by an HTTP client.
     pub output_path: Option<PathBuf>,
+    pub motion_output_path: Option<PathBuf>,
     // Keep a source alive while queued or running, even after ledger eviction.
     #[serde(skip)]
     pub source_artifact: Option<Arc<PlanFile>>,
@@ -46,6 +47,9 @@ pub struct Output {
     // Installed by the parent after a successful worker exit. Not part of IPC.
     #[serde(skip)]
     pub plan_artifact: Option<Arc<PlanFile>>,
+    #[serde(skip)]
+    pub motion_artifact: Option<Arc<PlanFile>>,
+    pub motion_pages: Vec<crate::motion_preview::Page>,
     pub programs: Vec<cam_core::post::Program>,
     pub inspection: Inspection,
 }
@@ -146,13 +150,20 @@ pub fn calculate(input: Input) -> Result<Output, Value> {
     summary["engineVersion"] = json!(ENGINE_VERSION);
     summary["motionCount"] = json!(motions.len());
     summary["cuttingMotionCount"] = json!(motions.iter().filter(|m| m.kind.cutting()).count());
-    summary["previewMotionCount"] = json!(motions.len().min(PREVIEW_MOTIONS));
-    summary["omittedMotionCount"] = json!(motions.len().saturating_sub(PREVIEW_MOTIONS));
+    summary["previewMotionCount"] = json!(motions.len());
+    summary["omittedMotionCount"] = json!(0);
+    let motion_path = input
+        .motion_output_path
+        .ok_or_else(|| artifact_error("Missing service-owned motion preview file".into()))?;
+    let motion_pages = crate::motion_preview::write(&motion_path, &motions)
+        .map_err(|e| artifact_error(e.to_string()))?;
     Ok(Output {
         summary,
         motions: motions.into_iter().take(PREVIEW_MOTIONS).collect(),
         artifact: String::new(),
         plan_artifact: None,
+        motion_artifact: None,
+        motion_pages,
         inspection,
         programs: vec![],
     })
@@ -232,6 +243,8 @@ mod tests {
             motions: vec![],
             artifact: String::new(),
             plan_artifact: Some(artifact.clone()),
+            motion_artifact: None,
+            motion_pages: vec![],
             programs: vec![],
             inspection: Default::default(),
         };
@@ -263,6 +276,7 @@ mod tests {
             }),
             export: None,
             output_path: None,
+            motion_output_path: None,
             source_artifact: Some(artifact.clone()),
         };
         let bytes = serde_json::to_vec(&input).unwrap();

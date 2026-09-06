@@ -386,9 +386,9 @@ describe('real background planning', () => {
     expect(task.state, JSON.stringify(task.diagnostic)).toBe('succeeded');
     expect(task.summary!.status).toBe('complete');
     const preview = await service.planResult!(id);
-    expect(preview.motions.length).toBe(20_000);
+    expect(preview.motions.length).toBe(task.summary!.motionCount);
+    expect(task.summary!.omittedMotionCount).toBe(0);
     const previewBytes = Buffer.byteLength(JSON.stringify(preview));
-    expect(previewBytes).toBeLessThan(16_000_000);
     const session = await (await fetch(`${base}/api/v1/session`)).json();
     const response = await fetch(`${base}/api/v1/tasks/${id.taskId}/artifact`, {headers:{'X-Cam-Session':session.sessionToken}});
     expect(response.status).toBe(200);
@@ -409,7 +409,7 @@ describe('real background planning', () => {
     expect((await service.verificationResult!(verification)).report.status).toBe('inconclusive');
     writeFileSync(`${output}/two-flowers-summary.json`, JSON.stringify({...measurement, verificationStatus:verified.summary?.status}, null, 2));
   }, 700_000);
-  it.skipIf(process.env.CAM_TEST_REAL_DATA !== '1')('streams the unchanged real flower plan with a bounded browser preview', async () => {
+  it.skipIf(process.env.CAM_TEST_REAL_DATA !== '1')('loads the complete unchanged real flower plan through bounded motion pages', async () => {
     const jobPath = `${workspace}../real_data/flower_box-svg.job (2).json`;
     const original = readFileSync(jobPath, 'utf8');
     const opened = await service.openJob!(original, 40);
@@ -428,15 +428,33 @@ describe('real background planning', () => {
     expect(task.state, JSON.stringify(task.diagnostic)).toBe('succeeded');
     expect(task.summary?.status).toBe('complete');
     expect(task.summary!.motionCount).toBeGreaterThan(20_000);
-    const result = await service.planResult!(id);
-    expect(result.motions.length).toBe(20_000);
-    expect(task.summary!.omittedMotionCount).toBe(task.summary!.motionCount - 20_000);
+    const progress: number[] = [];
+    const previewStarted = Date.now();
+    const result = await service.planResult!(id, undefined, loaded => progress.push(loaded));
+    const previewMs = Date.now() - previewStarted;
+    expect(result.motions.length).toBe(task.summary!.motionCount);
+    expect(task.summary!.omittedMotionCount).toBe(0);
+    expect(progress.length).toBe(Math.ceil(task.summary!.motionCount / 20_000));
+    expect(progress.at(-1)).toBe(task.summary!.motionCount);
     const previewBytes = Buffer.byteLength(JSON.stringify(result));
-    expect(previewBytes).toBeLessThan(16_000_000);
     const session = await (await fetch(`${base}/api/v1/session`)).json();
+    const headers = { 'X-Cam-Session': session.sessionToken };
+    const firstPage = await fetch(`${base}/api/v1/tasks/${id.taskId}/result`, { headers });
+    expect(Buffer.byteLength(await firstPage.text())).toBeLessThan(16_000_000);
+    for (const offset of [1, task.summary!.motionCount + 20_000]) {
+      expect((await fetch(`${base}/api/v1/tasks/${id.taskId}/motions/${offset}`, { headers })).status).toBe(404);
+    }
+    expect((await fetch(`${base}/api/v1/tasks/${id.taskId}/motions/20000`)).status).toBe(401);
     const response = await fetch(`${base}/api/v1/tasks/${id.taskId}/artifact`, {headers:{'X-Cam-Session':session.sessionToken}});
     expect(response.status).toBe(200);
     const artifact = Buffer.from(await response.arrayBuffer());
+    const recorded = JSON.parse(artifact.toString());
+    const motions = [...recorded.endmill.motions, ...recorded.vbit_motions];
+    // Compare every coordinate and field, in bounded batches so assertions do
+    // not need an additional full-plan JSON string.
+    for (let offset = 0; offset < motions.length; offset += 20_000) {
+      expect(result.motions.slice(offset, offset + 20_000)).toEqual(motions.slice(offset, offset + 20_000));
+    }
     expect(Number(response.headers.get('content-length'))).toBe(artifact.length);
     expect(artifact.length).toBeGreaterThan(100_000_000);
     const path = `${output}/real-flower.plan.json`;
@@ -454,7 +472,7 @@ describe('real background planning', () => {
     const verified = await finishVerification(verification, 300_000);
     expect(verified.state, JSON.stringify(verified.diagnostic)).toBe('succeeded');
     expect((await service.verificationResult!(verification)).report.status).toBe('inconclusive');
-    writeFileSync(`${output}/real-flower-summary.json`, JSON.stringify({planningMs, previewBytes,
+    writeFileSync(`${output}/real-flower-summary.json`, JSON.stringify({planningMs, previewBytes, previewMs, motionPages: progress.length,
       artifactBytes:artifact.length, motionCount:task.summary!.motionCount, artifactSha256:hash(artifact),
       verificationStatus:verified.summary?.status}, null, 2));
   }, 900_000);
@@ -476,7 +494,7 @@ describe('real background planning', () => {
     expect(task.summary?.inputFingerprint).toBe(cliPlan.input_fingerprint);
     expect(task.summary?.motionFingerprint).toBe(cliPlan.motion_fingerprint);
     const motions = stage === 'combined' ? [...cliPlan.endmill.motions, ...cliPlan.vbit_motions] : cliPlan.motions;
-    expect(result.motions).toEqual(motions.slice(0, 20_000));
+    expect(result.motions).toEqual(motions);
     expect(task.summary?.motionCount).toBe(motions.length);
     const session = await (await fetch(`${base}/api/v1/session`)).json();
     const artifact = await fetch(`${base}/api/v1/tasks/${id.taskId}/artifact`, { headers: { 'X-Cam-Session': session.sessionToken } });

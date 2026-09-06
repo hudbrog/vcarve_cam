@@ -13,12 +13,14 @@ Engine 0.7.2 adds spatial indexing, batched stock unions, and compact plan files
 
 Engine 0.7.3 completes the unchanged saved flower job in 52–54 seconds for combined CLI planning and about 7 seconds for endmill alone on the measured Windows machine. The [CLI performance report](docs/flat-v-carve/flower-performance.md) documents the bottlenecks and reproducible profiling commands. Regenerate older plans from their saved jobs.
 
-Live browser planning now keeps complete plans in temporary files and sends only
-bounded previews to the UI. Verification and export reopen those files directly;
+Live browser planning now keeps complete plans in temporary files and loads every
+recorded motion through bounded pages. Verification and export reopen those files directly;
 plan size no longer controls worker-message size. See the
 [plan storage report](docs/flat-v-carve/web-ui/u7-plan-artifacts.md) for lifecycle,
 remaining limits, and real-artwork checks. Rebuild and restart the portable
 application to use the updated service and UI together.
+The [complete preview report](docs/flat-v-carve/web-ui/complete-motion-preview.md)
+explains the removed 20,000-motion cutoff and the flower job regression checks.
 
 The Rust workspace lives in [`flat-v-carve/`](flat-v-carve/README.md). Import and inspect a bundled Inkscape export with the pinned Rust toolchain:
 

@@ -29,14 +29,31 @@ export const motionSchema = z.strictObject({
   kind: z.enum(['rapid_x_y', 'rapid_retract', 'approach', 'plunge', 'ramp', 'cut']),
   start: position, end: position, feed_mm_min: z.number().finite().positive().nullable(),
 });
-export const planResultSchema = z.strictObject({
-  task: taskSchema, coordinateSpace: z.literal('workpiece-mm-z-up'), motions: z.array(motionSchema).max(20_000),
+const resultFields = {
+  task: taskSchema, coordinateSpace: z.literal('workpiece-mm-z-up'), motions: z.array(motionSchema),
   // Core permits 256 endmill layers, 32 combined depths, and a floor-check depth.
   stockSlices: z.array(sliceInfoSchema).max(289),
-}).refine(result => result.task.state === 'succeeded' && result.task.resultAvailable
+};
+export const planResultSchema = z.strictObject(resultFields).refine(result => result.task.state === 'succeeded' && result.task.resultAvailable
   && result.motions.length === result.task.summary?.previewMotionCount
   && new Set(result.stockSlices.map(s => s.id)).size === result.stockSlices.length
   && (result.task.stage === 'combined' || result.stockSlices.every(s => s.stage === 'endmill')), 'Inconsistent motion preview');
+const pageFields = {
+  task: taskSchema, coordinateSpace: z.literal('workpiece-mm-z-up'),
+  motions: z.array(motionSchema).max(20_000), nextMotionOffset: integer.nullable().default(null),
+};
+function validPage(page: { task: PlanTask; motions: Motion[]; nextMotionOffset: number | null }, offset: number) {
+  const total = page.task.summary?.previewMotionCount ?? -1;
+  const end = offset + page.motions.length;
+  return page.task.state === 'succeeded' && page.task.resultAvailable && end <= total
+    && (page.nextMotionOffset === null ? end === total : page.motions.length > 0 && page.nextMotionOffset === end && end < total);
+}
+export const planResultPageSchema = z.strictObject({ ...resultFields, ...pageFields })
+  .refine(page => validPage(page, 0)
+    && new Set(page.stockSlices.map(s => s.id)).size === page.stockSlices.length
+    && (page.task.stage === 'combined' || page.stockSlices.every(s => s.stage === 'endmill')), 'Inconsistent initial motion page');
+export const motionPageSchema = z.strictObject({ ...pageFields, offset: integer })
+  .refine(page => validPage(page, page.offset), 'Inconsistent motion page');
 export const sliceResponseSchema = z.strictObject({ task: taskSchema, coordinateSpace: z.literal('workpiece-mm-z-up'), slice: stockSliceSchema })
   .refine(r => r.task.state === 'succeeded' && r.task.resultAvailable && (r.task.stage === 'combined' || r.slice.info.stage === 'endmill'));
 export type SliceResponse = z.infer<typeof sliceResponseSchema>;

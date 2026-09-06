@@ -5,7 +5,7 @@ import type { Job } from '../contracts/job';
 import type { CamService, Capabilities } from '../contracts/service';
 import { apiVersion, capabilitiesSchema, displaySchema, envelopeSchema, errorSchema, openedSchema, sessionSchema, validationSchema } from '../contracts/wire';
 import { fixtureService } from './fixture';
-import { acceptTask, planResultSchema, sliceResponseSchema, taskSchema, type TaskIdentity } from '../contracts/planning';
+import { acceptTask, planResultPageSchema, motionPageSchema, sliceResponseSchema, taskSchema, type TaskIdentity } from '../contracts/planning';
 import { sliceInfoSchema } from '../contracts/stock';
 import { acceptVerification, verificationTaskSchema, verificationResultSchema } from '../contracts/verification';
 
@@ -157,9 +157,23 @@ export function createHttpService(fetcher: typeof fetch = (...args) => fetch(...
     async cancelPlan(identity, signal) {
       return acceptTask(null, await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}/cancel`, taskSchema, {}, signal), identity);
     },
-    async planResult(identity, signal) {
-      const result = await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}/result`, planResultSchema, undefined, signal);
+    async planResult(identity, signal, onProgress) {
+      const { nextMotionOffset: firstOffset, ...result } = await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}/result`, planResultPageSchema, undefined, signal);
       acceptTask(null, result.task, identity);
+      const summary = JSON.stringify(result.task.summary);
+      let next = firstOffset;
+      onProgress?.(result.motions.length, result.task.summary!.previewMotionCount);
+      while (next !== null) {
+        const page = await taskRequest(identity, `tasks/${encodeURIComponent(identity.taskId)}/motions/${next}`, motionPageSchema, undefined, signal);
+        acceptTask(result.task, page.task, identity);
+        if (page.offset !== next || JSON.stringify(page.task.summary) !== summary)
+          throw new Error('The service returned a different motion page or plan summary. The preview was discarded.');
+        // Avoid argument spreading and repeated full-array copies for large plans.
+        for (const motion of page.motions) result.motions.push(motion);
+        next = page.nextMotionOffset;
+        onProgress?.(result.motions.length, result.task.summary!.previewMotionCount);
+      }
+      signal?.throwIfAborted();
       return result;
     },
     async stockSlice(identity, slice, signal) {

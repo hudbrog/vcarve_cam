@@ -5,7 +5,7 @@ import type { Capabilities, Validation } from '../src/contracts/service';
 import { apiVersion } from '../src/contracts/wire';
 import { createHttpService } from '../src/service/http';
 import { fixtureService } from '../src/service/fixture';
-import { Viewport, motionPath, stockPath } from '../src/components/Viewport';
+import { Viewport, motionPath, motionBounds, stockPath } from '../src/components/Viewport';
 import { layerKeys, stockSliceSchema, type StockSlice } from '../src/contracts/stock';
 import { filterMotions } from '../src/service/useInspection';
 
@@ -68,6 +68,28 @@ describe('stock inspection', () => {
 });
 
 describe('task identity and evidence', () => {
+  it('joins connected drawing segments without bridging gaps, depth changes, or tools', () => {
+    const next = { ...motion, id: 1, start: motion.end, end: { x: 6, y: 7, z: -2 } };
+    expect(motionPath([motion, next])).toBe('M2,-3L4,-5 L6,-7');
+    expect(motionPath([motion, { ...next, start: { ...next.start, z: -3 } }])).toBe('M2,-3L4,-5 M4,-5L6,-7');
+    expect(motionPath([motion, { ...next, tool_id: 'vbit' }])).toBe('M2,-3L4,-5 M4,-5L6,-7');
+    expect(motionPath([motion, { ...next, start: { x: 9, y: 10, z: -2 } }])).toBe('M2,-3L4,-5 M9,-10L6,-7');
+  });
+  it('fits an entire flower-sized plan without overflowing the argument stack', () => {
+    const motions = Array<Motion>(384_245).fill(motion);
+    motions[motions.length - 1] = { ...motion, end: { x: 500, y: -100, z: -2 } };
+    expect(motionBounds(motions)).toEqual({ min: { x: 2, y: -100 }, max: { x: 500, y: 5 } });
+    expect(motionBounds([])).toBeNull();
+  });
+  it('draws late motions in bounded paths and keeps travel hidden by default', async () => {
+    const { job, display } = await fixtureService.openExample();
+    const motions = Array<Motion>(20_001).fill(motion);
+    motions.push({ ...motion, id: 20_001, end: { x: 987, y: 654, z: -2 } }, { ...motion, kind: 'rapid_x_y' });
+    const markup = renderToStaticMarkup(<Viewport display={display} job={job} inspected={null} onInspect={() => {}} hidden={new Set()} motions={motions} />);
+    expect(markup.match(/data-motion-group="endmill:cutting"/g)).toHaveLength(5);
+    expect(markup).toContain('L987,-654');
+    expect(markup).not.toContain('data-motion-group="endmill:travel"');
+  });
   it('keeps a failed budget task in history without treating it as a current issue after edits',()=>{
     const failed:PlanTask={...finished,state:'failed',summary:null,resultAvailable:false,diagnostic:{code:'PLANNING_RESOURCE_LIMIT',message:'Layer limit',severity:'error'}};
     expect(planningInputMatches(failed,validation,7,'combined',caps)).toBe(true);
@@ -116,6 +138,57 @@ describe('task identity and evidence', () => {
 });
 
 describe('planning HTTP adapter', () => {
+  it('loads every motion page in order, reports progress, and retains the final motion', async () => {
+    const total = 40_003;
+    const all = Array.from({ length: total }, (_, id) => ({ ...motion, id, tool_id: id < 20_000 ? 'endmill' : 'vbit' }));
+    const task = { ...finished, summary: { ...summary, motionCount: total, cuttingMotionCount: total, previewMotionCount: total } };
+    const offsets: number[] = [], progress: number[] = [];
+    const service = createHttpService(async input => {
+      const url = String(input);
+      if (url.endsWith('session')) return Response.json({ apiVersion, engineVersion: '0.6.0', sessionToken: 'e'.repeat(64) });
+      if (url.endsWith('capabilities')) return Response.json(caps);
+      const initial = url.endsWith('/result');
+      const offset = initial ? 0 : Number(url.split('/').at(-1)); offsets.push(offset);
+      return Response.json({ task, coordinateSpace: 'workpiece-mm-z-up', motions: all.slice(offset, offset + 20_000),
+        nextMotionOffset: offset + 20_000 < total ? offset + 20_000 : null, ...(initial ? { stockSlices: [] } : { offset }) });
+    });
+    await service.capabilities();
+    const result = await service.planResult!(identity, undefined, loaded => progress.push(loaded));
+    expect(offsets).toEqual([0, 20_000, 40_000]);
+    expect(progress).toEqual([20_000, 40_000, 40_003]);
+    expect(result.motions).toEqual(all);
+    expect(planResultSchema.safeParse(result).success).toBe(true);
+  });
+  it('rejects missing, repeated, or mismatched pages instead of publishing an incomplete preview', async () => {
+    const task = { ...finished, summary: { ...summary, motionCount: 2, cuttingMotionCount: 2, previewMotionCount: 2 } };
+    for (const bad of ['offset', 'identity', 'summary', 'missing', 'repeat']) {
+      const service = createHttpService(async input => {
+        const url = String(input);
+        if (url.endsWith('session')) return Response.json({ apiVersion, engineVersion: '0.6.0', sessionToken: 'e'.repeat(64) });
+        if (url.endsWith('capabilities')) return Response.json(caps);
+        if (url.endsWith('/result')) return Response.json({ task, coordinateSpace: 'workpiece-mm-z-up', motions: [motion], stockSlices: [], nextMotionOffset: 1 });
+        return Response.json({ task: bad === 'identity' ? { ...task, revision: 8 } : bad === 'summary' ? { ...task, summary: { ...task.summary, motionFingerprint: 'e'.repeat(64) } } : task,
+          coordinateSpace: 'workpiece-mm-z-up', motions: bad === 'missing' ? [] : [motion],
+          offset: bad === 'offset' ? 0 : 1, nextMotionOffset: bad === 'repeat' ? 1 : null });
+      });
+      await service.capabilities();
+      await expect(service.planResult!(identity), bad).rejects.toThrow();
+    }
+  });
+  it('aborts a multi-page preview without returning partial motions', async () => {
+    const controller = new AbortController();
+    const task = { ...finished, summary: { ...summary, motionCount: 2, cuttingMotionCount: 2, previewMotionCount: 2 } };
+    const service = createHttpService(async input => {
+      const url = String(input);
+      if (url.endsWith('session')) return Response.json({ apiVersion, engineVersion: '0.6.0', sessionToken: 'e'.repeat(64) });
+      if (url.endsWith('capabilities')) return Response.json(caps);
+      if (url.endsWith('/result')) return Response.json({ task, coordinateSpace: 'workpiece-mm-z-up', motions: [motion], stockSlices: [], nextMotionOffset: 1 });
+      controller.abort();
+      return Response.json({ task, coordinateSpace: 'workpiece-mm-z-up', motions: [motion], offset: 1, nextMotionOffset: null });
+    });
+    await service.capabilities();
+    await expect(service.planResult!(identity, controller.signal)).rejects.toThrow();
+  });
   it('binds slice geometry to the accepted task and exact slice metadata', async () => {
     let response = { task: finished, coordinateSpace: 'workpiece-mm-z-up', slice: stock };
     const service = createHttpService(async input => {

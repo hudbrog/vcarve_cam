@@ -75,7 +75,7 @@ export interface CamService {
   startPlan?(job: Job, identity: TaskIdentity, signal?: AbortSignal): Promise<PlanTask>;
   planTask?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanTask>;
   cancelPlan?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanTask>;
-  planResult?(identity: TaskIdentity, signal?: AbortSignal): Promise<PlanResult>;
+  planResult?(identity: TaskIdentity, signal?: AbortSignal, onProgress?: (loaded: number, total: number) => void): Promise<PlanResult>;
   stockSlice?(identity: TaskIdentity, slice: SliceInfo, signal?: AbortSignal): Promise<SliceResponse>;
   startExport?(identity: ExportIdentity, signal?: AbortSignal): Promise<ExportTask>;
   exportTask?(identity: ExportIdentity, signal?: AbortSignal): Promise<ExportTask>;

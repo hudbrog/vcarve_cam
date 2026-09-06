@@ -29,7 +29,23 @@ function pathData(rings: { points: Point[] }[]) {
 }
 export function motionPath(motions: Motion[]): string {
   // Engine motions already use workpiece coordinates. Only flip Y for SVG.
-  return motions.map(motion => `M${motion.start.x},${-motion.start.y}L${motion.end.x},${-motion.end.y}`).join(' ');
+  // Join only genuinely connected recorded segments; retain every endpoint.
+  let previous: Motion | undefined;
+  return motions.map(motion => {
+    const connected = previous && previous.tool_id === motion.tool_id && previous.layer === motion.layer
+      && previous.end.x === motion.start.x && previous.end.y === motion.start.y && previous.end.z === motion.start.z;
+    previous = motion;
+    return `${connected ? '' : `M${motion.start.x},${-motion.start.y}`}L${motion.end.x},${-motion.end.y}`;
+  }).join(' ');
+}
+export function motionBounds(motions: Motion[]): DisplayBounds | null {
+  if (!motions.length) return null;
+  const min = { x: Infinity, y: Infinity }, max = { x: -Infinity, y: -Infinity };
+  for (const motion of motions) for (const point of [motion.start, motion.end]) {
+    min.x = Math.min(min.x, point.x); min.y = Math.min(min.y, point.y);
+    max.x = Math.max(max.x, point.x); max.y = Math.max(max.y, point.y);
+  }
+  return { min, max };
 }
 export function stockPath(region: StockRegion): string { return pathData(region.rings); }
 export function Viewport({ display, job, inspected, onInspect, hidden, motions, stockInfo, stockGeometry, stockPending, stockError, focus, verificationFinding, verificationScope }: Props) {
@@ -52,12 +68,16 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions, 
     const groups = new Map<string, Motion[]>();
     for (const motion of motions ?? []) {
       const travel = ['rapid_x_y', 'rapid_retract', 'approach'].includes(motion.kind);
-      if (travel && !showTravel) continue;
       const key = `${motion.tool_id}:${travel ? 'travel' : 'cutting'}`;
       const group = groups.get(key) ?? []; group.push(motion); groups.set(key, group);
     }
-    return Array.from(groups, ([key, group]) => ({ key, tool: group[0].tool_id, path: motionPath(group), travel: key.endsWith(':travel') }));
-  }, [motions, showTravel]);
+    return Array.from(groups, ([key, group]) => {
+      const chunks = [];
+      for (let start = 0; start < group.length; start += 4096) chunks.push({ key, chunk: start, tool: group[0].tool_id,
+        path: motionPath(group.slice(start, start + 4096)), travel: key.endsWith(':travel') });
+      return chunks;
+    }).flat();
+  }, [motions]);
   const drag = useRef<{ x: number; y: number; camera: typeof camera } | null>(null);
   const components = useMemo(() => display?.components.map(component => ({ ...component,
     rings: component.rings.map(ring => ({ ...ring, points: ring.points.map(point => placePoint(point, job.import.placement)) })),
@@ -65,10 +85,11 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions, 
   const page = useMemo(() => display ? [{ x: 0, y: 0 }, { x: display.widthMm, y: 0 },
     { x: display.widthMm, y: display.heightMm }, { x: 0, y: display.heightMm }].map(point => placePoint(point, job.import.placement)) : [], [display, job.import.placement]);
   function fit(selection = false, plan = false) {
-    const points = plan ? (motions ?? []).flatMap(motion => [motion.start, motion.end]) : selection ? components.filter(component => component.id === inspected).flatMap(component => component.rings.flatMap(ring => ring.points)) : page;
+    if (plan) { const bounds = motionBounds(motions ?? []); if (bounds) fitBounds(bounds); return; }
+    const points = selection ? components.filter(component => component.id === inspected).flatMap(component => component.rings.flatMap(ring => ring.points)) : page;
     if (!points.length) return;
-    const xs = points.map(point => point.x), ys = points.map(point => point.y);
-    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const point of points) { minX = Math.min(minX, point.x); maxX = Math.max(maxX, point.x); minY = Math.min(minY, point.y); maxY = Math.max(maxY, point.y); }
     setCamera({ x: (minX + maxX) / 2, y: (minY + maxY) / 2, span: Math.max(maxX - minX, (maxY - minY) / .7, 1) * 1.2 });
   }
   function zoom(factor: number) { setCamera(current => ({ ...current, span: Math.min(100000, Math.max(.01, current.span * factor)) })); }
@@ -133,7 +154,7 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions, 
             <title>{`${component.label} · ${job.selected_region_ids.includes(component.id) ? 'Included for machining' : 'Excluded from machining'}`}</title>
           </path>)}
           {stockPaths.map(region => <path key={region.key} data-stock-region={region.key} d={region.path} fillRule="evenodd" className={`stock-region ${region.key}`} vectorEffect="non-scaling-stroke"><title>{`${stockLayers[region.key].label} · engine-calculated slice`}</title></path>)}
-          {showMotions && motionGroups.map(group => <path key={group.key} data-motion-group={group.key}
+          {showMotions && motionGroups.filter(group => showTravel || !group.travel).map(group => <path key={`${group.key}:${group.chunk}`} data-motion-group={group.key}
             d={group.path} className={`plan-motion ${group.travel ? 'travel' : group.tool === job.operation.vbit_id ? 'vbit cutting' : 'endmill cutting'}`} vectorEffect="non-scaling-stroke"><title>{`${group.key} · recorded XYZ motions projected to XY`}</title></path>)}
           <g className="workpiece-axes" strokeWidth="1.5" fill="none">
             <path d="M0 -8V0H8" vectorEffect="non-scaling-stroke" />
@@ -149,7 +170,7 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions, 
         <div className="drawing-legend">{stockInfo ? stockPaths.map(region => <span className="stock-legend-item" key={region.key}><span className={`stock-swatch ${region.key}`} />{stockLayers[region.key].label}</span>) : <><span className="legend-swatch included" /> Included region <span className="legend-swatch hole" /> Preserved hole <span className="legend-swatch inspected" /> Inspected</>}{showMotions && <>
           {motionGroups.some(g => !g.travel && g.tool === job.operation.endmill_id) && <><span className="legend-swatch endmill-motion" /> Endmill</>}
           {motionGroups.some(g => !g.travel && g.tool === job.operation.vbit_id) && <><span className="legend-swatch vbit-motion" /> V-bit</>}
-          {motionGroups.some(g => g.travel) && <><span className="legend-swatch travel-motion" /> Travel</>}
+          {showTravel && motionGroups.some(g => g.travel) && <><span className="legend-swatch travel-motion" /> Travel</>}
         </>}</div>
       </> : <div className="empty-viewport"><span className="empty-symbol">⌗</span><h2>Artwork needs inspection</h2><p>Connect the local Rust service to normalize this source or changed import tolerance. Your draft is retained.</p></div>}
     </div>

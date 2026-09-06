@@ -22,6 +22,7 @@ export function usePlanning(service: CamService, capabilities: Capabilities, val
   const [submissionError, setSubmissionError] = useState('');
   const [missing, setMissing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [previewProgress, setPreviewProgress] = useState<{ loaded: number; total: number } | null>(null);
   const submittingRef = useRef(false);
   const submittedJob = useRef<Job | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -38,7 +39,7 @@ export function usePlanning(service: CamService, capabilities: Capabilities, val
     if (!handle || submitting || lost || !service.planTask) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
-    setError(''); setMissing(false);
+    setError(''); setMissing(false); setPreviewProgress(null);
     async function poll() {
       try {
         const next = await service.planTask!(handle!.identity, controller.signal);
@@ -46,16 +47,19 @@ export function usePlanning(service: CamService, capabilities: Capabilities, val
         accept(next, handle!.identity);
         if (terminal(next)) {
           if (next.state === 'succeeded' && next.resultAvailable && service.planResult) {
-            const value = await service.planResult(handle!.identity, controller.signal);
+            const value = await service.planResult(handle!.identity, controller.signal, (loaded, total) => {
+              if (!controller.signal.aborted) setPreviewProgress({ loaded, total });
+            });
             if (!controller.signal.aborted) {
               accept(value.task, handle!.identity);
               setResult({ value, restored: handle!.restored });
+              setPreviewProgress(null);
             }
           }
         } else timer = setTimeout(() => void poll(), 700);
       } catch (error) {
         if (!controller.signal.aborted) {
-          setError(String(error)); setMissing(String(error).includes('TASK_NOT_FOUND'));
+          setError(String(error)); setMissing(String(error).includes('TASK_NOT_FOUND')); setPreviewProgress(null);
         }
       }
     }
@@ -86,7 +90,7 @@ export function usePlanning(service: CamService, capabilities: Capabilities, val
   }
   const active = !!handle && !lost && !missing && (!task || !terminal(task));
   const current = !!result && !result.restored && currentPlan(result.value.task, validation, revision, stage, capabilities);
-  return { task, result: result?.value ?? null, current, error: [submissionError, error].filter(Boolean).join(' '), lost, restored: !!handle?.restored, active, submitting,
+  return { task, result: result?.value ?? null, current, error: [submissionError, error].filter(Boolean).join(' '), lost, restored: !!handle?.restored, active, submitting, previewProgress,
     start, cancel, check: () => setAttempt(value => value + 1),
     retrySubmission: submittedJob.current && handle && !task && !lost ? () => void submit(submittedJob.current!, handle) : null };
 }

@@ -35,8 +35,10 @@ its typed records and discard supplied analysis. This replaces hidden JSON
 round-trips inside M5/M6 as well as those in service transport; later changes to
 the caller's source cannot alter the authenticated snapshot.
 
-The browser receives the existing summary and first 20,000 motions, with explicit
-omission counts. Stock slices retain their independent geometry budgets. An
+The browser now receives the summary and first page of up to 20,000 motions,
+then requests every remaining page before publishing the complete preview. The
+[complete preview report](complete-motion-preview.md) describes this follow-up
+and its measurements. Stock slices retain their independent geometry budgets. An
 explicit artifact download reads at most 64 KiB per chunk and advertises the full
 content length. The service does not clone the complete file into an HTTP body.
 
@@ -86,7 +88,7 @@ pnpm --dir web check:live -t 'two flower copies'
 
 The real-data case imports the original SVG, opens the unchanged saved job,
 compares every saved artifact byte with the same-engine CLI (apart from its final
-newline), checks the bounded browser preview, and reopens the retained plan for
+newline), checks every motion in the complete paged preview, and reopens the retained plan for
 independent verification. The larger case repeats the flower at unchanged physical
 size and accuracy on a wider page, then downloads and verifies a plan above
 128 MB. Its saved job is a generated regression fixture, not a change to
@@ -94,7 +96,7 @@ size and accuracy on a wider page, then downloads and verifies a plan above
 expected `inconclusive` result tests transport/authentication and does not claim
 machining approval. Measurements are written to `web/test-results/live/`.
 
-## Measured results on Windows, 2026-09-06
+## Original measurements before complete preview paging, 2026-09-06
 
 | Input | Complete plan bytes | Browser preview bytes | Recorded motions |
 | --- | ---: | ---: | ---: |

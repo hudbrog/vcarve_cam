@@ -30,6 +30,7 @@ export function PlanPanel({ planning, capabilities, job, validation, revision, s
     {(task || planning.active || planning.error || planning.lost) && <section className="inspector-group"><h2>{task && !taskCurrent ? 'Previous task · different setup' : 'Background task'}</h2>
       <p role="status" className="task-state">{planning.lost ? 'Service restarted · task lost' : task ? ({ queued: 'Queued · waiting for the planner', running: `Running ${task.stage} planner`, cancelling: 'Cancelling · waiting for worker exit', cancelled: 'Cancelled · calculation stopped', succeeded: 'Calculation finished · review its outcome', failed: 'Planning failed' }[task.state]) : planning.submitting ? 'Submitting immutable snapshot…' : 'Checking task status…'}</p>
       {task && <dl><dt>Submitted revision</dt><dd>{task.revision}</dd><dt>Stage</dt><dd>{task.stage}</dd><dt>Task</dt><dd><code>{task.taskId}</code></dd></dl>}
+      {planning.previewProgress && <p role="status">Loading complete motion preview… {planning.previewProgress.loaded.toLocaleString()} / {planning.previewProgress.total.toLocaleString()} motions</p>}
       {planning.active && <button className="wide" disabled={!task || task.state === 'cancelling'} onClick={() => void planning.cancel()}>Cancel calculation</button>}
       {task?.diagnostic && <p role="alert" className="inline-warning"><strong>{task.diagnostic.code}</strong> · {task.diagnostic.message}</p>}
       {taskFix && <button onClick={() => onFix(taskFix.path)}>Open {taskFix.label}</button>}
@@ -44,6 +45,7 @@ export function PlanPanel({ planning, capabilities, job, validation, revision, s
       {!planning.current && <p className="inline-warning">This result does not match the current draft, stage, or service. Its motions are hidden.</p>}
       <dl><dt>Stage / revision</dt><dd>{result.task.stage} / {result.task.revision}</dd><dt>Recorded motions</dt><dd>{result.task.summary.motionCount}</dd><dt>Cutting motions</dt><dd>{result.task.summary.cuttingMotionCount}</dd><dt>Previewed motions</dt><dd>{result.task.summary.previewMotionCount}</dd></dl>
       {result.task.summary.omittedMotionCount > 0 && <p className="inline-warning">Preview shows the first {result.task.summary.previewMotionCount} motions; {result.task.summary.omittedMotionCount} are omitted.</p>}
+      {result.task.summary.omittedMotionCount === 0 && <p className="hint">Complete plan loaded · {result.task.summary.previewMotionCount.toLocaleString()} motions. Tool, layer, and travel controls filter the overlay.</p>}
       <p>{result.task.summary.meaning}</p>
       {[...result.task.summary.diagnostics,...result.task.summary.generationIssues].map((d, i) => { const fix = job ? planningIssueField(job,d) : null; return <div key={i}><p className="inline-warning"><strong>{d.code}</strong> · {d.message}</p>{fix && <button onClick={() => onFix(fix.path)}>Open {fix.label}</button>}</div>; })}
       {(result.task.summary.omittedDiagnostics + result.task.summary.omittedGenerationIssues > 0) && <p className="hint">Additional diagnostics remain in the engine plan artifact.</p>}

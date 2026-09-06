@@ -105,6 +105,7 @@ pub fn start(service: &Arc<Planning>, request: Start) -> Result<Snapshot, Failur
             identity: request.export.clone(),
         }),
         output_path: None,
+        motion_output_path: None,
         source_artifact: Some(artifact),
     };
     service.enqueue(
@@ -162,6 +163,8 @@ pub fn calculate(work: Work) -> Result<Output, Value> {
             "originalStatus":result.report.plan_verification.status,"emittedStatus":result.report.emitted_verification.as_ref().map(|v|v.status)}),
         artifact,
         plan_artifact: None,
+        motion_artifact: None,
+        motion_pages: vec![],
         programs: result.programs,
         motions: vec![],
         inspection: Default::default(),
