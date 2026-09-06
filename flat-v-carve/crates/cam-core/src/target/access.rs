@@ -1,7 +1,8 @@
 use super::{Target, error};
 use crate::{
     geometry::{
-        BoundaryQuery, Diagnostic, Point, PointLocation, Region, Result, Segment, SiteKind,
+        BoundaryQuery, Clearance, Diagnostic, Point, PointLocation, Region, Result, Segment,
+        SiteKind,
     },
     model::Length,
 };
@@ -60,6 +61,10 @@ impl Target {
             ));
         }
         let sample = self.boundary.sample(p)?;
+        Ok(self.fit_from_clearance(sample, required))
+    }
+
+    fn fit_from_clearance(&self, sample: Clearance, required: f64) -> PoseFit {
         let margin = sample.signed_distance_mm - required;
         let reserve = sample.numerical_reserve_mm + 32.0 * f64::EPSILON * required;
         let status = if margin > reserve {
@@ -69,14 +74,14 @@ impl Target {
         } else {
             FitStatus::Contact
         };
-        Ok(PoseFit {
+        PoseFit {
             status,
             clearance_mm: sample.signed_distance_mm,
             required_clearance_mm: required,
             margin_mm: margin,
             numerical_reserve_mm: reserve,
             input_snap_bound_mm: self.input_snap_bound_mm,
-        })
+        }
     }
 
     /// The authoritative predicate is signed boundary distance >= required radius.
@@ -106,16 +111,31 @@ impl Target {
         }
         let diagram = self.diagram()?;
         timing.lap("diagram");
+        // A Voronoi vertex occurs on several edges. Reuse its exact query,
+        // retaining every witness occurrence and the original error order.
+        let key = |p: Point| [p.x, p.y].map(|v| if v == 0. { 0 } else { v.to_bits() });
+        let mut clearances = std::collections::HashMap::new();
+        let mut sample = |p: Point| -> Result<Clearance> {
+            if let Some(&q) = clearances.get(&key(p)) {
+                return Ok(q);
+            }
+            let q = self.boundary.sample(p)?;
+            if clearances.len() < 131072 {
+                clearances.insert(key(p), q);
+            }
+            Ok(q)
+        };
         let mut witnesses = vec![];
         let mut candidates = vec![];
         let mut interior_vertices = 0;
         for edge in &diagram.edges {
             for p in [edge.start, edge.end].into_iter().flatten() {
-                if self.boundary.sample(p)?.location != PointLocation::Inside {
+                let q = sample(p)?;
+                if q.location != PointLocation::Inside {
                     continue;
                 }
                 interior_vertices += 1;
-                let fit = self.pose_fit(p, required)?;
+                let fit = self.fit_from_clearance(q, required);
                 if fit.status == FitStatus::Contact {
                     candidates.push(p);
                 }
@@ -131,8 +151,9 @@ impl Target {
             };
             let Some(curve) = &edge.curve else { continue };
             let mid = curve.evaluate(0.5)?;
-            if self.boundary.sample(mid)?.location == PointLocation::Inside
-                && self.pose_fit(mid, required)?.status == FitStatus::Clearance
+            let middle = sample(mid)?;
+            if middle.location == PointLocation::Inside
+                && self.fit_from_clearance(middle, required).status == FitStatus::Clearance
             {
                 witnesses.push(mid);
             }
@@ -153,15 +174,15 @@ impl Target {
             if !parallel || start == end {
                 continue;
             }
-            let fit = self.pose_fit(mid, required)?;
+            let fit = self.fit_from_clearance(middle, required);
             if fit.status != FitStatus::Contact
-                || self.pose_fit(start, required)?.status != FitStatus::Contact
-                || self.pose_fit(end, required)?.status != FitStatus::Contact
+                || self.fit_from_clearance(sample(start)?, required).status != FitStatus::Contact
+                || self.fit_from_clearance(sample(end)?, required).status != FitStatus::Contact
             {
                 continue;
             }
             let segment = Segment { start, end };
-            if self.boundary.sample(mid)?.location == PointLocation::Inside
+            if middle.location == PointLocation::Inside
                 && self.boundary.segment_distance_mm(segment)? + fit.numerical_reserve_mm
                     >= required
             {
@@ -175,7 +196,9 @@ impl Target {
             ));
         }
         for p in candidates {
-            let reserve = self.pose_fit(p, required)?.numerical_reserve_mm;
+            let reserve = self
+                .fit_from_clearance(sample(p)?, required)
+                .numerical_reserve_mm;
             if result
                 .contact_segments
                 .iter()
@@ -193,8 +216,20 @@ impl Target {
         let has_area = !result.area.rings().is_empty();
         // A positive-clearance witness missing from offset area must not disappear silently.
         let mut missing = vec![];
+        let mut area_locations = std::collections::HashMap::new();
         for p in witnesses {
-            if !has_area || area_query.sample(p)?.location == PointLocation::Outside {
+            let outside = if !has_area {
+                true
+            } else if let Some(&outside) = area_locations.get(&key(p)) {
+                outside
+            } else {
+                let outside = area_query.sample(p)?.location == PointLocation::Outside;
+                if area_locations.len() < 131072 {
+                    area_locations.insert(key(p), outside);
+                }
+                outside
+            };
+            if outside {
                 missing.push(p);
             }
         }

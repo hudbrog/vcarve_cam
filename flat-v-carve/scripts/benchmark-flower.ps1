@@ -1,12 +1,14 @@
 param(
     [string]$Job = '../real_data/flower_box-svg.job (2).json',
     [string]$OutputDirectory = 'artifacts/flower-performance',
+    [string]$Cam = '',
+    [ValidateRange(1, 86400)][int]$TimeoutSeconds = 300,
     [ValidateSet('endmill', 'combined')][string[]]$Stages = @('endmill', 'combined')
 )
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path $PSScriptRoot -Parent
 $jobPath = (Resolve-Path -LiteralPath $Job).Path
-$camPath = Join-Path $workspace 'target/release/cam.exe'
+$camPath = if ($Cam) { $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Cam) } else { Join-Path $workspace 'target/release/cam.exe' }
 if (-not (Test-Path -LiteralPath $camPath)) { throw 'Build first: cargo build --release --locked -p cam-app' }
 if (Test-Path -LiteralPath $OutputDirectory) { throw 'Choose a new output directory.' }
 $outputPath = (New-Item -ItemType Directory -Path $OutputDirectory).FullName
@@ -27,9 +29,16 @@ foreach ($stage in $Stages) {
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()
     $peak = 0L
+    $timedOut = $false
     while (-not $process.WaitForExit(500)) {
         $process.Refresh()
         $peak = [Math]::Max($peak, $process.PeakWorkingSet64)
+        if ($watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+            $timedOut = $true
+            $process.Kill($true)
+            $process.WaitForExit()
+            break
+        }
     }
     $watch.Stop()
     $stdout.GetAwaiter().GetResult() | Set-Content -LiteralPath (Join-Path $outputPath "$stage.stdout.txt")
@@ -37,7 +46,9 @@ foreach ($stage in $Stages) {
     $result = [ordered]@{
         stage = $stage
         seconds = $watch.Elapsed.TotalSeconds
+        cpu_seconds = $process.TotalProcessorTime.TotalSeconds
         exit_code = $process.ExitCode
+        timed_out = $timedOut
         peak_working_set_bytes = $peak
         plan_bytes = $(if (Test-Path -LiteralPath $planPath) { (Get-Item -LiteralPath $planPath).Length } else { $null })
     }

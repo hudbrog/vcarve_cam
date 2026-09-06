@@ -182,7 +182,7 @@ impl Target {
         }
         tool.validate_depth(self.depth_cap)
     }
-    fn diagram(&self) -> Result<&VoronoiDiagram> {
+    pub(crate) fn diagram(&self) -> Result<&VoronoiDiagram> {
         self.diagram
             .get_or_init(|| VoronoiDiagram::build(&self.region))
             .as_ref()

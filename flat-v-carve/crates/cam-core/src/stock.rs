@@ -160,6 +160,47 @@ impl<'a> StockQuery<'a> {
             QueryTool::Vbit(t) => vbit_depth(motions, t, p),
         }
     }
+
+    /// Select possible covering endmill sweeps spatially, then retain the
+    /// independent whole-footprint air predicate. The index is tied to this
+    /// immutable borrowed motion slice, never a serialized stock cache.
+    pub(crate) fn vbit_air(
+        &self,
+        motion: &Motion,
+        vbit: &crate::model::VBit,
+        reserve: f64,
+    ) -> bool {
+        let QueryTool::Endmill(radius) = self.tool else {
+            return false;
+        };
+        if !motion.start.finite() || !motion.end.finite() {
+            return false;
+        }
+        let depth = motion.start.depth().max(motion.end.depth());
+        if !reserve.is_finite()
+            || reserve < 0.
+            || depth > vbit.cutting_height().mm()
+            || vbit.tip_radius().mm() + depth * vbit.angle().slope() + reserve >= radius
+        {
+            return false;
+        }
+        let mut air = false;
+        self.index
+            .visit(Aabb::new(motion.start.xy(), motion.start.xy()), |i| {
+                if !air {
+                    air = vbit_air_in_endmill(
+                        motion,
+                        vbit,
+                        std::slice::from_ref(self.motions[i]),
+                        radius,
+                        reserve,
+                    );
+                }
+                Ok(())
+            })
+            .is_ok()
+            && air
+    }
 }
 
 fn validate_motions(motions: &[Motion]) -> Result<()> {
@@ -514,9 +555,6 @@ pub fn removal_at_slice(
                 .at_stage("stock"),
         );
     }
-    let mut lower = UnionAccumulator::new(grid);
-    let mut upper = UnionAccumulator::new(grid);
-    let mut error: f64 = 0.;
     let mut footprints = Footprints::default();
     let sweeps: Vec<_> = motions
         .iter()
@@ -533,23 +571,204 @@ pub fn removal_at_slice(
     let endpoints = moving_endpoint_radii(&sweeps);
     // Merge neighbors in space, not widely separated depth/final-pass records.
     // This avoids repeatedly intersecting large overlapping stock prefixes.
-    for i in sweep_order(&sweeps) {
-        let s = &sweeps[i];
-        if covered_stationary(s, &endpoints) || footprints.repeated(s.a, radius, s.b, radius) {
-            continue;
-        }
-        let capsule = capsule_bounds(grid, s.a, s.b, radius)?;
-        error = error.max(capsule.radial_error_mm);
-        lower.push(capsule.lower)?;
-        upper.push(capsule.upper)?;
-    }
+    let order: Vec<_> = sweep_order(&sweeps)
+        .into_iter()
+        .filter(|&i| {
+            let s = &sweeps[i];
+            !covered_stationary(s, &endpoints) && !footprints.repeated(s.a, radius, s.b, radius)
+        })
+        .collect();
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(4)
+        .min(order.len().div_ceil(4096).max(1));
+    let bounds = endmill_sweep_bounds(grid, &sweeps, &order, radius, workers)?;
     Ok(SliceRemoval {
         depth_mm: depth,
-        lower: lower.finish()?,
-        upper: upper.finish()?,
+        lower: bounds.lower,
+        upper: bounds.upper,
         contributing_motion_ids: sweeps.iter().map(|s| s.id).collect(),
-        capsule_radial_error_mm: error,
+        capsule_radial_error_mm: bounds.radial_error_mm,
     })
+}
+
+fn endmill_sweep_bounds(
+    grid: Grid,
+    sweeps: &[SliceSweep],
+    order: &[usize],
+    radius: f64,
+    workers: usize,
+) -> Result<CapsuleBounds> {
+    let batch = |indices: &[usize]| -> Result<CapsuleBounds> {
+        let mut lower = UnionAccumulator::new(grid);
+        let mut upper = UnionAccumulator::new(grid);
+        let mut error: f64 = 0.;
+        for &i in indices {
+            let s = &sweeps[i];
+            let c = capsule_bounds(grid, s.a, s.b, radius)?;
+            error = error.max(c.radial_error_mm);
+            lower.push(c.lower)?;
+            upper.push(c.upper)?;
+        }
+        Ok(CapsuleBounds {
+            lower: lower.finish()?,
+            upper: upper.finish()?,
+            radial_error_mm: error,
+        })
+    };
+    let partitions = order.len().div_ceil(4096).clamp(1, 4);
+    if partitions == 1 {
+        return batch(order);
+    }
+    // Spatially contiguous batches collapse their overlapping interiors on
+    // bounded workers. Every retained footprint still contributes its original
+    // inner/outer bracket; collect errors and merge in deterministic order.
+    // Partition boundaries and union order do not depend on host CPU count.
+    let chunks: Vec<_> = order.chunks(order.len().div_ceil(partitions)).collect();
+    let mut parts = vec![];
+    for wave in chunks.chunks(workers.max(1)) {
+        if workers <= 1 {
+            parts.push(batch(wave[0])?);
+        } else {
+            parts.extend(std::thread::scope(|scope| {
+                let handles: Vec<_> = wave
+                    .iter()
+                    .map(|chunk| {
+                        let batch = &batch;
+                        scope.spawn(move || batch(chunk))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| {
+                        handle.join().map_err(|_| {
+                            Diagnostic::new("STOCK_WORKER_PANIC", "endmill stock worker failed")
+                                .at_stage("stock")
+                        })?
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?);
+        }
+    }
+    Ok(CapsuleBounds {
+        lower: Region::union_all(grid, &parts.iter().map(|p| &p.lower).collect::<Vec<_>>())?,
+        upper: Region::union_all(grid, &parts.iter().map(|p| &p.upper).collect::<Vec<_>>())?,
+        radial_error_mm: parts.iter().map(|p| p.radial_error_mm).fold(0., f64::max),
+    })
+}
+
+#[cfg(test)]
+mod parallel_endmill_tests {
+    use super::*;
+    use crate::geometry::{BooleanOp, PointLocation};
+
+    #[test]
+    fn indexed_air_proofs_match_exhaustive_sweeps_for_islands_ramps_and_depths() {
+        use crate::{
+            job::{Job, ToolGeometry},
+            motion::{MotionKind, Position},
+        };
+        for input in [
+            include_str!("../../../fixtures/m4/island.json"),
+            include_str!("../../../fixtures/m4/ramp-roughing.json"),
+        ] {
+            let job = Job::from_json(input).unwrap();
+            let plan = crate::pocket::plan_endmill(&job).unwrap();
+            let Some(ToolGeometry::Vbit(spec)) = &job.tools[1].geometry else {
+                panic!("V-bit fixture")
+            };
+            let tool = crate::model::VBit::try_from(spec.clone()).unwrap();
+            let Some(ToolGeometry::Endmill(spec)) = &job.tools[0].geometry else {
+                panic!("endmill fixture")
+            };
+            let radius = spec.diameter_mm / 2.;
+            let stock = StockQuery::endmill(&plan.motions, radius).unwrap();
+            let mut accepted = 0;
+            for x in -1..=31 {
+                for y in -1..=21 {
+                    for depth in [0.1, 0.5, 1., 2.] {
+                        let motion = Motion {
+                            id: 0,
+                            tool_id: "vbit".into(),
+                            operation_id: "test".into(),
+                            layer: 0,
+                            kind: MotionKind::Cut,
+                            start: Position::new(Point::new(x as f64, y as f64), -depth),
+                            end: Position::new(
+                                Point::new(x as f64 + 0.3, y as f64 + 0.1),
+                                -depth * 0.8,
+                            ),
+                            feed_mm_min: Some(100.),
+                        };
+                        let expected =
+                            vbit_air_in_endmill(&motion, &tool, &plan.motions, radius, 0.002);
+                        assert_eq!(stock.vbit_air(&motion, &tool, 0.002), expected);
+                        accepted += usize::from(expected);
+                    }
+                }
+            }
+            assert!(accepted > 0);
+        }
+    }
+
+    #[test]
+    fn spatial_batches_preserve_analytic_bounds_and_serial_geometry() {
+        let grid = Grid::new(0.001, 100.).unwrap();
+        let sweeps: Vec<_> = (0..4800)
+            .map(|i| SliceSweep {
+                id: i,
+                a: Point::new(i as f64 / 400., 0.),
+                b: Point::new((i + 1) as f64 / 400., 0.),
+                ra: 1.,
+                rb: 1.,
+            })
+            .collect();
+        let order = sweep_order(&sweeps);
+        let serial = endmill_sweep_bounds(grid, &sweeps, &order, 1., 1).unwrap();
+        let parallel = endmill_sweep_bounds(grid, &sweeps, &order, 1., 4).unwrap();
+        assert_eq!(
+            serde_json::to_value(&serial.lower).unwrap(),
+            serde_json::to_value(&parallel.lower).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&serial.upper).unwrap(),
+            serde_json::to_value(&parallel.upper).unwrap()
+        );
+        for (a, b) in [
+            (&serial.lower, &parallel.lower),
+            (&serial.upper, &parallel.upper),
+        ] {
+            assert!(a.boolean(BooleanOp::Difference, b).unwrap().area_mm2() < 0.001);
+            assert!(b.boolean(BooleanOp::Difference, a).unwrap().area_mm2() < 0.001);
+        }
+        for ring in parallel.lower.rings_mm() {
+            for p in ring {
+                let closest = Point::new(p.x.clamp(0., 12.), 0.);
+                assert!(p.distance(closest) <= 1.);
+            }
+        }
+        let outer = crate::geometry::BoundaryQuery::new(&parallel.upper);
+        for x in 0..=120 {
+            for y in [-1., 0., 1.] {
+                assert_ne!(
+                    outer
+                        .sample(Point::new(x as f64 / 10., y))
+                        .unwrap()
+                        .location,
+                    PointLocation::Outside
+                );
+            }
+        }
+        assert_eq!(serial.radial_error_mm, parallel.radial_error_mm);
+        assert_eq!(
+            endmill_sweep_bounds(grid, &sweeps, &order, 1000000., 1)
+                .unwrap_err()
+                .code,
+            endmill_sweep_bounds(grid, &sweeps, &order, 1000000., 4)
+                .unwrap_err()
+                .code
+        );
+    }
 }
 
 /// Exact linear-motion/cylindrical-tool point query (up to floating-point arithmetic).

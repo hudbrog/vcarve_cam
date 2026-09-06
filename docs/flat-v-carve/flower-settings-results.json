@@ -1,0 +1,2291 @@
+{
+  "engine_version": "0.7.5",
+  "source_job": "../real_data/flower_box-svg.job (2).json",
+  "source_job_sha256": "59e4c9deb37cc3f0a335eab1f4c53fd86257263b476b96260da560223c6ea693",
+  "configuration_count": 19,
+  "cli_run_count": 25,
+  "checks": {
+    "source_job_unchanged": true,
+    "repeated_recorded_motions_identical": true,
+    "detail_001_and_020_motions_identical_to_baseline": true,
+    "clearance_5_cutting_paths_identical_to_baseline": true
+  },
+  "cases": [
+    {
+      "id": "baseline",
+      "changes": {},
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 20.3912835,
+          "cpu_seconds": 61.9375,
+          "exit_code": 0,
+          "peak_working_set_bytes": 205275136,
+          "plan_bytes": 14054720,
+          "artifact_directory": "artifacts/flower-settings-study/baseline-1",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        },
+        {
+          "stage": "combined",
+          "seconds": 22.846232,
+          "cpu_seconds": 68.0625,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 206426112,
+          "plan_bytes": 14054720,
+          "artifact_directory": "artifacts/flower-settings-study/baseline-2",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        },
+        {
+          "stage": "combined",
+          "seconds": 22.2430136,
+          "cpu_seconds": 69.234375,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 213831680,
+          "plan_bytes": 14054720,
+          "artifact_directory": "artifacts/flower-settings-repeat/baseline-1",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        },
+        {
+          "stage": "combined",
+          "seconds": 29.5131753,
+          "cpu_seconds": 89.609375,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 204492800,
+          "plan_bytes": 14054720,
+          "artifact_directory": "artifacts/flower-settings-repeat/baseline-2",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 17063,
+        "total_distance_mm": 4698.1398675310165,
+        "total_xy_distance_mm": 1690.139867531016,
+        "feed_minutes": 2.4380816107071066,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 47,
+            "distance_mm": 573.9766461168026,
+            "xy_distance_mm": 573.9766461168026,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 47,
+            "distance_mm": 1410,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.7625000000000015
+          },
+          "plunge": {
+            "count": 47,
+            "distance_mm": 94,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11750000000000006
+          },
+          "cut": {
+            "count": 16875,
+            "distance_mm": 1116.1632214142135,
+            "xy_distance_mm": 1116.1632214142135,
+            "feed_minutes": 0.5580816107071047
+          },
+          "rapid_retract": {
+            "count": 47,
+            "distance_mm": 1504,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 28501,
+        "total_distance_mm": 16728.596970473853,
+        "total_xy_distance_mm": 4826.349041287158,
+        "feed_minutes": 11.705419028694218,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 188,
+            "distance_mm": 1598.42666257426,
+            "xy_distance_mm": 1598.42666257426,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 188,
+            "distance_mm": 5640,
+            "xy_distance_mm": 0,
+            "feed_minutes": 9.399999999999999
+          },
+          "plunge": {
+            "count": 184,
+            "distance_mm": 294.37724375000005,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4906287395833341
+          },
+          "cut": {
+            "count": 27753,
+            "distance_mm": 3266.622520399594,
+            "xy_distance_mm": 3227.922378712898,
+            "feed_minutes": 1.8147902891108851
+          },
+          "rapid_retract": {
+            "count": 188,
+            "distance_mm": 5929.17054375,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "f9316ca4a6b4f833e22571a60ba2cb6f4162818c1e30a3b3709a32b3fdb77563",
+      "evaluation": {
+        "diagnostics": [],
+        "engine_version": "0.7.5",
+        "evaluation_seconds_including_replay": 19.7499773,
+        "finish_executed": 15025,
+        "finish_expected": 15025,
+        "fixed_grid_spacing_mm": 0.25,
+        "fixed_reference_material_samples": 161027,
+        "fixed_reference_samples": 311203,
+        "flattening_bound_mm": 0.00025,
+        "generation_issues": [],
+        "geometry_vertices": 22039,
+        "limitation": "Sampled depth errors against the original 0.001 mm input target; not a global error bound, M5 volume proof, or physical machine accuracy guarantee.",
+        "max_own_target_sampled_residual_mm": 0.046212502317236615,
+        "max_reference_excess_depth_mm": 0,
+        "max_reference_floor_residual_mm": 0.06333234008338873,
+        "max_reference_residual_mm": 0.06333234008338873,
+        "max_reference_wall_residual_mm": 0.003237595915732139,
+        "max_sampled_target_change_mm": 0,
+        "max_slice_possible_overcut_mm2": 0,
+        "missing_floor_beyond_tolerance_mm2": 0,
+        "own_witness_max_reference_excess_depth_mm": 0,
+        "own_witness_max_reference_residual_mm": 0.046212502317236615,
+        "quality_samples": 60961,
+        "reference_residual_p95_mm": 0.0026883550119090605,
+        "reference_residual_p99_mm": 0.01621289037064999,
+        "reference_samples_above_01_mm": 0,
+        "replay_seconds": 18.2178068,
+        "source_snap_bound_mm": 0.0000070710678118654756,
+        "status": "complete",
+        "worst_reference_residual_point": {
+          "x": 166.8878,
+          "y": 76.216
+        }
+      }
+    },
+    {
+      "id": "motion-005",
+      "changes": {
+        "tolerances.motion_tolerance_mm": 0.05
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 17.561708,
+          "cpu_seconds": 49.328125,
+          "exit_code": 0,
+          "peak_working_set_bytes": 202514432,
+          "plan_bytes": 12325197,
+          "artifact_directory": "artifacts/flower-settings-study/motion-005",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 17063,
+        "total_distance_mm": 4698.1398675310165,
+        "total_xy_distance_mm": 1690.139867531016,
+        "feed_minutes": 2.4380816107071066,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 47,
+            "distance_mm": 573.9766461168026,
+            "xy_distance_mm": 573.9766461168026,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 47,
+            "distance_mm": 1410,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.7625000000000015
+          },
+          "plunge": {
+            "count": 47,
+            "distance_mm": 94,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11750000000000006
+          },
+          "cut": {
+            "count": 16875,
+            "distance_mm": 1116.1632214142135,
+            "xy_distance_mm": 1116.1632214142135,
+            "feed_minutes": 0.5580816107071047
+          },
+          "rapid_retract": {
+            "count": 47,
+            "distance_mm": 1504,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 22658,
+        "total_distance_mm": 15648.19728538524,
+        "total_xy_distance_mm": 4900.669265871701,
+        "feed_minutes": 10.74060456982825,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 170,
+            "distance_mm": 1676.0587221943717,
+            "xy_distance_mm": 1676.0587221943717,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 170,
+            "distance_mm": 5100,
+            "xy_distance_mm": 0,
+            "feed_minutes": 8.499999999999986
+          },
+          "plunge": {
+            "count": 167,
+            "distance_mm": 256.6899625000001,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4278166041666667
+          },
+          "cut": {
+            "count": 21981,
+            "distance_mm": 3263.018338190869,
+            "xy_distance_mm": 3224.610543677329,
+            "feed_minutes": 1.8127879656615977
+          },
+          "rapid_retract": {
+            "count": 170,
+            "distance_mm": 5352.4302625,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "e1684644992d0759b29f5ba9167780d1beddb86b47e0e523fbe6b27c24cd8482",
+      "evaluation": {
+        "diagnostics": [],
+        "engine_version": "0.7.5",
+        "evaluation_seconds_including_replay": 12.9336858,
+        "finish_executed": 13929,
+        "finish_expected": 13929,
+        "fixed_grid_spacing_mm": 0.25,
+        "fixed_reference_material_samples": 161027,
+        "fixed_reference_samples": 311203,
+        "flattening_bound_mm": 0.00025,
+        "generation_issues": [],
+        "geometry_vertices": 22039,
+        "limitation": "Sampled depth errors against the original 0.001 mm input target; not a global error bound, M5 volume proof, or physical machine accuracy guarantee.",
+        "max_own_target_sampled_residual_mm": 0.04558022219605018,
+        "max_reference_excess_depth_mm": 0,
+        "max_reference_floor_residual_mm": 0.07418542384148963,
+        "max_reference_residual_mm": 0.07418542384148963,
+        "max_reference_wall_residual_mm": 0.008195492674261118,
+        "max_sampled_target_change_mm": 0,
+        "max_slice_possible_overcut_mm2": 0,
+        "missing_floor_beyond_tolerance_mm2": 0,
+        "own_witness_max_reference_excess_depth_mm": 0,
+        "own_witness_max_reference_residual_mm": 0.04558022219605018,
+        "quality_samples": 49404,
+        "reference_residual_p95_mm": 0.005492896936458269,
+        "reference_residual_p99_mm": 0.016281965430574807,
+        "reference_samples_above_01_mm": 0,
+        "replay_seconds": 11.6243202,
+        "source_snap_bound_mm": 0.0000070710678118654756,
+        "status": "complete",
+        "worst_reference_residual_point": {
+          "x": 74.93677375,
+          "y": 66.646755
+        }
+      }
+    },
+    {
+      "id": "motion-010",
+      "changes": {
+        "tolerances.motion_tolerance_mm": 0.1
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 20.2302394,
+          "cpu_seconds": 58.53125,
+          "exit_code": 0,
+          "peak_working_set_bytes": 202534912,
+          "plan_bytes": 12323863,
+          "artifact_directory": "artifacts/flower-settings-study/motion-010",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 17063,
+        "total_distance_mm": 4698.1398675310165,
+        "total_xy_distance_mm": 1690.139867531016,
+        "feed_minutes": 2.4380816107071066,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 47,
+            "distance_mm": 573.9766461168026,
+            "xy_distance_mm": 573.9766461168026,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 47,
+            "distance_mm": 1410,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.7625000000000015
+          },
+          "plunge": {
+            "count": 47,
+            "distance_mm": 94,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11750000000000006
+          },
+          "cut": {
+            "count": 16875,
+            "distance_mm": 1116.1632214142135,
+            "xy_distance_mm": 1116.1632214142135,
+            "feed_minutes": 0.5580816107071047
+          },
+          "rapid_retract": {
+            "count": 47,
+            "distance_mm": 1504,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 22654,
+        "total_distance_mm": 15648.197284407825,
+        "total_xy_distance_mm": 4900.669264489863,
+        "feed_minutes": 10.74060456928524,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 170,
+            "distance_mm": 1676.0587221943717,
+            "xy_distance_mm": 1676.0587221943717,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 170,
+            "distance_mm": 5100,
+            "xy_distance_mm": 0,
+            "feed_minutes": 8.499999999999986
+          },
+          "plunge": {
+            "count": 167,
+            "distance_mm": 256.6899625000001,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4278166041666667
+          },
+          "cut": {
+            "count": 21977,
+            "distance_mm": 3263.0183372134534,
+            "xy_distance_mm": 3224.610542295491,
+            "feed_minutes": 1.8127879651185883
+          },
+          "rapid_retract": {
+            "count": 170,
+            "distance_mm": 5352.4302625,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "f5644737db20087eb0cb89e0da179deab70a505247450ea10a515f1da1b0e9d2",
+      "evaluation": null
+    },
+    {
+      "id": "geometry-00025",
+      "changes": {
+        "import.geometry_tolerance_mm": 0.0025
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 16.2017552,
+          "cpu_seconds": 50.03125,
+          "exit_code": 0,
+          "peak_working_set_bytes": 151240704,
+          "plan_bytes": 10062632,
+          "artifact_directory": "artifacts/flower-settings-study/geometry-00025",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 11038,
+        "total_distance_mm": 4632.225394831823,
+        "total_xy_distance_mm": 1688.2253948318232,
+        "feed_minutes": 2.3978080585085007,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 46,
+            "distance_mm": 572.6092778148266,
+            "xy_distance_mm": 572.6092778148266,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 46,
+            "distance_mm": 1380,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.7250000000000014
+          },
+          "plunge": {
+            "count": 46,
+            "distance_mm": 92,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11500000000000006
+          },
+          "cut": {
+            "count": 10854,
+            "distance_mm": 1115.6161170169967,
+            "xy_distance_mm": 1115.6161170169967,
+            "feed_minutes": 0.5578080585084992
+          },
+          "rapid_retract": {
+            "count": 46,
+            "distance_mm": 1472,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 22565,
+        "total_distance_mm": 16340.730403445548,
+        "total_xy_distance_mm": 4819.781834436187,
+        "feed_minutes": 11.400074287074757,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 182,
+            "distance_mm": 1572.2943742109844,
+            "xy_distance_mm": 1572.2943742109844,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 182,
+            "distance_mm": 5460,
+            "xy_distance_mm": 0,
+            "feed_minutes": 9.099999999999994
+          },
+          "plunge": {
+            "count": 176,
+            "distance_mm": 285.05726874999993,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4750954479166674
+          },
+          "cut": {
+            "count": 21843,
+            "distance_mm": 3284.961910484562,
+            "xy_distance_mm": 3247.487460225202,
+            "feed_minutes": 1.8249788391580952
+          },
+          "rapid_retract": {
+            "count": 182,
+            "distance_mm": 5738.416850000002,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "0e6a7e13919b1f906b5122a6c02b2499da60407f718a6e87201a952dcd80c7f0",
+      "evaluation": null
+    },
+    {
+      "id": "geometry-0005",
+      "changes": {
+        "import.geometry_tolerance_mm": 0.005
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 10.8226745,
+          "cpu_seconds": 34.875,
+          "exit_code": 0,
+          "peak_working_set_bytes": 121491456,
+          "plan_bytes": 8309151,
+          "artifact_directory": "artifacts/flower-settings-study/geometry-0005",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 7934,
+        "total_distance_mm": 4757.064737172401,
+        "total_xy_distance_mm": 1685.0647371724008,
+        "feed_minutes": 2.474513845107791,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 48,
+            "distance_mm": 576.0370469568245,
+            "xy_distance_mm": 576.0370469568245,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 48,
+            "distance_mm": 1440,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.8000000000000016
+          },
+          "plunge": {
+            "count": 48,
+            "distance_mm": 96,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.12000000000000006
+          },
+          "cut": {
+            "count": 7742,
+            "distance_mm": 1109.0276902155763,
+            "xy_distance_mm": 1109.0276902155763,
+            "feed_minutes": 0.5545138451077889
+          },
+          "rapid_retract": {
+            "count": 48,
+            "distance_mm": 1536,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 20367,
+        "total_distance_mm": 16396.21036622137,
+        "total_xy_distance_mm": 4873.2955572528645,
+        "feed_minutes": 11.402908403060396,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 182,
+            "distance_mm": 1621.813803212684,
+            "xy_distance_mm": 1621.813803212684,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 182,
+            "distance_mm": 5460,
+            "xy_distance_mm": 0,
+            "feed_minutes": 9.099999999999994
+          },
+          "plunge": {
+            "count": 175,
+            "distance_mm": 285.76562500000006,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.47627604166666737
+          },
+          "cut": {
+            "count": 19646,
+            "distance_mm": 3287.9382505086883,
+            "xy_distance_mm": 3251.48175404018,
+            "feed_minutes": 1.8266323613937347
+          },
+          "rapid_retract": {
+            "count": 182,
+            "distance_mm": 5740.692687499998,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "773699a14df8c3a941ba0ba05d76bc164756c758aac148a4809123ad82f6eac5",
+      "evaluation": {
+        "diagnostics": [],
+        "engine_version": "0.7.5",
+        "evaluation_seconds_including_replay": 8.5750124,
+        "finish_executed": 6902,
+        "finish_expected": 6902,
+        "fixed_grid_spacing_mm": 0.25,
+        "fixed_reference_material_samples": 161027,
+        "fixed_reference_samples": 311203,
+        "flattening_bound_mm": 0.00125,
+        "generation_issues": [],
+        "geometry_vertices": 9942,
+        "limitation": "Sampled depth errors against the original 0.001 mm input target; not a global error bound, M5 volume proof, or physical machine accuracy guarantee.",
+        "max_own_target_sampled_residual_mm": 0.072788621331632,
+        "max_reference_excess_depth_mm": 0,
+        "max_reference_floor_residual_mm": 0.08271283465706447,
+        "max_reference_residual_mm": 0.08271283465706447,
+        "max_reference_wall_residual_mm": 0.011542211597051377,
+        "max_sampled_target_change_mm": 0.0009940036739266578,
+        "max_slice_possible_overcut_mm2": 0,
+        "missing_floor_beyond_tolerance_mm2": 0,
+        "own_witness_max_reference_excess_depth_mm": 0,
+        "own_witness_max_reference_residual_mm": 0.072788621331632,
+        "quality_samples": 44740,
+        "reference_residual_p95_mm": 0.010758775513761476,
+        "reference_residual_p99_mm": 0.020557422408955972,
+        "reference_samples_above_01_mm": 0,
+        "replay_seconds": 6.5118914,
+        "source_snap_bound_mm": 0.00003535533905932738,
+        "status": "complete",
+        "worst_reference_residual_point": {
+          "x": 177.44659375,
+          "y": 27.595691666666667
+        }
+      }
+    },
+    {
+      "id": "verification-010",
+      "changes": {
+        "tolerances.verification_tolerance_mm": 0.1
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 29.875026,
+          "cpu_seconds": 91.078125,
+          "exit_code": 0,
+          "peak_working_set_bytes": 205131776,
+          "plan_bytes": 14035818,
+          "artifact_directory": "artifacts/flower-settings-study/verification-010",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 17063,
+        "total_distance_mm": 4698.1398675310165,
+        "total_xy_distance_mm": 1690.139867531016,
+        "feed_minutes": 2.4380816107071066,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 47,
+            "distance_mm": 573.9766461168026,
+            "xy_distance_mm": 573.9766461168026,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 47,
+            "distance_mm": 1410,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.7625000000000015
+          },
+          "plunge": {
+            "count": 47,
+            "distance_mm": 94,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11750000000000006
+          },
+          "cut": {
+            "count": 16875,
+            "distance_mm": 1116.1632214142135,
+            "xy_distance_mm": 1116.1632214142135,
+            "feed_minutes": 0.5580816107071047
+          },
+          "rapid_retract": {
+            "count": 47,
+            "distance_mm": 1504,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 28426,
+        "total_distance_mm": 16646.13270938376,
+        "total_xy_distance_mm": 4807.884780197062,
+        "feed_minutes": 11.639782653982808,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 187,
+            "distance_mm": 1602.107875964706,
+            "xy_distance_mm": 1602.107875964706,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 187,
+            "distance_mm": 5610,
+            "xy_distance_mm": 0,
+            "feed_minutes": 9.349999999999998
+          },
+          "plunge": {
+            "count": 183,
+            "distance_mm": 292.37724375000005,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4872954062500008
+          },
+          "cut": {
+            "count": 27682,
+            "distance_mm": 3244.4770459190545,
+            "xy_distance_mm": 3205.7769042323566,
+            "feed_minutes": 1.8024872477328093
+          },
+          "rapid_retract": {
+            "count": 187,
+            "distance_mm": 5897.17054375,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "ec04da236c5842e3fa5a70aa00d4a03c0773bc890762dc8fda8048f27cf365bf",
+      "evaluation": null
+    },
+    {
+      "id": "geometry-001",
+      "changes": {
+        "import.geometry_tolerance_mm": 0.01,
+        "tolerances.motion_tolerance_mm": 0.05,
+        "tolerances.verification_tolerance_mm": 0.1
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 5.3155562,
+          "cpu_seconds": 14.765625,
+          "exit_code": 0,
+          "peak_working_set_bytes": 87584768,
+          "plan_bytes": 5002683,
+          "artifact_directory": "artifacts/flower-settings-study/geometry-001",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        },
+        {
+          "stage": "combined",
+          "seconds": 5.3020136,
+          "cpu_seconds": 14.765625,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 84103168,
+          "plan_bytes": 5002683,
+          "artifact_directory": "artifacts/flower-settings-repeat/geometry-001",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 5630,
+        "total_distance_mm": 4415.461194276412,
+        "total_xy_distance_mm": 1663.4611942764125,
+        "feed_minutes": 2.2729955380165485,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 43,
+            "distance_mm": 557.4701182433182,
+            "xy_distance_mm": 557.4701182433182,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 43,
+            "distance_mm": 1290,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.6125000000000012
+          },
+          "plunge": {
+            "count": 43,
+            "distance_mm": 86,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.10750000000000005
+          },
+          "cut": {
+            "count": 5458,
+            "distance_mm": 1105.9910760330943,
+            "xy_distance_mm": 1105.9910760330943,
+            "feed_minutes": 0.5529955380165472
+          },
+          "rapid_retract": {
+            "count": 43,
+            "distance_mm": 1376,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 11456,
+        "total_distance_mm": 15630.751271067464,
+        "total_xy_distance_mm": 4860.982893293201,
+        "feed_minutes": 10.812667624615052,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 170,
+            "distance_mm": 1554.320921760356,
+            "xy_distance_mm": 1554.320921760356,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 170,
+            "distance_mm": 5100,
+            "xy_distance_mm": 0,
+            "feed_minutes": 8.499999999999986
+          },
+          "plunge": {
+            "count": 163,
+            "distance_mm": 273.29243749999995,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4554873958333341
+          },
+          "cut": {
+            "count": 10783,
+            "distance_mm": 3342.9244118071083,
+            "xy_distance_mm": 3306.6619715328457,
+            "feed_minutes": 1.8571802287817318
+          },
+          "rapid_retract": {
+            "count": 170,
+            "distance_mm": 5360.213499999999,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "e25bfa84b145a4506fcd19366f0e867bcedc599186b43feabd6eaa98fa1cfbb7",
+      "evaluation": {
+        "diagnostics": [],
+        "engine_version": "0.7.5",
+        "evaluation_seconds_including_replay": 6.1074884,
+        "finish_executed": 4652,
+        "finish_expected": 4652,
+        "fixed_grid_spacing_mm": 0.25,
+        "fixed_reference_material_samples": 161027,
+        "fixed_reference_samples": 311203,
+        "flattening_bound_mm": 0.0025,
+        "generation_issues": [],
+        "geometry_vertices": 6846,
+        "limitation": "Sampled depth errors against the original 0.001 mm input target; not a global error bound, M5 volume proof, or physical machine accuracy guarantee.",
+        "max_own_target_sampled_residual_mm": 0.06140824977185444,
+        "max_reference_excess_depth_mm": 0,
+        "max_reference_floor_residual_mm": 0.0755752339092064,
+        "max_reference_residual_mm": 0.0755752339092064,
+        "max_reference_wall_residual_mm": 0.0270581052247294,
+        "max_sampled_target_change_mm": 0.0023268295045059117,
+        "max_slice_possible_overcut_mm2": 0,
+        "missing_floor_beyond_tolerance_mm2": 0,
+        "own_witness_max_reference_excess_depth_mm": 0,
+        "own_witness_max_reference_residual_mm": 0.06140824977185444,
+        "quality_samples": 26998,
+        "reference_residual_p95_mm": 0.023765779992832137,
+        "reference_residual_p99_mm": 0.026760297375496567,
+        "reference_samples_above_01_mm": 0,
+        "replay_seconds": 4.7090358,
+        "source_snap_bound_mm": 0.00007071067811865475,
+        "status": "complete",
+        "worst_reference_residual_point": {
+          "x": 180.0259125,
+          "y": 67.624171875
+        }
+      }
+    },
+    {
+      "id": "ridge-005",
+      "changes": {
+        "operation.max_floor_ridge_mm": 0.05
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 38.2108022,
+          "cpu_seconds": 119.34375,
+          "exit_code": 0,
+          "peak_working_set_bytes": 224735232,
+          "plan_bytes": 16062940,
+          "artifact_directory": "artifacts/flower-settings-study/ridge-005",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 17063,
+        "total_distance_mm": 4698.1398675310165,
+        "total_xy_distance_mm": 1690.139867531016,
+        "feed_minutes": 2.4380816107071066,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 47,
+            "distance_mm": 573.9766461168026,
+            "xy_distance_mm": 573.9766461168026,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 47,
+            "distance_mm": 1410,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.7625000000000015
+          },
+          "plunge": {
+            "count": 47,
+            "distance_mm": 94,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11750000000000006
+          },
+          "cut": {
+            "count": 16875,
+            "distance_mm": 1116.1632214142135,
+            "xy_distance_mm": 1116.1632214142135,
+            "feed_minutes": 0.5580816107071047
+          },
+          "rapid_retract": {
+            "count": 47,
+            "distance_mm": 1504,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 36364,
+        "total_distance_mm": 18381.19479858408,
+        "total_xy_distance_mm": 6478.946869397352,
+        "feed_minutes": 12.624579080901157,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 188,
+            "distance_mm": 1596.5363967119852,
+            "xy_distance_mm": 1596.5363967119852,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 188,
+            "distance_mm": 5640,
+            "xy_distance_mm": 0,
+            "feed_minutes": 9.399999999999999
+          },
+          "plunge": {
+            "count": 184,
+            "distance_mm": 294.37724375000005,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4906287395833341
+          },
+          "cut": {
+            "count": 35616,
+            "distance_mm": 4921.110614372099,
+            "xy_distance_mm": 4882.410472685367,
+            "feed_minutes": 2.733950341317824
+          },
+          "rapid_retract": {
+            "count": 188,
+            "distance_mm": 5929.17054375,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "1ce59870dad24cdf8f80cadbb90aa458e027cc5db778f14783b6bdb044670fd8",
+      "evaluation": {
+        "diagnostics": [],
+        "engine_version": "0.7.5",
+        "evaluation_seconds_including_replay": 30.2856927,
+        "finish_executed": 15025,
+        "finish_expected": 15025,
+        "fixed_grid_spacing_mm": 0.25,
+        "fixed_reference_material_samples": 161027,
+        "fixed_reference_samples": 311203,
+        "flattening_bound_mm": 0.00025,
+        "generation_issues": [],
+        "geometry_vertices": 22039,
+        "limitation": "Sampled depth errors against the original 0.001 mm input target; not a global error bound, M5 volume proof, or physical machine accuracy guarantee.",
+        "max_own_target_sampled_residual_mm": 0.02251077534056356,
+        "max_reference_excess_depth_mm": 0,
+        "max_reference_floor_residual_mm": 0.03729855779309532,
+        "max_reference_residual_mm": 0.03729855779309532,
+        "max_reference_wall_residual_mm": 0.003237595915732139,
+        "max_sampled_target_change_mm": 0,
+        "max_slice_possible_overcut_mm2": 0,
+        "missing_floor_beyond_tolerance_mm2": 0,
+        "own_witness_max_reference_excess_depth_mm": 0,
+        "own_witness_max_reference_residual_mm": 0.02251077534056356,
+        "quality_samples": 76616,
+        "reference_residual_p95_mm": 0.0026816445443228476,
+        "reference_residual_p99_mm": 0.008349652614165981,
+        "reference_samples_above_01_mm": 0,
+        "replay_seconds": 27.0501929,
+        "source_snap_bound_mm": 0.0000070710678118654756,
+        "status": "complete",
+        "worst_reference_residual_point": {
+          "x": 181.6378,
+          "y": 65.966
+        }
+      }
+    },
+    {
+      "id": "ridge-020",
+      "changes": {
+        "operation.max_floor_ridge_mm": 0.2
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 26.2659421,
+          "cpu_seconds": 77.671875,
+          "exit_code": 0,
+          "peak_working_set_bytes": 212336640,
+          "plan_bytes": 13056061,
+          "artifact_directory": "artifacts/flower-settings-study/ridge-020",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 17063,
+        "total_distance_mm": 4698.1398675310165,
+        "total_xy_distance_mm": 1690.139867531016,
+        "feed_minutes": 2.4380816107071066,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 47,
+            "distance_mm": 573.9766461168026,
+            "xy_distance_mm": 573.9766461168026,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 47,
+            "distance_mm": 1410,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.7625000000000015
+          },
+          "plunge": {
+            "count": 47,
+            "distance_mm": 94,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11750000000000006
+          },
+          "cut": {
+            "count": 16875,
+            "distance_mm": 1116.1632214142135,
+            "xy_distance_mm": 1116.1632214142135,
+            "feed_minutes": 0.5580816107071047
+          },
+          "rapid_retract": {
+            "count": 47,
+            "distance_mm": 1504,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 24586,
+        "total_distance_mm": 15745.53459059246,
+        "total_xy_distance_mm": 3971.2866614057766,
+        "feed_minutes": 11.137501554521643,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 186,
+            "distance_mm": 1573.6157362035144,
+            "xy_distance_mm": 1573.6157362035144,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 186,
+            "distance_mm": 5580,
+            "xy_distance_mm": 0,
+            "feed_minutes": 9.299999999999997
+          },
+          "plunge": {
+            "count": 182,
+            "distance_mm": 290.37724375000005,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.48396207291666743
+          },
+          "cut": {
+            "count": 23846,
+            "distance_mm": 2436.371066888946,
+            "xy_distance_mm": 2397.670925202262,
+            "feed_minutes": 1.3535394816049773
+          },
+          "rapid_retract": {
+            "count": 186,
+            "distance_mm": 5865.17054375,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "1819b5b3049c1ddd1a35f2634ed7e5f2b523c6d5148ecbbafe12ecb18dbfabc4",
+      "evaluation": {
+        "diagnostics": [],
+        "engine_version": "0.7.5",
+        "evaluation_seconds_including_replay": 20.9767164,
+        "finish_executed": 15025,
+        "finish_expected": 15025,
+        "fixed_grid_spacing_mm": 0.25,
+        "fixed_reference_material_samples": 161027,
+        "fixed_reference_samples": 311203,
+        "flattening_bound_mm": 0.00025,
+        "generation_issues": [],
+        "geometry_vertices": 22039,
+        "limitation": "Sampled depth errors against the original 0.001 mm input target; not a global error bound, M5 volume proof, or physical machine accuracy guarantee.",
+        "max_own_target_sampled_residual_mm": 0.10537568276023568,
+        "max_reference_excess_depth_mm": 0,
+        "max_reference_floor_residual_mm": 0.16822554738049877,
+        "max_reference_residual_mm": 0.16822554738049877,
+        "max_reference_wall_residual_mm": 0.003237595915732139,
+        "max_sampled_target_change_mm": 0,
+        "max_slice_possible_overcut_mm2": 0,
+        "missing_floor_beyond_tolerance_mm2": 0,
+        "own_witness_max_reference_excess_depth_mm": 0,
+        "own_witness_max_reference_residual_mm": 0.10537568276023568,
+        "quality_samples": 53182,
+        "reference_residual_p95_mm": 0.08951220969341822,
+        "reference_residual_p99_mm": 0.08999969737740354,
+        "reference_samples_above_01_mm": 36,
+        "replay_seconds": 18.7302464,
+        "source_snap_bound_mm": 0.0000070710678118654756,
+        "status": "complete",
+        "worst_reference_residual_point": {
+          "x": 177.2937638888889,
+          "y": 27.368573611111113
+        }
+      }
+    },
+    {
+      "id": "wall-010",
+      "changes": {
+        "operation.wall_allowance_mm": 0.1
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 37.9188475,
+          "cpu_seconds": 113.265625,
+          "exit_code": 0,
+          "peak_working_set_bytes": 215932928,
+          "plan_bytes": 15666931,
+          "artifact_directory": "artifacts/flower-settings-study/wall-010",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 16080,
+        "total_distance_mm": 4435.411568918318,
+        "total_xy_distance_mm": 1619.411568918318,
+        "feed_minutes": 2.288643490831826,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 44,
+            "distance_mm": 562.1245872546749,
+            "xy_distance_mm": 562.1245872546749,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 44,
+            "distance_mm": 1320,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.6500000000000012
+          },
+          "plunge": {
+            "count": 44,
+            "distance_mm": 88,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11000000000000006
+          },
+          "cut": {
+            "count": 15904,
+            "distance_mm": 1057.286981663643,
+            "xy_distance_mm": 1057.286981663643,
+            "feed_minutes": 0.5286434908318244
+          },
+          "rapid_retract": {
+            "count": 44,
+            "distance_mm": 1408,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 35974,
+        "total_distance_mm": 19242.571450989428,
+        "total_xy_distance_mm": 6629.064403321883,
+        "feed_minutes": 13.249668416498045,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 199,
+            "distance_mm": 1700.9827325429105,
+            "xy_distance_mm": 1700.9827325429105,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 199,
+            "distance_mm": 5970,
+            "xy_distance_mm": 0,
+            "feed_minutes": 9.950000000000006
+          },
+          "plunge": {
+            "count": 196,
+            "distance_mm": 324.1033312499999,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.5401722187500004
+          },
+          "cut": {
+            "count": 35181,
+            "distance_mm": 4967.093155946517,
+            "xy_distance_mm": 4928.081670778973,
+            "feed_minutes": 2.759496197748037
+          },
+          "rapid_retract": {
+            "count": 199,
+            "distance_mm": 6280.392231249999,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "f2c84646cc9a4fffbf540537715d30a3f3f6574cc8ae77faade7c51e14ac749f",
+      "evaluation": {
+        "diagnostics": [],
+        "engine_version": "0.7.5",
+        "evaluation_seconds_including_replay": 30.2035486,
+        "finish_executed": 15025,
+        "finish_expected": 15025,
+        "fixed_grid_spacing_mm": 0.25,
+        "fixed_reference_material_samples": 161027,
+        "fixed_reference_samples": 311203,
+        "flattening_bound_mm": 0.00025,
+        "generation_issues": [],
+        "geometry_vertices": 22039,
+        "limitation": "Sampled depth errors against the original 0.001 mm input target; not a global error bound, M5 volume proof, or physical machine accuracy guarantee.",
+        "max_own_target_sampled_residual_mm": 0.046212502317236615,
+        "max_reference_excess_depth_mm": 0,
+        "max_reference_floor_residual_mm": 0.08452354937302742,
+        "max_reference_residual_mm": 0.08452354937302742,
+        "max_reference_wall_residual_mm": 0.003237595915732139,
+        "max_sampled_target_change_mm": 0,
+        "max_slice_possible_overcut_mm2": 0,
+        "missing_floor_beyond_tolerance_mm2": 0,
+        "own_witness_max_reference_excess_depth_mm": 0,
+        "own_witness_max_reference_residual_mm": 0.046212502317236615,
+        "quality_samples": 75769,
+        "reference_residual_p95_mm": 0.0028148170573962794,
+        "reference_residual_p99_mm": 0.03171694559921123,
+        "reference_samples_above_01_mm": 0,
+        "replay_seconds": 27.2197141,
+        "source_snap_bound_mm": 0.0000070710678118654756,
+        "status": "complete",
+        "worst_reference_residual_point": {
+          "x": 177.34748194444444,
+          "y": 27.449974305555557
+        }
+      }
+    },
+    {
+      "id": "wall-030",
+      "changes": {
+        "operation.wall_allowance_mm": 0.3
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 132.4394706,
+          "cpu_seconds": 440.75,
+          "exit_code": 0,
+          "peak_working_set_bytes": 381267968,
+          "plan_bytes": 35217280,
+          "artifact_directory": "artifacts/flower-settings-study/wall-030",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 0,
+        "total_distance_mm": 0,
+        "total_xy_distance_mm": 0,
+        "feed_minutes": 0,
+        "by_kind": {}
+      },
+      "vbit": {
+        "motions": 129334,
+        "total_distance_mm": 39134.69148206956,
+        "total_xy_distance_mm": 29082.059109556307,
+        "feed_minutes": 23.690510249504115,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 159,
+            "distance_mm": 1509.3295517122308,
+            "xy_distance_mm": 1509.3295517122308,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 159,
+            "distance_mm": 4770,
+            "xy_distance_mm": 0,
+            "feed_minutes": 7.94999999999998
+          },
+          "plunge": {
+            "count": 152,
+            "distance_mm": 240.48693750000004,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.40081156250000044
+          },
+          "cut": {
+            "count": 128705,
+            "distance_mm": 27611.45763660733,
+            "xy_distance_mm": 27572.729557844075,
+            "feed_minutes": 15.339698687004132
+          },
+          "rapid_retract": {
+            "count": 159,
+            "distance_mm": 5003.417356249999,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [
+        {
+          "code": "CENTER_SET_UNRESOLVED",
+          "message": "layer 0: refine geometry before planning"
+        }
+      ],
+      "generation_issues": [],
+      "recorded_motion_sha256": "e2928264d987612ba8a6109b9a5a27cc37df68ac7797a243fa204709978f87cd",
+      "evaluation": null
+    },
+    {
+      "id": "detail-001",
+      "changes": {
+        "operation.max_detail_residual_mm": 0.01
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 19.4368356,
+          "cpu_seconds": 60.25,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 207151104,
+          "plan_bytes": 14054721,
+          "artifact_directory": "artifacts/flower-settings-study/detail-001",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 17063,
+        "total_distance_mm": 4698.1398675310165,
+        "total_xy_distance_mm": 1690.139867531016,
+        "feed_minutes": 2.4380816107071066,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 47,
+            "distance_mm": 573.9766461168026,
+            "xy_distance_mm": 573.9766461168026,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 47,
+            "distance_mm": 1410,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.7625000000000015
+          },
+          "plunge": {
+            "count": 47,
+            "distance_mm": 94,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11750000000000006
+          },
+          "cut": {
+            "count": 16875,
+            "distance_mm": 1116.1632214142135,
+            "xy_distance_mm": 1116.1632214142135,
+            "feed_minutes": 0.5580816107071047
+          },
+          "rapid_retract": {
+            "count": 47,
+            "distance_mm": 1504,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 28501,
+        "total_distance_mm": 16728.596970473853,
+        "total_xy_distance_mm": 4826.349041287158,
+        "feed_minutes": 11.705419028694218,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 188,
+            "distance_mm": 1598.42666257426,
+            "xy_distance_mm": 1598.42666257426,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 188,
+            "distance_mm": 5640,
+            "xy_distance_mm": 0,
+            "feed_minutes": 9.399999999999999
+          },
+          "plunge": {
+            "count": 184,
+            "distance_mm": 294.37724375000005,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4906287395833341
+          },
+          "cut": {
+            "count": 27753,
+            "distance_mm": 3266.622520399594,
+            "xy_distance_mm": 3227.922378712898,
+            "feed_minutes": 1.8147902891108851
+          },
+          "rapid_retract": {
+            "count": 188,
+            "distance_mm": 5929.17054375,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "f9316ca4a6b4f833e22571a60ba2cb6f4162818c1e30a3b3709a32b3fdb77563",
+      "evaluation": null
+    },
+    {
+      "id": "detail-020",
+      "changes": {
+        "operation.max_detail_residual_mm": 0.2
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 22.0223539,
+          "cpu_seconds": 67.203125,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 209149952,
+          "plan_bytes": 14054720,
+          "artifact_directory": "artifacts/flower-settings-study/detail-020",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 17063,
+        "total_distance_mm": 4698.1398675310165,
+        "total_xy_distance_mm": 1690.139867531016,
+        "feed_minutes": 2.4380816107071066,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 47,
+            "distance_mm": 573.9766461168026,
+            "xy_distance_mm": 573.9766461168026,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 47,
+            "distance_mm": 1410,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.7625000000000015
+          },
+          "plunge": {
+            "count": 47,
+            "distance_mm": 94,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11750000000000006
+          },
+          "cut": {
+            "count": 16875,
+            "distance_mm": 1116.1632214142135,
+            "xy_distance_mm": 1116.1632214142135,
+            "feed_minutes": 0.5580816107071047
+          },
+          "rapid_retract": {
+            "count": 47,
+            "distance_mm": 1504,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 28501,
+        "total_distance_mm": 16728.596970473853,
+        "total_xy_distance_mm": 4826.349041287158,
+        "feed_minutes": 11.705419028694218,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 188,
+            "distance_mm": 1598.42666257426,
+            "xy_distance_mm": 1598.42666257426,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 188,
+            "distance_mm": 5640,
+            "xy_distance_mm": 0,
+            "feed_minutes": 9.399999999999999
+          },
+          "plunge": {
+            "count": 184,
+            "distance_mm": 294.37724375000005,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4906287395833341
+          },
+          "cut": {
+            "count": 27753,
+            "distance_mm": 3266.622520399594,
+            "xy_distance_mm": 3227.922378712898,
+            "feed_minutes": 1.8147902891108851
+          },
+          "rapid_retract": {
+            "count": 188,
+            "distance_mm": 5929.17054375,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "f9316ca4a6b4f833e22571a60ba2cb6f4162818c1e30a3b3709a32b3fdb77563",
+      "evaluation": null
+    },
+    {
+      "id": "vbit-step-005",
+      "changes": {
+        "tools.1.stepover_mm": 0.05
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 35.5056663,
+          "cpu_seconds": 112.25,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 213803008,
+          "plan_bytes": 16279076,
+          "artifact_directory": "artifacts/flower-settings-study/vbit-step-005",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 17063,
+        "total_distance_mm": 4698.1398675310165,
+        "total_xy_distance_mm": 1690.139867531016,
+        "feed_minutes": 2.4380816107071066,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 47,
+            "distance_mm": 573.9766461168026,
+            "xy_distance_mm": 573.9766461168026,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 47,
+            "distance_mm": 1410,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.7625000000000015
+          },
+          "plunge": {
+            "count": 47,
+            "distance_mm": 94,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11750000000000006
+          },
+          "cut": {
+            "count": 16875,
+            "distance_mm": 1116.1632214142135,
+            "xy_distance_mm": 1116.1632214142135,
+            "feed_minutes": 0.5580816107071047
+          },
+          "rapid_retract": {
+            "count": 47,
+            "distance_mm": 1504,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 37661,
+        "total_distance_mm": 69573.29473148254,
+        "total_xy_distance_mm": 6247.822355115646,
+        "feed_minutes": 55.30394322040421,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 992,
+            "distance_mm": 1680.3355097537928,
+            "xy_distance_mm": 1680.3355097537928,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 992,
+            "distance_mm": 29760,
+            "xy_distance_mm": 0,
+            "feed_minutes": 49.59999999999932
+          },
+          "plunge": {
+            "count": 988,
+            "distance_mm": 1887.7698624999996,
+            "xy_distance_mm": 0,
+            "feed_minutes": 3.1462831041667094
+          },
+          "cut": {
+            "count": 33697,
+            "distance_mm": 4603.788209228741,
+            "xy_distance_mm": 4567.486845361854,
+            "feed_minutes": 2.5576601162381807
+          },
+          "rapid_retract": {
+            "count": 992,
+            "distance_mm": 31641.401150000012,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "11051246a63b66b08484841620c7ca22dec5bd1c64c95fec0cea5bd75394c3e0",
+      "evaluation": null
+    },
+    {
+      "id": "vbit-step-020",
+      "changes": {
+        "tools.1.stepover_mm": 0.2
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 19.6632168,
+          "cpu_seconds": 60.828125,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 208150528,
+          "plan_bytes": 14137654,
+          "artifact_directory": "artifacts/flower-settings-study/vbit-step-020",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 17063,
+        "total_distance_mm": 4698.1398675310165,
+        "total_xy_distance_mm": 1690.139867531016,
+        "feed_minutes": 2.4380816107071066,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 47,
+            "distance_mm": 573.9766461168026,
+            "xy_distance_mm": 573.9766461168026,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 47,
+            "distance_mm": 1410,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.7625000000000015
+          },
+          "plunge": {
+            "count": 47,
+            "distance_mm": 94,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11750000000000006
+          },
+          "cut": {
+            "count": 16875,
+            "distance_mm": 1116.1632214142135,
+            "xy_distance_mm": 1116.1632214142135,
+            "feed_minutes": 0.5580816107071047
+          },
+          "rapid_retract": {
+            "count": 47,
+            "distance_mm": 1504,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 28903,
+        "total_distance_mm": 25288.44774683025,
+        "total_xy_distance_mm": 4826.349041287156,
+        "feed_minutes": 18.817570712627926,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 322,
+            "distance_mm": 1639.4685953501391,
+            "xy_distance_mm": 1639.4685953501391,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 322,
+            "distance_mm": 9660,
+            "xy_distance_mm": 0,
+            "feed_minutes": 16.100000000000094
+          },
+          "plunge": {
+            "count": 318,
+            "distance_mm": 555.8314125000002,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.926385687499998
+          },
+          "cut": {
+            "count": 27619,
+            "distance_mm": 3224.133045230107,
+            "xy_distance_mm": 3186.880445937017,
+            "feed_minutes": 1.7911850251278356
+          },
+          "rapid_retract": {
+            "count": 322,
+            "distance_mm": 10209.014693750001,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "ff4e542b6b2ff63b7e92497edc17e15edea1db9e33ecc240cd51954dae300a90",
+      "evaluation": null
+    },
+    {
+      "id": "clearance-5",
+      "changes": {
+        "endmill_planning.clearance_z_mm": 5
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 28.230236,
+          "cpu_seconds": 86.703125,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 212488192,
+          "plan_bytes": 14053778,
+          "artifact_directory": "artifacts/flower-settings-study/clearance-5",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 17063,
+        "total_distance_mm": 2348.139867531016,
+        "total_xy_distance_mm": 1690.139867531016,
+        "feed_minutes": 0.9693316107071047,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 47,
+            "distance_mm": 573.9766461168026,
+            "xy_distance_mm": 573.9766461168026,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 47,
+            "distance_mm": 235,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.29374999999999996
+          },
+          "plunge": {
+            "count": 47,
+            "distance_mm": 94,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.11750000000000006
+          },
+          "cut": {
+            "count": 16875,
+            "distance_mm": 1116.1632214142135,
+            "xy_distance_mm": 1116.1632214142135,
+            "feed_minutes": 0.5580816107071047
+          },
+          "rapid_retract": {
+            "count": 47,
+            "distance_mm": 329,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 28501,
+        "total_distance_mm": 7328.5969704738545,
+        "total_xy_distance_mm": 4826.349041287158,
+        "feed_minutes": 3.872085695360883,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 188,
+            "distance_mm": 1598.42666257426,
+            "xy_distance_mm": 1598.42666257426,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 188,
+            "distance_mm": 940,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.5666666666666635
+          },
+          "plunge": {
+            "count": 184,
+            "distance_mm": 294.37724375000005,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4906287395833341
+          },
+          "cut": {
+            "count": 27753,
+            "distance_mm": 3266.622520399594,
+            "xy_distance_mm": 3227.922378712898,
+            "feed_minutes": 1.8147902891108851
+          },
+          "rapid_retract": {
+            "count": 188,
+            "distance_mm": 1229.17054375,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "c316f4da7ebe20e93798797cbddaa9868f782ca839a622ae0d6e1abbbf3a4b0e",
+      "evaluation": null
+    },
+    {
+      "id": "wood-balanced",
+      "changes": {
+        "import.geometry_tolerance_mm": 0.005,
+        "tolerances.motion_tolerance_mm": 0.05
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 8.4714829,
+          "cpu_seconds": 23.625,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 112898048,
+          "plan_bytes": 6534807,
+          "artifact_directory": "artifacts/flower-settings-study/wood-balanced",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        },
+        {
+          "stage": "combined",
+          "seconds": 8.2465432,
+          "cpu_seconds": 23.5625,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 109076480,
+          "plan_bytes": 6534807,
+          "artifact_directory": "artifacts/flower-settings-repeat/wood-balanced",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 7934,
+        "total_distance_mm": 4757.064737172401,
+        "total_xy_distance_mm": 1685.0647371724008,
+        "feed_minutes": 2.474513845107791,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 48,
+            "distance_mm": 576.0370469568245,
+            "xy_distance_mm": 576.0370469568245,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 48,
+            "distance_mm": 1440,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.8000000000000016
+          },
+          "plunge": {
+            "count": 48,
+            "distance_mm": 96,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.12000000000000006
+          },
+          "cut": {
+            "count": 7742,
+            "distance_mm": 1109.0276902155763,
+            "xy_distance_mm": 1109.0276902155763,
+            "feed_minutes": 0.5545138451077889
+          },
+          "rapid_retract": {
+            "count": 48,
+            "distance_mm": 1536,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 13435,
+        "total_distance_mm": 15400.316497535798,
+        "total_xy_distance_mm": 4898.248292558752,
+        "feed_minutes": 10.553997635479409,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 166,
+            "distance_mm": 1660.7623286728478,
+            "xy_distance_mm": 1660.7623286728478,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 166,
+            "distance_mm": 4980,
+            "xy_distance_mm": 0,
+            "feed_minutes": 8.299999999999983
+          },
+          "plunge": {
+            "count": 160,
+            "distance_mm": 261.1247875,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4352079791666673
+          },
+          "cut": {
+            "count": 12777,
+            "distance_mm": 3273.8213813629513,
+            "xy_distance_mm": 3237.485963885904,
+            "feed_minutes": 1.818789656312758
+          },
+          "rapid_retract": {
+            "count": 166,
+            "distance_mm": 5224.607999999999,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "8f12d04c40c7b630b4f168dbdb30c1580c5a38e30580fbc703be47dad16b7c6b",
+      "evaluation": {
+        "diagnostics": [],
+        "engine_version": "0.7.5",
+        "evaluation_seconds_including_replay": 8.9275747,
+        "finish_executed": 6615,
+        "finish_expected": 6615,
+        "fixed_grid_spacing_mm": 0.25,
+        "fixed_reference_material_samples": 161027,
+        "fixed_reference_samples": 311203,
+        "flattening_bound_mm": 0.00125,
+        "generation_issues": [],
+        "geometry_vertices": 9942,
+        "limitation": "Sampled depth errors against the original 0.001 mm input target; not a global error bound, M5 volume proof, or physical machine accuracy guarantee.",
+        "max_own_target_sampled_residual_mm": 0.07140870994260862,
+        "max_reference_excess_depth_mm": 0,
+        "max_reference_floor_residual_mm": 0.08305207124327407,
+        "max_reference_residual_mm": 0.08305207124327407,
+        "max_reference_wall_residual_mm": 0.017111407611690277,
+        "max_sampled_target_change_mm": 0.0009940036739266578,
+        "max_slice_possible_overcut_mm2": 0,
+        "missing_floor_beyond_tolerance_mm2": 0,
+        "own_witness_max_reference_excess_depth_mm": 0,
+        "own_witness_max_reference_residual_mm": 0.07140870994260862,
+        "quality_samples": 30989,
+        "reference_residual_p95_mm": 0.013692539461647057,
+        "reference_residual_p99_mm": 0.0206436203825775,
+        "reference_samples_above_01_mm": 0,
+        "replay_seconds": 7.2664847,
+        "source_snap_bound_mm": 0.00003535533905932738,
+        "status": "complete",
+        "worst_reference_residual_point": {
+          "x": 35.572440625,
+          "y": 70.9434125
+        }
+      }
+    },
+    {
+      "id": "wood-finish",
+      "changes": {
+        "import.geometry_tolerance_mm": 0.005,
+        "tolerances.motion_tolerance_mm": 0.05,
+        "operation.max_floor_ridge_mm": 0.05
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 10.3796977,
+          "cpu_seconds": 31.171875,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 115417088,
+          "plan_bytes": 7588802,
+          "artifact_directory": "artifacts/flower-settings-study/wood-finish",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        },
+        {
+          "stage": "combined",
+          "seconds": 10.4728726,
+          "cpu_seconds": 31.953125,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 115126272,
+          "plan_bytes": 7588802,
+          "artifact_directory": "artifacts/flower-settings-repeat/wood-finish",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 7934,
+        "total_distance_mm": 4757.064737172401,
+        "total_xy_distance_mm": 1685.0647371724008,
+        "feed_minutes": 2.474513845107791,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 48,
+            "distance_mm": 576.0370469568245,
+            "xy_distance_mm": 576.0370469568245,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 48,
+            "distance_mm": 1440,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.8000000000000016
+          },
+          "plunge": {
+            "count": 48,
+            "distance_mm": 96,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.12000000000000006
+          },
+          "cut": {
+            "count": 7742,
+            "distance_mm": 1109.0276902155763,
+            "xy_distance_mm": 1109.0276902155763,
+            "feed_minutes": 0.5545138451077889
+          },
+          "rapid_retract": {
+            "count": 48,
+            "distance_mm": 1536,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 17362,
+        "total_distance_mm": 17070.289424542432,
+        "total_xy_distance_mm": 6568.221219565343,
+        "feed_minutes": 11.482839885378212,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 166,
+            "distance_mm": 1658.8192058615903,
+            "xy_distance_mm": 1658.8192058615903,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 166,
+            "distance_mm": 4980,
+            "xy_distance_mm": 0,
+            "feed_minutes": 8.299999999999983
+          },
+          "plunge": {
+            "count": 160,
+            "distance_mm": 261.1247875,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4352079791666673
+          },
+          "cut": {
+            "count": 16704,
+            "distance_mm": 4945.737431180843,
+            "xy_distance_mm": 4909.402013703752,
+            "feed_minutes": 2.747631906211561
+          },
+          "rapid_retract": {
+            "count": 166,
+            "distance_mm": 5224.607999999999,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "b6c7b3add967a117fc4e53abc2ee8c1a9d0506988687d41fbd519f6b4333ab70",
+      "evaluation": {
+        "diagnostics": [],
+        "engine_version": "0.7.5",
+        "evaluation_seconds_including_replay": 10.7429475,
+        "finish_executed": 6615,
+        "finish_expected": 6615,
+        "fixed_grid_spacing_mm": 0.25,
+        "fixed_reference_material_samples": 161027,
+        "fixed_reference_samples": 311203,
+        "flattening_bound_mm": 0.00125,
+        "generation_issues": [],
+        "geometry_vertices": 9942,
+        "limitation": "Sampled depth errors against the original 0.001 mm input target; not a global error bound, M5 volume proof, or physical machine accuracy guarantee.",
+        "max_own_target_sampled_residual_mm": 0.025492243571389572,
+        "max_reference_excess_depth_mm": 0,
+        "max_reference_floor_residual_mm": 0.03760356699598866,
+        "max_reference_residual_mm": 0.03760356699598866,
+        "max_reference_wall_residual_mm": 0.017111407611690277,
+        "max_sampled_target_change_mm": 0.0009940036739266578,
+        "max_slice_possible_overcut_mm2": 0,
+        "missing_floor_beyond_tolerance_mm2": 0,
+        "own_witness_max_reference_excess_depth_mm": 0,
+        "own_witness_max_reference_residual_mm": 0.025492243571389572,
+        "quality_samples": 38771,
+        "reference_residual_p95_mm": 0.013528804709471931,
+        "reference_residual_p99_mm": 0.015703057783230112,
+        "reference_samples_above_01_mm": 0,
+        "replay_seconds": 8.8101272,
+        "source_snap_bound_mm": 0.00003535533905932738,
+        "status": "complete",
+        "worst_reference_residual_point": {
+          "x": 177.44659375,
+          "y": 27.595691666666667
+        }
+      }
+    },
+    {
+      "id": "wall-030-geometry-0005",
+      "changes": {
+        "operation.wall_allowance_mm": 0.3,
+        "import.geometry_tolerance_mm": 0.005,
+        "tolerances.motion_tolerance_mm": 0.05
+      },
+      "runs": [
+        {
+          "stage": "combined",
+          "seconds": 13.1419156,
+          "cpu_seconds": 37.5625,
+          "exit_code": 0,
+          "timed_out": false,
+          "peak_working_set_bytes": 117121024,
+          "plan_bytes": 8022985,
+          "artifact_directory": "artifacts/flower-settings-repeat/wall-030-geometry-0005",
+          "executable_sha256": "ED6A10F261E4382373A9886BE6F5C6FF1631CD1CDC19ED83BA08D08EECF031B2"
+        }
+      ],
+      "status": "Complete",
+      "endmill": {
+        "motions": 6700,
+        "total_distance_mm": 4166.496068331785,
+        "total_xy_distance_mm": 1414.4960683317852,
+        "feed_minutes": 2.1946355839657445,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 43,
+            "distance_mm": 465.2249004002966,
+            "xy_distance_mm": 465.2249004002966,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 43,
+            "distance_mm": 1290,
+            "xy_distance_mm": 0,
+            "feed_minutes": 1.6125000000000012
+          },
+          "plunge": {
+            "count": 43,
+            "distance_mm": 86,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.10750000000000005
+          },
+          "cut": {
+            "count": 6528,
+            "distance_mm": 949.2711679314885,
+            "xy_distance_mm": 949.2711679314885,
+            "feed_minutes": 0.47463558396574324
+          },
+          "rapid_retract": {
+            "count": 43,
+            "distance_mm": 1376,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "vbit": {
+        "motions": 20569,
+        "total_distance_mm": 19845.690988236416,
+        "total_xy_distance_mm": 8558.83483078825,
+        "feed_minutes": 13.240089590288363,
+        "by_kind": {
+          "rapid_x_y": {
+            "count": 178,
+            "distance_mm": 1682.5138632173002,
+            "xy_distance_mm": 1682.5138632172998,
+            "feed_minutes": 0
+          },
+          "approach": {
+            "count": 178,
+            "distance_mm": 5340,
+            "xy_distance_mm": 0,
+            "feed_minutes": 8.899999999999991
+          },
+          "plunge": {
+            "count": 172,
+            "distance_mm": 299.798525,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0.4996642083333344
+          },
+          "cut": {
+            "count": 19863,
+            "distance_mm": 6912.765687519117,
+            "xy_distance_mm": 6876.3209675709495,
+            "feed_minutes": 3.840425381955037
+          },
+          "rapid_retract": {
+            "count": 178,
+            "distance_mm": 5610.612912499998,
+            "xy_distance_mm": 0,
+            "feed_minutes": 0
+          }
+        }
+      },
+      "endmill_generation_issues": [],
+      "generation_issues": [],
+      "recorded_motion_sha256": "dcbab7fa6dbc07d770a6270046820490ab3a2f74b1c8b0567e0088becfa68a77",
+      "evaluation": {
+        "diagnostics": [],
+        "endmill_generation_issues": [],
+        "endmill_status": "incomplete",
+        "engine_version": "0.7.5",
+        "evaluation_seconds_including_replay": 11.5442097,
+        "finish_executed": 6615,
+        "finish_expected": 6615,
+        "fixed_grid_spacing_mm": 0.25,
+        "fixed_reference_material_samples": 161027,
+        "fixed_reference_samples": 311203,
+        "flattening_bound_mm": 0.00125,
+        "generation_issues": [],
+        "geometry_vertices": 9942,
+        "limitation": "Sampled depth errors against the original 0.001 mm input target; not a global error bound, M5 volume proof, or physical machine accuracy guarantee.",
+        "max_own_target_sampled_residual_mm": 0.07140870994260862,
+        "max_reference_excess_depth_mm": 0,
+        "max_reference_floor_residual_mm": 0.08305207124327407,
+        "max_reference_residual_mm": 0.08305207124327407,
+        "max_reference_wall_residual_mm": 0.017111407611690277,
+        "max_sampled_target_change_mm": 0.0009940036739266578,
+        "max_slice_possible_overcut_mm2": 0,
+        "missing_floor_beyond_tolerance_mm2": 0,
+        "own_witness_max_reference_excess_depth_mm": 0,
+        "own_witness_max_reference_residual_mm": 0.07140870994260862,
+        "quality_samples": 45054,
+        "reference_residual_p95_mm": 0.014843782031671249,
+        "reference_residual_p99_mm": 0.03690317978882329,
+        "reference_samples_above_01_mm": 0,
+        "replay_seconds": 9.6037011,
+        "source_snap_bound_mm": 0.00003535533905932738,
+        "status": "complete",
+        "worst_reference_residual_point": {
+          "x": 35.572440625,
+          "y": 70.9434125
+        }
+      }
+    }
+  ]
+}

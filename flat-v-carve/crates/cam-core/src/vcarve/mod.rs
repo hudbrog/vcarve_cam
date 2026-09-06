@@ -1,6 +1,7 @@
 //! Combined endmill / finite-tip V-bit planning. M4 reports slice and sampled
 //! quality evidence; adaptive full-volume certification remains M5.
 mod medial;
+mod prune;
 mod quality;
 mod rest;
 mod routing;
@@ -12,7 +13,7 @@ use crate::{
     model::Depth,
     motion::{Motion, MotionKind, Position},
     pocket::{EndmillPlan, GenerationIssue, PlanStatus, plan_endmill},
-    stock::{SliceRemoval, removal_at_slice, vbit_air_in_endmill},
+    stock::{SliceRemoval, StockQuery, removal_at_slice},
     svg::Bounds,
 };
 pub use medial::{MedialAxis, MedialBranch};
@@ -418,6 +419,8 @@ fn candidate_families(
         ));
     }
     routing::weld_endpoints(ctx, &mut paths)?;
+    prune::simplify_contours(ctx, &mut paths)?;
+    prune::redundant_spokes(ctx, &axis, &mut paths);
     Ok((axis, paths))
 }
 
@@ -545,7 +548,19 @@ fn excursion(
     );
     moves
 }
-fn air(ctx: &Context, candidate: &Candidate, cap: f64, endmill: &EndmillPlan) -> bool {
+struct EndmillStock<'a> {
+    plan: &'a EndmillPlan,
+    query: StockQuery<'a>,
+}
+impl<'a> EndmillStock<'a> {
+    fn new(plan: &'a EndmillPlan, radius: f64) -> Result<Self> {
+        Ok(Self {
+            plan,
+            query: StockQuery::endmill(&plan.motions, radius)?,
+        })
+    }
+}
+fn air(ctx: &Context, candidate: &Candidate, cap: f64, stock: &StockQuery<'_>) -> bool {
     let p = profile(candidate, cap);
     if p.is_empty() {
         return true;
@@ -561,24 +576,19 @@ fn air(ctx: &Context, candidate: &Candidate, cap: f64, endmill: &EndmillPlan) ->
             end: p[(i + 1).min(p.len() - 1)],
             feed_mm_min: Some(ctx.feed),
         };
-        vbit_air_in_endmill(
-            &m,
-            &ctx.tool,
-            &endmill.motions,
-            ctx.mill.radius().mm(),
-            ctx.guard,
-        )
+        stock.vbit_air(&m, &ctx.tool, ctx.guard)
     })
 }
 fn execute(
     ctx: &Context,
-    endmill: &EndmillPlan,
+    stock: &EndmillStock<'_>,
     candidate: &Candidate,
     cap: f64,
     final_finish: bool,
     moves: &mut Vec<Motion>,
     executions: &mut Vec<Execution>,
 ) -> Result<()> {
+    let endmill = stock.plan;
     let mut base = endmill.motions.len() + moves.len();
     let previous = moves.last().or(endmill.motions.last()).map_or(
         Position::new(
@@ -587,7 +597,7 @@ fn execute(
         ),
         |m| m.end,
     );
-    let pruned = !final_finish && air(ctx, candidate, cap, endmill);
+    let pruned = !final_finish && air(ctx, candidate, cap, &stock.query);
     let linked = !pruned
         && candidate.points.iter().any(|p| p.depth() > 0.)
         && moves.last().is_some_and(|m| {
@@ -637,6 +647,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
     timing.lap("context");
     let endmill = plan_endmill(job)?;
     timing.lap("endmill");
+    let stock = EndmillStock::new(&endmill, ctx.mill.radius().mm())?;
     let (axis, candidates) = candidates(&ctx, &endmill)?;
     timing.lap("candidates");
     let start = endmill.motions.last().map_or(
@@ -680,7 +691,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
                 let previous = moves.last().map_or(start.xy(), |m: &Motion| m.end.xy());
                 for c in &routing::order(&group, previous) {
                     if let Err(d) =
-                        execute(&ctx, &endmill, c, cap, false, &mut moves, &mut executions)
+                        execute(&ctx, &stock, c, cap, false, &mut moves, &mut executions)
                     {
                         issues.push(GenerationIssue {
                             code: d.code,
@@ -724,7 +735,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
                 };
                 for &cap in &levels {
                     if let Err(e) =
-                        execute(&ctx, &endmill, &c, cap, false, &mut moves, &mut executions)
+                        execute(&ctx, &stock, &c, cap, false, &mut moves, &mut executions)
                     {
                         issues.push(GenerationIssue {
                             code: e.code,
@@ -760,7 +771,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
                 for c in &routing::order(&group, previous) {
                     if let Err(e) = execute(
                         &ctx,
-                        &endmill,
+                        &stock,
                         c,
                         ctx.target.depth_cap().mm(),
                         true,

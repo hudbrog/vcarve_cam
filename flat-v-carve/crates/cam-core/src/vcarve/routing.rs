@@ -236,6 +236,7 @@ mod tests {
         let endmill = plan_endmill(&job).unwrap();
         let mut ctx = Context::new(&job).unwrap();
         let mut moves = vec![];
+        let stock = super::super::EndmillStock::new(&endmill, ctx.mill.radius().mm()).unwrap();
         let mut executions = vec![];
         let candidate = |x| Candidate {
             family: PathFamily::Medial,
@@ -248,7 +249,7 @@ mod tests {
         let cap = ctx.target.depth_cap().mm();
         execute(
             &ctx,
-            &endmill,
+            &stock,
             &candidate(5.),
             cap,
             true,
@@ -261,7 +262,7 @@ mod tests {
         ctx.settings.max_motions = moves.len();
         let error = execute(
             &ctx,
-            &endmill,
+            &stock,
             &candidate(6.1),
             cap,
             true,
@@ -280,16 +281,7 @@ mod tests {
             points: vec![moves.last().unwrap().start],
         };
         for _ in 0..2 {
-            execute(
-                &ctx,
-                &endmill,
-                &point,
-                cap,
-                true,
-                &mut moves,
-                &mut executions,
-            )
-            .unwrap();
+            execute(&ctx, &stock, &point, cap, true, &mut moves, &mut executions).unwrap();
         }
         assert!(
             executions
@@ -306,7 +298,7 @@ mod tests {
         ctx.settings.max_motions = 1000;
         execute(
             &ctx,
-            &endmill,
+            &stock,
             &candidate(6.1),
             cap,
             true,

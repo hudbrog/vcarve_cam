@@ -422,24 +422,35 @@ impl Region {
     /// operation, not a stock-clearance proof. No connector is added across a
     /// clipped-out interval. Output ordering and direction are canonical.
     pub fn clip_polyline(&self, points: &[Point]) -> Result<Vec<Vec<Point>>> {
-        if points.len() > 65_536 {
-            return Err(Diagnostic::new(
-                "GEOMETRY_LIMIT",
-                "polyline exceeds 65536 vertices",
-            ));
+        self.clip_polylines(&[points])
+    }
+
+    /// Clip independent contours together, preparing the shared clipping
+    /// region once. The backend keeps open subjects disconnected; canonicalize
+    /// all returned paths just as for a single subject.
+    pub(crate) fn clip_polylines(&self, polylines: &[&[Point]]) -> Result<Vec<Vec<Point>>> {
+        let mut inputs = vec![];
+        for points in polylines {
+            if points.len() > 65_536 {
+                return Err(Diagnostic::new(
+                    "GEOMETRY_LIMIT",
+                    "polyline exceeds 65536 vertices",
+                ));
+            }
+            let mut input = points
+                .iter()
+                .map(|&p| self.grid.quantize(p))
+                .collect::<Result<Vec<_>>>()?;
+            input.dedup();
+            if input.len() >= 2 {
+                inputs.push(input.iter().map(|p| Point64::new(p.x, p.y)).collect());
+            }
         }
-        let mut input = points
-            .iter()
-            .map(|&p| self.grid.quantize(p))
-            .collect::<Result<Vec<_>>>()?;
-        input.dedup();
-        if input.len() < 2 || self.rings.is_empty() {
+        if inputs.is_empty() || self.rings.is_empty() {
             return Ok(vec![]);
         }
         let mut engine = Clipper64::new();
-        engine.add_open_subject(&vec![
-            input.iter().map(|p| Point64::new(p.x, p.y)).collect(),
-        ]);
+        engine.add_open_subject(&inputs);
         engine.add_clip(&self.paths());
         let mut open = vec![];
         if !engine.execute(

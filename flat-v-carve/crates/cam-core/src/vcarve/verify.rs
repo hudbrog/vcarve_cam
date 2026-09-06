@@ -177,6 +177,7 @@ pub(super) fn executions<'a>(
         ));
     }
     let minimum_margin = check(ctx, endmill.motions.len(), start, moves)?;
+    let stock = crate::stock::StockQuery::endmill(&endmill.motions, ctx.mill.radius().mm())?;
     let mut at = 0;
     let mut previous = start;
     let mut final_started = false;
@@ -232,7 +233,7 @@ pub(super) fn executions<'a>(
         );
         let prior = *progress.get(&key).unwrap_or(&0.);
         if reached > prior + ctx.stepdown + 1e-12
-            && !air(ctx, &e.candidate, (reached - ctx.stepdown).max(0.), endmill)
+            && !air(ctx, &e.candidate, (reached - ctx.stepdown).max(0.), &stock)
         {
             return Err(error(
                 "VBIT_STOCK_STEPDOWN",
@@ -252,7 +253,7 @@ pub(super) fn executions<'a>(
             ));
         }
         let mut expected = if e.pruned_air {
-            if e.final_finish || !air(ctx, &e.candidate, e.pass_depth_mm, endmill) {
+            if e.final_finish || !air(ctx, &e.candidate, e.pass_depth_mm, &stock) {
                 return Err(error(
                     "INVALID_AIR_PRUNING",
                     "only proved air cuts may be omitted; final finish is retained",

@@ -18,6 +18,16 @@ Engine 0.7.4 optimizes actual tool movement: the unchanged flower job drops from
 ordering, checked cutting links and retained final-depth finishing reduce travel
 without changing job tolerances. See the [motion routing report](docs/flat-v-carve/flower-motion-routing.md).
 
+Engine 0.7.5 replaces redundant V-bit spokes with contour-following cuts and
+reduces total V-bit movement by **69.2%** on the unchanged flower job. Bounded
+contour simplification and parallel endmill stock reconstruction also reduce
+combined generation to **28.74–29.21 seconds** in three final portable-build
+runs. See the [contour optimization benchmark and comparison](docs/flat-v-carve/flower-contour-optimization.md).
+
+The [flower settings study](docs/flat-v-carve/flower-settings-study.md) compares
+19 configurations for an approximately 0.1 mm wood finish. Saved balanced and
+finer-floor job presets generate in 8.2–10.5 seconds on the measured machine.
+
 Live browser planning now keeps complete plans in temporary files and loads every
 recorded motion through bounded pages. Verification and export reopen those files directly;
 plan size no longer controls worker-message size. See the

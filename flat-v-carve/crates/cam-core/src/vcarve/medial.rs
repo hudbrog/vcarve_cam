@@ -3,7 +3,7 @@ use super::{
     settings::{Context, error},
 };
 use crate::{
-    geometry::{Curve, Point, PointLocation, Result, Segment, Site, SiteKind, VoronoiDiagram},
+    geometry::{Curve, Point, PointLocation, Result, Segment, Site, SiteKind},
     motion::Position,
 };
 use serde::Serialize;
@@ -163,7 +163,7 @@ fn append_interval(
     Ok(())
 }
 pub(super) fn build(ctx: &Context) -> Result<(MedialAxis, Vec<Candidate>)> {
-    let diagram = VoronoiDiagram::build(ctx.target.region())?;
+    let diagram = ctx.target.diagram()?;
     let mut branches = vec![];
     let mut paths = vec![];
     let mut excluded = 0;

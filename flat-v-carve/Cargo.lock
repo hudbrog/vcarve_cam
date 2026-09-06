@@ -111,7 +111,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cam-app"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "cam-core",
  "cam-server",
@@ -123,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "cam-core"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "boostvoronoi",
  "clipper2-rust",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "cam-server"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "axum",
  "cam-core",
@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "cam-storage"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "cam-core",
  "serde",
