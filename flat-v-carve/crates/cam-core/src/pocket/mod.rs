@@ -239,6 +239,8 @@ pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
             continue;
         }
         let mut loop_count = 0;
+        let mut loops = vec![];
+        let mut cut_count = 0;
         for offset in 0..ctx.settings.max_loops_per_layer {
             let inset = centers.erode(offset as f64 * ctx.stepover)?;
             if inset.rings().is_empty() {
@@ -272,25 +274,13 @@ pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
                     ));
                     continue;
                 }
-                let previous = motions.last().map_or(
-                    Position::new(ctx.settings.start_xy_mm, ctx.settings.clearance_z_mm),
-                    |m: &Motion| m.end,
-                );
-                match make_loop(&ctx, layer, depth, points, previous, motions.len()) {
-                    Ok(additions)
-                        if motions.len() + additions.len() <= ctx.settings.max_motions =>
-                    {
-                        motions.extend(additions)
-                    }
-                    Ok(_) => {
-                        resource_hit = true;
-                        break;
-                    }
-                    Err(d) => {
-                        diagnostics.push(d);
-                        resource_hit = true;
-                        break;
-                    }
+                cut_count += points.len();
+                loops.push(points);
+                // Bound the collected routing batch even when a few offsets
+                // already contain more cuts than the entire motion budget.
+                if cut_count >= ctx.settings.max_motions {
+                    resource_hit = true;
+                    break;
                 }
             }
             if resource_hit {
@@ -299,6 +289,76 @@ pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
             if offset + 1 == ctx.settings.max_loops_per_layer {
                 resource_hit = true;
             }
+        }
+        let mut entries = vec![];
+        for (i, points) in loops.iter().enumerate() {
+            let count = if matches!(ctx.settings.entry, EntryStrategy::Plunge) {
+                points.len()
+            } else {
+                1
+            };
+            for (v, &p) in points.iter().take(count).enumerate() {
+                let end = match ctx.settings.entry {
+                    EntryStrategy::Ramp { max_angle_deg, .. } => {
+                        let drop = (points[0].distance(points[1])
+                            * max_angle_deg.to_radians().tan())
+                        .min(ctx.stepdown / 2.);
+                        if (depth / drop).ceil() % 2. == 1. {
+                            points[1]
+                        } else {
+                            p
+                        }
+                    }
+                    EntryStrategy::Plunge => p,
+                };
+                entries.push((i, v, p, end));
+            }
+        }
+        let start = motions
+            .last()
+            .map_or(ctx.settings.start_xy_mm, |m: &Motion| m.end.xy());
+        for (i, vertex) in crate::routing::nearest_order(entries, loops.len(), start) {
+            let mut points = std::mem::take(&mut loops[i]);
+            points.rotate_left(vertex);
+            let previous = motions.last().map_or(
+                Position::new(ctx.settings.start_xy_mm, ctx.settings.clearance_z_mm),
+                |m| m.end,
+            );
+            let linked = matches!(ctx.settings.entry, EntryStrategy::Plunge)
+                && depth <= ctx.stepdown
+                && motions.last().is_some_and(|m| {
+                    m.kind == MotionKind::RapidRetract
+                        && m.layer == layer
+                        && m.start.xy().distance(points[0]) <= ctx.stepover
+                        && verify::center_margin(&ctx, m.start.xy(), points[0], depth)
+                            .is_ok_and(|margin| margin >= ctx.guard / 2.)
+                });
+            let base = motions.len() - usize::from(linked);
+            let previous = if linked {
+                motions.last().unwrap().start
+            } else {
+                previous
+            };
+            match make_loop(&ctx, layer, depth, points, previous, base) {
+                Ok(additions) if base + additions.len() <= ctx.settings.max_motions => {
+                    if linked {
+                        motions.pop();
+                    }
+                    motions.extend(additions);
+                }
+                Ok(_) => {
+                    resource_hit = true;
+                    break;
+                }
+                Err(d) => {
+                    diagnostics.push(d);
+                    resource_hit = true;
+                    break;
+                }
+            }
+        }
+        if resource_hit {
+            break;
         }
     }
     if resource_hit {
@@ -378,46 +438,54 @@ fn make_loop(
             position = end;
         }
     };
-    push(
-        MotionKind::RapidXY,
-        Position::new(points[0], ctx.settings.clearance_z_mm),
-        None,
-    );
-    push(
-        MotionKind::Approach,
-        Position::new(points[0], 0.),
-        Some(ctx.entry_feed),
-    );
-    match ctx.settings.entry {
-        EntryStrategy::Plunge => {
-            let n = (depth / ctx.stepdown).ceil() as usize;
-            for i in 1..=n {
-                push(
-                    MotionKind::Plunge,
-                    Position::new(points[0], -(i as f64 * ctx.stepdown).min(depth)),
-                    Some(ctx.entry_feed),
-                );
+    if previous.z < 0. {
+        push(
+            MotionKind::Cut,
+            Position::new(points[0], -depth),
+            Some(ctx.feed),
+        );
+    } else {
+        push(
+            MotionKind::RapidXY,
+            Position::new(points[0], ctx.settings.clearance_z_mm),
+            None,
+        );
+        push(
+            MotionKind::Approach,
+            Position::new(points[0], 0.),
+            Some(ctx.entry_feed),
+        );
+        match ctx.settings.entry {
+            EntryStrategy::Plunge => {
+                let n = (depth / ctx.stepdown).ceil() as usize;
+                for i in 1..=n {
+                    push(
+                        MotionKind::Plunge,
+                        Position::new(points[0], -(i as f64 * ctx.stepdown).min(depth)),
+                        Some(ctx.entry_feed),
+                    );
+                }
             }
-        }
-        EntryStrategy::Ramp { max_angle_deg, .. } => {
-            let drop = (points[0].distance(points[1]) * max_angle_deg.to_radians().tan())
-                .min(ctx.stepdown / 2.);
-            let count = (depth / drop).ceil();
-            if !count.is_finite() || count > ctx.settings.max_motions as f64 {
-                return Err(error(
-                    "ENTRY_RESOURCE_LIMIT",
-                    "ramp requires too many traverses; use a larger entry region or an appropriate tool",
-                ));
-            }
-            for i in 1..=count as usize {
-                push(
-                    MotionKind::Ramp,
-                    Position::new(points[i % 2], -(i as f64 * drop).min(depth)),
-                    Some(ctx.entry_feed),
-                );
-            }
-            if count as usize % 2 == 1 {
-                points.rotate_left(1);
+            EntryStrategy::Ramp { max_angle_deg, .. } => {
+                let drop = (points[0].distance(points[1]) * max_angle_deg.to_radians().tan())
+                    .min(ctx.stepdown / 2.);
+                let count = (depth / drop).ceil();
+                if !count.is_finite() || count > ctx.settings.max_motions as f64 {
+                    return Err(error(
+                        "ENTRY_RESOURCE_LIMIT",
+                        "ramp requires too many traverses; use a larger entry region or an appropriate tool",
+                    ));
+                }
+                for i in 1..=count as usize {
+                    push(
+                        MotionKind::Ramp,
+                        Position::new(points[i % 2], -(i as f64 * drop).min(depth)),
+                        Some(ctx.entry_feed),
+                    );
+                }
+                if count as usize % 2 == 1 {
+                    points.rotate_left(1);
+                }
             }
         }
     }

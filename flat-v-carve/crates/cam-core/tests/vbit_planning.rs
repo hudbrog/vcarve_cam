@@ -492,10 +492,11 @@ fn authenticated_plans_rebuild_cached_reports_and_bind_an_immutable_snapshot() {
 #[test]
 fn missing_final_finish_cannot_be_hidden_by_an_already_clean_stock_preview() {
     let mut p = planned("narrow-channel").clone();
-    let at = p.executions.iter().position(|e| e.final_finish).unwrap();
-    let id = p.executions[at].first_motion_id;
-    p.executions.truncate(at);
-    p.vbit_motions.truncate(id - p.endmill.motions.len());
+    // Preserve actual cutting and clean stock, but withdraw final-family
+    // declarations. Stock alone cannot establish that finishing was scheduled.
+    for e in &mut p.executions {
+        e.final_finish = false;
+    }
     let a = verify_combined_plan(&p).unwrap();
     assert_eq!(a.status, PlanStatus::Incomplete);
     assert!(

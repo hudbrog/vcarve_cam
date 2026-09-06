@@ -7,6 +7,7 @@ mod plan_hash;
 pub mod pocket;
 pub mod post;
 pub mod preview;
+mod routing;
 pub mod spike;
 pub mod stock;
 pub mod svg;

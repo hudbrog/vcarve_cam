@@ -13,6 +13,11 @@ Engine 0.7.2 adds spatial indexing, batched stock unions, and compact plan files
 
 Engine 0.7.3 completes the unchanged saved flower job in 52–54 seconds for combined CLI planning and about 7 seconds for endmill alone on the measured Windows machine. The [CLI performance report](docs/flat-v-carve/flower-performance.md) documents the bottlenecks and reproducible profiling commands. Regenerate older plans from their saved jobs.
 
+Engine 0.7.4 optimizes actual tool movement: the unchanged flower job drops from
+384,245 to 113,192 motions and from 60,485 to 178 V-bit plunges. Nearby path
+ordering, checked cutting links and retained final-depth finishing reduce travel
+without changing job tolerances. See the [motion routing report](docs/flat-v-carve/flower-motion-routing.md).
+
 Live browser planning now keeps complete plans in temporary files and loads every
 recorded motion through bounded pages. Verification and export reopen those files directly;
 plan size no longer controls worker-message size. See the

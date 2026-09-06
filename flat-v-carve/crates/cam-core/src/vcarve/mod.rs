@@ -3,6 +3,7 @@
 mod medial;
 mod quality;
 mod rest;
+mod routing;
 mod settings;
 mod verify;
 use crate::{
@@ -242,18 +243,20 @@ fn finish_status(
     executions: &[Execution],
     issues: &[GenerationIssue],
 ) -> Result<()> {
-    let expected = candidates
+    let mut expected = candidates
         .iter()
         .filter(|c| c.family != PathFamily::Floor)
-        .map(hash)
+        .map(routing::candidate_key)
         .collect::<Result<Vec<_>>>()?;
-    let actual = executions
+    let mut actual = executions
         .iter()
         .filter(|e| e.final_finish && !e.pruned_air)
-        .map(|e| hash(&e.candidate))
+        .map(|e| routing::candidate_key(&e.candidate))
         .collect::<Result<Vec<_>>>()?;
     analysis.finish_paths_expected = expected.len();
     analysis.finish_paths_executed = actual.len();
+    expected.sort_unstable();
+    actual.sort_unstable();
     if expected != actual {
         if analysis.status != PlanStatus::Inconclusive {
             analysis.status = PlanStatus::Incomplete;
@@ -414,6 +417,7 @@ fn candidate_families(
             "candidate family count exceeds the path budget",
         ));
     }
+    routing::weld_endpoints(ctx, &mut paths)?;
     Ok((axis, paths))
 }
 
@@ -506,26 +510,30 @@ fn excursion(
             position = end;
         }
     };
-    push(
-        MotionKind::RapidXY,
-        Position::new(points[0].xy(), ctx.clearance),
-        None,
-    );
-    push(
-        MotionKind::Approach,
-        Position::new(points[0].xy(), 0.),
-        Some(ctx.plunge_feed),
-    );
-    let n = (points[0].depth() / ctx.stepdown).ceil() as usize;
-    for i in 1..=n {
+    if previous.z <= 0. {
+        push(MotionKind::Cut, points[0], Some(ctx.feed));
+    } else {
         push(
-            MotionKind::Plunge,
-            Position::new(
-                points[0].xy(),
-                -(i as f64 * ctx.stepdown).min(points[0].depth()),
-            ),
+            MotionKind::RapidXY,
+            Position::new(points[0].xy(), ctx.clearance),
+            None,
+        );
+        push(
+            MotionKind::Approach,
+            Position::new(points[0].xy(), 0.),
             Some(ctx.plunge_feed),
         );
+        let n = (points[0].depth() / ctx.stepdown).ceil() as usize;
+        for i in 1..=n {
+            push(
+                MotionKind::Plunge,
+                Position::new(
+                    points[0].xy(),
+                    -(i as f64 * ctx.stepdown).min(points[0].depth()),
+                ),
+                Some(ctx.plunge_feed),
+            );
+        }
     }
     for &p in points.iter().skip(1) {
         push(MotionKind::Cut, p, Some(ctx.feed));
@@ -571,7 +579,7 @@ fn execute(
     moves: &mut Vec<Motion>,
     executions: &mut Vec<Execution>,
 ) -> Result<()> {
-    let base = endmill.motions.len() + moves.len();
+    let mut base = endmill.motions.len() + moves.len();
     let previous = moves.last().or(endmill.motions.last()).map_or(
         Position::new(
             endmill.job.endmill_planning.as_ref().unwrap().start_xy_mm,
@@ -580,16 +588,37 @@ fn execute(
         |m| m.end,
     );
     let pruned = !final_finish && air(ctx, candidate, cap, endmill);
+    let linked = !pruned
+        && candidate.points.iter().any(|p| p.depth() > 0.)
+        && moves.last().is_some_and(|m| {
+            m.kind == MotionKind::RapidRetract
+                && executions.last().is_some_and(|e| {
+                    e.pass_depth_mm == cap
+                        && e.final_finish == final_finish
+                        && !e.pruned_air
+                        && e.end_motion_id > e.first_motion_id
+                })
+                && profile(candidate, cap)
+                    .first()
+                    .is_some_and(|&p| routing::can_link(ctx, m.start, p))
+        });
     let additions = if pruned {
         vec![]
+    } else if linked {
+        base -= 1;
+        excursion(ctx, candidate, cap, moves.last().unwrap().start, base)
     } else {
         excursion(ctx, candidate, cap, previous, base)
     };
-    if moves.len() + additions.len() > ctx.settings.max_motions {
+    if moves.len() + additions.len() - usize::from(linked) > ctx.settings.max_motions {
         return Err(error(
             "VBIT_MOTION_LIMIT",
             "V-bit motion budget exhausted; complete excursions are retained",
         ));
+    }
+    if linked {
+        moves.pop();
+        executions.last_mut().unwrap().end_motion_id -= 1;
     }
     moves.extend(additions);
     executions.push(Execution {
@@ -627,6 +656,8 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
     let mut executions = vec![];
     let mut issues = vec![];
     let mut sample_reuse = None;
+    let mut last_finish_start = 0;
+    let mut cleanup_added = false;
     let levels = (1..=(ctx.target.depth_cap().mm() / ctx.stepdown).ceil() as usize)
         .map(|i| (i as f64 * ctx.stepdown).min(ctx.target.depth_cap().mm()))
         .collect::<Vec<_>>();
@@ -637,14 +668,26 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
         });
     } else {
         'passes: for &cap in &levels {
-            for c in &candidates {
-                if let Err(d) = execute(&ctx, &endmill, c, cap, false, &mut moves, &mut executions)
-                {
-                    issues.push(GenerationIssue {
-                        code: d.code,
-                        message: d.message,
-                    });
-                    break 'passes;
+            for floor in [true, false] {
+                if !floor {
+                    last_finish_start = executions.len();
+                }
+                let group: Vec<_> = candidates
+                    .iter()
+                    .filter(|c| (c.family == PathFamily::Floor) == floor)
+                    .cloned()
+                    .collect();
+                let previous = moves.last().map_or(start.xy(), |m: &Motion| m.end.xy());
+                for c in &routing::order(&group, previous) {
+                    if let Err(d) =
+                        execute(&ctx, &endmill, c, cap, false, &mut moves, &mut executions)
+                    {
+                        issues.push(GenerationIssue {
+                            code: d.code,
+                            message: d.message,
+                        });
+                        break 'passes;
+                    }
                 }
             }
         }
@@ -669,6 +712,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
                 break;
             }
             for p in points {
+                cleanup_added = true;
                 let d = ctx.safe_depth(p)?;
                 if d == 0. {
                     continue;
@@ -696,21 +740,39 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
         }
         timing.lap("cleanup");
         if issues.is_empty() {
-            for c in candidates.iter().filter(|c| c.family != PathFamily::Floor) {
-                if let Err(e) = execute(
-                    &ctx,
-                    &endmill,
-                    c,
-                    ctx.target.depth_cap().mm(),
-                    true,
-                    &mut moves,
-                    &mut executions,
-                ) {
-                    issues.push(GenerationIssue {
-                        code: e.code,
-                        message: e.message,
-                    });
-                    break;
+            if !cleanup_added
+                && executions[last_finish_start..]
+                    .iter()
+                    .all(|e| !e.pruned_air)
+            {
+                // The last full-depth boundary/detail traversal is already the
+                // final family when no later cleanup cut disturbed it.
+                for e in &mut executions[last_finish_start..] {
+                    e.final_finish = true;
+                }
+            } else {
+                let group: Vec<_> = candidates
+                    .iter()
+                    .filter(|c| c.family != PathFamily::Floor)
+                    .cloned()
+                    .collect();
+                let previous = moves.last().map_or(start.xy(), |m| m.end.xy());
+                for c in &routing::order(&group, previous) {
+                    if let Err(e) = execute(
+                        &ctx,
+                        &endmill,
+                        c,
+                        ctx.target.depth_cap().mm(),
+                        true,
+                        &mut moves,
+                        &mut executions,
+                    ) {
+                        issues.push(GenerationIssue {
+                            code: e.code,
+                            message: e.message,
+                        });
+                        break;
+                    }
                 }
             }
         }

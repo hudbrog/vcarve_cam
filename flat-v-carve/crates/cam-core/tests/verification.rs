@@ -520,18 +520,63 @@ fn deleting_one_floor_lane_exposes_a_missed_strip_with_valid_motion_continuity()
     for original in p.vbit_motions.iter().filter(|m| !removed.contains(&m.id)) {
         let mut m = original.clone();
         if m.start != previous {
-            assert_eq!(previous.z, 5.);
-            assert_eq!(m.start.z, 5.);
-            if m.kind == MotionKind::RapidXY {
-                m.start = previous;
-            } else {
+            // Removing a linked lane can now leave either side below the
+            // clearance plane. Reconnect with explicit retract/entry motions
+            // so this remains a stock-coverage test, not an invalid-link test.
+            let clearance = p
+                .endmill
+                .job
+                .endmill_planning
+                .as_ref()
+                .unwrap()
+                .clearance_z_mm;
+            let slot = p
+                .endmill
+                .job
+                .tools
+                .iter()
+                .find(|t| t.id == p.endmill.job.operation.vbit_id)
+                .unwrap();
+            let from = previous;
+            let mut push = |kind, end, feed| {
+                if previous == end {
+                    return;
+                }
                 let mut link = m.clone();
                 link.start = previous;
-                link.end = m.start;
-                link.kind = MotionKind::RapidXY;
-                link.feed_mm_min = None;
+                link.end = end;
+                link.kind = kind;
+                link.feed_mm_min = feed;
                 link.id = p.endmill.motions.len() + moves.len();
                 moves.push(link);
+                previous = end;
+            };
+            // The closure owns the mutable position; use the original tail's
+            // coordinates to build the retract endpoint.
+            push(
+                MotionKind::RapidRetract,
+                Position::new(from.xy(), clearance),
+                None,
+            );
+            push(
+                MotionKind::RapidXY,
+                Position::new(m.start.xy(), clearance),
+                None,
+            );
+            if m.start.z <= 0. {
+                push(
+                    MotionKind::Approach,
+                    Position::new(m.start.xy(), 0.),
+                    slot.plunge_feed_mm_min,
+                );
+                let step = slot.max_stepdown_mm.unwrap();
+                for i in 1..=(m.start.depth() / step).ceil() as usize {
+                    push(
+                        MotionKind::Plunge,
+                        Position::new(m.start.xy(), -(i as f64 * step).min(m.start.depth())),
+                        slot.plunge_feed_mm_min,
+                    );
+                }
             }
         }
         if m.start == m.end {

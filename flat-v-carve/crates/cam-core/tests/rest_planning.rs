@@ -122,7 +122,10 @@ fn island_floor_cleanup_stays_near_residual_boundaries_and_preserves_finish() {
         report.status,
         VerificationStatus::Passed,
         "{:?}",
-        report.original.findings
+        (
+            report.original.findings,
+            report.rounded.map(|r| r.verification.findings)
+        )
     );
 }
 

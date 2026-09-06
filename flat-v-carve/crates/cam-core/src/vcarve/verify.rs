@@ -1,4 +1,4 @@
-use super::{Context, Execution, StageTransition, air, error, excursion, hash};
+use super::{Context, Execution, StageTransition, air, error, excursion, profile, routing};
 use crate::{
     geometry::{Result, Segment},
     job::Job,
@@ -222,7 +222,7 @@ pub(super) fn executions<'a>(
             ));
         }
         final_started |= e.final_finish;
-        let key = hash(&e.candidate)?;
+        let key = routing::candidate_key(&e.candidate)?;
         let reached = e.pass_depth_mm.min(
             e.candidate
                 .points
@@ -240,7 +240,18 @@ pub(super) fn executions<'a>(
             ));
         }
         progress.insert(key, prior.max(reached));
-        let expected = if e.pruned_air {
+        if !e.pruned_air
+            && previous.z <= 0.
+            && !profile(&e.candidate, e.pass_depth_mm)
+                .first()
+                .is_some_and(|&p| routing::can_link(ctx, previous, p))
+        {
+            return Err(error(
+                "INVALID_VBIT_LINK",
+                "linked execution cannot establish clearance and stock stepdown",
+            ));
+        }
+        let mut expected = if e.pruned_air {
             if e.final_finish || !air(ctx, &e.candidate, e.pass_depth_mm, endmill) {
                 return Err(error(
                     "INVALID_AIR_PRUNING",
@@ -258,6 +269,15 @@ pub(super) fn executions<'a>(
             )
         };
         let next = e.end_motion_id - endmill.motions.len();
+        // A coincident single-point path may contribute only its retract;
+        // linking the following path removes that too, leaving an empty range.
+        if expected
+            .last()
+            .is_some_and(|m| m.kind == MotionKind::RapidRetract)
+            && next - at + 1 == expected.len()
+        {
+            expected.pop();
+        }
         if moves[at..next] != expected {
             return Err(error(
                 "EXECUTION_MISMATCH",
