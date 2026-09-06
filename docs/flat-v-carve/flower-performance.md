@@ -1,5 +1,7 @@
 # Saved flower job: CLI performance, engine 0.7.3
 
+The subsequent [40-second optimization report](flower-performance-40s.md) records complete runs in 37.146 and 36.335 seconds with byte-identical output. The measurements below document the initial 0.7.3 improvements.
+
 Measured on native Windows x64 with the pinned Rust 1.95.0 release build on 2026-09-06. The input is `real_data/flower_box-svg.job (2).json`, SHA-256 `59e4c9deb37cc3f0a335eab1f4c53fd86257263b476b96260da560223c6ea693`. Its embedded SVG and machining settings were left unchanged.
 
 This is a different setup from the older scalability report: 0.001 mm geometry tolerance, 15 selected components, 22,039 normalized boundary vertices, a 3 mm endmill, one 2 mm roughing layer, a pointed 90° V-bit, 0.1 mm permitted floor ridge, and eight stock slices plus the floor-check slice. The saved snapshot's SVG matches `real_data/flower_box.svg` (ignoring surrounding whitespace). The standalone SVG's SHA-256 is `817743c4f77f644fdf703fa9301eba8a52f35df66503f5b0a953c822f6d63154`.

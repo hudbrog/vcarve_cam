@@ -85,7 +85,30 @@ impl<'a> StockQuery<'a> {
         Ok(Self::build(motions, QueryTool::Vbit(tool)))
     }
     fn build(motions: &'a [Motion], tool: QueryTool<'a>) -> Self {
-        let motions: Vec<_> = motions.iter().filter(|m| m.kind.cutting()).collect();
+        // Repeated passes add no removal. Keep exact forward XYZ duplicates
+        // out of the query index, without modifying the recorded motions.
+        // Do not canonicalize reversal: preserve the original floating-point
+        // evaluation of each direction in the independent analytic formulas.
+        let mut seen = HashSet::new();
+        let motions: Vec<_> = motions
+            .iter()
+            .filter(|m| m.kind.cutting())
+            .filter(|m| {
+                let key = [
+                    m.start.x.to_bits(),
+                    m.start.y.to_bits(),
+                    m.start.z.to_bits(),
+                    m.end.x.to_bits(),
+                    m.end.y.to_bits(),
+                    m.end.z.to_bits(),
+                ];
+                if seen.len() < 131072 {
+                    seen.insert(key)
+                } else {
+                    !seen.contains(&key)
+                }
+            })
+            .collect();
         let index = SpatialIndex::new(
             motions
                 .iter()
@@ -156,6 +179,55 @@ mod indexed_query_tests {
         model::{VBit, VBitSpec},
         motion::{MotionKind, Position},
     };
+    #[test]
+    fn analytic_index_deduplicates_only_identical_forward_sweeps() {
+        let motion = Motion {
+            id: 0,
+            tool_id: "test".into(),
+            operation_id: "test".into(),
+            layer: 0,
+            kind: MotionKind::Cut,
+            start: Position::new(Point::new(10.12345, 5.99876), -0.5),
+            end: Position::new(Point::new(12.5689, 8.1101), -1.5),
+            feed_mm_min: Some(100.),
+        };
+        let mut motions = vec![motion.clone(); 600];
+        let mut reverse = motion.clone();
+        std::mem::swap(&mut reverse.start, &mut reverse.end);
+        motions.push(reverse);
+        let mut deeper = motion;
+        deeper.end.z = -2.;
+        motions.push(deeper);
+        for (id, motion) in motions.iter_mut().enumerate() {
+            motion.id = id;
+        }
+        for tip in [0., 0.5] {
+            let tool = VBit::try_from(VBitSpec {
+                included_angle_deg: 90.,
+                tip_diameter_mm: tip,
+                max_cutting_diameter_mm: 12.,
+                cutting_height_mm: 5.,
+            })
+            .unwrap();
+            let vbit = StockQuery::vbit(&motions, &tool).unwrap();
+            let endmill = StockQuery::endmill(&motions, 1.5).unwrap();
+            assert_eq!(vbit.motions.len(), 3);
+            assert_eq!(endmill.motions.len(), 3);
+            for i in 0..400 {
+                let p = Point::new(9. + (i % 20) as f64 / 4., 5. + (i / 20) as f64 / 4.);
+                assert_eq!(
+                    vbit.removed_depth(p).unwrap(),
+                    vbit_removed_depth_at(&motions, &tool, p).unwrap()
+                );
+                assert_eq!(
+                    endmill.removed_depth(p).unwrap(),
+                    removed_depth_at(&motions, 1.5, p).unwrap()
+                );
+            }
+        }
+        motions[0].start.x = f64::NAN;
+        assert!(StockQuery::endmill(&motions, 1.5).is_err());
+    }
     #[test]
     fn covered_plunge_disks_are_redundant_but_deeper_plunges_are_retained() {
         let grid = Grid::new(0.001, 100.).unwrap();
@@ -367,6 +439,21 @@ pub struct CapsuleBounds {
     pub radial_error_mm: f64,
 }
 
+fn circle_directions(sides: usize) -> &'static [Point] {
+    // Circle resolution is bounded to 1024 sides by both callers. Reuse the
+    // exact same trigonometric values across footprints, tools, and slices.
+    static CIRCLES: [std::sync::OnceLock<Vec<Point>>; 1025] =
+        [const { std::sync::OnceLock::new() }; 1025];
+    CIRCLES[sides].get_or_init(|| {
+        (0..sides)
+            .map(|i| {
+                let t = std::f64::consts::TAU * i as f64 / sides as f64;
+                Point::new(t.cos(), t.sin())
+            })
+            .collect()
+    })
+}
+
 pub fn capsule_bounds(grid: Grid, a: Point, b: Point, radius: f64) -> Result<CapsuleBounds> {
     let snap = grid.snap_bound_mm();
     let tolerance = grid.tolerance_mm();
@@ -394,9 +481,8 @@ pub fn capsule_bounds(grid: Grid, a: Point, b: Point, radius: f64) -> Result<Cap
     let hull = |r: f64| {
         let mut points = Vec::with_capacity(2 * n);
         for p in [a, b] {
-            for i in 0..n {
-                let t = std::f64::consts::TAU * i as f64 / n as f64;
-                points.push(Point::new(p.x + r * t.cos(), p.y + r * t.sin()));
+            for direction in circle_directions(n) {
+                points.push(Point::new(p.x + r * direction.x, p.y + r * direction.y));
             }
         }
         Region::convex_hull(grid, &points)
@@ -580,9 +666,11 @@ pub fn variable_capsule_bounds(
             } else {
                 radius - 2. * snap
             };
-            for i in 0..n {
-                let t = std::f64::consts::TAU * i as f64 / n as f64;
-                points.push(Point::new(p.x + radius * t.cos(), p.y + radius * t.sin()));
+            for direction in circle_directions(n) {
+                points.push(Point::new(
+                    p.x + radius * direction.x,
+                    p.y + radius * direction.y,
+                ));
             }
         }
         if points.is_empty() {

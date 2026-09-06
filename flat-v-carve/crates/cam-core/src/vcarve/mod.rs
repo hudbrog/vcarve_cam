@@ -146,14 +146,14 @@ impl CombinedPlan {
         }
         let ctx = Context::new(&endmill.job)?;
         let (axis, candidates) = candidates(&ctx, &endmill)?;
-        verify::executions(
+        let checked = verify::executions(
             &ctx,
             &endmill,
             &e.transition,
             &e.vbit_motions,
             &e.executions,
         )?;
-        let mut analysis = quality::analyze(&ctx, &endmill, &e.vbit_motions, axis)?;
+        let mut analysis = quality::analyze(&ctx, &endmill, checked, axis, None)?;
         finish_status(
             &mut analysis,
             &candidates,
@@ -184,14 +184,14 @@ pub fn verify_combined_plan(plan: &CombinedPlan) -> Result<CombinedAnalysis> {
     let endmill = EndmillPlan::from_json(&plan.endmill.to_json()?)?;
     let ctx = Context::new(&endmill.job)?;
     let (axis, candidates) = candidates(&ctx, &endmill)?;
-    verify::executions(
+    let checked = verify::executions(
         &ctx,
         &endmill,
         &plan.transition,
         &plan.vbit_motions,
         &plan.executions,
     )?;
-    let mut analysis = quality::analyze(&ctx, &endmill, &plan.vbit_motions, axis)?;
+    let mut analysis = quality::analyze(&ctx, &endmill, checked, axis, None)?;
     finish_status(
         &mut analysis,
         &candidates,
@@ -328,9 +328,61 @@ fn endmill_slice(ctx: &Context, endmill: &EndmillPlan, depth: f64) -> Result<Sli
 }
 
 fn candidates(ctx: &Context, endmill: &EndmillPlan) -> Result<(MedialAxis, Vec<Candidate>)> {
-    let mut timing = crate::timing::Timer::new("vbit candidates");
-    let (axis, medial) = medial::build(ctx)?;
-    timing.lap("medial axis");
+    let parallel = ctx
+        .target
+        .region()
+        .rings()
+        .iter()
+        .map(|r| r.points.len())
+        .sum::<usize>()
+        > 4096
+        && std::thread::available_parallelism().map_or(1, usize::from) > 1;
+    candidate_families(ctx, endmill, parallel)
+}
+
+fn candidate_families(
+    ctx: &Context,
+    endmill: &EndmillPlan,
+    parallel: bool,
+) -> Result<(MedialAxis, Vec<Candidate>)> {
+    let _timing = crate::timing::Timer::new("vbit candidates");
+    // Medial chords and area paths read the same immutable target, but neither
+    // depends on the other's candidates. Preserve family and error order when
+    // collecting them, including the contact paths that follow medial paths.
+    let ((axis, medial), (mut paths, contacts)) = if parallel {
+        std::thread::scope(|scope| {
+            let medial = scope.spawn(|| medial::build(ctx));
+            let area = area_candidates(ctx, endmill);
+            let medial = medial
+                .join()
+                .map_err(|_| error("CANDIDATE_WORKER_PANIC", "medial candidate worker failed"))?;
+            Ok((medial?, area?))
+        })?
+    } else {
+        (medial::build(ctx)?, area_candidates(ctx, endmill)?)
+    };
+    paths.extend(medial);
+    for p in contacts {
+        let d = ctx.safe_depth(p)?;
+        if d > 0. {
+            paths.push(Candidate {
+                family: PathFamily::Contact,
+                points: vec![Position::new(p, -d)],
+                source_branch: None,
+            });
+        }
+    }
+    if paths.len() > ctx.settings.max_paths {
+        return Err(error(
+            "VBIT_PATH_LIMIT",
+            "candidate family count exceeds the path budget",
+        ));
+    }
+    Ok((axis, paths))
+}
+
+fn area_candidates(ctx: &Context, endmill: &EndmillPlan) -> Result<(Vec<Candidate>, Vec<Point>)> {
+    let _timing = crate::timing::Timer::new("vbit area candidates");
     let cap = ctx.target.depth_cap().mm();
     let full = ctx.target.vbit_centers(&ctx.tool, Depth::new(cap)?)?;
     let centers = ctx
@@ -374,24 +426,7 @@ fn candidates(ctx: &Context, endmill: &EndmillPlan) -> Result<(MedialAxis, Vec<C
             });
         }
     }
-    paths.extend(medial);
-    for p in full.contact_points {
-        let d = ctx.safe_depth(p)?;
-        if d > 0. {
-            paths.push(Candidate {
-                family: PathFamily::Contact,
-                points: vec![Position::new(p, -d)],
-                source_branch: None,
-            });
-        }
-    }
-    if paths.len() > ctx.settings.max_paths {
-        return Err(error(
-            "VBIT_PATH_LIMIT",
-            "candidate family count exceeds the path budget",
-        ));
-    }
-    Ok((axis, paths))
+    Ok((paths, full.contact_points))
 }
 fn profile(candidate: &Candidate, cap: f64) -> Vec<Position> {
     let mut points = vec![];
@@ -555,6 +590,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
     let mut moves = vec![];
     let mut executions = vec![];
     let mut issues = vec![];
+    let mut sample_reuse = None;
     let levels = (1..=(ctx.target.depth_cap().mm() / ctx.stepdown).ceil() as usize)
         .map(|i| (i as f64 * ctx.stepdown).min(ctx.target.depth_cap().mm()))
         .collect::<Vec<_>>();
@@ -581,7 +617,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
             if !issues.is_empty() {
                 break;
             }
-            let quality = quality::sample(&ctx, &endmill, &moves)?;
+            let (quality, floor_points) = quality::cleanup(&ctx, &endmill, &moves)?;
             let mut points: Vec<_> = quality
                 .samples
                 .iter()
@@ -589,10 +625,11 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
                 .take(16)
                 .map(|p| p.best_tip_center)
                 .collect();
-            points.extend(quality::floor_cleanup_centers(&ctx, &endmill, &moves)?);
+            points.extend(floor_points);
             points.dedup_by(|a, b| a.distance(*b) < ctx.guard);
             points.truncate(16);
             if points.is_empty() {
+                sample_reuse = Some(quality::SampleReuse::new(quality, &moves)?);
                 break;
             }
             for p in points {
@@ -643,9 +680,9 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
         }
     }
     timing.lap("final finish");
-    verify::executions(&ctx, &endmill, &transition, &moves, &executions)?;
+    let checked = verify::executions(&ctx, &endmill, &transition, &moves, &executions)?;
     timing.lap("verify executions");
-    let mut analysis = quality::analyze(&ctx, &endmill, &moves, axis)?;
+    let mut analysis = quality::analyze(&ctx, &endmill, checked, axis, sample_reuse)?;
     timing.lap("analyze");
     finish_status(&mut analysis, &candidates, &executions, &issues)?;
     let input_fingerprint = identity(&endmill)?;
@@ -677,6 +714,35 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
 mod slice_reuse_tests {
     use super::*;
     use crate::pocket::EntryStrategy;
+
+    #[test]
+    fn parallel_candidates_preserve_families_geometry_and_error_order() {
+        for input in [
+            include_str!("../../../../fixtures/m4/island.json"),
+            include_str!("../../../../fixtures/m4/finite-tip.json"),
+            include_str!("../../../../fixtures/m4/contact-line.json"),
+            include_str!("../../../../fixtures/m4/contact-point.json"),
+            include_str!("../../../../fixtures/m4/resource-limit.json"),
+        ] {
+            let job = Job::from_json(input).unwrap();
+            let endmill = plan_endmill(&job).unwrap();
+            // Separate contexts also exercise concurrent initialization of the
+            // shared target's lazy geometric data, without a warm serial cache.
+            let serial = candidate_families(&Context::new(&job).unwrap(), &endmill, false);
+            let parallel = candidate_families(&Context::new(&job).unwrap(), &endmill, true);
+            match (serial, parallel) {
+                (Ok(serial), Ok(parallel)) => assert_eq!(
+                    serde_json::to_value(serial).unwrap(),
+                    serde_json::to_value(parallel).unwrap()
+                ),
+                (Err(serial), Err(parallel)) => {
+                    assert_eq!(serial.code, parallel.code);
+                    assert_eq!(serial.message, parallel.message);
+                }
+                (serial, parallel) => panic!("candidate results differ: {serial:?}, {parallel:?}"),
+            }
+        }
+    }
 
     #[test]
     fn reused_stock_matches_fresh_sweeps_for_plunges_ramps_and_multiple_layers() {

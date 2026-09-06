@@ -60,6 +60,82 @@ pub(super) struct Samples {
     pub samples: Vec<QualitySample>,
     pub limited: bool,
 }
+
+pub(super) struct SampleReuse {
+    samples: Samples,
+    prefix_len: usize,
+    prefix_hash: String,
+}
+
+pub(super) fn cleanup(
+    ctx: &Context,
+    endmill: &EndmillPlan,
+    moves: &[Motion],
+) -> Result<(Samples, Vec<Point>)> {
+    // Both inspect the same immutable stock and neither adds motions. Running
+    // the floor reconstruction beside the sample workers shortens the serial
+    // cleanup stage; sample errors retain their original reporting priority.
+    if moves.len() < 4096 || std::thread::available_parallelism().map_or(1, usize::from) < 2 {
+        return Ok((
+            sample(ctx, endmill, moves)?,
+            floor_cleanup_centers(ctx, endmill, moves)?,
+        ));
+    }
+    std::thread::scope(|scope| {
+        let floor = scope.spawn(|| floor_cleanup_centers(ctx, endmill, moves));
+        let quality = sample(ctx, endmill, moves);
+        let floor = floor
+            .join()
+            .map_err(|_| error("CLEANUP_WORKER_PANIC", "floor cleanup worker failed"));
+        Ok((quality?, floor??))
+    })
+}
+
+impl SampleReuse {
+    pub(super) fn new(samples: Samples, moves: &[Motion]) -> Result<Self> {
+        Ok(Self {
+            samples,
+            prefix_len: moves.len(),
+            prefix_hash: super::hash(&moves)?,
+        })
+    }
+    fn recover(self, moves: &[Motion]) -> Result<Option<Samples>> {
+        let Some(prefix) = moves.get(..self.prefix_len) else {
+            return Ok(None);
+        };
+        if super::hash(&prefix)? != self.prefix_hash {
+            return Ok(None);
+        }
+        // Appended forward duplicates have exactly the same analytic removal
+        // and sample witnesses. Anything new falls back to full sampling.
+        let key = |m: &Motion| {
+            [
+                m.start.x.to_bits(),
+                m.start.y.to_bits(),
+                m.start.z.to_bits(),
+                m.end.x.to_bits(),
+                m.end.y.to_bits(),
+                m.end.z.to_bits(),
+            ]
+        };
+        let mut seen = std::collections::HashSet::new();
+        for m in prefix.iter().filter(|m| m.kind.cutting()) {
+            seen.insert(key(m));
+            if seen.len() > 131072 {
+                return Ok(None);
+            }
+        }
+        if moves[self.prefix_len..]
+            .iter()
+            .filter(|m| m.kind.cutting())
+            .all(|m| seen.contains(&key(m)))
+        {
+            Ok(Some(self.samples))
+        } else {
+            Ok(None)
+        }
+    }
+}
 pub(super) fn sample(ctx: &Context, endmill: &EndmillPlan, moves: &[Motion]) -> Result<Samples> {
     let _timing = crate::timing::Timer::new("quality samples");
     let bounds = Bounds::of(ctx.target.region()).unwrap();
@@ -100,10 +176,59 @@ pub(super) fn sample(ctx: &Context, endmill: &EndmillPlan, moves: &[Motion]) -> 
             add(m.start.lerp(m.end, t).xy())?;
         }
     }
-    let mut samples = vec![];
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(4);
+    let samples = sample_points(ctx, endmill, moves, &points, workers)?;
+    Ok(Samples { samples, limited })
+}
+
+fn sample_points(
+    ctx: &Context,
+    endmill: &EndmillPlan,
+    moves: &[Motion],
+    points: &[Point],
+    workers: usize,
+) -> Result<Vec<QualitySample>> {
     let endmill_stock = StockQuery::endmill(&endmill.motions, ctx.mill.radius().mm())?;
     let vbit_stock = StockQuery::vbit(moves, &ctx.tool)?;
-    for p in points {
+    // Queries are immutable; each worker owns its samples. Contiguous chunks
+    // and ordered joins preserve both sample order and the first reported error.
+    let workers = workers.max(1).min(points.len().div_ceil(4096).max(1));
+    if workers == 1 {
+        return evaluate_samples(ctx, endmill, &endmill_stock, &vbit_stock, points);
+    }
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = points
+            .chunks(points.len().div_ceil(workers))
+            .map(|chunk| {
+                let endmill_stock = &endmill_stock;
+                let vbit_stock = &vbit_stock;
+                scope
+                    .spawn(move || evaluate_samples(ctx, endmill, endmill_stock, vbit_stock, chunk))
+            })
+            .collect();
+        let batches = handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| error("QUALITY_WORKER_PANIC", "quality sample worker failed"))?
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(batches.into_iter().flatten().collect())
+    })
+}
+
+fn evaluate_samples(
+    ctx: &Context,
+    endmill: &EndmillPlan,
+    endmill_stock: &StockQuery<'_>,
+    vbit_stock: &StockQuery<'_>,
+    points: &[Point],
+) -> Result<Vec<QualitySample>> {
+    let mut samples = vec![];
+    for &p in points {
         let nominal = ctx.target.nominal_depth(p)?.mm();
         if nominal == 0. {
             continue;
@@ -164,7 +289,7 @@ pub(super) fn sample(ctx: &Context, endmill: &EndmillPlan, moves: &[Motion]) -> 
             best_tip_center: best,
         });
     }
-    Ok(Samples { samples, limited })
+    Ok(samples)
 }
 fn combined_slice(
     ctx: &Context,
@@ -220,6 +345,24 @@ fn accessible_area(access: &CenterSet, radius: f64) -> Result<Region> {
     Ok(area)
 }
 
+fn endmill_accessible_floor(ctx: &Context, endmill: &EndmillPlan, cap: f64) -> Result<Region> {
+    // A freshly planned/authenticated complete layer has no unresolved or
+    // exact-fit contacts, so its recorded accessible area is the same query.
+    if let Some(layer) =
+        endmill.analysis.layers.iter().find(|l| {
+            l.depth_mm == cap && matches!(l.status, PlanStatus::Complete | PlanStatus::Empty)
+        })
+    {
+        return Ok(layer.accessible_floor.clone());
+    }
+    let access = ctx.target.endmill_centers(
+        &ctx.mill,
+        Depth::new(cap)?,
+        Length::new(endmill.job.operation.wall_allowance_mm.unwrap())?,
+    )?;
+    accessible_area(&access, ctx.mill.radius().mm())
+}
+
 fn stock_slices(
     ctx: &Context,
     endmill: &EndmillPlan,
@@ -238,17 +381,24 @@ fn stock_slices(
             .map(|&d| combined_slice(ctx, endmill, moves, d))
             .collect();
     }
+    let next = std::sync::atomic::AtomicUsize::new(0);
     let batches = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
-            .map(|worker| {
+            .map(|_| {
+                let next = &next;
                 scope.spawn(move || {
-                    depths
-                        .iter()
-                        .enumerate()
-                        .skip(worker)
-                        .step_by(workers)
-                        .map(|(i, &d)| (i, combined_slice(ctx, endmill, moves, d)))
-                        .collect::<Vec<_>>()
+                    // A shallow slice is much more expensive than a deep one.
+                    // Let the first available worker take the next depth rather
+                    // than assigning the ninth slice behind the slowest worker.
+                    let mut results = vec![];
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(&depth) = depths.get(i) else {
+                            break;
+                        };
+                        results.push((i, combined_slice(ctx, endmill, moves, depth)));
+                    }
+                    results
                 })
             })
             .collect();
@@ -323,13 +473,17 @@ pub(super) fn floor_cleanup_centers(
 pub(super) fn analyze(
     ctx: &Context,
     endmill: &EndmillPlan,
-    moves: &[Motion],
+    checked: super::verify::CheckedMotions<'_>,
     axis: MedialAxis,
+    reuse: Option<SampleReuse>,
 ) -> Result<CombinedAnalysis> {
-    let mut timing = crate::timing::Timer::new("combined analysis");
-    let minimum = super::verify::verify_vbit_motions(&endmill.job, &endmill.motions, moves)?;
-    timing.lap("verify motions");
-    let quality = sample(ctx, endmill, moves)?;
+    let _timing = crate::timing::Timer::new("combined analysis");
+    let moves = checked.motions();
+    let minimum = checked.minimum_margin();
+    let quality = match reuse.map(|r| r.recover(moves)).transpose()?.flatten() {
+        Some(samples) => samples,
+        None => sample(ctx, endmill, moves)?,
+    };
     let cap = ctx.target.depth_cap().mm();
     let floor_check = (cap - ctx.ridge - ctx.tolerance / 2.).max(0.);
     let mut depths = (1..=ctx.settings.stock_slices)
@@ -340,14 +494,9 @@ pub(super) fn analyze(
     depths.dedup();
     let slices = stock_slices(ctx, endmill, moves, &depths)?;
     let access = ctx.target.vbit_centers(&ctx.tool, Depth::new(cap)?)?;
-    let ea = ctx.target.endmill_centers(
-        &ctx.mill,
-        Depth::new(cap)?,
-        Length::new(endmill.job.operation.wall_allowance_mm.unwrap())?,
-    )?;
     let accessible = accessible_area(&access, ctx.tool.tip_radius().mm())?.boolean(
         BooleanOp::Union,
-        &accessible_area(&ea, ctx.mill.radius().mm())?,
+        &endmill_accessible_floor(ctx, endmill, cap)?,
     )?;
     let floor = slices.iter().find(|l| l.depth_mm == floor_check).unwrap();
     let missing = accessible
@@ -438,6 +587,116 @@ pub(super) fn analyze(
 #[cfg(test)]
 mod slice_order_tests {
     use super::*;
+
+    #[test]
+    fn cleanup_samples_are_reused_only_for_unchanged_prefix_and_duplicate_finish() {
+        let job = crate::job::Job::from_json(include_str!("../../../../fixtures/m4/island.json"))
+            .unwrap();
+        let plan = super::super::plan_combined(&job).unwrap();
+        let ctx = Context::new(&job).unwrap();
+        let seed = || {
+            SampleReuse::new(
+                sample(&ctx, &plan.endmill, &plan.vbit_motions).unwrap(),
+                &plan.vbit_motions,
+            )
+            .unwrap()
+        };
+        let mut moves = plan.vbit_motions.clone();
+        let mut repeated = moves
+            .iter()
+            .find(|m| m.kind == crate::motion::MotionKind::Cut)
+            .unwrap()
+            .clone();
+        repeated.id = plan.endmill.motions.len() + moves.len();
+        moves.push(repeated);
+        let cached = seed()
+            .recover(&moves)
+            .unwrap()
+            .expect("duplicate cuts must reuse samples");
+        let fresh = sample(&ctx, &plan.endmill, &moves).unwrap();
+        assert_eq!(cached.limited, fresh.limited);
+        assert_eq!(
+            serde_json::to_value(cached.samples).unwrap(),
+            serde_json::to_value(fresh.samples).unwrap()
+        );
+        moves.last_mut().unwrap().end.z -= 0.01;
+        assert!(
+            seed().recover(&moves).unwrap().is_none(),
+            "new removal must be sampled"
+        );
+        moves.pop();
+        moves[0].id += 1;
+        assert!(
+            seed().recover(&moves).unwrap().is_none(),
+            "a changed prefix invalidates its samples"
+        );
+        assert!(
+            seed()
+                .recover(&plan.vbit_motions[..plan.vbit_motions.len() - 1])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cached_endmill_access_matches_fresh_area_and_preserves_contact_fallback() {
+        for fixture in [
+            include_str!("../../../../fixtures/m4/island.json"),
+            include_str!("../../../../fixtures/m4/exact-fit.json"),
+        ] {
+            let job = crate::job::Job::from_json(fixture).unwrap();
+            let endmill = crate::pocket::plan_endmill(&job).unwrap();
+            let ctx = Context::new(&job).unwrap();
+            let cap = ctx.target.depth_cap().mm();
+            let access = ctx
+                .target
+                .endmill_centers(
+                    &ctx.mill,
+                    Depth::new(cap).unwrap(),
+                    Length::new(job.operation.wall_allowance_mm.unwrap()).unwrap(),
+                )
+                .unwrap();
+            let expected = accessible_area(&access, ctx.mill.radius().mm()).unwrap();
+            let cached = endmill_accessible_floor(&ctx, &endmill, cap).unwrap();
+            assert_eq!(
+                serde_json::to_value(cached).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_quality_samples_match_serial_values_and_error_order() {
+        for fixture in [
+            include_str!("../../../../fixtures/m4/island.json"),
+            include_str!("../../../../fixtures/m4/finite-tip.json"),
+        ] {
+            let job = crate::job::Job::from_json(fixture).unwrap();
+            let plan = super::super::plan_combined(&job).unwrap();
+            let ctx = Context::new(&job).unwrap();
+            let mut points: Vec<_> = (0..8193)
+                .map(|i| Point::new((i % 97) as f64 / 4., (i / 97) as f64 / 4.))
+                .collect();
+            let sequential =
+                sample_points(&ctx, &plan.endmill, &plan.vbit_motions, &points, 1).unwrap();
+            let parallel =
+                sample_points(&ctx, &plan.endmill, &plan.vbit_motions, &points, 4).unwrap();
+            assert_eq!(
+                serde_json::to_value(parallel).unwrap(),
+                serde_json::to_value(sequential).unwrap()
+            );
+            points[4100] = Point::new(f64::NAN, 0.);
+            points[8100] = Point::new(f64::INFINITY, 0.);
+            let sequential =
+                sample_points(&ctx, &plan.endmill, &plan.vbit_motions, &points, 1).unwrap_err();
+            let parallel =
+                sample_points(&ctx, &plan.endmill, &plan.vbit_motions, &points, 4).unwrap_err();
+            assert_eq!(
+                serde_json::to_value(parallel).unwrap(),
+                serde_json::to_value(sequential).unwrap()
+            );
+        }
+    }
 
     #[test]
     fn parallel_slices_match_sequential_geometry_and_error_order() {

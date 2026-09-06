@@ -25,6 +25,7 @@ pub fn verify_vbit_motions(
 fn check(ctx: &Context, base: usize, start: Position, moves: &[Motion]) -> Result<Option<f64>> {
     let mut previous = start;
     let mut minimum: Option<f64> = None;
+    let mut margins = std::collections::HashMap::new();
     if moves.len() > ctx.settings.max_motions {
         return Err(error(
             "VBIT_MOTION_LIMIT",
@@ -87,14 +88,33 @@ fn check(ctx: &Context, base: usize, start: Position, moves: &[Motion]) -> Resul
         }
         if m.kind.cutting() {
             let r = |p: Position| ctx.tool.tip_radius().mm() + p.depth() * ctx.tool.angle().slope();
-            let margin = ctx.target.boundary().variable_radius_margin_mm(
-                Segment {
-                    start: m.start.xy(),
-                    end: m.end.xy(),
-                },
-                r(m.start),
-                r(m.end),
-            )?;
+            // Identity, continuity, feeds, entry and range are still checked
+            // for every record above. Only an exact forward XYZ duplicate can
+            // reuse the independent continuous-clearance calculation.
+            let key = [
+                m.start.x.to_bits(),
+                m.start.y.to_bits(),
+                m.start.z.to_bits(),
+                m.end.x.to_bits(),
+                m.end.y.to_bits(),
+                m.end.z.to_bits(),
+            ];
+            let margin = if let Some(&margin) = margins.get(&key) {
+                margin
+            } else {
+                let margin = ctx.target.boundary().variable_radius_margin_mm(
+                    Segment {
+                        start: m.start.xy(),
+                        end: m.end.xy(),
+                    },
+                    r(m.start),
+                    r(m.end),
+                )?;
+                if margins.len() < 131072 {
+                    margins.insert(key, margin);
+                }
+                margin
+            };
             if margin < 0. {
                 return Err(error(
                     "VBIT_SWEEP_CLEARANCE",
@@ -116,13 +136,28 @@ fn check(ctx: &Context, base: usize, start: Position, moves: &[Motion]) -> Resul
     }
     Ok(minimum)
 }
-pub(super) fn executions(
+/// An in-memory result tied to the exact immutable motions just checked.
+/// Analysis consumes this instead of verifying the same motions a second time.
+pub(super) struct CheckedMotions<'a> {
+    motions: &'a [Motion],
+    minimum_margin: Option<f64>,
+}
+impl CheckedMotions<'_> {
+    pub(super) fn motions(&self) -> &[Motion] {
+        self.motions
+    }
+    pub(super) fn minimum_margin(&self) -> Option<f64> {
+        self.minimum_margin
+    }
+}
+
+pub(super) fn executions<'a>(
     ctx: &Context,
     endmill: &EndmillPlan,
     transition: &StageTransition,
-    moves: &[Motion],
+    moves: &'a [Motion],
     executions: &[Execution],
-) -> Result<()> {
+) -> Result<CheckedMotions<'a>> {
     let start = endmill.motions.last().map_or(
         Position::new(
             endmill.job.endmill_planning.as_ref().unwrap().start_xy_mm,
@@ -141,7 +176,7 @@ pub(super) fn executions(
             "tool transition must follow all endmill work at the common clearance plane",
         ));
     }
-    check(ctx, endmill.motions.len(), start, moves)?;
+    let minimum_margin = check(ctx, endmill.motions.len(), start, moves)?;
     let mut at = 0;
     let mut previous = start;
     let mut final_started = false;
@@ -240,5 +275,8 @@ pub(super) fn executions(
             "some cutting moves have no path execution record",
         ));
     }
-    Ok(())
+    Ok(CheckedMotions {
+        motions: moves,
+        minimum_margin,
+    })
 }
