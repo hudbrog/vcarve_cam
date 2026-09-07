@@ -27,7 +27,7 @@ impl<'a> ClearanceReuse<'a> {
         if let Some(&sample) = self.samples.get(&key) {
             return Ok(sample);
         }
-        let sample = self.ctx.target.boundary().sample(p)?;
+        let sample = self.ctx.target.cached_sample(p)?;
         if self.samples.len() < 131072 {
             self.samples.insert(key, sample);
         }

@@ -120,15 +120,22 @@ impl SpatialIndex {
         if self.nodes.is_empty() {
             return Ok(());
         }
-        let mut stack = vec![0];
-        while let Some(id) = stack.pop() {
+        // Median splits bound the number of deferred siblings by usize::BITS,
+        // even for the largest representable collection. Queries need no heap
+        // allocation, including the per-edge visits in boundary validation.
+        let mut stack = [0; usize::BITS as usize];
+        let mut pending = 1;
+        while pending > 0 {
+            pending -= 1;
+            let id = stack[pending];
             let node = &self.nodes[id];
             if !node.bounds.overlaps(bounds) {
                 continue;
             }
             if let Some((a, b)) = node.children {
-                stack.push(b);
-                stack.push(a);
+                stack[pending] = b;
+                stack[pending + 1] = a;
+                pending += 2;
             } else {
                 for &i in &self.order[node.start..node.end] {
                     if self.boxes[i].overlaps(bounds) {
@@ -159,22 +166,29 @@ impl SpatialIndex {
             return f64::INFINITY;
         }
         let mut best = f64::INFINITY;
-        let mut stack = vec![0];
-        while let Some(id) = stack.pop() {
+        let mut stack = [(0, 0.); usize::BITS as usize];
+        let mut pending = 1;
+        while pending > 0 {
+            pending -= 1;
+            let (id, lower) = stack[pending];
             let node = &self.nodes[id];
-            if node.bounds.distance_lower(bounds) > best {
+            if lower > best {
                 continue;
             }
             if let Some((a, b)) = node.children {
-                if self.nodes[a].bounds.distance_lower(bounds)
-                    <= self.nodes[b].bounds.distance_lower(bounds)
-                {
-                    stack.push(b);
-                    stack.push(a);
+                // Child ordering already computes these immutable bounds.
+                // Carry them through the traversal instead of recomputing
+                // both hypotenuses and numerical reserves when nodes are popped.
+                let da = self.nodes[a].bounds.distance_lower(bounds);
+                let db = self.nodes[b].bounds.distance_lower(bounds);
+                if da <= db {
+                    stack[pending] = (b, db);
+                    stack[pending + 1] = (a, da);
                 } else {
-                    stack.push(a);
-                    stack.push(b);
+                    stack[pending] = (a, da);
+                    stack[pending + 1] = (b, db);
                 }
+                pending += 2;
             } else {
                 for &i in &self.order[node.start..node.end] {
                     if self.boxes[i].distance_lower(bounds) <= best {
@@ -190,6 +204,40 @@ impl SpatialIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nearest_queries_match_full_scan_at_large_coordinates_and_box_edges() {
+        let centers: Vec<_> = (0..5000)
+            .map(|i| {
+                Point::new(
+                    1e9 + (i * 31 % 277) as f64 / 7.,
+                    -1e9 + (i * 47 % 321) as f64 / 11.,
+                )
+            })
+            .collect();
+        let index = SpatialIndex::new(centers.iter().map(|&p| Aabb::new(p, p)).collect());
+        for p in centers.iter().step_by(7).copied().chain([
+            Point::new(1e9 - 1., -1e9),
+            Point::new(1e9 + 100., -1e9 + 100.),
+            Point::new(0., 0.),
+        ]) {
+            let expected = centers
+                .iter()
+                .map(|&c| c.distance(p))
+                .fold(f64::INFINITY, f64::min);
+            assert_eq!(
+                index.minimum(Aabb::new(p, p), |i| centers[i].distance(p)),
+                expected
+            );
+        }
+        assert!(
+            SpatialIndex::new(vec![])
+                .minimum(
+                    Aabb::new(Point::new(0., 0.), Point::new(0., 0.)),
+                    |_| unreachable!()
+                )
+                .is_infinite()
+        );
+    }
     #[test]
     fn indexed_pairs_match_brute_force_including_touching_and_vertical_edges() {
         let boxes: Vec<_> = (0..1000)

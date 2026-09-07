@@ -113,13 +113,13 @@ impl Target {
         timing.lap("diagram");
         // A Voronoi vertex occurs on several edges. Reuse its exact query,
         // retaining every witness occurrence and the original error order.
-        let key = |p: Point| [p.x, p.y].map(|v| if v == 0. { 0 } else { v.to_bits() });
+        let key = Self::sample_key;
         let mut clearances = std::collections::HashMap::new();
         let mut sample = |p: Point| -> Result<Clearance> {
             if let Some(&q) = clearances.get(&key(p)) {
                 return Ok(q);
             }
-            let q = self.boundary.sample(p)?;
+            let q = self.cached_sample(p)?;
             if clearances.len() < 131072 {
                 clearances.insert(key(p), q);
             }
@@ -251,6 +251,10 @@ impl Target {
         if contacts {
             result.diagnostics.push(error("EXACT_FIT_CONTACT","zero-margin tool-center contacts are retained; input snapping, entry capability and motion verification still need accounting").warning());
         }
+        // Publish only successfully computed samples from this exact target.
+        // Concurrent queries may win initialization; either cache contains the
+        // same independent boundary predicate and uses the same size limit.
+        let _ = self.diagram_samples.set(clearances);
         // Target geometry is immutable. Bound both cache entry count and total
         // retained geometry; unusually large results are simply not cached.
         let weight = result

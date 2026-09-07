@@ -175,7 +175,7 @@ impl Context {
         })
     }
     pub fn safe_depth(&self, p: crate::geometry::Point) -> Result<f64> {
-        let sample = self.target.boundary().sample(p)?;
+        let sample = self.target.cached_sample(p)?;
         Ok(self.safe_depth_from_sample(sample))
     }
     /// Reuse a sample from this immutable target at the requested center.

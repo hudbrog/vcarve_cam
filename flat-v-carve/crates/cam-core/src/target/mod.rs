@@ -3,13 +3,15 @@ mod access;
 mod reachability;
 
 use crate::{
-    geometry::{BoundaryQuery, Diagnostic, Point, PointLocation, Region, Result, VoronoiDiagram},
+    geometry::{
+        BoundaryQuery, Clearance, Diagnostic, Point, PointLocation, Region, Result, VoronoiDiagram,
+    },
     model::{Depth, Endmill, IncludedAngle, Length, VBit},
 };
 pub use access::{CenterSet, CenterSetStatus, FitStatus, PoseFit};
 pub use reachability::{Reachability, ReachabilityOptions, ReachabilityStatus};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{Mutex, OnceLock},
 };
 
@@ -20,6 +22,10 @@ pub struct Target {
     angle: IncludedAngle,
     diagram: OnceLock<Result<VoronoiDiagram>>,
     center_sets: Mutex<VecDeque<(f64, CenterSet, usize)>>,
+    // First center-set query retains at most 131072 exact boundary samples.
+    // Clearance is independent of cutter radius; subsequent tools and medial
+    // paths can read this immutable cache without contending on a mutex.
+    diagram_samples: OnceLock<HashMap<[u64; 2], Clearance>>,
     input_snap_bound_mm: f64,
 }
 
@@ -55,6 +61,7 @@ impl Target {
             angle,
             diagram: OnceLock::new(),
             center_sets: Mutex::new(VecDeque::new()),
+            diagram_samples: OnceLock::new(),
             input_snap_bound_mm,
         })
     }
@@ -76,6 +83,19 @@ impl Target {
     }
     pub fn boundary(&self) -> &BoundaryQuery {
         &self.boundary
+    }
+    pub(crate) fn sample_key(p: Point) -> [u64; 2] {
+        [p.x, p.y].map(|v| if v == 0. { 0 } else { v.to_bits() })
+    }
+    pub(crate) fn cached_sample(&self, p: Point) -> Result<Clearance> {
+        if let Some(&sample) = self
+            .diagram_samples
+            .get()
+            .and_then(|c| c.get(&Self::sample_key(p)))
+        {
+            return Ok(sample);
+        }
+        self.boundary.sample(p)
     }
     pub fn depth_cap(&self) -> Depth {
         self.depth_cap
@@ -192,4 +212,65 @@ impl Target {
 
 fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("target")
+}
+
+#[cfg(test)]
+mod sample_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cached_samples_match_fresh_boundary_queries_and_preserve_range_errors() {
+        let job = crate::job::Job::from_json(include_str!("../../../../fixtures/m4/island.json"))
+            .unwrap();
+        let make_target = || {
+            Target::for_planning(
+                job.inspect().unwrap().geometry.selected,
+                Depth::new(2.).unwrap(),
+                IncludedAngle::new(90.).unwrap(),
+            )
+            .unwrap()
+        };
+        let target = make_target();
+        let fresh = make_target();
+        // Independent radii can initialize the same cache concurrently.
+        std::thread::scope(|scope| {
+            let a = scope.spawn(|| target.center_set(Length::new(1.).unwrap()).unwrap());
+            let b = target.center_set(Length::new(2.).unwrap()).unwrap();
+            for (radius, actual) in [(1., a.join().unwrap()), (2., b)] {
+                let expected = fresh.center_set(Length::new(radius).unwrap()).unwrap();
+                assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(expected).unwrap()
+                );
+            }
+        });
+        let cached = target.diagram_samples.get().unwrap();
+        assert!(!cached.is_empty());
+        assert!(cached.len() <= 131072);
+        let mut points: Vec<_> = cached
+            .keys()
+            .map(|k| Point::new(f64::from_bits(k[0]), f64::from_bits(k[1])))
+            .collect();
+        points.extend([
+            Point::new(0., -0.),
+            Point::new(-0., 0.),
+            Point::new(-1.234, 5.678),
+        ]);
+        for p in points {
+            assert_eq!(
+                serde_json::to_value(target.cached_sample(p).unwrap()).unwrap(),
+                serde_json::to_value(fresh.boundary().sample(p).unwrap()).unwrap()
+            );
+        }
+        for p in [
+            Point::new(f64::NAN, 0.),
+            Point::new(f64::INFINITY, 0.),
+            Point::new(1e100, 0.),
+        ] {
+            assert_eq!(
+                target.cached_sample(p).unwrap_err().code,
+                fresh.boundary().sample(p).unwrap_err().code
+            );
+        }
+    }
 }

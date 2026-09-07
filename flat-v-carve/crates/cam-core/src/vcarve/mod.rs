@@ -12,7 +12,7 @@ use crate::{
     job::Job,
     model::Depth,
     motion::{Motion, MotionKind, Position},
-    pocket::{EndmillPlan, GenerationIssue, PlanStatus, plan_endmill},
+    pocket::{EndmillPlan, GenerationIssue, PlanStatus},
     stock::{SliceRemoval, StockQuery, removal_at_slice},
     svg::Bounds,
 };
@@ -651,9 +651,12 @@ fn execute(
 }
 pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
     let mut timing = crate::timing::Timer::new("combined");
-    let ctx = Context::new(job)?;
+    let mut ctx = Context::new(job)?;
     timing.lap("context");
-    let endmill = plan_endmill(job)?;
+    let (endmill, target) = crate::pocket::plan_with_target(job)?;
+    // Both contexts use this job's selected geometry, depth and V-bit angle.
+    // Retain the endmill's populated Voronoi/access caches for V-bit queries.
+    ctx.target = target;
     timing.lap("endmill");
     let stock = EndmillStock::new(&endmill, ctx.mill.radius().mm())?;
     let (axis, candidates) = candidates(&ctx, &endmill)?;
@@ -834,7 +837,40 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
 #[cfg(test)]
 mod slice_reuse_tests {
     use super::*;
-    use crate::pocket::EntryStrategy;
+    use crate::pocket::{EntryStrategy, plan_endmill};
+
+    #[test]
+    fn retained_target_matches_independent_geometry_and_access_queries() {
+        for input in [
+            include_str!("../../../../fixtures/m4/island.json"),
+            include_str!("../../../../fixtures/m4/finite-tip.json"),
+            include_str!("../../../../fixtures/m4/exact-fit.json"),
+        ] {
+            let job = Job::from_json(input).unwrap();
+            let (endmill, target) = crate::pocket::plan_with_target(&job).unwrap();
+            let ctx = Context::new(&job).unwrap();
+            assert_eq!(
+                serde_json::to_value(target.region()).unwrap(),
+                serde_json::to_value(ctx.target.region()).unwrap()
+            );
+            assert_eq!(target.depth_cap(), ctx.target.depth_cap());
+            assert_eq!(target.angle(), ctx.target.angle());
+            for depth in [target.depth_cap().mm(), target.depth_cap().mm() / 2.] {
+                let query = |t: &crate::target::Target| {
+                    t.vbit_centers(&ctx.tool, Depth::new(depth).unwrap())
+                        .unwrap()
+                };
+                assert_eq!(
+                    serde_json::to_value(query(&target)).unwrap(),
+                    serde_json::to_value(query(&ctx.target)).unwrap()
+                );
+            }
+            assert_eq!(
+                endmill.to_json().unwrap(),
+                plan_endmill(&job).unwrap().to_json().unwrap()
+            );
+        }
+    }
 
     #[test]
     fn parallel_candidates_preserve_families_geometry_and_error_order() {

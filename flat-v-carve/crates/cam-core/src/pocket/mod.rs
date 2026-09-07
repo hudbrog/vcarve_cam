@@ -207,6 +207,13 @@ fn strategy_depth(ctx: &Context, depth: f64) -> f64 {
 }
 
 pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
+    plan_with_target(job).map(|(plan, _)| plan)
+}
+
+/// Keep the freshly constructed target for the next tool of the same job.
+/// Its immutable geometry and bounded query caches are planning evidence,
+/// never data recovered from a saved artifact.
+pub(crate) fn plan_with_target(job: &Job) -> Result<(EndmillPlan, crate::target::Target)> {
     let mut timing = crate::timing::Timer::new("endmill");
     let ctx = Context::new(job)?;
     timing.lap("context");
@@ -428,7 +435,7 @@ pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
     apply_generation(&mut analysis, &generation_issues);
     let input_fingerprint = input_hash(job)?;
     let motion_fingerprint = hash(&(&input_fingerprint, &motions, &generation_issues))?;
-    Ok(EndmillPlan {
+    let plan = EndmillPlan {
         artifact_kind: "endmill_plan".into(),
         schema_version: PLAN_SCHEMA_VERSION,
         engine_version: env!("CARGO_PKG_VERSION").into(),
@@ -439,7 +446,8 @@ pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
         motions,
         generation_issues,
         analysis,
-    })
+    };
+    Ok((plan, ctx.target))
 }
 
 fn apply_generation(analysis: &mut EndmillAnalysis, issues: &[GenerationIssue]) {
