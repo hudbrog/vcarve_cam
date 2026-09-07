@@ -12,6 +12,29 @@ pub(super) fn floor_paths(
     needed: &Region,
     spacing: f64,
 ) -> Result<Vec<Candidate>> {
+    let workers = if centers
+        .rings()
+        .iter()
+        .map(|r| r.points().len())
+        .sum::<usize>()
+        >= 4096
+    {
+        std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(4)
+    } else {
+        1
+    };
+    floor_paths_with_workers(ctx, centers, needed, spacing, workers)
+}
+
+fn floor_paths_with_workers(
+    ctx: &Context,
+    centers: &Region,
+    needed: &Region,
+    spacing: f64,
+    workers: usize,
+) -> Result<Vec<Candidate>> {
     // A cutter centered just inside the cleared region can still be needed to
     // finish its edge. Keep a full allowed-ridge footprint around residual
     // stock, plus the planning guard; never simply clip tip centers to stock.
@@ -42,6 +65,7 @@ pub(super) fn floor_paths(
         Ok(())
     };
     let mut current = centers.clone();
+    let mut offsets = std::collections::VecDeque::new();
     for level in 0..ctx.settings.max_paths {
         if current
             .boolean(BooleanOp::Intersection, &support)?
@@ -59,7 +83,27 @@ pub(super) fn floor_paths(
             add(&rings)?;
         }
         // Offset the original region, avoiding accumulated offset error.
-        let next = centers.erode((level + 1) as f64 * spacing)?;
+        if offsets.is_empty() {
+            let count = workers.min(ctx.settings.max_paths - level);
+            offsets = if count == 1 {
+                [centers.erode((level + 1) as f64 * spacing)].into()
+            } else {
+                std::thread::scope(|scope| {
+                    let handles: Vec<_> = (1..=count)
+                        .map(|i| scope.spawn(move || centers.erode((level + i) as f64 * spacing)))
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join().unwrap_or_else(|_| {
+                                Err(error("OFFSET_WORKER_PANIC", "floor offset worker failed"))
+                            })
+                        })
+                        .collect()
+                })
+            };
+        }
+        let next = offsets.pop_front().unwrap()?;
         if next.rings().is_empty() {
             // The final thin core may have no positive-area next offset. A
             // small local raster covers it; deep medial edges are deliberately
@@ -127,6 +171,31 @@ mod tests {
         assert_eq!(
             batched, separate,
             "intersecting open subjects must not acquire bridges or lose hole splits"
+        );
+    }
+
+    #[test]
+    fn prefetched_offsets_preserve_contours_and_resource_errors() {
+        let job =
+            crate::job::Job::from_json(include_str!("../../../../fixtures/m4/finite-tip.json"))
+                .unwrap();
+        let mut ctx = Context::new(&job).unwrap();
+        let p = Point::new;
+        let centers = Region::from_rings(
+            ctx.target.region().grid(),
+            &[vec![p(5., 5.), p(8., 5.), p(8., 7.), p(5., 7.)]],
+        )
+        .unwrap();
+        let serial = floor_paths_with_workers(&ctx, &centers, &centers, 0.1, 1).unwrap();
+        let parallel = floor_paths_with_workers(&ctx, &centers, &centers, 0.1, 4).unwrap();
+        assert_eq!(
+            serde_json::to_value(parallel).unwrap(),
+            serde_json::to_value(serial).unwrap()
+        );
+        ctx.settings.max_paths = 2;
+        assert_eq!(
+            floor_paths_with_workers(&ctx, &centers, &centers, 0.1, 1).unwrap_err(),
+            floor_paths_with_workers(&ctx, &centers, &centers, 0.1, 4).unwrap_err()
         );
     }
 }

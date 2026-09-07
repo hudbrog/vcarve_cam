@@ -653,7 +653,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
     let mut timing = crate::timing::Timer::new("combined");
     let mut ctx = Context::new(job)?;
     timing.lap("context");
-    let (endmill, target) = crate::pocket::plan_with_target(job)?;
+    let (endmill, target) = crate::pocket::plan_with_target(job, Some(ctx.target.clone()))?;
     // Both contexts use this job's selected geometry, depth and V-bit angle.
     // Retain the endmill's populated Voronoi/access caches for V-bit queries.
     ctx.target = target;
@@ -847,7 +847,7 @@ mod slice_reuse_tests {
             include_str!("../../../../fixtures/m4/exact-fit.json"),
         ] {
             let job = Job::from_json(input).unwrap();
-            let (endmill, target) = crate::pocket::plan_with_target(&job).unwrap();
+            let (endmill, target) = crate::pocket::plan_with_target(&job, None).unwrap();
             let ctx = Context::new(&job).unwrap();
             assert_eq!(
                 serde_json::to_value(target.region()).unwrap(),
@@ -869,6 +869,10 @@ mod slice_reuse_tests {
                 endmill.to_json().unwrap(),
                 plan_endmill(&job).unwrap().to_json().unwrap()
             );
+            let (shared, retained) =
+                crate::pocket::plan_with_target(&job, Some(ctx.target.clone())).unwrap();
+            assert!(std::sync::Arc::ptr_eq(&retained, &ctx.target));
+            assert_eq!(endmill.to_json().unwrap(), shared.to_json().unwrap());
         }
     }
 

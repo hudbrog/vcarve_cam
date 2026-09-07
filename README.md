@@ -35,6 +35,11 @@ both stages. Deeper links require swept-stock clearance. See the
 [implementation and verification results](docs/flat-v-carve/planner-small-motions-and-links.md).
 Regenerate older plans from their saved jobs.
 
+Engine **0.7.7** completes `flower_box-svg.job-real.json` in **2.71–2.73 seconds**
+across five fresh CLI runs. Bounded contour simplification, grouped stock strokes,
+and parallel stock comparisons retain the job's tolerances and pass full-stock
+G-code verification. See the [three-second benchmark](docs/flat-v-carve/flower-performance-3s.md).
+
 Flower G-code export now preserves tiny motions by increasing output precision
 when needed and reports the precision used. Retained-plan authentication and
 parallel stock verification reduce export latency; see the

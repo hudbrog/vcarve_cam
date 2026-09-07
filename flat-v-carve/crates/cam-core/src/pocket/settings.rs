@@ -71,7 +71,7 @@ impl EndmillPlanningSettings {
     }
 }
 pub(super) struct Context {
-    pub target: Target,
+    pub target: std::sync::Arc<Target>,
     pub mill: Endmill,
     pub settings: EndmillPlanningSettings,
     pub allowance: f64,
@@ -99,6 +99,10 @@ fn required(v: Option<f64>, name: &str) -> Result<f64> {
 }
 impl Context {
     pub fn new(job: &Job) -> Result<Self> {
+        Self::with_target(job, None)
+    }
+    /// `shared` is freshly constructed from this exact job by combined planning.
+    pub(super) fn with_target(job: &Job, shared: Option<std::sync::Arc<Target>>) -> Result<Self> {
         job.validate_settings()?;
         let settings = job.endmill_planning.clone().ok_or_else(|| {
             error(
@@ -107,8 +111,15 @@ impl Context {
             )
         })?;
         settings.validate()?;
-        let geometry = job.inspect()?.geometry;
-        if geometry.selected.rings().is_empty() {
+        let geometry = if shared.is_none() {
+            Some(job.inspect()?.geometry)
+        } else {
+            None
+        };
+        if geometry
+            .as_ref()
+            .is_some_and(|g| g.selected.rings().is_empty())
+        {
             return Err(error(
                 "EMPTY_SELECTION",
                 "select at least one region before planning",
@@ -142,7 +153,14 @@ impl Context {
         };
         let vbit = VBit::try_from(spec.clone())?;
         vbit.validate_depth(Depth::new(depth)?)?;
-        let target = Target::for_planning(geometry.selected, Depth::new(depth)?, vbit.angle())?;
+        let target = match shared {
+            Some(target) => target,
+            None => std::sync::Arc::new(Target::for_planning(
+                geometry.unwrap().selected,
+                Depth::new(depth)?,
+                vbit.angle(),
+            )?),
+        };
         let stepdown = required(tool.max_stepdown_mm, "endmill.max_stepdown_mm")?;
         let stepover = required(tool.stepover_mm, "endmill.stepover_mm")?;
         let feed = required(tool.cutting_feed_mm_min, "endmill.cutting_feed_mm_min")?;

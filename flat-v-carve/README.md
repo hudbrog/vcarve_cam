@@ -111,6 +111,12 @@ nearby V-bit endpoints before recording path identities. The
 records the construction-error budgets, routing bounds and verification results.
 Restart with the rebuilt application and regenerate plans from older engines.
 
+Engine **0.7.7** extends bounded endmill simplification and groups connected stock
+sweeps on sufficiently fine grids. The current real flower job completes combined
+CLI planning in **2.71–2.73 seconds**, with all original job tolerances retained.
+See the [benchmark, output changes, and verification](../docs/flat-v-carve/flower-performance-3s.md).
+Regenerate saved plans from earlier engine versions.
+
 Each saved plan embeds the job and records actual XYZ moves, identity fingerprints, and generation issues. Plans use compact JSON and omit derived stock/quality caches; `inspect --report` writes the rebuilt analysis separately. `inspect` and `verify` rebuild clearance and stock from the motions and ignore any supplied cached analysis. Saving rejects artifacts above the 128 MB reload limit. Editing the job or motions invalidates the fingerprint and requires replanning. Job schema 1 migrates to schema 2 without inventing new settings; plan schema 1 is a separate artifact format tied to the generating engine version.
 
 The preview shows layer paths, removed stock, and remaining target. Missing accessible floor is pink; possible overcut is purple. No-access stages are empty. Exact-fit contacts and insufficient numerical margin are inconclusive; unsupported entries and missed floors are reported explicitly. Partial plans remain inspectable and exit with status 1.

@@ -555,6 +555,52 @@ impl Region {
         self.offset(radius_mm, true)
     }
 
+    /// Round stroke of a constructed centerline. Callers provide the radial
+    /// reserves for input/output snapping and the arc sagitta. Unlike source
+    /// rings, a machining centerline may cross or retrace itself.
+    pub(crate) fn stroke(grid: Grid, points: &[Point], radius: f64, arc: f64) -> Result<Self> {
+        if points.len() > MAX_EDGES
+            || !radius.is_finite()
+            || radius <= 0.
+            || radius > grid.max_coordinate_mm()
+            || !arc.is_finite()
+            || arc <= 0.
+        {
+            return Err(Diagnostic::new(
+                "STOCK_PRECISION",
+                "invalid bounded centerline stroke",
+            ));
+        }
+        let mut path = points
+            .iter()
+            .map(|&p| grid.quantize(p).map(|p| Point64::new(p.x, p.y)))
+            .collect::<Result<Vec<_>>>()?;
+        path.dedup();
+        let closed = path.len() > 2 && path.first() == path.last();
+        if closed {
+            path.pop();
+        }
+        let mut offset = ClipperOffset::new(2., arc * grid.scale(), true, false);
+        offset.add_path(
+            &path,
+            JoinType::Round,
+            if closed {
+                EndType::Joined
+            } else {
+                EndType::Round
+            },
+        );
+        let mut tree = PolyTree64::new();
+        offset.execute_tree(radius * grid.scale(), &mut tree);
+        if offset.error_code() != 0 {
+            return Err(Diagnostic::new(
+                "POLYGON_BACKEND",
+                "centerline stroke failed",
+            ));
+        }
+        Self::from_tree(grid, tree)
+    }
+
     fn offset(&self, radius_mm: f64, outward: bool) -> Result<Self> {
         if !radius_mm.is_finite() || radius_mm < 0.0 {
             return Err(Diagnostic::new(

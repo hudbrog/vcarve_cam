@@ -101,7 +101,69 @@ pub(crate) fn vbit_removal_at_slices(
     let workers = std::thread::available_parallelism()
         .map_or(1, usize::from)
         .min(MAX_WORKERS);
+    if motions.len() >= 4096 {
+        return chain_slices(grid, motions, tool, depths, workers);
+    }
     removal_with_workers(grid, motions, tool, depths, workers)
+}
+
+fn chain_slices(
+    grid: Grid,
+    motions: &[Motion],
+    tool: &VBit,
+    depths: &[f64],
+    workers: usize,
+) -> Result<Vec<SliceRemoval>> {
+    let evaluate = |depth: f64, inner_workers: usize| {
+        vbit_slice_with_workers(grid, motions, tool, depth, inner_workers)
+    };
+    let mut result = vec![];
+    for group in depths.chunks(workers.clamp(1, MAX_WORKERS)) {
+        if group.len() == 1 {
+            result.push(evaluate(group[0], workers)?);
+        } else {
+            let slices = std::thread::scope(|scope| {
+                let handles: Vec<_> = group
+                    .iter()
+                    .map(|&d| {
+                        let evaluate = &evaluate;
+                        scope.spawn(move || evaluate(d, 1))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join().map_err(|_| {
+                            Diagnostic::new("STOCK_WORKER_PANIC", "stock slice worker failed")
+                        })?
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?;
+            result.extend(slices);
+        }
+    }
+    Ok(result)
+}
+
+pub(crate) fn vbit_slice_with_workers(
+    grid: Grid,
+    motions: &[Motion],
+    tool: &VBit,
+    depth: f64,
+    inner_workers: usize,
+) -> Result<SliceRemoval> {
+    let (sweeps, order) = prepare_vbit_slice(motions, tool, depth)?;
+    if let Some(bounds) = super::chains::bounds(grid, &sweeps, &order, inner_workers) {
+        let bounds = bounds?;
+        return Ok(SliceRemoval {
+            depth_mm: depth,
+            lower: bounds.lower,
+            upper: bounds.upper,
+            contributing_motion_ids: sweeps.iter().map(|s| s.id).collect(),
+            capsule_radial_error_mm: bounds.radial_error_mm,
+        });
+    }
+    Ok(removal_with_workers(grid, motions, tool, &[depth], inner_workers)?.remove(0))
 }
 
 fn removal_with_workers(

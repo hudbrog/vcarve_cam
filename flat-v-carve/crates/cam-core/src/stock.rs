@@ -6,8 +6,10 @@ use crate::{
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+mod chains;
 mod slices;
 pub(crate) use slices::vbit_removal_at_slices;
+pub(crate) use slices::vbit_slice_with_workers;
 
 /// Exact duplicate footprints (often depth pass + final finish). This only
 /// avoids repeated polygon construction/union; every motion ID is retained.
@@ -584,7 +586,8 @@ pub fn removal_at_slice(
         .map_or(1, usize::from)
         .min(4)
         .min(order.len().div_ceil(4096).max(1));
-    let bounds = endmill_sweep_bounds(grid, &sweeps, &order, radius, workers)?;
+    let bounds = chains::bounds(grid, &sweeps, &order, workers)
+        .unwrap_or_else(|| endmill_sweep_bounds(grid, &sweeps, &order, radius, workers))?;
     Ok(SliceRemoval {
         depth_mm: depth,
         lower: bounds.lower,

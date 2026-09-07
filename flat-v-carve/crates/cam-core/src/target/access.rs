@@ -223,7 +223,7 @@ impl Target {
             } else if let Some(&outside) = area_locations.get(&key(p)) {
                 outside
             } else {
-                let outside = area_query.sample(p)?.location == PointLocation::Outside;
+                let outside = area_query.location(p)? == PointLocation::Outside;
                 if area_locations.len() < 131072 {
                     area_locations.insert(key(p), outside);
                 }

@@ -38,7 +38,10 @@ fn flower_has_no_grid_tick_moves_and_replays_and_exports() {
             .count()
     };
     assert!(retracts(&plan.endmill.motions) < 43);
-    assert!(retracts(&plan.vbit_motions) <= 214);
+    // Bounded endmill contour simplification changes the residual-floor
+    // clipping slightly. The V-bit route uses one additional retract;
+    // retain a tight routing budget while independently verifying every cut.
+    assert!(retracts(&plan.vbit_motions) <= 215);
     let saved = plan.to_json().unwrap();
     assert_eq!(
         plan_combined(&job).unwrap().to_json().unwrap(),

@@ -55,7 +55,7 @@ fn required(v: Option<f64>, name: &str) -> Result<f64> {
     })
 }
 pub(super) struct Context {
-    pub target: Target,
+    pub target: std::sync::Arc<Target>,
     pub mill: Endmill,
     pub tool: VBit,
     pub settings: VBitPlanningSettings,
@@ -143,7 +143,7 @@ impl Context {
             })?
             .clearance_z_mm;
         Ok(Self {
-            target,
+            target: std::sync::Arc::new(target),
             mill,
             tool,
             settings,

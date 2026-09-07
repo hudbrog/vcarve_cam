@@ -1,9 +1,9 @@
-//! Bounded cleanup of microscopic offset edges, before routing or entry planning.
+//! Bounded simplification of offset contours, before routing or entry planning.
 use super::{EntryStrategy, settings::Context, verify};
 use crate::geometry::{Point, Segment};
 use std::collections::VecDeque;
 
-pub(super) fn tiny_edges(ctx: &Context, points: &mut Vec<Point>, depth: f64) {
+pub(super) fn simplify(ctx: &Context, points: &mut Vec<Point>, depth: f64) {
     let n = points.len();
     if n <= 3 || ctx.cleanup_budget <= 0. {
         return;
@@ -25,12 +25,7 @@ pub(super) fn tiny_edges(ctx: &Context, points: &mut Vec<Point>, depth: f64) {
         }
         let a = prev[i];
         let b = next[i];
-        if points[a]
-            .distance(points[i])
-            .min(points[i].distance(points[b]))
-            > ctx.cleanup_budget
-            || points[a] == points[b]
-        {
+        if points[a] == points[b] {
             continue;
         }
         let cost = (b + n - a) % n;
@@ -92,7 +87,7 @@ mod tests {
             p(5., 15. + q),
         ];
         let mut points = original.clone();
-        tiny_edges(&ctx, &mut points, 1.);
+        simplify(&ctx, &mut points, 1.);
         assert_eq!(points.len(), 4);
         for &v in &original {
             assert!((0..points.len()).any(|i| {
@@ -110,7 +105,7 @@ mod tests {
         };
         let mut points = original;
         let entry = points[..2].to_vec();
-        tiny_edges(&ctx, &mut points, 1.);
+        simplify(&ctx, &mut points, 1.);
         assert_eq!(points[..2], entry);
         assert_eq!(points.len(), 4);
     }
@@ -125,7 +120,7 @@ mod tests {
             })
             .collect();
         let original = points.clone();
-        tiny_edges(&ctx, &mut points, 1.);
+        simplify(&ctx, &mut points, 1.);
         assert!(points.len() >= 3);
         for &p in &original {
             assert!((0..points.len()).any(|i| {
@@ -142,7 +137,55 @@ mod tests {
             Point::new(10. + b / 2., 20.),
             Point::new(10., 20. + b / 2.),
         ];
-        tiny_edges(&ctx, &mut triangle, 1.);
+        simplify(&ctx, &mut triangle, 1.);
         assert_eq!(triangle.len(), 3);
+    }
+
+    #[test]
+    fn long_tessellated_edges_use_the_same_budget_and_reject_unsafe_chords() {
+        let mut ctx = context();
+        ctx.settings.entry = EntryStrategy::Ramp {
+            max_angle_deg: 5.,
+            feed_mm_min: 100.,
+        };
+        let mut points: Vec<_> = (0..800)
+            .map(|i| {
+                let t = i as f64 * std::f64::consts::TAU / 800.;
+                Point::new(10. + 3. * t.cos(), 20. + 3. * t.sin())
+            })
+            .collect();
+        let original = points.clone();
+        assert!(
+            points
+                .windows(2)
+                .all(|w| w[0].distance(w[1]) > ctx.cleanup_budget)
+        );
+        simplify(&ctx, &mut points, 1.);
+        assert!(points.len() < original.len() / 2);
+        assert_eq!(points[..2], original[..2]);
+        for p in original {
+            assert!((0..points.len()).any(|i| {
+                Segment {
+                    start: points[i],
+                    end: points[(i + 1) % points.len()],
+                }
+                .distance(p)
+                    <= ctx.cleanup_budget
+            }));
+        }
+        let p = Point::new;
+        let mut outside = vec![
+            p(-5., 10.),
+            p(-5., 11.),
+            p(-5., 12.),
+            p(-10., 12.),
+            p(-10., 10.),
+        ];
+        let original = outside.clone();
+        simplify(&ctx, &mut outside, 1.);
+        assert_eq!(
+            outside, original,
+            "an unsafe straight replacement cannot be accepted"
+        );
     }
 }

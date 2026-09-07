@@ -26,30 +26,27 @@ impl Aabb {
             && self.min.y <= other.max.y
             && other.min.y <= self.max.y
     }
-    fn distance_lower(self, other: Self) -> f64 {
+    fn distance_lower_squared(self, other: Self) -> f64 {
         let x = (self.min.x - other.max.x)
             .max(other.min.x - self.max.x)
             .max(0.);
         let y = (self.min.y - other.max.y)
             .max(other.min.y - self.max.y)
             .max(0.);
-        // Overlapping boxes have exactly zero separation. Axis-aligned gaps
-        // need no general hypotenuse calculation (the reserve is unchanged).
+        // Comparing squared bounds avoids a square root at every visited box.
         if x == 0. && y == 0. {
             return 0.;
         }
-        let distance = if x == 0. {
-            y
-        } else if y == 0. {
-            x
-        } else {
-            x.hypot(y)
-        };
         let magnitude = [self.min, self.max, other.min, other.max]
             .iter()
             .map(|p| p.x.abs().max(p.y.abs()))
             .fold(1., f64::max);
-        (distance - 32. * f64::EPSILON * magnitude).max(0.)
+        // Subtract the numerical reserve on BOTH axes before squaring. This
+        // is at least as conservative as reserving it on the Euclidean norm.
+        let reserve = 32. * f64::EPSILON * magnitude;
+        let x = (x - reserve).max(0.);
+        let y = (y - reserve).max(0.);
+        x * x + y * y
     }
 }
 
@@ -172,15 +169,15 @@ impl SpatialIndex {
             pending -= 1;
             let (id, lower) = stack[pending];
             let node = &self.nodes[id];
-            if lower > best {
+            if lower > best * best {
                 continue;
             }
             if let Some((a, b)) = node.children {
                 // Child ordering already computes these immutable bounds.
                 // Carry them through the traversal instead of recomputing
-                // both hypotenuses and numerical reserves when nodes are popped.
-                let da = self.nodes[a].bounds.distance_lower(bounds);
-                let db = self.nodes[b].bounds.distance_lower(bounds);
+                // axis gaps and numerical reserves when nodes are popped.
+                let da = self.nodes[a].bounds.distance_lower_squared(bounds);
+                let db = self.nodes[b].bounds.distance_lower_squared(bounds);
                 if da <= db {
                     stack[pending] = (b, db);
                     stack[pending + 1] = (a, da);
@@ -191,7 +188,7 @@ impl SpatialIndex {
                 pending += 2;
             } else {
                 for &i in &self.order[node.start..node.end] {
-                    if self.boxes[i].distance_lower(bounds) <= best {
+                    if self.boxes[i].distance_lower_squared(bounds) <= best * best {
                         best = best.min(value(i));
                     }
                 }

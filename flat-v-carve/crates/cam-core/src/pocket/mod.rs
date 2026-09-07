@@ -207,15 +207,18 @@ fn strategy_depth(ctx: &Context, depth: f64) -> f64 {
 }
 
 pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
-    plan_with_target(job).map(|(plan, _)| plan)
+    plan_with_target(job, None).map(|(plan, _)| plan)
 }
 
 /// Keep the freshly constructed target for the next tool of the same job.
 /// Its immutable geometry and bounded query caches are planning evidence,
 /// never data recovered from a saved artifact.
-pub(crate) fn plan_with_target(job: &Job) -> Result<(EndmillPlan, crate::target::Target)> {
+pub(crate) fn plan_with_target(
+    job: &Job,
+    shared: Option<std::sync::Arc<crate::target::Target>>,
+) -> Result<(EndmillPlan, std::sync::Arc<crate::target::Target>)> {
     let mut timing = crate::timing::Timer::new("endmill");
-    let ctx = Context::new(job)?;
+    let ctx = Context::with_target(job, shared)?;
     timing.lap("context");
     let levels = depths(&ctx)?;
     let mut motions = vec![];
@@ -296,7 +299,7 @@ pub(crate) fn plan_with_target(job: &Job) -> Result<(EndmillPlan, crate::target:
                     })
                     .unwrap();
                 points.rotate_left(start);
-                cleanup::tiny_edges(&ctx, &mut points, depth);
+                cleanup::simplify(&ctx, &mut points, depth);
                 if points
                     .iter()
                     .zip(points.iter().cycle().skip(1))

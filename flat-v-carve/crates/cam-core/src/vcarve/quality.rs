@@ -328,13 +328,21 @@ fn combined_slice_with_vbit(
     let mut timing = crate::timing::Timer::new("combined stock slice");
     let e = super::endmill_slice(ctx, endmill, depth)?;
     timing.lap("endmill");
-    let lower = e.lower.boolean(BooleanOp::Union, &v.lower)?;
-    let upper = e.upper.boolean(BooleanOp::Union, &v.upper)?;
+    let parallel = v.contributing_motion_ids.len() >= 4096
+        && std::thread::available_parallelism().map_or(1, usize::from) > 1;
+    let (lower, upper) = pair(
+        parallel,
+        || e.lower.boolean(BooleanOp::Union, &v.lower),
+        || e.upper.boolean(BooleanOp::Union, &v.upper),
+    )?;
     timing.lap("merge tools");
     let nominal = ctx.target.section_area(Depth::new(depth)?)?;
     timing.lap("nominal section");
-    let remaining = nominal.boolean(BooleanOp::Difference, &lower)?;
-    let overcut = upper.boolean(BooleanOp::Difference, &nominal)?;
+    let (remaining, overcut) = pair(
+        parallel,
+        || nominal.boolean(BooleanOp::Difference, &lower),
+        || upper.boolean(BooleanOp::Difference, &nominal),
+    )?;
     let mut ids = e.contributing_motion_ids;
     ids.extend(v.contributing_motion_ids.iter().copied());
     Ok(CombinedSlice {
@@ -349,6 +357,25 @@ fn combined_slice_with_vbit(
             contributing_motion_ids: ids,
             capsule_radial_error_mm: e.capsule_radial_error_mm.max(v.capsule_radial_error_mm),
         },
+    })
+}
+// At most one extra worker per slice, with identical left-before-right errors.
+fn pair<T: Send>(
+    parallel: bool,
+    left: impl FnOnce() -> Result<T> + Send,
+    right: impl FnOnce() -> Result<T>,
+) -> Result<(T, T)> {
+    if !parallel {
+        return Ok((left()?, right()?));
+    }
+    std::thread::scope(|scope| {
+        let left = scope.spawn(left);
+        let right = right();
+        Ok((
+            left.join()
+                .map_err(|_| error("STOCK_WORKER_PANIC", "stock comparison worker failed"))??,
+            right?,
+        ))
     })
 }
 fn accessible_area(access: &CenterSet, radius: f64) -> Result<Region> {
@@ -394,6 +421,9 @@ fn stock_slices(
     moves: &[Motion],
     depths: &[f64],
 ) -> Result<Vec<CombinedSlice>> {
+    if moves.len() >= 4096 {
+        return streamed_slices(ctx, endmill, moves, depths);
+    }
     let vbit = vbit_removal_at_slices(ctx.target.region().grid(), moves, &ctx.tool, depths)?;
     // Each slice owns its unions. Bound concurrency/memory and retain depth
     // order (including which error is reported), independent of scheduling.
@@ -444,6 +474,63 @@ fn stock_slices(
     slices.into_iter().map(|(_, slice)| slice).collect()
 }
 
+fn streamed_slices(
+    ctx: &Context,
+    endmill: &EndmillPlan,
+    moves: &[Motion],
+    depths: &[f64],
+) -> Result<Vec<CombinedSlice>> {
+    let parallelism = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(16);
+    let workers = parallelism.min(8).min(depths.len()).max(1);
+    let inner = (parallelism / workers).clamp(1, 2);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let batches = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                let next = &next;
+                scope.spawn(move || {
+                    let mut results = vec![];
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(&depth) = depths.get(i) else {
+                            break;
+                        };
+                        let result = crate::stock::vbit_slice_with_workers(
+                            ctx.target.region().grid(),
+                            moves,
+                            &ctx.tool,
+                            depth,
+                            inner,
+                        )
+                        .map(|v| combined_slice_with_vbit(ctx, endmill, depth, &v));
+                        results.push((i, result));
+                    }
+                    results
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .map_err(|_| error("STOCK_WORKER_PANIC", "stock reconstruction worker failed"))
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
+    let mut results: Vec<_> = batches.into_iter().flatten().collect();
+    results.sort_by_key(|(i, _)| *i);
+    // All V-bit construction errors precede the tool-comparison errors, as in
+    // the original two-stage reconstruction. Both retain input depth order.
+    results
+        .into_iter()
+        .map(|(_, r)| r)
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .collect()
+}
+
 fn floor_cleanup(ctx: &Context, endmill: &EndmillPlan, moves: &[Motion]) -> Result<FloorCleanup> {
     let cap = ctx.target.depth_cap().mm();
     let access = ctx.target.vbit_centers(&ctx.tool, Depth::new(cap)?)?;
@@ -461,7 +548,7 @@ fn floor_cleanup(ctx: &Context, endmill: &EndmillPlan, moves: &[Motion]) -> Resu
         let bounds = Bounds::of(&component).unwrap();
         let query = crate::geometry::BoundaryQuery::new(&component);
         let center = bounds.min.lerp(bounds.max, 0.5);
-        let witness = if query.sample(center)?.location == crate::geometry::PointLocation::Inside {
+        let witness = if query.location(center)? == crate::geometry::PointLocation::Inside {
             center
         } else {
             let ring = component.rings_mm().remove(0);
@@ -475,7 +562,7 @@ fn floor_cleanup(ctx: &Context, endmill: &EndmillPlan, moves: &[Motion]) -> Resu
                     witness.x - (b.y - a.y) * d / length,
                     witness.y + (b.x - a.x) * d / length,
                 );
-                if query.sample(p)?.location == crate::geometry::PointLocation::Inside {
+                if query.location(p)? == crate::geometry::PointLocation::Inside {
                     witness = p;
                     break;
                 }
@@ -806,5 +893,69 @@ mod slice_order_tests {
         let error =
             stock_slices(&ctx, &plan.endmill, &plan.vbit_motions, &[0.5, -1., 3.]).unwrap_err();
         assert_eq!(error.code, "STOCK_DEPTH");
+    }
+
+    #[test]
+    fn streamed_dense_slices_match_staged_reconstruction_and_error_priority() {
+        use crate::motion::{MotionKind, Position};
+        let job =
+            crate::job::Job::from_json(include_str!("../../../../fixtures/m4/finite-tip.json"))
+                .unwrap();
+        let endmill = crate::pocket::plan_endmill(&job).unwrap();
+        let ctx = Context::new(&job).unwrap();
+        let position = |i: usize| {
+            let t = (i % 4096) as f64 * std::f64::consts::TAU / 4096.;
+            Position::new(Point::new(10. + 3. * t.cos(), 10. + 3. * t.sin()), -1.)
+        };
+        let moves: Vec<_> = (0..4096)
+            .map(|i| Motion {
+                id: i,
+                tool_id: ctx.tool_id.clone(),
+                operation_id: ctx.operation_id.clone(),
+                layer: 0,
+                kind: MotionKind::Cut,
+                start: position(i),
+                end: position(i + 1),
+                feed_mm_min: Some(100.),
+            })
+            .collect();
+        let depths = [0.1, 0.5, 1.];
+        let expected: Vec<_> = depths
+            .iter()
+            .map(|&d| combined_slice(&ctx, &endmill, &moves, d).unwrap())
+            .collect();
+        let actual = stock_slices(&ctx, &endmill, &moves, &depths).unwrap();
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert!(
+            stock_slices(&ctx, &endmill, &moves, &[])
+                .unwrap()
+                .is_empty()
+        );
+        // A later V-bit construction error still precedes an earlier nominal
+        // section error, even though comparisons now overlap reconstruction.
+        assert_eq!(
+            stock_slices(
+                &ctx,
+                &endmill,
+                &moves,
+                &[ctx.target.depth_cap().mm() + 1., -1.]
+            )
+            .unwrap_err()
+            .code,
+            "STOCK_DEPTH"
+        );
+        assert_eq!(
+            pair(
+                true,
+                || Err::<(), _>(error("LEFT", "first")),
+                || Err(error("RIGHT", "second"))
+            )
+            .unwrap_err()
+            .code,
+            "LEFT"
+        );
     }
 }

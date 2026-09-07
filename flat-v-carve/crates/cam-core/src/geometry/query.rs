@@ -174,10 +174,42 @@ impl BoundaryQuery {
         })
     }
     pub fn sample(&self, p: Point) -> Result<Clearance> {
-        let location = self.location(p)?;
-        let distance = self
-            .index
-            .minimum(Aabb::new(p, p), |i| self.segments[i].distance(p));
+        self.check_sample_point(p)?;
+        let mut nearest = 0;
+        let mut best = f64::INFINITY;
+        let distance = self.index.minimum(Aabb::new(p, p), |i| {
+            let distance = self.segments[i].distance(p);
+            if distance < best {
+                best = distance;
+                nearest = i;
+            }
+            distance
+        });
+        let Segment { start: a, end: b } = self.segments[nearest];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let length2 = dx * dx + dy * dy;
+        let projection = (p.x - a.x) * dx + (p.y - a.y) * dy;
+        let reserve = 128.
+            * f64::EPSILON
+            * self.magnitude.max(p.x.abs()).max(p.y.abs())
+            * (dx.abs() + dy.abs());
+        // Normalized outer boundaries are CCW and holes are CW: material is
+        // always on the left. A nearest point strictly inside an edge therefore
+        // determines the sign. Vertex and numerically ambiguous projections
+        // retain the independent ray test, including touching components.
+        let location = if projection > reserve && projection < length2 - reserve {
+            let orientation = orient(a, b, p);
+            if orientation > 0. {
+                PointLocation::Inside
+            } else if orientation < 0. {
+                PointLocation::Outside
+            } else {
+                PointLocation::Boundary
+            }
+        } else {
+            self.location(p)?
+        };
         let signed_distance_mm = match location {
             PointLocation::Inside => distance,
             PointLocation::Outside => -distance,
@@ -335,4 +367,71 @@ fn segment_distance(a: Segment, b: Segment) -> f64 {
         .min(a.distance(b.end))
         .min(b.distance(a.start))
         .min(b.distance(a.end))
+}
+
+#[cfg(test)]
+mod sign_tests {
+    use super::*;
+    use crate::geometry::{BooleanOp, Grid};
+
+    #[test]
+    fn nearest_edge_sign_matches_ray_crossings_and_full_scan_distances() {
+        let p = Point::new;
+        let rectangle = |x, y, w, h| vec![p(x, y), p(x + w, y), p(x + w, y + h), p(x, y + h)];
+        for scale in [1., 1000.] {
+            let grid = Grid::new(0.001 * scale, 100. * scale).unwrap();
+            let ring = |v: Vec<Point>| {
+                v.into_iter()
+                    .map(|p| Point::new(p.x * scale, p.y * scale))
+                    .collect()
+            };
+            let region = Region::from_rings(
+                grid,
+                &[
+                    ring(rectangle(0., 0., 20., 20.)),
+                    ring(rectangle(4., 4., 12., 12.)),
+                    ring(rectangle(7., 7., 6., 6.)),
+                    ring(vec![
+                        p(25., 0.),
+                        p(40., 0.),
+                        p(40., 20.),
+                        p(35., 20.),
+                        p(35., 5.),
+                        p(30., 5.),
+                        p(30., 20.),
+                        p(25., 20.),
+                    ]),
+                ],
+            )
+            .unwrap();
+            // The extra square touches the first at one vertex after union.
+            let touching = Region::from_rings(grid, &[ring(rectangle(-5., -5., 5., 5.))]).unwrap();
+            let region = region.boolean(BooleanOp::Union, &touching).unwrap();
+            let query = BoundaryQuery::new(&region);
+            let mut points = vec![];
+            for x in -24..=170 {
+                for y in -24..=90 {
+                    points.push(p(x as f64 * scale / 4., y as f64 * scale / 4.));
+                }
+            }
+            for edge in region.segments() {
+                for t in [0., f64::EPSILON, 0.5, 1. - f64::EPSILON, 1.] {
+                    let at = edge.start.lerp(edge.end, t);
+                    for epsilon in [-1e-12, 0., 1e-12] {
+                        points.push(p(at.x + epsilon * scale, at.y - epsilon * scale));
+                    }
+                }
+            }
+            for p in points {
+                let sample = query.sample(p).unwrap();
+                assert_eq!(sample.location, query.location(p).unwrap(), "{p:?}");
+                let distance = query
+                    .segments()
+                    .iter()
+                    .map(|s| s.distance(p))
+                    .fold(f64::INFINITY, f64::min);
+                assert_eq!(sample.distance_mm, distance, "{p:?}");
+            }
+        }
+    }
 }
