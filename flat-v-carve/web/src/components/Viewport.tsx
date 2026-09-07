@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ArtworkDisplay } from '../contracts/service';
 import type { Job, Point } from '../contracts/job';
 import type { Motion } from '../contracts/planning';
@@ -53,6 +53,30 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions, 
   const [grid, setGrid] = useState(true);
   const [showMotions, setShowMotions] = useState(true);
   const [showTravel, setShowTravel] = useState(false);
+  const drawingRef = useCallback((drawing: SVGSVGElement | null) => {
+    if (!drawing) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.deltaY) return;
+      const bounds = drawing.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return;
+      event.preventDefault();
+      // Normalize line/page scrolling as well as pixel deltas from trackpads.
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? bounds.height : 1);
+      const factor = Math.exp(Math.max(-1, Math.min(1, delta * .002)));
+      const offsetX = event.clientX - bounds.left - bounds.width / 2;
+      const offsetY = event.clientY - bounds.top - bounds.height / 2;
+      setCamera(current => {
+        const span = Math.min(100000, Math.max(.01, current.span * factor));
+        // Account for SVG letterboxing and keep the point under the cursor fixed.
+        const pixelsPerMm = Math.min(bounds.width / current.span, bounds.height / (current.span * .7));
+        const change = (1 - span / current.span) / pixelsPerMm;
+        return { x: current.x + offsetX * change, y: current.y - offsetY * change, span };
+      });
+    };
+    // React's delegated wheel listener is passive, so attach directly to prevent page scrolling.
+    drawing.addEventListener('wheel', onWheel, { passive: false });
+    return () => drawing.removeEventListener('wheel', onWheel);
+  }, []);
   const stockPaths = useMemo(() => {
     const order = ['removedUpper', 'removedLower', 'accessibleFloor', 'requestedCenters', 'remainingTarget', 'missingFloor', 'possibleOvercut', 'nominalTarget'];
     return [...(stockGeometry ?? [])].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key)).map(region => ({ key: region.key, path: stockPath(region) }));
@@ -110,7 +134,7 @@ export function Viewport({ display, job, inspected, onInspect, hidden, motions, 
     <div className="drawing-wrap">
       {display ? <>
         <div className="drawing-note">{verificationFinding ? `VERIFICATION FINDING · ${verificationScope ?? "original coordinates"} · ${verificationFinding.code}` : stockInfo ? `STOCK SLICE · ${stockInfo.stage === 'endmill' ? 'after endmill' : 'after both tools'} · ${stockInfo.depthMm} mm deep${stockPending ? ' · loading…' : stockError || stockInfo.unavailableReason ? ' · geometry unavailable' : ''}` : motions ? motions.length === 0 ? 'NO RECORDED MOTIONS · see plan outcome' : showMotions ? 'RECORDED MOTIONS · top projection' : 'SOURCE GEOMETRY · motion overlay hidden' : 'SOURCE GEOMETRY · no planned cuts'}</div>
-        <svg className="drawing" role="group" aria-label={`${verificationFinding ? `Verification finding ${verificationFinding.code} in ${verificationScope ?? "original coordinates"}. Path overlays show original recorded motions.` : stockInfo ? `Stock slice at ${stockInfo.depthMm} mm below stock top. Use the stock overlay controls and area table to inspect regions.` : 'Top view of normalized artwork. Inspect shapes with the source list.'} Arrow keys pan; plus and minus zoom; Home fits the job.`}
+        <svg ref={drawingRef} className="drawing" role="group" aria-label={`${verificationFinding ? `Verification finding ${verificationFinding.code} in ${verificationScope ?? "original coordinates"}. Path overlays show original recorded motions.` : stockInfo ? `Stock slice at ${stockInfo.depthMm} mm below stock top. Use the stock overlay controls and area table to inspect regions.` : 'Top view of normalized artwork. Inspect shapes with the source list.'} Mouse wheel zooms at the pointer; arrow keys pan; plus and minus zoom; Home fits the job.`}
           tabIndex={0} viewBox={`${camera.x - camera.span / 2} ${-camera.y - camera.span * .35} ${camera.span} ${camera.span * .7}`}
           onKeyDown={event => {
             const step = camera.span * .08;
