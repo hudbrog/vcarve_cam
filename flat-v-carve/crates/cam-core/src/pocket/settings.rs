@@ -81,6 +81,7 @@ pub(super) struct Context {
     pub entry_feed: f64,
     pub spindle: f64,
     pub coverage_tolerance: f64,
+    pub cleanup_budget: f64,
     pub guard: f64,
     pub tool_id: String,
     pub operation_id: String,
@@ -182,6 +183,14 @@ impl Context {
             EntryStrategy::Ramp { feed_mm_min, .. } => feed_mm_min,
         };
         target.boundary().sample(settings.start_xy_mm)?;
+        // Account for existing offset error before spending motion tolerance on
+        // cleanup, and retain most of the geometry guard.
+        let cleanup_budget = (motion_tolerance
+            - target.region().grid().arc_tolerance_mm()
+            - target.region().grid().snap_bound_mm())
+        .max(0.)
+        .min(e / 4.)
+        .min(coverage_tolerance / 8.);
         Ok(Self {
             target,
             mill,
@@ -193,6 +202,7 @@ impl Context {
             entry_feed,
             spindle,
             coverage_tolerance,
+            cleanup_budget,
             guard: 2. * e,
             tool_id: tool.id.clone(),
             operation_id: job.operation.id.clone(),

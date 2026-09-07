@@ -1,6 +1,9 @@
-use super::{Candidate, Context, hash};
+use super::{Candidate, Context, PathFamily, hash};
 use crate::{
-    geometry::{Point, Result, Segment},
+    geometry::{
+        Point, Result, Segment,
+        spatial::{Aabb, SpatialIndex},
+    },
     motion::Position,
 };
 
@@ -52,6 +55,75 @@ pub(super) fn weld_endpoints(ctx: &Context, paths: &mut [Candidate]) -> Result<(
         }
     }
     Ok(())
+}
+
+/// Join independently reconstructed medial endpoints to immutable boundary
+/// vertices before identities/executions are recorded. Anchors never move, so
+/// endpoint reconciliation cannot accumulate through a chain of near neighbors.
+pub(super) fn reconcile_endpoints(ctx: &Context, paths: &mut [Candidate]) {
+    let anchors: Vec<_> = paths
+        .iter()
+        .filter(|p| p.family == PathFamily::Boundary)
+        .flat_map(|p| p.points.iter().copied())
+        .collect();
+    let index = SpatialIndex::new(anchors.iter().map(|p| Aabb::new(p.xy(), p.xy())).collect());
+    let budget = ctx.motion_tolerance.min(ctx.tolerance) / 32.;
+    let slope = ctx.tool.angle().slope();
+    let distance_limit = (2. / ctx.target.region().grid().scale()).min(budget * slope.min(1.));
+    let radius = |p: Position| ctx.tool.tip_radius().mm() + p.depth() * slope + ctx.guard / 2.;
+    for c in paths
+        .iter_mut()
+        .filter(|p| p.family == PathFamily::Medial && p.points.len() >= 2)
+    {
+        let mut points = c.points.clone();
+        let last = points.len() - 1;
+        for i in [0, last] {
+            let p = c.points[i];
+            let mut best: Option<(f64, usize)> = None;
+            index.minimum(Aabb::new(p.xy(), p.xy()), |j| {
+                let distance = p.xy().distance(anchors[j].xy());
+                if best.is_none_or(|b| distance.total_cmp(&b.0).then(j.cmp(&b.1)).is_lt()) {
+                    best = Some((distance, j));
+                }
+                distance
+            });
+            if let Some((distance, j)) = best {
+                let q = anchors[j];
+                let reserve =
+                    128. * f64::EPSILON * p.x.abs().max(p.y.abs()).max(1.) * (1. + 1. / slope);
+                // Preserve every endpoint depth, including cap intersections.
+                // Parameterwise XY displacement bounds the entire changed
+                // segment and its cone-height error by displacement / slope.
+                if p.z == q.z
+                    && distance <= distance_limit
+                    && distance / slope.min(1.) + reserve <= budget
+                {
+                    points[i] = q;
+                }
+            }
+        }
+        // Do not collapse point features or turn a valid cut into a vertical
+        // segment. Both changed endpoint chords must retain reserved clearance.
+        if points != c.points
+            && points.windows(2).all(|w| {
+                w[0].xy() != w[1].xy()
+                    && ctx
+                        .target
+                        .boundary()
+                        .variable_radius_margin_mm(
+                            Segment {
+                                start: w[0].xy(),
+                                end: w[1].xy(),
+                            },
+                            radius(w[0]),
+                            radius(w[1]),
+                        )
+                        .is_ok_and(|m| m >= 0.)
+            })
+        {
+            c.points = points;
+        }
+    }
 }
 
 /// Compare required cuts independently of traversal direction and contour start.
@@ -123,7 +195,16 @@ pub(super) fn can_link(ctx: &Context, a: Position, b: Position) -> bool {
         return true;
     }
     let distance = a.xy().distance(b.xy());
-    if distance < 1. / ctx.target.region().grid().scale()
+    let quantum = 1. / ctx.target.region().grid().scale();
+    let reserve = (64.
+        * f64::EPSILON
+        * [a.x, a.y, b.x, b.y]
+            .into_iter()
+            .map(f64::abs)
+            .fold(1., f64::max))
+    .min(quantum / 8.);
+    if a.xy() == b.xy()
+        || distance + reserve < quantum
         || distance > ctx.stepover
         || a.depth().max(b.depth()) > ctx.stepdown
     {
@@ -149,6 +230,82 @@ pub(super) fn can_link(ctx: &Context, a: Position, b: Position) -> bool {
 mod tests {
     use super::*;
     use crate::{job::Job, vcarve::PathFamily};
+
+    #[test]
+    fn adjacent_grid_points_link_on_either_side_of_binary_roundoff() {
+        let job = Job::from_json(include_str!("../../../../fixtures/m4/wide-floor.json")).unwrap();
+        let ctx = Context::new(&job).unwrap();
+        let q = 1. / ctx.target.region().grid().scale();
+        let mut below = false;
+        let mut above = false;
+        for x in [5., 6., 7., 10., 20.] {
+            let a = Position::new(Point::new(x, 20.), -0.5);
+            let b = Position::new(Point::new(x + q, 20.), -0.5);
+            below |= a.xy().distance(b.xy()) < q;
+            above |= a.xy().distance(b.xy()) >= q;
+            assert!(can_link(&ctx, a, b));
+            assert!(can_link(&ctx, b, a));
+            assert!(!can_link(&ctx, a, Position::new(a.xy(), -0.6)));
+            assert!(!can_link(
+                &ctx,
+                a,
+                Position::new(Point::new(x + q / 4., 20.), -0.5)
+            ));
+        }
+        assert!(
+            below && above,
+            "test must exercise both threshold roundoff directions"
+        );
+    }
+
+    #[test]
+    fn endpoint_reconciliation_is_bounded_immutable_and_preserves_depth_and_points() {
+        let job = Job::from_json(include_str!("../../../../fixtures/m4/wide-floor.json")).unwrap();
+        let ctx = Context::new(&job).unwrap();
+        let q = 1. / ctx.target.region().grid().scale();
+        let p = |x, y, z| Position::new(Point::new(x, y), z);
+        let medial = |points| Candidate {
+            family: PathFamily::Medial,
+            source_branch: Some(0),
+            points,
+        };
+        let boundary = Candidate {
+            family: PathFamily::Boundary,
+            source_branch: None,
+            points: vec![
+                p(10., 20., -1.),
+                p(10., 22., -1.),
+                p(12., 22., -1.),
+                p(10., 20., -1.),
+            ],
+        };
+        let mut paths = vec![
+            boundary.clone(),
+            medial(vec![p(8., 20., -0.5), p(10. + q, 20., -1.)]),
+            medial(vec![p(8., 20., -0.5), p(10. + 2.5 * q, 20., -1.)]),
+            medial(vec![p(8., 20., -0.5), p(10. + q, 20., -1. + q)]),
+            medial(vec![p(10., 20., -1.), p(10. + q, 20., -1.)]),
+            medial(vec![p(10. + q, 20., -1.)]),
+        ];
+        let original = paths.clone();
+        reconcile_endpoints(&ctx, &mut paths);
+        assert_eq!(paths[0].points, boundary.points);
+        assert_eq!(paths[1].points[1], boundary.points[0]);
+        for i in 2..paths.len() {
+            assert_eq!(paths[i].points, original[i].points);
+        }
+        // An unchanged anchor is the only witness, even on repeated calls.
+        let once = serde_json::to_value(&paths).unwrap();
+        reconcile_endpoints(&ctx, &mut paths);
+        assert_eq!(serde_json::to_value(&paths).unwrap(), once);
+        for (&a, &b) in original[1].points.iter().zip(&paths[1].points) {
+            assert_eq!(a.z, b.z);
+            assert!(
+                a.xy().distance(b.xy()) / ctx.tool.angle().slope().min(1.)
+                    <= ctx.motion_tolerance.min(ctx.tolerance) / 32.
+            );
+        }
+    }
 
     #[test]
     fn routing_preserves_required_cuts_with_rotated_loops_and_reversed_profiles() {

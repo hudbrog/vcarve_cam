@@ -198,12 +198,33 @@ fn clearance_checker_rejects_wall_gouges_and_allowance_violations() {
 fn deleting_reachable_clearing_leaves_measured_missing_floor() {
     let job = fixture("rectangle");
     let plan = plan_endmill(&job).unwrap();
+    let start = plan
+        .motions
+        .iter()
+        .find(|m| m.kind == MotionKind::Cut)
+        .unwrap()
+        .start;
     let end = plan
         .motions
         .iter()
-        .position(|m| m.kind == MotionKind::RapidRetract)
+        .position(|m| m.kind == MotionKind::Cut && m.end == start)
         .unwrap();
-    let partial = verify_endmill_motions(&job, &plan.motions[..=end]).unwrap();
+    // Retain only the first contour, even when subsequent contours stay down.
+    let mut retained = plan.motions[..=end].to_vec();
+    let mut retract = plan
+        .motions
+        .iter()
+        .find(|m| m.kind == MotionKind::RapidRetract)
+        .unwrap()
+        .clone();
+    retract.id = retained.len();
+    retract.start = start;
+    retract.end = Position::new(
+        start.xy(),
+        job.endmill_planning.as_ref().unwrap().clearance_z_mm,
+    );
+    retained.push(retract);
+    let partial = verify_endmill_motions(&job, &retained).unwrap();
     assert_eq!(partial.status, PlanStatus::Incomplete);
     assert!(partial.layers[0].missing_floor_beyond_tolerance.area_mm2() > 100.);
     assert!(partial.layers[1].removal.lower.rings().is_empty());
@@ -317,6 +338,49 @@ fn disconnected_links_stay_at_clearance_and_islands_remain_stock() {
                 .location,
             PointLocation::Outside
         );
+    }
+}
+
+#[test]
+fn concentric_contours_stay_down_with_checked_previous_layer_stock() {
+    let job = fixture("rectangle");
+    let plan = plan_endmill(&job).unwrap();
+    assert_eq!(plan.analysis.status, PlanStatus::Complete);
+    for layer in 0..2 {
+        assert_eq!(
+            plan.motions
+                .iter()
+                .filter(|m| m.layer == layer && m.kind == MotionKind::RapidRetract)
+                .count(),
+            1,
+            "each rectangle layer should clear in one excursion"
+        );
+    }
+    assert_eq!(
+        EndmillPlan::from_json(&plan.to_json().unwrap())
+            .unwrap()
+            .motions,
+        plan.motions
+    );
+}
+
+#[test]
+fn linked_contour_motion_limits_retain_a_complete_retracted_prefix() {
+    let original = fixture("rectangle");
+    let full_count = plan_endmill(&original).unwrap().motions.len();
+    for limit in (8..full_count).step_by(3) {
+        let mut job = original.clone();
+        job.endmill_planning.as_mut().unwrap().max_motions = limit;
+        let plan = plan_endmill(&job).unwrap();
+        assert!(plan.motions.len() <= limit);
+        assert_eq!(plan.motions.last().unwrap().kind, MotionKind::RapidRetract);
+        assert!(
+            plan.generation_issues
+                .iter()
+                .any(|d| d.code == "PLANNING_RESOURCE_LIMIT")
+        );
+        verify_endmill_motions(&job, &plan.motions).unwrap();
+        EndmillPlan::from_json(&plan.to_json().unwrap()).unwrap();
     }
 }
 

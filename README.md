@@ -28,6 +28,13 @@ The [flower settings study](docs/flat-v-carve/flower-settings-study.md) compares
 19 configurations for an approximately 0.1 mm wood finish. Saved balanced and
 finer-floor job presets generate in 8.2–10.5 seconds on the measured machine.
 
+Engine **0.7.6** removes bounded microscopic contour edges and uses checked
+endmill links between nearby contours. On the saved flower job, endmill retracts
+fall from **64 to 29**, and all 22 movements below 0.00001 mm disappear across
+both stages. Deeper links require swept-stock clearance. See the
+[implementation and verification results](docs/flat-v-carve/planner-small-motions-and-links.md).
+Regenerate older plans from their saved jobs.
+
 Flower G-code export now preserves tiny motions by increasing output precision
 when needed and reports the precision used. Retained-plan authentication and
 parallel stock verification reduce export latency; see the

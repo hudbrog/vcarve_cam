@@ -103,7 +103,13 @@ cargo run --release --locked -p cam-app -- verify artifacts/m3/island/plan.json 
 
 The [M3 fixtures](fixtures/m3/README.md) supply **synthetic test settings**, including feeds and spindle speed. Imported jobs default only the endmill wall allowance to zero; tools and cutting settings must still be supplied. Planning requires stock thickness, depth, horizontal wall allowance, endmill dimensions/capability/feeds/spindle/stepdown/stepover, V-bit geometry to define the target angle, planning tolerances, and `endmill_planning` settings for the clearance plane, start XY, entry, strategy, and resource limits. V-bit cutting settings and finish-quality limits remain editable for M4.
 
-`depth_dependent` clearing generates offset loops inside each layer's admissible center region; `deepest_region` uses the deepest region at every stepdown. Direct plunges require a plunge-capable endmill and explicit plunge feed. Ramps require `ramp_capable: true` and an explicit angle/feed. Every disconnected loop retracts and links at the configured clearance Z. M3 limits stepover to half the tool diameter; it does not optimize travel or calculate machine-specific cutting parameters.
+`depth_dependent` clearing generates offset loops inside each layer's admissible center region; `deepest_region` uses the deepest region at every stepdown. Direct plunges require a plunge-capable endmill and explicit plunge feed. Ramps require `ramp_capable: true` and an explicit angle/feed. Nearby plunge-entry contours use continuously checked cutting links, with contour retracing or entry between vertices when needed. Deeper links also require swept-stock clearance above the allowed fresh stepdown; unproved and disconnected connections retract to the configured clearance Z. Stepover remains limited to half the tool diameter. The planner does not calculate machine-specific cutting parameters.
+
+Engine **0.7.6** also collapses bounded microscopic endmill edges and reconciles
+nearby V-bit endpoints before recording path identities. The
+[optimization report](../docs/flat-v-carve/planner-small-motions-and-links.md)
+records the construction-error budgets, routing bounds and verification results.
+Restart with the rebuilt application and regenerate plans from older engines.
 
 Each saved plan embeds the job and records actual XYZ moves, identity fingerprints, and generation issues. Plans use compact JSON and omit derived stock/quality caches; `inspect --report` writes the rebuilt analysis separately. `inspect` and `verify` rebuild clearance and stock from the motions and ignore any supplied cached analysis. Saving rejects artifacts above the 128 MB reload limit. Editing the job or motions invalidates the fingerprint and requires replanning. Job schema 1 migrates to schema 2 without inventing new settings; plan schema 1 is a separate artifact format tied to the generating engine version.
 

@@ -1,8 +1,10 @@
 //! Conservative endmill-only clearing. Every saved report is derived from actual motions.
+mod cleanup;
+mod routing;
 mod settings;
 mod verify;
 use crate::{
-    geometry::{BooleanOp, Diagnostic, Point, Region, Result},
+    geometry::{BooleanOp, BoundaryQuery, Diagnostic, Point, Region, Result},
     job::Job,
     model::{Depth, Length},
     motion::{Motion, MotionKind, Position},
@@ -250,6 +252,20 @@ pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
             ));
             continue;
         }
+        let prior_stock =
+            if depth > ctx.stepdown && matches!(ctx.settings.entry, EntryStrategy::Plunge) {
+                Some(BoundaryQuery::new(
+                    &removal_at_slice(
+                        ctx.target.region().grid(),
+                        &motions,
+                        ctx.mill.radius().mm(),
+                        depth - ctx.stepdown,
+                    )?
+                    .lower,
+                ))
+            } else {
+                None
+            };
         let mut loop_count = 0;
         let mut loops = vec![];
         let mut cut_count = 0;
@@ -273,6 +289,7 @@ pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
                     })
                     .unwrap();
                 points.rotate_left(start);
+                cleanup::tiny_edges(&ctx, &mut points, depth);
                 if points
                     .iter()
                     .zip(points.iter().cycle().skip(1))
@@ -329,6 +346,7 @@ pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
         let start = motions
             .last()
             .map_or(ctx.settings.start_xy_mm, |m: &Motion| m.end.xy());
+        let mut last_contour: Vec<Point> = vec![];
         for (i, vertex) in crate::routing::nearest_order(entries, loops.len(), start) {
             let mut points = std::mem::take(&mut loops[i]);
             points.rotate_left(vertex);
@@ -336,27 +354,45 @@ pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
                 Position::new(ctx.settings.start_xy_mm, ctx.settings.clearance_z_mm),
                 |m| m.end,
             );
-            let linked = matches!(ctx.settings.entry, EntryStrategy::Plunge)
-                && depth <= ctx.stepdown
+            let mut departure = None;
+            if matches!(ctx.settings.entry, EntryStrategy::Plunge)
                 && motions.last().is_some_and(|m| {
                     m.kind == MotionKind::RapidRetract
                         && m.layer == layer
-                        && m.start.xy().distance(points[0]) <= ctx.stepover
-                        && verify::center_margin(&ctx, m.start.xy(), points[0], depth)
-                            .is_ok_and(|margin| margin >= ctx.guard / 2.)
-                });
+                        && last_contour.first() == Some(&m.start.xy())
+                })
+            {
+                departure = routing::link(
+                    &ctx,
+                    &last_contour,
+                    &mut points,
+                    depth,
+                    prior_stock.as_ref(),
+                );
+            }
+            let linked = departure.is_some();
             let base = motions.len() - usize::from(linked);
             let previous = if linked {
                 motions.last().unwrap().start
             } else {
                 previous
             };
-            match make_loop(&ctx, layer, depth, points, previous, base) {
+            let contour = points.clone();
+            match make_loop(
+                &ctx,
+                layer,
+                depth,
+                points,
+                previous,
+                base,
+                departure.as_deref().unwrap_or(&[]),
+            ) {
                 Ok(additions) if base + additions.len() <= ctx.settings.max_motions => {
                     if linked {
                         motions.pop();
                     }
                     motions.extend(additions);
+                    last_contour = contour;
                 }
                 Ok(_) => {
                     resource_hit = true;
@@ -432,6 +468,7 @@ fn make_loop(
     mut points: Vec<Point>,
     previous: Position,
     base_id: usize,
+    departure: &[Point],
 ) -> Result<Vec<Motion>> {
     let mut moves = vec![];
     let mut position = previous;
@@ -451,6 +488,9 @@ fn make_loop(
         }
     };
     if previous.z < 0. {
+        for &p in departure {
+            push(MotionKind::Cut, Position::new(p, -depth), Some(ctx.feed));
+        }
         push(
             MotionKind::Cut,
             Position::new(points[0], -depth),

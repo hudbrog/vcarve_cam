@@ -428,6 +428,7 @@ fn candidate_families(
     routing::weld_endpoints(ctx, &mut paths)?;
     prune::simplify_contours(ctx, &mut paths)?;
     prune::redundant_spokes(ctx, &axis, &mut paths);
+    routing::reconcile_endpoints(ctx, &mut paths);
     Ok((axis, paths))
 }
 
