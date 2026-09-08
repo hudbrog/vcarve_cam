@@ -1,6 +1,6 @@
 # Flat V-carve CAM
 
-An isolated Rust workspace for the combined endmill/V-bit planner described in the [project docs](../docs/flat-v-carve/architecture.md). M0–M5 implement geometry, SVG jobs, both planners, recorded-motion previews, and bounded continuous stock verification. M6 implements LinuxCNC output and numeric readback; actual controller validation remains pending. The integrated browser workflow follows in M7.
+An isolated Rust workspace for the combined endmill/V-bit planner described in the [project docs](../docs/flat-v-carve/architecture.md). M0–M5 implement geometry, SVG jobs, both planners, recorded-motion previews, and bounded continuous stock verification. M6 implements LinuxCNC output and numeric readback; actual controller validation remains pending. The M7 browser workflow is implemented: the local service and UI below cover import-to-export with background planning, verification, gated output, a tool library, and a 3D stock simulator, and the same UI runs statically through the in-browser WebAssembly engine.
 
 ## Portable Windows application
 
@@ -40,12 +40,11 @@ the `cam-web` alias. To embed assets directly with Cargo, first run `pnpm build`
 in `web`, then build `cam-app` with `--features bundled-ui`. The build checks
 source and asset hashes and refuses stale or incomplete UI bundles. The Windows
 release script also links the C runtime statically. See the
-[packaging notes](../docs/flat-v-carve/single-executable.md) and the
 [live UI guide](web/README.md) for validation commands and current capabilities.
 
 ## Run
 
-Install [Rust with rustup](https://www.rust-lang.org/tools/install). The workspace pins Rust **1.95.0**; rustup selects it when running Cargo here. Tested native targets are **x86_64-pc-windows-msvc** on Windows and **x86_64-unknown-linux-gnu** on Ubuntu 24.04.4 under WSL2. See [Windows setup](#windows-setup) for prerequisites and PowerShell commands. WebAssembly builds have not been tested.
+Install [Rust with rustup](https://www.rust-lang.org/tools/install). The workspace pins Rust **1.95.0**; rustup selects it when running Cargo here. Tested native targets are **x86_64-pc-windows-msvc** on Windows and **x86_64-unknown-linux-gnu** on Ubuntu 24.04.4 under WSL2. See [Windows setup](#windows-setup) for prerequisites and PowerShell commands. The `cam-wasm` crate additionally builds the engine for **wasm32-unknown-unknown**; CI checks that target, and the [web UI plan](../docs/flat-v-carve/web-ui.md) records the browser deployment.
 
 From this directory:
 
@@ -70,7 +69,7 @@ cargo run --locked -p cam-app -- inspect artifacts/m2/selected.json \
 
 Repeat `--select` for multiple regions. `select` with no IDs saves an empty selection. `import` also accepts `--select` and `--tolerance <mm>` (default 0.001 mm). Component IDs use `source-id::index`, assigned before workpiece placement. The job's `import.placement` contains `origin_mm`, `scale`, and `rotation_deg`: workpiece XY is `scale * rotate(page_XY - origin_mm)`. Page XY has its origin at the lower left, with Y upward.
 
-Supported SVG input includes explicit page dimensions, mm/cm/in/pt/pc/px and unitless CSS pixels, `viewBox`, affine transforms, all path commands including elliptical arcs, rectangles/rounded rectangles, circles, ellipses, polygons, compound fills, and inherited solid styles/visibility. Text and strokes must be converted to paths in Inkscape. CSS stylesheets, references/clones, gradients, clipping/masking/filter effects, animation, nested viewports, relative lengths, and artwork outside the page are rejected with diagnostics. The [M2 report](../docs/flat-v-carve/m2-capability-report.md) defines the supported subset and precision limits.
+Supported SVG input includes explicit page dimensions, mm/cm/in/pt/pc/px and unitless CSS pixels, `viewBox`, affine transforms, all path commands including elliptical arcs, rectangles/rounded rectangles, circles, ellipses, polygons, compound fills, and inherited solid styles/visibility. Text and strokes must be converted to paths in Inkscape. CSS stylesheets, references/clones, gradients, clipping/masking/filter effects, animation, nested viewports, relative lengths, and artwork outside the page are rejected with diagnostics.
 
 Exit codes are `0` for successful import/inspection, valid editable jobs, or a complete/empty endmill stage; `1` for invalid inputs or an incomplete/inconclusive stage; and `2` for argument/I/O errors. An invalid inspected job or stale plan replaces the previous SVG/report with an error result. Import failures leave existing job files untouched, so callers must check the exit status.
 
@@ -106,22 +105,20 @@ The [M3 fixtures](fixtures/m3/README.md) supply **synthetic test settings**, inc
 `depth_dependent` clearing generates offset loops inside each layer's admissible center region; `deepest_region` uses the deepest region at every stepdown. Direct plunges require a plunge-capable endmill and explicit plunge feed. Ramps require `ramp_capable: true` and an explicit angle/feed. Nearby plunge-entry contours use continuously checked cutting links, with contour retracing or entry between vertices when needed. Deeper links also require swept-stock clearance above the allowed fresh stepdown; unproved and disconnected connections retract to the configured clearance Z. Stepover remains limited to half the tool diameter. The planner does not calculate machine-specific cutting parameters.
 
 Engine **0.7.6** also collapses bounded microscopic endmill edges and reconciles
-nearby V-bit endpoints before recording path identities. The
-[optimization report](../docs/flat-v-carve/planner-small-motions-and-links.md)
-records the construction-error budgets, routing bounds and verification results.
+nearby V-bit endpoints before recording path identities; deeper stay-down links
+additionally require swept-stock clearance above the permitted fresh stepdown.
 Restart with the rebuilt application and regenerate plans from older engines.
 
 Engine **0.7.7** extends bounded endmill simplification and groups connected stock
 sweeps on sufficiently fine grids. The current real flower job completes combined
 CLI planning in **2.71–2.73 seconds**, with all original job tolerances retained.
-See the [benchmark, output changes, and verification](../docs/flat-v-carve/flower-performance-3s.md).
 Regenerate saved plans from earlier engine versions.
 
 Each saved plan embeds the job and records actual XYZ moves, identity fingerprints, and generation issues. Plans use compact JSON and omit derived stock/quality caches; `inspect --report` writes the rebuilt analysis separately. `inspect` and `verify` rebuild clearance and stock from the motions and ignore any supplied cached analysis. Saving rejects artifacts above the 128 MB reload limit. Editing the job or motions invalidates the fingerprint and requires replanning. Job schema 1 migrates to schema 2 without inventing new settings; plan schema 1 is a separate artifact format tied to the generating engine version.
 
 The preview shows layer paths, removed stock, and remaining target. Missing accessible floor is pink; possible overcut is purple. No-access stages are empty. Exact-fit contacts and insufficient numerical margin are inconclusive; unsupported entries and missed floors are reported explicitly. Partial plans remain inspectable and exit with status 1.
 
-M3 checks whole-segment center clearance and compares actual endmill sweeps at planned depth slices. `complete` refers to this endmill-stage coverage within the declared XY tolerance. Remaining target includes slopes, wall allowance, and detail for M4. It does not establish combined finish quality, adaptive full-volume verification (M5), or readiness for machine output (M6). See the [M3 capability report](../docs/flat-v-carve/m3-capability-report.md) for formulas, evidence, and limits.
+M3 checks whole-segment center clearance and compares actual endmill sweeps at planned depth slices. `complete` refers to this endmill-stage coverage within the declared XY tolerance. Remaining target includes slopes, wall allowance, and detail for M4. It does not establish combined finish quality, adaptive full-volume verification (M5), or readiness for machine output (M6).
 
 ## M4 combined finishing and rest machining
 
@@ -146,7 +143,7 @@ Floor contour spacing is at most 90% of the cutter radius at the permitted ridge
 
 Saved combined plans bind both stages, tool-transition markers, path execution records, generation issues, and the engine/job identity. Reopening recomputes the actual sweeps and quality report. Changing cached analysis cannot create a successful result. The verifier also rejects omitted depth passes without stock evidence and an absent or incomplete final finish.
 
-M4 `complete` means candidate-family completion, continuous segment clearance, accessible-floor slice coverage, and quality at the reported sample lattice/motion witnesses. Floor coverage is checked at `D - allowed_ridge - numerical_depth_budget`, where the explicitly reported numerical depth budget is half the verification tolerance. The report also retains XY coverage tolerance. Sampled residual maxima are **not global error bounds**; use M5 verification below for bounded continuous checks. See the [M4 capability report](../docs/flat-v-carve/m4-capability-report.md).
+M4 `complete` means candidate-family completion, continuous segment clearance, accessible-floor slice coverage, and quality at the reported sample lattice/motion witnesses. Floor coverage is checked at `D - allowed_ridge - numerical_depth_budget`, where the explicitly reported numerical depth budget is half the verification tolerance. The report also retains XY coverage tolerance. Sampled residual maxima are **not global error bounds**; use M5 verification below for bounded continuous checks.
 
 ## M5 continuous verification and coordinate precision
 
@@ -167,22 +164,22 @@ Resource controls are `--max-cells` (default 1,000,000; total across refinement 
 
 M5 enforces the explicit ridge and detail limits without adding M4's numerical allowance. Consequently, the M4 zero-ridge `contact-line` and `contact-point` examples do not pass M5: their guarded cap motions leave about 0.01 mm. The [M5 fixtures](fixtures/m5/README.md) record these expected failures alongside successful and resource-limited cases. Endmill-only `verify` retains its M3 stage contract; the new M5 options require a combined plan.
 
-Engine **0.7.3** invalidates plans created by older engines. Regenerate plans from saved jobs; job schema 3 still accepts schemas 1 and 2. The [M5 capability report](../docs/flat-v-carve/m5-capability-report.md) records the methods, regression evidence, Windows performance measurements, and remaining limits. Run `scripts/benchmark-m5.ps1` from PowerShell 7 after a release build to reproduce the ten release cases and their JSON/SVG artifacts.
+Engine **0.7.3** invalidates plans created by older engines. Regenerate plans from saved jobs; job schema 3 still accepts schemas 1 and 2. Run `scripts/benchmark-m5.ps1` from PowerShell 7 after a release build to reproduce the ten release cases and their JSON/SVG artifacts.
 
 ## Real artwork and scalability
 
-Engine **0.7.3** reduces repeated stock construction, uses small spatially ordered footprint unions, and caches immutable access geometry. The unchanged saved flower job completes combined CLI planning in 52–54 seconds on the measured Windows machine; see the [saved flower CLI performance report](../docs/flat-v-carve/flower-performance.md). Run `scripts/benchmark-flower.ps1` from PowerShell 7 after a release build, or set `CAM_TIMINGS=1` for stage timings on stderr. Replan artifacts from older engines; saved jobs remain compatible.
+Successive engine releases reduced flower planning from an incomplete run stopped after ~15 minutes (0.7.2) through 52–54 s (0.7.3), 29 s (0.7.5), and 4.2 s (0.7.6) to **2.71–2.73 seconds** on the unchanged real job (`../real_data/flower_box-svg.job-real.json`) in engine **0.7.7**, using spatial indexes, checked stay-down routing, contour-following V-bit cuts, bounded contour simplification, and grouped/parallel stock construction. Run `scripts/benchmark-flower.ps1` from PowerShell 7 after a release build, or set `CAM_TIMINGS=1` for stage timings on stderr. Replan artifacts from older engines; saved jobs remain compatible.
 
-Engine 0.7.2 imports `../real_data/flower_box.svg` at 0.005 mm tolerance without editing the source. Spatial indexes replace repeated all-edge topology, containment, distance, and stock-query scans; selected regions use a batch union and recorded cutter sweeps use bounded batches with balanced merges. Consecutive vertices may coalesce on the precision grid only after local topology checks; erased rings, new nonlocal contacts, and changed crossings still fail.
+Two saved preset jobs tune the same artwork for an approximately 0.1 mm wood finish: `../real_data/flower_box-wood-balanced.job.json` (geometry tolerance 0.005 mm, motion tolerance 0.05 mm; planned in ~8.5 s on the measured machine) and `../real_data/flower_box-wood-finish.job.json` (the same tolerances plus a 0.05 mm floor ridge for extra finish margin; ~10.4 s). Raising the import geometry tolerance is the largest computation saving, but the planner requires the verification tolerance to cover at least eight geometry tolerances, so the presets retain 0.05 mm verification.
 
-The [scalability report](../docs/flat-v-carve/scalability-report.md) separates import measurements from planning and verification. Reproduce the 1×/10×/100× import cases on Windows with:
+Engine 0.7.2 imports `../real_data/flower_box.svg` at 0.005 mm tolerance without editing the source. Spatial indexes replace repeated all-edge topology, containment, distance, and stock-query scans; selected regions use a batch union and recorded cutter sweeps use bounded batches with balanced merges. Consecutive vertices may coalesce on the precision grid only after local topology checks; erased rings, new nonlocal contacts, and changed crossings still fail. Import scales roughly linearly with input size (measured 0.063 s / 6.5 MB at 9,943 vertices through 5.994 s / 307 MB at 994,300 vertices on Windows x64); the 100× case is import-only and does not establish full-CAM scaling. Reproduce the 1×/10×/100× import cases with:
 
 ```powershell
 cargo build --release --locked --workspace --examples --bins
 ./scripts/benchmark-import.ps1 -OutputDirectory artifacts/import-scalability-new
 ```
 
-The benchmark repeats the real path at unchanged physical size and tolerance. It records component/vertex counts, area, time, peak process working set, and source hash. It does not establish 100× full CAM or deeply connected artwork performance. Current bounds are 32 MB SVG, 200,000 XML nodes, two million flattened vertices, 64 MB job JSON, and 128 MB for legacy CLI/string-based saved-plan loading. Dense intersection arrangements and excessive spatial candidate pairs have separate guards. V-bit budgets remain explicit per job, up to 65,536 paths and one million motions/curve segments/quality samples; hitting a budget never means complete. The live browser service keeps full plans in temporary files without a separate plan byte cap, streams downloads, and reopens files for verification/export. Its bounded previews and worker messages are independent of plan file size; see the [plan storage report](../docs/flat-v-carve/web-ui/u7-plan-artifacts.md).
+The benchmark repeats the real path at unchanged physical size and tolerance. It records component/vertex counts, area, time, peak process working set, and source hash. It does not establish 100× full CAM or deeply connected artwork performance. Current bounds are 32 MB SVG, 200,000 XML nodes, two million flattened vertices, 64 MB job JSON, and 128 MB for legacy CLI/string-based saved-plan loading. Dense intersection arrangements and excessive spatial candidate pairs have separate guards. V-bit budgets remain explicit per job, up to 65,536 paths and one million motions/curve segments/quality samples; hitting a budget never means complete. The live browser service keeps full plans in temporary files without a separate plan byte cap, streams downloads, and reopens files for verification/export; its bounded previews and worker messages are independent of plan file size (see the [web UI plan](../docs/flat-v-carve/web-ui.md)).
 
 ## M6 LinuxCNC export
 
@@ -197,7 +194,7 @@ Export requires a new output directory and publishes `export-report.json` with `
 
 The supplied [macro profile](fixtures/m6/macro-stock-bottom.json) follows the user-described Z-only M6 TLO with stock-bottom/worktable zero, T1/T2, and `G0 Z150` then X0 Y0 after M6. G54, six decimals, clockwise spindle, coolant off, and zero added spin-up dwell are editable initial choices. With 8 mm stock, the 2 mm depth cap outputs Z6 and a 5 mm planning clearance outputs Z13. Z150 is in the selected work frame. See the [profile contract](fixtures/m6/README.md) for setup and clearance assumptions.
 
-Macro-managed output preserves TLO; tool-table output applies the configured G43 H mapping. Original and decoded output motions must pass M5. Every modal/tool/feed/coordinate block is checked by a strict numeric subset reader. Failed or inconclusive output produces a report-only bundle and exits 1; argument/profile/stale-plan/I/O errors exit 2. Existing outputs are never overwritten. Verification resource flags match `verify`; output decimal precision comes from the profile.
+Macro-managed output preserves TLO; tool-table output applies the configured G43 H mapping. Original and decoded output motions must pass M5. Every modal/tool/feed/coordinate block is checked by a strict numeric subset reader. Failed or inconclusive output produces a report-only bundle and exits 1; argument/profile/stale-plan/I/O errors exit 2. Existing outputs are never overwritten. Verification resource flags match `verify`; the profile's `decimal_places` sets the **minimum** output precision — export raises precision up to nine decimals when needed to preserve every motion's direction and required travel, and reports the precision used.
 
 Run `scripts/check-m6.ps1` after a release build to reproduce eight fixture expectations and saved-byte readbacks. The [M6 capability report](../docs/flat-v-carve/m6-capability-report.md) records contracts and limits. LinuxCNC preview/simulation with the actual macro/configuration remains pending; the bundled cutting settings are synthetic fixtures.
 
@@ -300,9 +297,8 @@ pnpm preview      # serve it; the page auto-detects the missing local service
 
 Deploy `web/dist` to any static host. `?mode=wasm` forces the in-browser
 engine and `?mode=live` forces the local service. See the
-[U9 report](../docs/flat-v-carve/web-ui/u9-wasm-static.md) for architecture,
-limits, and browser acceptance evidence.
+[web UI plan](../docs/flat-v-carve/web-ui.md) for the wasm architecture and limits.
 
 `cam-core` contains in-memory geometry contracts, narrow dependency adapters, SVG normalization, portable jobs, cutter/target models, independent distance queries, both planners, linear motions, stock analysis, and preview calculations. It has no filesystem or process access. `cam-app` handles command arguments, fixtures, JSON/SVG output, and build metadata. The debug SVGs visualize source geometry, recorded paths, combined stock slices, and sampled finish quality; no G-code is generated.
 
-See the [M4 capability report](../docs/flat-v-carve/m4-capability-report.md) for combined planning, the [M3 report](../docs/flat-v-carve/m3-capability-report.md) for endmill evidence, the [M2 report](../docs/flat-v-carve/m2-capability-report.md) for importer/job evidence and the [M1 report](../docs/flat-v-carve/m1-capability-report.md) for finite-tip and exact-fit geometry. The [M0 report](../docs/flat-v-carve/m0-capability-report.md) records the underlying geometry dependencies and precision policy.
+The per-milestone sections above (M0–M6) document each capability's behavior, evidence, and limits. The historical capability reports behind them were consolidated into these sections and the [project docs](../docs/flat-v-carve/architecture.md); the original reports remain in Git history. The [implementation plan](../docs/flat-v-carve/implementation-plan.md) tracks the remaining M6 controller validation and M8 machining-trial work.

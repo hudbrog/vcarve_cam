@@ -18,4 +18,4 @@ cargo build --release --workspace --locked
 
 Each case creates `plan.json`, `verification.json`, `verification.svg`, and process logs under `artifacts/m5/<case>/`. `artifacts/m5/benchmark.json` records timings, observed process memory, segment counts, artifact sizes, and whether the expected status/exit code matched. The script exits unsuccessfully if an expectation changes.
 
-The core tests additionally inject continuous gouges, remove one floor lane while preserving valid motion continuity, lower reachable paths, tighten finite-tip detail limits, change tools, and challenge depth/area bounds against analytic cases. See the [M5 capability report](../../../docs/flat-v-carve/m5-capability-report.md) for formulas, measurements, and limits.
+The core tests additionally inject continuous gouges, remove one floor lane while preserving valid motion continuity, lower reachable paths, tighten finite-tip detail limits, change tools, and challenge depth/area bounds against analytic cases. The verification formulas and bound model are documented in the [technical design](../../../docs/flat-v-carve/technical-design.md).

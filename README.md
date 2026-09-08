@@ -6,53 +6,11 @@ The [portable Windows build](flat-v-carve/README.md#portable-windows-application
 packages the CLI, local browser service, and web assets into one `cam.exe`.
 From `flat-v-carve`, run `./scripts/build-portable.ps1`, then
 `./artifacts/portable/cam.exe serve --open` to use the integrated workspace.
+GitHub Actions builds and tests it on every push to `main`.
 
-M0–M5 implement SVG jobs, endmill clearing, V-bit finishing/rest machining, combined stock previews, and bounded continuous stock verification. M6 adds LinuxCNC output with explicit machine profiles and numeric readback; actual controller validation remains pending.
+M0–M5 implement SVG jobs, endmill clearing, V-bit finishing/rest machining, combined stock previews, and bounded continuous stock verification. M6 adds LinuxCNC output with explicit machine profiles and numeric readback; actual controller validation remains pending. The M7 browser workflow is implemented: import-to-export runs in the local UI with background planning, stock slices, gated export, a local tool library, and a labeled 3D stock simulator. The same UI also builds statically with the engine compiled to WebAssembly for browser-only hosting.
 
-Engine 0.7.2 adds spatial indexing, batched stock unions, and compact plan files for larger artwork. The [scalability report](docs/flat-v-carve/scalability-report.md) records the real flower import and 1×/10×/100× measurements, with full-pipeline limits tracked separately.
-
-Engine 0.7.3 completes the unchanged saved flower job in 52–54 seconds for combined CLI planning and about 7 seconds for endmill alone on the measured Windows machine. The [CLI performance report](docs/flat-v-carve/flower-performance.md) documents the bottlenecks and reproducible profiling commands. Regenerate older plans from their saved jobs.
-
-Engine 0.7.4 optimizes actual tool movement: the unchanged flower job drops from
-384,245 to 113,192 motions and from 60,485 to 178 V-bit plunges. Nearby path
-ordering, checked cutting links and retained final-depth finishing reduce travel
-without changing job tolerances. See the [motion routing report](docs/flat-v-carve/flower-motion-routing.md).
-
-Engine 0.7.5 replaces redundant V-bit spokes with contour-following cuts and
-reduces total V-bit movement by **69.2%** on the unchanged flower job. Bounded
-contour simplification and parallel endmill stock reconstruction also reduce
-combined generation to **28.74–29.21 seconds** in three final portable-build
-runs. See the [contour optimization benchmark and comparison](docs/flat-v-carve/flower-contour-optimization.md).
-
-The [flower settings study](docs/flat-v-carve/flower-settings-study.md) compares
-19 configurations for an approximately 0.1 mm wood finish. Saved balanced and
-finer-floor job presets generate in 8.2–10.5 seconds on the measured machine.
-
-Engine **0.7.6** removes bounded microscopic contour edges and uses checked
-endmill links between nearby contours. On the saved flower job, endmill retracts
-fall from **64 to 29**, and all 22 movements below 0.00001 mm disappear across
-both stages. Deeper links require swept-stock clearance. See the
-[implementation and verification results](docs/flat-v-carve/planner-small-motions-and-links.md).
-Regenerate older plans from their saved jobs.
-
-Engine **0.7.7** completes `flower_box-svg.job-real.json` in **2.71–2.73 seconds**
-across five fresh CLI runs. Bounded contour simplification, grouped stock strokes,
-and parallel stock comparisons retain the job's tolerances and pass full-stock
-G-code verification. See the [three-second benchmark](docs/flat-v-carve/flower-performance-3s.md).
-
-Flower G-code export now preserves tiny motions by increasing output precision
-when needed and reports the precision used. Retained-plan authentication and
-parallel stock verification reduce export latency; see the
-[postprocessing investigation](docs/flat-v-carve/flower-postprocessing.md).
-
-Live browser planning now keeps complete plans in temporary files and loads every
-recorded motion through bounded pages. Verification and export reopen those files directly;
-plan size no longer controls worker-message size. See the
-[plan storage report](docs/flat-v-carve/web-ui/u7-plan-artifacts.md) for lifecycle,
-remaining limits, and real-artwork checks. Rebuild and restart the portable
-application to use the updated service and UI together.
-The [complete preview report](docs/flat-v-carve/web-ui/complete-motion-preview.md)
-explains the removed 20,000-motion cutoff and the flower job regression checks.
+Engine 0.7.7 completes the unchanged real flower job (`real_data/flower_box-svg.job-real.json`) in **2.71–2.73 seconds** across five fresh CLI runs, using spatial indexing, checked stay-down routing, contour-following V-bit cuts, bounded simplification, and grouped/parallel stock construction. Wood-finish preset jobs (`real_data/flower_box-wood-balanced.job.json`, `flower_box-wood-finish.job.json`) trade a little speed for a finer floor. See the [workspace README](flat-v-carve/README.md) for benchmark and profiling commands.
 
 The Rust workspace lives in [`flat-v-carve/`](flat-v-carve/README.md). Import and inspect a bundled Inkscape export with the pinned Rust toolchain:
 
@@ -62,4 +20,4 @@ cargo run --release --locked -p cam-app -- import fixtures/m2/inkscape-export.sv
 cargo run --release --locked -p cam-app -- inspect artifacts/m2/job.json --output artifacts/m2/preview.svg
 ```
 
-See the [workspace README](flat-v-carve/README.md) for validation and development commands, [Windows setup](flat-v-carve/README.md#windows-setup) for the native MSVC toolchain and PowerShell commands, the [architecture](docs/flat-v-carve/architecture.md) for scope, and the [implementation plan](docs/flat-v-carve/implementation-plan.md) for progress. The [M6 capability report](docs/flat-v-carve/m6-capability-report.md) records machine contracts, output verification, and remaining controller validation.
+Documentation lives in [`docs/flat-v-carve/`](docs/flat-v-carve): the [architecture](docs/flat-v-carve/architecture.md) for scope and components, the [technical design](docs/flat-v-carve/technical-design.md) for geometry and data contracts, the [implementation plan](docs/flat-v-carve/implementation-plan.md) for milestone status and the remaining M6/M8 work, the [web UI plan](docs/flat-v-carve/web-ui.md) for the browser product and its remaining U4/U6 stages, the [tool library guide](docs/flat-v-carve/tool-library.md), and the [M6 capability report](docs/flat-v-carve/m6-capability-report.md) for machine contracts and the pending controller validation. The [workspace README](flat-v-carve/README.md) holds validation and development commands, and [Windows setup](flat-v-carve/README.md#windows-setup) covers the native MSVC toolchain.

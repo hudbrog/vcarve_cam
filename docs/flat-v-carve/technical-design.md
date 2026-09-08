@@ -1,15 +1,15 @@
 # Flat V-carve CAM: technical design
 
 Date: 2026-09-05\
-Status: M0–M5 implemented and tested. M6 linear LinuxCNC output, machine profiles, and numeric readback are implemented; actual controller validation remains pending.
+Status: M0–M5 implemented and tested. M6 linear LinuxCNC output, machine profiles, and numeric readback are implemented; actual controller validation remains pending. M7's browser workflow is implemented in software; M8 physical validation remains.
 
 See [architecture](architecture.md) for scope and component boundaries, and [implementation plan](implementation-plan.md) for delivery order. Unless explicitly attributed to a source, the geometry below is derived for this project.
 
-The [M3 capability report](m3-capability-report.md) defines the current endmill-only implementation: offset loops with a numerical guard, explicit plunge/ramp entries, clearance-plane links, independent continuous segment clearance, and actual-motion stock comparisons at stepdown slices. M3 uses `verification_tolerance_mm` as the XY floor-coverage tolerance at those slices. An M3 `complete` stage does not claim the separate M5 adaptive stock/quality contract below.
+The M3 milestone defines the current endmill-only implementation: offset loops with a numerical guard, explicit plunge/ramp entries, clearance-plane links, independent continuous segment clearance, and actual-motion stock comparisons at stepdown slices. M3 uses `verification_tolerance_mm` as the XY floor-coverage tolerance at those slices. An M3 `complete` stage does not claim the separate M5 adaptive stock/quality contract below.
 
-The [M4 capability report](m4-capability-report.md) records the original combined planner: guarded full-depth boundaries, threshold-split medial paths, floor lanes, conservative air proofs against actual endmill sweeps, bounded cleanup, and a retained final finishing family. Engine 0.7.1 replaces broad floor lanes with contours clipped to residual stock, described below. M4 checks continuous linear-radius cutter clearance, floor coverage at the ridge depth minus an explicit numerical budget, and a configurable sample lattice with independent reachability bounds. Its sampled quality maxima and fixed slices are not the adaptive global certification specified for M5.
+The M4 milestone implements the original combined planner: guarded full-depth boundaries, threshold-split medial paths, floor lanes, conservative air proofs against actual endmill sweeps, bounded cleanup, and a retained final finishing family. Engine 0.7.1 replaces broad floor lanes with contours clipped to residual stock, described below. M4 checks continuous linear-radius cutter clearance, floor coverage at the ridge depth minus an explicit numerical budget, and a configurable sample lattice with independent reachability bounds. Its sampled quality maxima and fixed slices are not the adaptive global certification specified for M5.
 
-The [M5 capability report](m5-capability-report.md) defines the implemented continuous verifier. Independent analytical point and box bounds drive adaptive height-field/depth-band refinement over the normalized target and every cutting footprint. Reported maximum-error intervals satisfy the requested verification uncertainty before passing. Explicit floor/detail limits are not increased by M4's numerical allowance. Decimal coordinate formatting triggers independent semantic and stock revalidation; cached reports cannot authorize changed jobs or motions. Source conversion error is reported separately from normalized-target bounds. M6 adds emitted-program verification; actual physical-machine validation remains pending.
+The M5 milestone defines the implemented continuous verifier. Independent analytical point and box bounds drive adaptive height-field/depth-band refinement over the normalized target and every cutting footprint. Reported maximum-error intervals satisfy the requested verification uncertainty before passing. Explicit floor/detail limits are not increased by M4's numerical allowance. Decimal coordinate formatting triggers independent semantic and stock revalidation; cached reports cannot authorize changed jobs or motions. Source conversion error is reported separately from normalized-target bounds. M6 adds emitted-program verification; actual physical-machine validation remains pending.
 
 ## 1. Coordinate and tolerance conventions
 
@@ -29,11 +29,11 @@ Separate these controls:
 | `wall_allowance_mm` | Configurable extra horizontal stock left by the endmill near the target wall; new jobs default to 0 mm. Saved values are preserved when opening jobs. |
 | Output precision | Decimal resolution of serialized machine coordinates. |
 
-No machining defaults are confirmed yet. Numerical tolerances are not substitutes for finishing allowances. The verifier must aggregate approximation bounds; rounding and each processing stage cannot independently consume the entire allowed error.
+No machining defaults are confirmed yet. Numerical tolerances are not substitutes for finishing allowances. The verifier must aggregate approximation bounds; rounding and each processing stage cannot independently consume the entire allowed error. V-bit planning additionally requires the verification tolerance to cover at least eight geometry tolerances in both XY and depth, so loosening the import tolerance eventually forces a looser verification budget.
 
 Polygon adapters use a documented integer scale shared with segment Voronoi input. Choose it from the requested resolution and supported coordinate range. Check multiplication, overflow, and topology changes caused by snapping. Reject an impossible tolerance/range combination instead of silently degrading accuracy.
 
-M0 implements this policy and the finite-parabola evaluation method. See the [capability report](m0-capability-report.md) for the common integer range, budget allocation, measured fixture errors, rejection behavior, and limits of the current evidence.
+M0 implements this policy and the finite-parabola evaluation method, including the common integer range, budget allocation, measured fixture errors, rejection behavior, and limits of the current evidence.
 
 Detail residual is zero by default. A nonzero setting is a visible finish-quality choice, with the affected regions highlighted. It must not excuse missing stock that a valid toolpath could remove.
 
@@ -136,7 +136,7 @@ To see why flat-tip coverage suffices, consider a feasible pose at depth `d` tha
 
 M1 evaluates this maximum with a branch-and-bound search using independent boundary distances. Feasible samples provide lower bounds; cell radii and the Lipschitz property provide upper bounds. It returns depth/residual intervals and an explicit unresolved status when the requested resolution cannot be met within the cell budget or floating-point resolution. Input snapping uncertainty is recorded separately; the floating-point reserves are engineering margins, not a formal interval-arithmetic proof.
 
-The preview compares `A_v` with the unchanged nominal `T`. This is V-bit capability over arbitrary feasible poses, not combined endmill/V-bit stock removal or evidence that a path visits those poses. Profiles sample specified lines; the SVG interpolates between samples for display. See the [M1 capability report](m1-capability-report.md) for analytic corner/channel checks and center-set representation limits.
+The preview compares `A_v` with the unchanged nominal `T`. This is V-bit capability over arbitrary feasible poses, not combined endmill/V-bit stock removal or evidence that a path visits those poses. Profiles sample specified lines; the SVG interpolates between samples for display.
 
 ## 4. SVG normalization
 
@@ -156,7 +156,7 @@ Flattening tolerance applies after transforms so scaling does not amplify an unt
 
 Initially require text and strokes to be converted to paths in Inkscape. Report open paths, external references, masks, clip paths, filters, and unsupported styling. Ignore non-geometric editor metadata. Do not automatically close a substantial gap or remove a tiny island without a diagnostic.
 
-M2 implements the supported subset with `roxmltree` 0.21.1 and `svgtypes` 0.16.1. It resolves filled components in page coordinates before workpiece placement, preserving IDs across placement edits; both source and final snapping budgets are recorded. Unsupported rendering effects and out-of-page geometry are rejected. See the [M2 capability report](m2-capability-report.md) for exact subset boundaries, transformed curve bounds, Inkscape measurements, and unresolved precision cases.
+M2 implements the supported subset with `roxmltree` 0.21.1 and `svgtypes` 0.16.1. It resolves filled components in page coordinates before workpiece placement, preserving IDs across placement edits; both source and final snapping budgets are recorded. Unsupported rendering effects and out-of-page geometry are rejected.
 
 ## 5. Endmill planning
 
@@ -287,7 +287,7 @@ A saved job can be incomplete while the user is editing it. Planning validates a
 
 M2's schema-version-1 `Job` implements embedded artwork, import placement/precision, selected component IDs, nullable stock/operation/tool settings, tolerances, and an optional editable machine profile. It stores no trusted normalized-geometry cache. The implemented `import`, `inspect`, `select`, and `validate-job` commands rebuild/validate the source snapshot. M3 and M4 extend the job through schemas 2 and 3 and implement `plan`, `inspect`, and `verify` for endmill/combined artifacts. Export now requires M5 verification and a complete, separately versioned M6 LinuxCNC profile.
 
-CLI (`serve` remains planned):
+CLI (`serve` implemented; it exposes the local browser service described in the [web UI plan](web-ui.md)):
 
 ```text
 cam import artwork.svg --output job.json

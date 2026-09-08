@@ -1,6 +1,6 @@
 # Flat V-carve web workspace
 
-The local TypeScript workspace from the [web UI design](../../docs/flat-v-carve/web-ui/README.md), connected to Rust for SVG import, job migration/opening, validation, cancellable background planning, recorded motion previews, 2D stock inspection, M5 continuous verification, M6 checked output, and the local tool library. Development can still use the deterministic fixture adapter.
+The local TypeScript workspace from the [web UI plan](../../docs/flat-v-carve/web-ui.md), connected to Rust for SVG import, job migration/opening, validation, cancellable background planning, recorded motion previews, 2D stock inspection, M5 continuous verification, M6 checked output, the local tool library, and the animated 3D stock simulator. Development can still use the deterministic fixture adapter, and the same bundle runs standalone through the in-browser WebAssembly engine.
 
 ## Run the portable application
 
@@ -32,8 +32,8 @@ The 32 MB worker reply and 20,000-motion preview budgets are independent of plan
 file size. Artifact downloads stream in 64 KiB chunks. The latest four results
 are retained; active verification, export, and downloads keep their source files
 alive until finished. Rebuild the UI and service together and restart after an
-update. See [plan artifact storage](../../docs/flat-v-carve/web-ui/u7-plan-artifacts.md)
-for lifecycle, remaining bounds, and real-artwork regression commands.
+update. The [web UI plan](../../docs/flat-v-carve/web-ui.md) records the storage
+lifecycle, remaining bounds, and the state/identity rules.
 
 ## Tool library location and workflow
 
@@ -55,8 +55,8 @@ A conflict keeps the unfinished form. Reload updates the list, but saving that
 old form stays disabled until it is discarded and the latest record is opened.
 Closing the dialog keeps its form in memory; reloading the tab loses **unsaved
 library forms**. Saved records persist independently of job recovery. The
-[library report](../../docs/flat-v-carve/web-ui/tool-library-ui.md) records checks
-and transport limits. Fixture mode has no tool library.
+[tool library guide](../../docs/flat-v-carve/tool-library.md) records the data
+model, transport limits, and persistence behavior. Fixture mode has no tool library.
 
 ## Develop against fixtures
 
@@ -87,7 +87,7 @@ The production bundle is in `dist/`, with a generated `.bundle-manifest.json` re
 - Schema 3 job file open/download, undo/redo, and recovery across reloads in the **same browser tab**. Recovery is distinct from a downloaded portable snapshot. Open/replacement is undoable; rejected input preserves the current draft. Invalid recovery is preserved until explicitly replaced.
 - System/light/dark appearance, responsive stacked panels, desktop inspector resizing, labeled controls, visible focus, native text-editing shortcuts, and keyboard equivalents for viewport actions.
 
-Live mode supports endmill and combined background planning, task cancellation/recovery, engine outcomes and diagnostics, and bounded recorded-motion previews. Stock inspection shows engine-produced depth slices after the endmill or both tools, lower/upper removal bounds, remaining target, possible overcut, and endmill floor coverage. Area and supported diagnostic links fit the affected region. Tool and path-layer filters change only the motion overlay. M5 verifies current combined plans with continuous error and depth-band bounds, optional rounded-coordinate checks, locatable findings, cancellation, and stale-report protection. M6 adds a separate LinuxCNC profile editor, cancellable generation, original/emitted verification review, combined/per-tool program previews, and hash-checked downloads gated by the current plan/profile/settings. 3D simulation remains unavailable. Fixture mode has no planning, verification or output capability.
+Live mode supports endmill and combined background planning, task cancellation/recovery, engine outcomes and diagnostics, and bounded recorded-motion previews. Stock inspection shows engine-produced depth slices after the endmill or both tools, lower/upper removal bounds, remaining target, possible overcut, and endmill floor coverage. Area and supported diagnostic links fit the affected region. Tool and path-layer filters change only the motion overlay. M5 verifies current combined plans with continuous error and depth-band bounds, optional rounded-coordinate checks, locatable findings, cancellation, and stale-report protection. M6 adds a separate LinuxCNC profile editor, cancellable generation, original/emitted verification review, combined/per-tool program previews, and hash-checked downloads gated by the current plan/profile/settings. The Plan step offers an animated 3D stock simulator for current plans; it renders recorded motions at a labeled visual resolution and makes no verification claim. Fixture mode has no planning, verification or output capability.
 
 ## Export tool mapping
 
@@ -129,14 +129,14 @@ Missing settings reported by Rust are listed in Issues and before the Generate b
 
 To load a library tool, use **Choose endmill from library** or **Choose V-bit from library**, select the record, explicitly choose a cutting preset (or geometry only), review the changed values, then apply. This works while the job is unfinished: only the selected tool's fields are replaced, and other incomplete settings stay in the draft for validation before planning. Selecting a record alone does not edit the job. The selected tool and preset names appear next to the job tool after application; edits to its values change that label to **Edited since library selection**. This display association survives same-tab recovery but is not embedded in portable job files. Geometry-only application clears the five cutting values, as shown during review. Saving a job tool into the library still requires a valid editable job.
 
-The [U3 background-planning report](../../docs/flat-v-carve/web-ui/u3-background-planning.md) records task execution and identity/recovery. The [stock-inspection report](../../docs/flat-v-carve/web-ui/u3-stock-inspection.md) records display limits and slice parity. The [M5 integration report](../../docs/flat-v-carve/web-ui/u5-verification.md) records the shared task queue, report identities, verification settings, and CLI/browser checks. Editable-job validation alone does not establish planning readiness or verification. The [M6 integration report](../../docs/flat-v-carve/web-ui/u5-linuxcnc-output.md) records the separate profile editor, checked output workflow and byte-for-byte CLI parity. Native save/file conflicts, 3D, arbitrary cross-sections, motion playback, durable recovery, and multi-tab document ownership remain later work.
+Task execution and identity/recovery, stock display limits and slice parity, the shared verification/export task queue, and byte-for-byte CLI parity are all exercised by `pnpm check:live` against the same-engine CLI. Editable-job validation alone does not establish planning readiness or verification. The [web UI plan](../../docs/flat-v-carve/web-ui.md) records the simulator, the in-browser WebAssembly engine, and the remaining U4/U6 work (native save/file conflicts, arbitrary cross-sections, durable recovery, multi-tab document ownership).
 
 ## Code map
 
 | File / directory | Responsibility |
 | --- | --- |
 | `src/contracts/job.ts` | Runtime structural checks and inferred TypeScript types for current portable jobs. |
-| `src/contracts/service.ts`, `wire.ts`, `planning.ts`, `stock.ts`, `verification.ts`, `machineProfile.ts`, `export.ts`, `library.ts` | Replaceable service interface and runtime checks for the `ui-6` transport. |
+| `src/contracts/service.ts`, `wire.ts`, `planning.ts`, `stock.ts`, `verification.ts`, `machineProfile.ts`, `export.ts`, `library.ts` | Replaceable service interface and runtime checks for the `ui-7` transport. |
 | `src/service/fixture.ts` | Deterministic captured-artwork adapter; absent capabilities remain unavailable. |
 | `src/service/http.ts`, `useValidation.ts` | Same-origin session, checked responses, debounced validation, and stale-response guards. |
 | `src/service/usePlanning.ts`, `src/components/PlanPanel.tsx` | Immutable submissions, monotonic task tracking, cancellation, recovery, scoped outcomes, and stale-result gating. |
@@ -169,4 +169,4 @@ that EXE for both CLI and `serve`, start the server from its own directory with
 only OS directories on `PATH`, and supply no `--ui-dir`. They compare every
 embedded asset to the current build manifest and run the full live workflow.
 
-The implementation history is in [U1 implementation](../../docs/flat-v-carve/web-ui/u1-implementation.md). The follow-up [setup and browser report](../../docs/flat-v-carve/web-ui/browser-checks.md) records 37 automated regressions and browser checks of all steps, keyboard/focus, recovery, file round-trips, themes, and 200% text. [React](https://react.dev/) provides the component/state layer; [Vite](https://vite.dev/guide/) produces a local static distribution without a server framework.
+[React](https://react.dev/) provides the component/state layer; [Vite](https://vite.dev/guide/) produces a local static distribution without a server framework. The per-slice implementation history is recorded in the Git history of the former `docs/flat-v-carve/web-ui/` reports.

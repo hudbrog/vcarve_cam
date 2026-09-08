@@ -1,9 +1,9 @@
 # Flat V-carve CAM: implementation plan
 
 Date: 2026-09-05\
-Status: M0–M5 implemented; M6 postprocessor and numeric readback implemented on native Windows x64, with actual controller validation pending. M7–M8 integration/release work remains planned.
+Status: M0–M5 implemented; M6 postprocessor and numeric readback implemented on native Windows x64, with actual controller validation pending. M7's browser workflow is implemented in software (U1–U3, U5, U7–U9 slices: local service, background planning, verification, gated export, tool library, 3D simulator, and the static WebAssembly build); U4 section/inspection contracts, the U6 file-lifecycle/release work, and the M8 measured machining trial remain.
 
-Read [architecture](architecture.md) for agreed scope and [technical design](technical-design.md) for geometry and contracts. This plan orders work by uncertainty: establish the geometric foundation before investing in application polish or relying on machine output.
+Read [architecture](architecture.md) for agreed scope and [technical design](technical-design.md) for geometry and contracts. This plan orders work by uncertainty: establish the geometric foundation before investing in application polish or relying on machine output. The per-milestone capability reports and per-slice web-UI reports that originally evidenced the completed items below were consolidated on 2026-09-08; the originals remain in Git history under `docs/flat-v-carve/`.
 
 ## 1. Delivery rules
 
@@ -21,14 +21,14 @@ No calendar estimate is assigned yet. The dependency and geometry spike should e
 
 | ID | Deliverable | Depends on | Exit evidence |
 | --- | --- | --- | --- |
-| M0 ✓ | Rust dependency and geometry spike | None | [Completed capability report](m0-capability-report.md): native debug/release builds, 28 fixtures, 14 tests, documented precision behavior. |
-| M1 ✓ | Target model, cutter models, and debug preview | M0 | [Completed capability report](m1-capability-report.md): 37 tests, 8 procedural previews, analytic dimensions/depths, finite-tip bounds, and exact-fit contacts. |
-| M2 ✓ | SVG import and versioned jobs | M1 | [Completed capability report](m2-capability-report.md): 65 tests, native/plain Inkscape exports, portable jobs, dimensions/holes/selection preserved. |
-| M3 ✓ | Endmill planner and recorded stock removal | M1; integrate M2 | [Completed capability report](m3-capability-report.md): 84 tests, 10 release fixtures, continuous clearance, and actual endmill stock. |
-| M4 ✓ | V-bit paths and combined rest machining | M3 | [Completed capability report](m4-capability-report.md): 108 tests, 13 release fixtures, curved/rising detail, floor ridges, and retained final finishing. |
-| M5 ✓ | Verification of continuous and rounded motions | M4 | [Completed capability report](m5-capability-report.md): 127 tests, bounded stock/quality checks, rounded-coordinate revalidation, and ten release expectations. |
+| M0 ✓ | Rust dependency and geometry spike | None | Complete: native debug/release builds, 28 fixtures, 14 tests, documented precision behavior. |
+| M1 ✓ | Target model, cutter models, and debug preview | M0 | Complete: 37 tests, 8 procedural previews, analytic dimensions/depths, finite-tip bounds, and exact-fit contacts. |
+| M2 ✓ | SVG import and versioned jobs | M1 | Complete: 65 tests, native/plain Inkscape exports, portable jobs, dimensions/holes/selection preserved. |
+| M3 ✓ | Endmill planner and recorded stock removal | M1; integrate M2 | Complete: 84 tests, 10 release fixtures, continuous clearance, and actual endmill stock. |
+| M4 ✓ | V-bit paths and combined rest machining | M3 | Complete: 108 tests, 13 release fixtures, curved/rising detail, floor ridges, and retained final finishing. |
+| M5 ✓ | Verification of continuous and rounded motions | M4 | Complete: 127 tests, bounded stock/quality checks, rounded-coordinate revalidation, and ten release expectations. |
 | M6 (software implemented) | LinuxCNC postprocessor and machine-profile contract | M5 | [Export and emitted-subset checks](m6-capability-report.md); actual LinuxCNC preview/simulation remains pending. |
-| M7 | Local browser workflow | M2 and stable planning contracts; integrate M6 | Import-to-export parity with CLI and responsive planning. |
+| M7 ✓ (software) | Local browser workflow | M2 and stable planning contracts; integrate M6 | Implemented through the web-UI delivery stages recorded in the [web UI plan](web-ui.md) (U1–U3, U5, U7–U9). Remaining release work is tracked as U4/U6 there. |
 | M8 | Measured machining trial and usable release | M6, M7 | Test carving, measured deviations, reproducible installation and documented limits. |
 
 Verification is developed alongside each planner. M5 completes and challenges it; it is not the first time paths are checked. M8 can start with CLI output while browser integration finishes, but release completion requires both.
@@ -45,7 +45,7 @@ Verification is developed alongside each planner. M5 completes and challenges it
 - [x] Establish integer range/scale limits and a bounded curve-evaluation method.
 - [x] Produce JSON/debug SVG artifacts and a concise capability report.
 
-Completed 2026-09-05 in [`flat-v-carve/`](../../flat-v-carve/README.md). Rust 1.95.0, `clipper2-rust` 1.1.0, and `boostvoronoi` 0.12.1 passed on Ubuntu 24.04.4/WSL2, `x86_64-unknown-linux-gnu`. Evidence, analytic formulas, measured errors, precision/resource limits, and repro commands are in the [M0 capability report](m0-capability-report.md). The full Voronoi diagram and positive-area offsets supplied the foundation for M1's target/tool models and exact-fit line/point handling.
+Completed 2026-09-05 in [`flat-v-carve/`](../../flat-v-carve/README.md). Rust 1.95.0, `clipper2-rust` 1.1.0, and `boostvoronoi` 0.12.1 passed on Ubuntu 24.04.4/WSL2, `x86_64-unknown-linux-gnu`. The full Voronoi diagram and positive-area offsets supplied the foundation for M1's target/tool models and exact-fit line/point handling.
 
 **Exit:** no project-specific C++ is required; the selected APIs support all required primitives; fixture errors are measured against analytic references or independently evaluated distances. Failures have minimal reproducers. If a dependency cannot meet a requirement, resolve that finding before building the planner around it.
 
@@ -60,7 +60,7 @@ Completed 2026-09-05 in [`flat-v-carve/`](../../flat-v-carve/README.md). Rust 1.
 - [x] Handle valid center sets that collapse to a line or point, and reject incompatible cutting height.
 - [x] Validate parameter changes without relying on a browser interface.
 
-Completed 2026-09-05 with engine 0.2.0. Debug tests, release build, Clippy, and formatting pass; the release CLI passes all 28 M0 fixtures and all 8 M1 models. The [M1 capability report](m1-capability-report.md) records the 37-test suite, exact-fit and sub-grid cases, finite-tip reachability derivation, measured interval widths, and remaining representation limits. These previews describe target/cutter geometry; toolpaths and stock verification remain later milestones.
+Completed 2026-09-05 with engine 0.2.0. Debug tests, release build, Clippy, and formatting pass; the release CLI passes all 28 M0 fixtures and all 8 M1 models. The 37-test suite covers exact-fit and sub-grid cases, the finite-tip reachability derivation, and measured interval widths. These previews describe target/cutter geometry; toolpaths and stock verification remain later milestones.
 
 **Exit:** straight-channel depth/floor dimensions match the formulas; islands offset in the correct direction; finite-tip center offsets differ correctly from ideal floor boundaries; changing the integer scale within the supported budget does not erase features silently.
 
@@ -74,7 +74,7 @@ Completed 2026-09-05 with engine 0.2.0. Debug tests, release build, Clippy, and 
 - [x] Add versioned job serialization with embedded artwork and editable incomplete settings.
 - [x] Implement import/plan/inspect CLI entry points as their core operations become available.
 
-Completed 2026-09-05 with engine 0.3.0. The release build, 65 integration tests, Clippy, and formatting pass. Both native and plain Inkscape exports preserve dimensions, compound holes, and selections; source bounds agree with Inkscape within 0.000171 mm. The [M2 capability report](m2-capability-report.md) records parser selection, supported features, precision budgets, portable job replay, diagnostics, and limits. `import`, `inspect`, `select`, and `validate-job` are implemented; `plan` reports explicit unavailability until M3 provides cutting paths.
+Completed 2026-09-05 with engine 0.3.0. The release build, 65 integration tests, Clippy, and formatting pass. Both native and plain Inkscape exports preserve dimensions, compound holes, and selections; source bounds agree with Inkscape within 0.000171 mm. `import`, `inspect`, `select`, and `validate-job` are implemented; `plan` reports explicit unavailability until M3 provides cutting paths.
 
 **Exit:** round-tripped jobs preserve physical dimensions, selection, and normalized geometry within tolerance. Reversed winding, transformed groups, and compound letters behave correctly. Text/strokes that need Inkscape conversion are reported rather than machined accidentally.
 
@@ -91,7 +91,7 @@ Completed 2026-09-05 with engine 0.3.0. The release build, 65 integration tests,
 
 **Exit:** paths preserve the nominal slopes plus allowance, never cross an island, and leave measurable stock for the V-bit. Cases with no endmill access produce an empty endmill stage and continue to the V-bit planner when appropriate. Missing pocket coverage and unsupported entries are visible diagnostics.
 
-Completed 2026-09-05 with engine 0.4.0. The [M3 capability report](m3-capability-report.md) records the endmill-only completion contract, motion/stock checks, synthetic fixture matrix, explicit failure statuses, saved-plan replay, and numerical limits. `plan` produces recorded XYZ moves; `inspect` and `verify` recompute stock and clearance. Empty stages retain target stock for the M4 planner described below.
+Completed 2026-09-05 with engine 0.4.0, including the endmill-only completion contract, motion/stock checks, synthetic fixture matrix, explicit failure statuses, saved-plan replay, and numerical limits. `plan` produces recorded XYZ moves; `inspect` and `verify` recompute stock and clearance. Empty stages retain target stock for the M4 planner described below.
 
 ## 7. M4: V-bit finishing and rest machining
 
@@ -107,7 +107,7 @@ Completed 2026-09-05 with engine 0.4.0. The [M3 capability report](m3-capability
 
 **Exit:** wide floors, narrow channels, pointed ends, holes, and transitions are covered within declared tolerances. Pointed-bit floor ridges match the analytic straight-lane case. Zero-ridge requests that require pointed-bit area clearing are rejected. Finite-tip limitations are reported without pretending they are part of the nominal target.
 
-Completed 2026-09-05 with engine 0.5.0. The [M4 capability report](m4-capability-report.md) records curved and rising medial paths, finite-tip/ridge behavior, conservative air pruning, actual variable-radius sweeps, bounded cleanup, final-family replay checks, and the sampled/slice scope of completion. Adaptive continuous stock-quality certification remains M5.
+Completed 2026-09-05 with engine 0.5.0, including curved and rising medial paths, finite-tip/ridge behavior, conservative air pruning, actual variable-radius sweeps, bounded cleanup, final-family replay checks, and the sampled/slice scope of completion. Adaptive continuous stock-quality certification remains M5.
 
 ## 8. M5: verification and output precision
 
@@ -124,7 +124,7 @@ Completed 2026-09-05 with engine 0.5.0. The [M4 capability report](m4-capability
 
 **Exit:** deliberately injected gouges, unsafe modeled-stock links, missed strips, and rounding errors are detected. Coarse grids cannot yield a false pass on narrow fixtures. Reducing resource limits yields an inconclusive result. Refinement demonstrates convergence on the analytic fixture set.
 
-Completed 2026-09-05 with engine 0.6.0 on Windows x64 and pinned Rust 1.95.0. Debug/release builds, all 127 integration tests in both profiles, Clippy with warnings denied, and formatting pass. All ten release fixture expectations match. The [M5 capability report](m5-capability-report.md) records independent whole-cell bounds, adaptive depth bands, finite-tip reachability, strict ridge/detail limits, rounded-coordinate checks, failure locations, and measured performance. Rounding exposed and removed floating-point-only initial plunges. M4 zero-ridge cap-contact examples are explicitly rejected under M5's stricter limit. Bounds apply to normalized polygon geometry and modeled motions, with source conversion error and physical-machine limits reported separately.
+Completed 2026-09-05 with engine 0.6.0 on Windows x64 and pinned Rust 1.95.0. Debug/release builds, all 127 integration tests in both profiles, Clippy with warnings denied, and formatting pass. All ten release fixture expectations match. The milestone delivered independent whole-cell bounds, adaptive depth bands, finite-tip reachability, strict ridge/detail limits, rounded-coordinate checks, failure locations, and measured performance. Rounding exposed and removed floating-point-only initial plunges. M4 zero-ridge cap-contact examples are explicitly rejected under M5's stricter limit. Bounds apply to normalized polygon geometry and modeled motions, with source conversion error and physical-machine limits reported separately.
 
 ## 9. M6: LinuxCNC integration
 
@@ -146,16 +146,18 @@ G-code review also exposed redundant V-bit floor rastering. Engine 0.7.1 restric
 
 ## 10. M7: local browser workflow
 
-- [ ] Serve the interface and API from the native local application.
-- [ ] Add SVG preview, physical dimensions, origin controls, and region selection.
-- [ ] Add job/tool settings with Rust-generated validation results.
-- [ ] Display target, toolpaths, stock after each tool, and error/residual overlays.
-- [ ] Distinguish preview resolution from verification status.
-- [ ] Run planning in background tasks with progress, cancellation, and stale-result protection.
-- [ ] Save/load portable jobs and export only results matching current settings.
-- [ ] Match the CLI's output for identical jobs and engine versions.
+- [x] Serve the interface and API from the native local application.
+- [x] Add SVG preview, physical dimensions, origin controls, and region selection.
+- [x] Add job/tool settings with Rust-generated validation results.
+- [x] Display target, toolpaths, stock after each tool, and error/residual overlays.
+- [x] Distinguish preview resolution from verification status.
+- [x] Run planning in background tasks with progress, cancellation, and stale-result protection.
+- [x] Save/load portable jobs and export only results matching current settings.
+- [x] Match the CLI's output for identical jobs and engine versions.
 
 **Exit:** an ordinary job can be imported, configured, inspected, saved, reopened, and exported without editing JSON. Calculation does not freeze the UI, and changing settings invalidates old output visibly.
+
+Completed 2026-09-08 in software through the U-stage delivery record in the [web UI plan](web-ui.md). The same UI runs without the local service through the in-browser WebAssembly engine. Native file open/save dialogs with conflict handling, durable cross-restart recovery, multi-tab document ownership, and release qualification (U4/U6) remain open and are folded into the M8 release work; see the web UI plan's delivery stages.
 
 ## 11. M8: physical validation and release
 
@@ -198,6 +200,6 @@ Compare the target and actual sweeps through independent calculations where poss
 
 After the combined workflow is reliable, evaluate path ordering, verified in-stock links, accelerated stock analysis, multiple clearance tools, arc fitting, bounded LinuxCNC blending, and WebAssembly. Each optimization retains the same fixtures and verification requirements. A changed strategy must not silently weaken the user's finish tolerance or remove small details.
 
-The WebAssembly item shipped: the engine core now also builds for the browser and the UI can be statically hosted. See the [investigation](web-ui/wasm-packing.md) and the [U9 report](web-ui/u9-wasm-static.md); threaded wasm execution remains in this backlog.
+Path ordering, verified in-stock links, and accelerated stock/verification analysis shipped across engines 0.7.3–0.7.7; the workspace README records the current flower measurements and profiling commands. The WebAssembly item shipped: the engine core also builds for the browser and the UI can be statically hosted (see the [web UI plan](web-ui.md)). Threaded wasm execution remains in this backlog — it needs cross-origin isolation (COOP/COEP headers) and a browser-compatible scoped-parallelism refactor of the engine's thread sites — as do multiple clearance tools, arc fitting, and bounded LinuxCNC blending.
 
-Engine 0.7.2 starts real-artwork scalability work ahead of M7. The [scalability report](scalability-report.md) records spatial topology/distance/stock indexes, batch and balanced unions, compact authenticated plan files, successful import through 994,300 vertices, and complete M4 planning for the unchanged flower artwork. The 100× result is import-only. Follow-up acceptance requires connected medial traversal, component-local work, scalable M5 verification, and bounded preview/artifact output, measured on real connected and repeated artwork at 10× and 100× volume.
+Engine 0.7.2 started real-artwork scalability work ahead of M7: spatial topology/distance/stock indexes, batch and balanced unions, compact authenticated plan files, import measured through 994,300 vertices, and complete M4 planning for the unchanged flower artwork. The 100× result is import-only. Of the follow-up items, connected medial traversal with verified links, accelerated stock analysis, conclusive real-artwork M5 verification, and bounded paged preview/artifact output have since shipped; component-local planning work and measured 10×/100× full-pipeline acceptance on real connected and repeated artwork remain open.

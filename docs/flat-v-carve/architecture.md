@@ -1,7 +1,7 @@
 # Flat V-carve CAM: architecture
 
 Date: 2026-09-05\
-Status: M0–M5 implemented and tested. M6 linear LinuxCNC export and numeric readback are implemented; actual controller integration remains pending. M7–M8 remain the integration/release baseline.
+Status: M0–M5 implemented and tested. M6 linear LinuxCNC export and numeric readback are implemented; actual controller integration remains pending. M7's browser workflow is implemented in software (local service plus a static WebAssembly build); M8 physical validation and release qualification remain.
 
 This document records the product boundaries, components, and language choices. See [technical design](technical-design.md) for geometry and data contracts, and [implementation plan](implementation-plan.md) for milestones and acceptance criteria.
 
@@ -28,10 +28,10 @@ The user should not have to coordinate independent pocket and engraving operatio
 | Machine | Agreed | LinuxCNC with existing M6 macros. |
 | Finished shape | Agreed | Full sloped walls, depth cap, and shallower narrow details. |
 | Tools | MVP boundary | One flat endmill and one conical V-bit per job. |
-| Geometry libraries | Tested in M0 | `clipper2-rust` 1.1.0 and `boostvoronoi` 0.12.1 behind application-owned adapters; see [capability evidence](m0-capability-report.md). |
+| Geometry libraries | Tested in M0 | `clipper2-rust` 1.1.0 and `boostvoronoi` 0.12.1 behind application-owned adapters. |
 | Units and datum | Agreed for export | Millimeters internally; stock top is Z = 0 and cutting Z is negative. The user's M6 TLO establishes work Z0 at stock bottom/worktable; export adds stock thickness. |
-| Distribution | Proposed default | Native local executable; browser assets bundled for everyday use. |
-| WebAssembly | Implemented | The engine core runs in the browser behind the same UI contracts; see [the wasm packing investigation](web-ui/wasm-packing.md) and the [U9 static-web report](web-ui/u9-wasm-static.md). The native local service remains the everyday default. |
+| Distribution | Implemented | Native local executable with bundled browser assets, built and tested by CI. The same UI additionally builds statically with the in-browser engine. |
+| WebAssembly | Implemented | The engine core runs in the browser behind the same UI contracts; see the [web UI plan](web-ui.md). The native local service remains the everyday default. |
 
 These documents live in `docs/flat-v-carve/`; the standalone CAM workspace now lives in `flat-v-carve/`. The planning baseline referenced an unrelated Astro website, but the M0 checkout contained only these docs. CAM development remains isolated from any website project.
 
@@ -88,31 +88,33 @@ Start with two Rust crates rather than a large collection of services:
 
 Within `cam-core`, keep modules for `model`, `svg`, `geometry`, `target`, `pocket`, `vcarve`, `stock`, `motion`, `verify`, and `post`. Split modules into crates only when a real dependency or compilation problem warrants it.
 
-M1 implements `model`, `target`, and `preview` alongside M0's `geometry` and `spike`. Independent boundary queries support point/segment clearance and bounded finite-tip reachability. The CLI can validate edited model JSON and render plan/profile SVGs without a browser. These are target/cutter capability views; M3 now adds stock removal from recorded endmill moves. See the [M1 capability report](m1-capability-report.md).
+M1 implements `model`, `target`, and `preview` alongside M0's `geometry` and `spike`. Independent boundary queries support point/segment clearance and bounded finite-tip reachability. The CLI can validate edited model JSON and render plan/profile SVGs without a browser. These are target/cutter capability views; M3 now adds stock removal from recorded endmill moves.
 
-M2 adds `svg` and `job`: explicit SVG subset validation, transformed curve flattening, fill normalization, stable source/component mapping, and portable source/settings snapshots. CLI import, selection, validation, and inspection call this in-memory core. Jobs can be saved with missing machining settings; inspection recomputes derived geometry. See the [M2 capability report](m2-capability-report.md).
+M2 adds `svg` and `job`: explicit SVG subset validation, transformed curve flattening, fill normalization, stable source/component mapping, and portable source/settings snapshots. CLI import, selection, validation, and inspection call this in-memory core. Jobs can be saved with missing machining settings; inspection recomputes derived geometry.
 
-M3 adds `pocket` (including an independent segment verifier), `motion`, and `stock`. Planning returns an endmill-only artifact with the embedded job, linear XYZ moves, generation issues, and derived layer reports. Stock comes from actual recorded cuts, ramps, and plunges. The core independently checks whole segments and compares capsule sweeps at stepdown slices. The CLI plans, renders paths/residuals, and verifies saved plans. Job schema 2 adds explicit entry settings and ramp capability; schema 1 jobs migrate with those settings unset. Plan fingerprints include the engine, job, moves, and generation issues. Cached reports are recomputed on loading. See the [M3 capability report](m3-capability-report.md).
+M3 adds `pocket` (including an independent segment verifier), `motion`, and `stock`. Planning returns an endmill-only artifact with the embedded job, linear XYZ moves, generation issues, and derived layer reports. Stock comes from actual recorded cuts, ramps, and plunges. The core independently checks whole segments and compares capsule sweeps at stepdown slices. The CLI plans, renders paths/residuals, and verifies saved plans. Job schema 2 adds explicit entry settings and ramp capability; schema 1 jobs migrate with those settings unset. Plan fingerprints include the engine, job, moves, and generation issues. Cached reports are recomputed on loading.
 
-M4 adds `vcarve` with medial extraction, guarded XYZ path generation, combined planning, and execution/quality verification. `stock` supports variable-radius V-bit sweeps and analytic point-removal queries. `geometry` independently checks continuous linear-radius clearance and uses an exact bounding-box broad phase for polygon-output validation. Combined artifacts retain both stages, a logical tool-transition marker, actual motions, and path execution records. Floor slices and sampled reachability distinguish missed stock from cutter-limited detail; M5 below adds the separate continuous verification contract. See the [M4 capability report](m4-capability-report.md).
+M4 adds `vcarve` with medial extraction, guarded XYZ path generation, combined planning, and execution/quality verification. `stock` supports variable-radius V-bit sweeps and analytic point-removal queries. `geometry` independently checks continuous linear-radius clearance and uses an exact bounding-box broad phase for polygon-output validation. Combined artifacts retain both stages, a logical tool-transition marker, actual motions, and path execution records. Floor slices and sampled reachability distinguish missed stock from cutter-limited detail; M5 below adds the separate continuous verification contract.
 
-M5 adds `verification`: independent box distance bounds, analytical cutter-removal bounds, adaptive whole-surface and depth-band refinement, explicit maximum-error intervals, and located failed/inconclusive states. It authenticates plan identity and execution records, distinguishes reachable residue from cutter-limited detail, and rechecks decimal-formatted coordinates when precision is supplied. `cam verify` produces M5 JSON and an optional findings SVG; `inspect` retains the M4 planning preview. Acceptance uses the normalized polygon and actual motions, independently of repeated preview polygon unions. See the [M5 capability report](m5-capability-report.md) for the supported bound model, measured Windows performance, and strict zero-ridge contact failures.
+M5 adds `verification`: independent box distance bounds, analytical cutter-removal bounds, adaptive whole-surface and depth-band refinement, explicit maximum-error intervals, and located failed/inconclusive states. It authenticates plan identity and execution records, distinguishes reachable residue from cutter-limited detail, and rechecks decimal-formatted coordinates when precision is supplied. `cam verify` produces M5 JSON and an optional findings SVG; `inspect` retains the M4 planning preview. Acceptance uses the normalized polygon and actual motions, independently of repeated preview polygon unions.
 
-Layout inside `flat-v-carve/` (the `web` directory and later core modules remain future work):
+Layout inside `flat-v-carve/` (the `web` UI and the supporting crates below are implemented):
 
 ```text
 Cargo.toml
 Cargo.lock
 rust-toolchain.toml
 crates/
-  cam-core/src/
-  cam-app/src/
-fixtures/m0.json
-fixtures/m1/        # eight editable procedural target/cutter models
-fixtures/m2/        # authored coupon, actual Inkscape exports, reference bounds
+  cam-core/src/       # geometry, planners, stock, verification, postprocessing
+  cam-service/src/    # DTOs shared by the HTTP service and the browser build
+  cam-server/src/     # loopback HTTP service, task/worker supervision
+  cam-storage/src/    # tool-library persistence
+  cam-wasm/src/       # wasm-bindgen entry points for the static web build
+  cam-app/src/        # CLI + serve, portable executable
+fixtures/
 README.md
-artifacts/          # generated locally
-web/                # planned for M7
+artifacts/          # generated locally, ignored by Git
+web/                # TypeScript browser workspace
 ```
 
 ## 5. Geometry dependencies
@@ -122,9 +124,9 @@ Use narrow adapters that expose application-owned region, path, and skeleton typ
 - `clipper2-rust` supplies polygon Boolean operations, offsets, and polygon hierarchy. Its documentation describes a pure Rust port with integer and floating-point interfaces. Prefer explicitly scaled integer coordinates at the adapter boundary. [Library documentation](https://docs.rs/clipper2-rust/latest/clipper2_rust/)
 - `boostvoronoi` supplies a Rust port of the segment Voronoi algorithm. It accepts integer input coordinates; segments must not intersect or overlap except at shared endpoints. Normalization must satisfy that precondition before construction. [Library documentation](https://docs.rs/boostvoronoi/latest/boostvoronoi/)
 
-M0 checked holes, curved Voronoi edges, degenerate inputs, numerical error, and native builds. The project pins Rust 1.95.0 and the tested crate versions; both geometry dependencies have default features disabled. [The capability report](m0-capability-report.md) records measurements and limitations. A port's documented API alone does not establish its correctness for this CAM workload. Future dependency failures should produce small reproducers and adapter-level decisions, without spreading workarounds throughout the planner.
+M0 checked holes, curved Voronoi edges, degenerate inputs, numerical error, and native builds. The project pins Rust 1.95.0 and the tested crate versions; both geometry dependencies have default features disabled. A port's documented API alone does not establish its correctness for this CAM workload. Future dependency failures should produce small reproducers and adapter-level decisions, without spreading workarounds throughout the planner.
 
-M2 pins `roxmltree` 0.21.1 and `svgtypes` 0.16.1 for XML/attribute parsing, while application code owns supported SVG semantics and diagnostics. [The M2 report](m2-capability-report.md) records parser and fixture evidence. HTTP/framework dependencies remain future choices.
+M2 pins `roxmltree` 0.21.1 and `svgtypes` 0.16.1 for XML/attribute parsing, while application code owns supported SVG semantics and diagnostics. HTTP/framework dependencies remain future choices.
 
 ## 6. Data flow and reproducibility
 
@@ -144,7 +146,7 @@ The browser workflow is: import, confirm dimensions/origin, select regions, set 
 
 The local service binds to loopback. Long computations run outside the request handler and report stage progress. Cancellation discards an incomplete result. Results carry a job fingerprint so an old calculation cannot replace a newer edit. Background computation must not freeze the interface.
 
-The CLI calls the same service functions in process. Proposed commands are specified in the technical design. Start with native execution; browser-only WebAssembly is a later deployment option, not an initial requirement.
+The CLI calls the same service functions in process. Native execution with the bundled UI is the everyday default; the browser-only WebAssembly deployment shipped as an additional option ([web UI plan](web-ui.md)).
 
 ## 8. Correctness and machine boundary
 
@@ -158,7 +160,7 @@ The program generator does not connect to or execute code on the machine. Fixtur
 
 | Decision | Resolve by | Evidence needed |
 | --- | --- | --- |
-| Exact geometry crate versions and precision scale | Resolved for M0 | [Build results and fixture measurements](m0-capability-report.md); future changes require revalidation. |
+| Exact geometry crate versions and precision scale | Resolved for M0 | M0 build results and fixture measurements; future changes require revalidation. |
 | SVG parser and practical Inkscape subset | SVG milestone | Real exported files and unsupported-feature diagnostics. |
 | Rest-clearing strategy and verification bounds | Combined-planner milestone | Residual convergence and overcut bounds on difficult fixtures. |
 | M6 macro and length-offset contract | LinuxCNC milestone | Actual macro/configuration behavior. |
