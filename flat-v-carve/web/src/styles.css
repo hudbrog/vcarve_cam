@@ -165,3 +165,20 @@
 .profile-check input { flex: 0 0 auto; width: 16px; min-height: 16px; margin-top: 2px; }
 .output-program { padding-block: 12px; border-bottom: 1px solid var(--line); }
 .program-preview { font-size: 11px; line-height: 1.6; max-height: 320px; overflow: auto; padding: 10px; border: 1px solid var(--line); }
+
+/* U8 3D stock simulation viewport */
+.sim-viewport { flex: 1; position: relative; min-height: 230px; background: #14161a; overflow: hidden; }
+.sim-viewport > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.sim-badge { position: absolute; top: .9rem; left: 1rem; z-index: 1; font-size: .7rem; letter-spacing: .06em; color: #9aa3ad; background: rgba(16, 18, 22, .8); padding: .3rem .55rem; border-radius: 4px; pointer-events: none; max-width: min(60ch, 80%); }
+.sim-transport { position: absolute; left: 1rem; right: 1rem; bottom: .9rem; z-index: 1; display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; background: rgba(16, 18, 22, .82); padding: .45rem .6rem; border-radius: 6px; }
+.sim-transport button { background: transparent; color: #cfd4da; border-color: #3a3f47; }
+.sim-transport button:hover:not(:disabled) { border-color: #6ea8d8; color: #fff; }
+.sim-scrub { flex: 1 1 14rem; min-width: 8rem; display: flex; }
+.sim-scrub input[type='range'] { width: 100%; accent-color: var(--accent); }
+.sim-time { font-size: .78rem; color: #cfd4da; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sim-speed, .sim-option { display: flex; align-items: center; gap: .3rem; font-size: .78rem; color: #cfd4da; white-space: nowrap; }
+.sim-speed select { padding: .2rem .3rem; font-size: .78rem; background: #14161a; color: #cfd4da; border-color: #3a3f47; }
+.sim-option input { accent-color: var(--accent); }
+.sim-clamped { font-size: .72rem; color: #e0b060; }
+.sim-exit { margin-left: auto; }
+.sim-status { position: absolute; top: .9rem; right: 1rem; z-index: 1; display: flex; gap: .8rem; flex-wrap: wrap; justify-content: flex-end; max-width: 55%; font-size: .72rem; color: #9aa3ad; background: rgba(16, 18, 22, .8); padding: .3rem .55rem; border-radius: 4px; pointer-events: none; }

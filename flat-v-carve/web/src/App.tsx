@@ -9,6 +9,7 @@ import { useValidation } from './service/useValidation';
 import { usePlanning } from './service/usePlanning';
 import { planningInputMatches } from './contracts/planning';
 import { PlanPanel } from './components/PlanPanel';
+import { SimViewport } from './components/SimViewport';
 import { useInspection } from './service/useInspection';
 import { InspectionToolbar } from './components/StockInspector';
 import { useVerification } from './service/useVerification';
@@ -92,6 +93,7 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
   });
   const [inspectorWidth, setInspectorWidth] = useState(340);
   const [planMode, setPlanMode] = useState<'combined' | 'endmill'>('combined');
+  const [simView, setSimView] = useState(false);
   const [openError, setOpenError] = useState('');
   const [libraryOpen, setLibraryOpen] = useState<LibraryOpen | null>(null);
   const libraryAssignments = useLibraryAssignments(recovered);
@@ -235,6 +237,18 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
     ...(planning.result?.task.summary?.diagnostics ?? []),
     ...(planning.result?.task.summary?.generationIssues ?? []),
   ] : [];
+  const simulation = useMemo(() => {
+    const result = planning.current ? planning.result : null;
+    const simJob = draftResult.job;
+    if (!result || !simJob) {
+      return { ready: false as const, available: false, reason: capabilities.mode === 'live'
+        ? 'Generate a plan first; the simulation replays its recorded motions while the task stays current.'
+        : 'Planning and the simulation need the local Rust service; fixture mode has no recorded motions.' };
+    }
+    if (simJob.stock.thickness_mm === null || simJob.stock.thickness_mm <= 0) return { ready: false as const, available: false, reason: 'Stock thickness is required before planning and simulation.' };
+    return { ready: true as const, available: true, reason: '', motions: result.motions, job: simJob, slices: result.stockSlices };
+  }, [planning.current, planning.result, draftResult.job, capabilities.mode]);
+  useEffect(() => { if (simView && !simulation.ready) setSimView(false); }, [simView, simulation.ready]);
   const outputIssues = output.task?.diagnostic ? [output.task.diagnostic] : output.current ? [
     ...(output.result?.report.diagnostics ?? []), ...(output.result?.report.plan_verification.original.findings ?? []),
     ...(output.result?.report.emitted_verification?.findings ?? []),
@@ -267,8 +281,10 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
         <div className="navigator-footer"><label htmlFor="theme">Appearance</label><select id="theme" value={theme} onChange={event => setTheme(event.target.value as Theme)}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><button className="text-button" onClick={() => shortcutsDialog.current?.showModal()}>Keyboard shortcuts <span>?</span></button></div>
       </aside>
       <main className="work-area">
-        {planning.result && <InspectionToolbar inspection={inspection} />}
-        <Viewport display={display} job={job} inspected={inspected} onInspect={id => { setInspected(id); setStep('artwork'); }} hidden={hidden} motions={inspection.motions} stockInfo={inspection.current ? inspection.selected : undefined} stockGeometry={inspection.geometry} stockPending={inspection.pending} stockError={inspection.error} focus={step === 'verify' && verification.focus ? verification.focus : inspection.focus} verificationFinding={step === 'verify' ? verification.finding : undefined} verificationScope={verification.scope === 'rounded' ? `rounded to ${verification.result?.report.rounded?.decimal_places} decimal places` : 'original coordinates'} />
+        {step === 'plan' && simView && simulation.ready ? <SimViewport motions={simulation.motions} job={simulation.job} slices={simulation.slices} onExit={() => setSimView(false)} /> : <>
+          {planning.result && <InspectionToolbar inspection={inspection} />}
+          <Viewport display={display} job={job} inspected={inspected} onInspect={id => { setInspected(id); setStep('artwork'); }} hidden={hidden} motions={inspection.motions} stockInfo={inspection.current ? inspection.selected : undefined} stockGeometry={inspection.geometry} stockPending={inspection.pending} stockError={inspection.error} focus={step === 'verify' && verification.focus ? verification.focus : inspection.focus} verificationFinding={step === 'verify' ? verification.finding : undefined} verificationScope={verification.scope === 'rounded' ? `rounded to ${verification.result?.report.rounded?.decimal_places} decimal places` : 'original coordinates'} />
+        </>}
         <div className="drawer"><div className="drawer-tabs"><button aria-expanded={drawer === 'issues'} onClick={() => setDrawer(drawer === 'issues' ? null : 'issues')}>Issues <span className="count">{errors.length + warnings.length + setupNeeds.length + planIssues.length + verificationIssues.length + outputIssues.length + 1 + (validation.result?.diagnostics.length ?? 0) + (displayError ? 1 : 0)}</span></button><button aria-expanded={drawer === 'activity'} onClick={() => setDrawer(drawer === 'activity' ? null : 'activity')}>Activity</button><span className="drawer-summary">{errors.length ? 'Draft needs attention' : step === 'export' || output.active ? output.label : verification.label}</span></div>
           {drawer === 'issues' && <div className="drawer-content">{setupNeeds.map(need => <button key={'setup-' + need.path} className="issue issue-button" onClick={() => focusField(need.path)}><span className="issue-tag error">SETUP</span><span><strong>{need.label}</strong><span>{need.message}</span></span></button>)}{outputIssues.slice(0,20).map((issue,index) => <button className="issue issue-button" key={'export-' + index} onClick={() => setStep('export')}><span className="issue-tag">EXPORT</span><span><strong>{issue.code}</strong><span>{issue.message}</span></span></button>)}{outputIssues.length > 20 && <button onClick={() => setStep('export')}>Review all export findings</button>}{verificationIssues.slice(0,20).map((finding, index) => <button className="issue issue-button" key={"verification-" + index} onClick={() => { setStep('verify'); verification.locate(index); }}><span className="issue-tag">VERIFY</span><span><strong>{finding.code}</strong><span>{finding.status} · {finding.message}</span></span></button>)}{verificationIssues.length > 20 && <button onClick={() => setStep('verify')}>Review all {verificationIssues.length} verification findings</button>}{planIssues.map((issue, i) => <button className="issue issue-button" key={`plan-${i}`} onClick={() => { const fix = planningIssueField(job,issue); if (fix) focusField(fix.path); else setStep('plan'); }}><span className="issue-tag">PLAN</span><span><strong>{issue.code}</strong><span>{issue.message}</span></span></button>)}<div className="issue"><span className="issue-tag">INFO</span><div><strong role="status">{validation.headline}</strong><p>{capabilities.mode === 'live' ? 'This checks supplied job settings and SVG normalization. It does not establish stage readiness, cutting verification, or machine-output eligibility.' : 'The fixture adapter provides captured source geometry. Planning, geometric verification, and machine output require the local Rust service.'}</p>{validation.error && <p role="alert">{validation.error}</p>}{validation.result?.diagnostics.map((diagnostic, index) => <p key={index} role={diagnostic.severity === 'error' ? 'alert' : undefined}><strong>{diagnostic.code}</strong>: {diagnostic.message}{diagnostic.sourceId && <span> · source {diagnostic.sourceId}</span>}</p>)}</div></div>{displayError && <p role="alert">{displayError}</p>}{warnings.map(warning => <button key={warning.path} className="issue issue-button" onClick={() => focusField(warning.path)}><span className="issue-tag">REVIEW</span><span>{warning.message}</span></button>)}{errors.map(([path, error]) => <button key={path} className="issue issue-button" onClick={() => focusField(path)}><span className="issue-tag error">INPUT</span><span><strong>{allFields(state.draft.base).find(field => field.path === path)?.label ?? path}</strong><span>{error}</span></span></button>)}</div>}
           {drawer === 'activity' && <div className="drawer-content"><p>{validation.pending ? 'Checking editable job with Rust…' : output.active ? 'Machine output is being checked. Open Export for status or cancellation.' : verification.active ? 'Continuous verification is running. Open Verification for status or cancellation.' : planning.active ? 'A background planning task is active. Inspect Plan & inspect for progress or cancellation.' : 'No calculation is active.'}</p><p className="muted">Draft revision {state.revision}. {recovery}. Recovery belongs to this browser tab; download a job to keep it after closing the tab.</p></div>}
@@ -286,7 +302,7 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
         </>}
         {step === 'stock' && <StockSetup {...setupProps} />}
         {step === 'tools' && <ToolsSetup {...setupProps} assignments={libraryAssignments.assignments} openLibrary={capabilities.toolLibrary ? slot => setLibraryOpen(previous => ({ serial: (previous?.serial ?? 0) + 1, slot })) : undefined} />}
-        {step === 'plan' && <PlanPanel planning={planning} capabilities={capabilities} job={draftResult.job} validation={validation.result} revision={state.revision} stage={planMode} onStage={setPlanMode} inspection={inspection} onFix={focusField} />}
+        {step === 'plan' && <PlanPanel planning={planning} capabilities={capabilities} job={draftResult.job} validation={validation.result} revision={state.revision} stage={planMode} onStage={setPlanMode} inspection={inspection} onFix={focusField} simulation={{ available: simulation.available, active: simView && simulation.ready, reason: simulation.reason, onToggle: () => setSimView(previous => !previous) }} />}
         {step === 'verify' && <VerificationPanel verification={verification} planCurrent={planning.current} combined={planMode === 'combined'} />}
         {step === 'export' && <><ExportPanel output={output} job={job} planCurrent={planning.current && planMode === 'combined'} /><Group title="Portable job"><p className="hint">Download source and settings independently of machine output. The snapshot contains no display caches or verification claims.</p><button className="wide" onClick={download}>Download job snapshot</button></Group><details className="inspector-group"><summary>Job machine constraints (optional)</summary><MachineSetup {...setupProps} /></details></>}
         <div className="inspector-next"><button onClick={() => setStep(steps[Math.min(steps.findIndex(item => item.id === step) + 1, steps.length - 1)].id)} disabled={step === 'export'}>Next: {steps[Math.min(steps.findIndex(item => item.id === step) + 1, steps.length - 1)].label} <span>→</span></button></div>

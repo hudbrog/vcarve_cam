@@ -6,11 +6,12 @@ import { StockInspector, type Inspection } from './StockInspector';
 import { missingPlanningSettings, planningIssueField } from '../state/setupNeeds';
 
 type Planning = ReturnType<typeof usePlanning>;
-export function PlanPanel({ planning, capabilities, job, validation, revision, stage, onStage, inspection, onFix }: {
+export function PlanPanel({ planning, capabilities, job, validation, revision, stage, onStage, inspection, onFix, simulation }: {
   planning: Planning; capabilities: Capabilities; job: Job | null; validation: Validation | undefined;
   revision: number; stage: PlanningStage; onStage: (stage: PlanningStage) => void;
   inspection: Inspection;
   onFix: (path: string) => void;
+  simulation: { available: boolean; active: boolean; reason: string; onToggle: () => void };
 }) {
   const { task, result } = planning;
   const checked = !!job && validation?.valid && validation.authoritative && validation.revision === revision && !!validation.documentFingerprint;
@@ -40,6 +41,13 @@ export function PlanPanel({ planning, capabilities, job, validation, revision, s
       {task?.state === 'succeeded' && !task.resultAvailable && <p className="hint">The motion preview and plan artifact expired. The service retains the latest {capabilities.planning?.retainedResults} results.</p>}
     </section>}
     <StockInspector inspection={inspection} />
+    <section className="inspector-group"><h2>Stock simulation · 3D</h2>
+      <p className="hint">Animate the recorded motions cutting the stock in a 3D view: play, speed up, and scroll through the process, or jump to the finished surface. The rectangle is the nominal target inflated by the largest tool; timing is a display model from recorded feeds.</p>
+      {simulation.available
+        ? <button className="wide" aria-pressed={simulation.active} onClick={simulation.onToggle}>{simulation.active ? 'Back to the 2D view' : 'Open 3D simulation'}</button>
+        : <p className="hint">{simulation.reason}</p>}
+      <p className="hint">Visual preview only at a labeled resolution. Verification remains the authority for cuts and quality.</p>
+    </section>
     {result?.task.summary && <section className="inspector-group plan-result"><h2>{planning.current ? 'Current plan' : 'Previous plan · stale'}</h2>
       <p className={`plan-outcome ${result.task.summary.status}`}>Outcome: {result.task.summary.status}</p>
       {!planning.current && <p className="inline-warning">This result does not match the current draft, stage, or service. Its motions are hidden.</p>}
