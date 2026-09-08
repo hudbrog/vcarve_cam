@@ -1,7 +1,7 @@
 # U8: 3D stock simulator (animated material-removal preview)
 
 Date: 2026-09-07
-Status: phase 1 (technical-risk spike) complete; phase 2 core build complete and verified live (see §10) — M5 cross-check test, browser-checks entry, and flower-scale measurement remain
+Status: complete through phase 2 — spike measured, animated simulator built and verified live, M5 cross-check test and browser acceptance recorded (see §9–§10); only integrated-GPU fps validation remains hardware-pending
 
 A browser-side 3D material-removal view driven by the recorded motions of a
 current plan task: the stock starts as a slab, the recorded endmill/V-bit
