@@ -558,7 +558,14 @@ phase-2 estimate re-baselined on measurements instead of arithmetic.
 6. App integration: "Stock simulation · 3D" section on the Plan step, center
    viewport swap, availability gating, fixture-mode notice. **Done.**
 7. M5 cross-check integration test; `browser-checks.md` update; flower-job
-   measurement recorded in §9. **Remaining.**
+   measurement recorded in §9. **Done (2026-09-08): the cross-check test
+   (`web/integration/simulator-crosscheck.test.ts`) plans and verifies the
+   curved-medial fixture through a live service and holds the simulator's
+   removed area inside every published depth-band interval — including the
+   converged bands at ±1.5 mm²; the browser-checks simulator section and the
+   flower measurements are recorded. Integrated-GPU fps validation remains
+   hardware-pending (an AMD 780M is present but selecting it needs an OS
+   per-app graphics preference).**
 
 Live verification (2026-09-07, `cam serve` 0.7.6 + built UI, m4
 curved-medial fixture, 565 motions): job → plan → simulation runs with zero

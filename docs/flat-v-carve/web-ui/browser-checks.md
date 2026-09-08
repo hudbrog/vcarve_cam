@@ -50,3 +50,22 @@ Local evidence is generated under `flat-v-carve/web/test-results/browser/` (igno
 7. Exercise source inclusion/visibility, keyboard actions, both dialogs, themes, and the viewport matrix above. Verify inner panel overflow as well as overall page overflow.
 
 `pnpm test` runs the 37 unit/contract regressions; `pnpm check:contracts` checks Rust field sets and captured geometry; `pnpm build` checks TypeScript and the static bundle. Browser checks here were performed through browser automation and are not represented as a headless test suite. Other browser engines and full screen-reader qualification remain release acceptance work.
+
+## 3D stock simulator (2026-09-08)
+
+Result: passed in the embedded Chromium against the local Rust 0.7.7 service, on the m4 curved-medial fixture and the real flower job.
+
+| Check | Result |
+| --- | --- |
+| Availability gating | Fixture mode and stale plans show the explanatory reason; the toggle appears only for a current succeeded plan. |
+| Startup | Simulation opens interactive in ~70 ms on flower (22,893 motions): stock slab visible, no blank period. |
+| Playback | Play/pause, 0.25–200× speeds, single-motion steps, and the tool following the model clock. |
+| Scrubbing | Forward and backward scrub update surface and stats continuously; the adaptive ladder keeps percentages moving during long End jumps and redirects to newer targets. |
+| Rewind | Scrubbing back lowers applied percentage and removed volume consistently (flower 4.4 cm³ → 3.9 at 66%, fixture 432 → 211 mm³ at 1:00). |
+| Stage colors and legend | Endmill-blue and V-bit-teal surfaces with per-stage volume readouts; uncut stock neutral. |
+| Z exaggeration, fit, track tool | Exaggeration rebuilds skirts and scales the tool; fit reframes; track tool pans the orbit target. |
+| Labeling | "VISUAL PREVIEW" badge with cell size and the verification-remains-authoritative note stay visible. |
+| Exit | "Back to 2D" restores the artwork viewport without errors. |
+| Browser console | No application errors or warnings during any of the above. |
+
+Integrated-GPU fps validation is still open: this machine has an AMD 780M alongside the RTX 3090, and selecting the iGPU needs an OS per-app graphics preference. The RTX measurement (70 fps at the 9.87 M-triangle worst case) has ample headroom over the 25 fps gate.
