@@ -230,6 +230,83 @@ describe('motion application semantics', () => {
       expect(snapshot.some(level => level > 0)).toBe(true);
     }
   });
+  it('cuts cells that only the moving V-bit later crosses', () => {
+    const cell = 0.05;
+    const f = field([vbit60()], cell, stock(200, 40));
+    // The disc around the start point misses (18, 10); the segment covers it.
+    applyMotion(f, motion(0, 10, 10, -1, 20, 10, -1, 'cut'));
+    const col = Math.round(18 / cell - 0.5);
+    const row = Math.round(10 / cell - 0.5);
+    expect(depthAt(f, col, row)).toBeGreaterThan(0.9);
+    // A cell at 1 mm lateral distance keeps the cone profile.
+    const sideCol = Math.round(15 / cell - 0.5);
+    const sideRow = Math.round(11 / cell - 0.5);
+    const cy = (sideRow + 0.5) * cell;
+    const expected = Math.max(0, 1 - (Math.abs(cy - 10) - 0.25) / Math.tan(Math.PI / 6));
+    expect(Math.abs(depthAt(f, sideCol, sideRow) - expected)).toBeLessThan(0.001);
+  });
+
+  it('finds the true deepest point of sloped V-bit cuts', () => {
+    // Reviewer case: 60-degree cone, 0.5 mm tip, ramp descending 1 mm over
+    // 2 mm of travel. The deepest cut at the sample cell is NOT at the XY
+    // projection; the shifted cone stationary point reaches ~1.2168 mm.
+    const cell = 0.01;
+    const slope = Math.tan(Math.PI / 6);
+    const f = field([vbit60()], cell, stock(200, 40));
+    const run = { x0: 10, y0: 10, z0: -2, x1: 12, y1: 10, z1: -3 };
+    applyMotion(f, motion(0, run.x0, run.y0, run.z0, run.x1, run.y1, run.z1, 'ramp'));
+    const bruteMax = (col: number, row: number, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number) => {
+      const qx = (col + 0.5) * cell - x0;
+      const qy = (row + 0.5) * cell - y0;
+      const dx = x1 - x0;
+      const dy = y1 - y0;
+      const a2 = dx * dx + dy * dy;
+      let best = 0;
+      for (let step = 0; step <= 8000; step++) {
+        const t = step / 8000;
+        const dist = Math.sqrt(a2 * t * t - 2 * (qx * dx + qy * dy) * t + qx * qx + qy * qy);
+        const depth = -(z0 + (z1 - z0) * t) - Math.max(0, dist - 0.25) / slope;
+        if (depth > best) best = depth;
+      }
+      return best;
+    };
+    const col = Math.floor(11.05 / cell);
+    const row = Math.floor(11.05 / cell);
+    const analytic = depthAt(f, col, row);
+    const brute = bruteMax(col, row, run.x0, run.y0, run.z0, run.x1, run.y1, run.z1);
+    expect(analytic).toBeGreaterThan(1.2);
+    expect(analytic).toBeLessThan(1.22);
+    expect(analytic).toBeGreaterThanOrEqual(brute - 0.0005);
+    expect(analytic).toBeLessThanOrEqual(brute + 0.002);
+    // Property: the analytic surface equals a dense brute-force sample of the
+    // same continuous function, across randomized sloped segments.
+    let seed = 987654321;
+    const random = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32;
+    for (let trial = 0; trial < 12; trial++) {
+      const x0 = 20 + random() * 60;
+      const y0 = 20 + random() * 10;
+      const z0 = -(0.5 + random() * 1.5);
+      const angle = random() * Math.PI * 2;
+      const length = 1 + random() * 8;
+      const x1 = x0 + Math.cos(angle) * length;
+      const y1 = y0 + Math.sin(angle) * length;
+      const z1 = Math.max(-4, Math.min(-0.3, z0 - (random() - 0.5) * 3));
+      const g = field([vbit60()], cell, stock(200, 40));
+      applyMotion(g, motion(0, x0, y0, z0, x1, y1, z1, 'ramp'));
+      for (let sample = 0; sample < 12; sample++) {
+        const px = x0 + (random() - 0.5) * (length + 6);
+        const py = y0 + (random() - 0.5) * 8;
+        const col2 = Math.floor(px / cell);
+        const row2 = Math.floor(py / cell);
+        const sampleBrute = bruteMax(col2, row2, x0, y0, z0, x1, y1, z1);
+        const sampleAnalytic = depthAt(g, col2, row2);
+        // The analytic value is the exact maximum; dense sampling approaches
+        // it from below and never exceeds it by more than quantization.
+        expect(sampleAnalytic).toBeGreaterThanOrEqual(sampleBrute - 0.0005);
+        expect(sampleAnalytic).toBeLessThanOrEqual(sampleBrute + 0.002);
+      }
+    }
+  });
   it('is deterministic for a repeated mixed workload', () => {
     const tools = [endmill4(), vbit60()];
     let seed = 123456789;

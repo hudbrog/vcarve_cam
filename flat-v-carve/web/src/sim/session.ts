@@ -49,6 +49,8 @@ interface UndoEntry {
   index: number;
   tiles: Map<number, SavedTile>;
   bytes: number;
+  /** Incremental statistics at interval start (see restoreStats). */
+  stats: { dirtyCells: number; removedVolumeMm3: number; stage: [number, number] };
 }
 
 export interface SessionOptions {
@@ -96,7 +98,17 @@ export class SimulationSession {
   }
 
   private pushLog(index: number): void {
-    this.logs.push({ index, tiles: new Map(), bytes: 0 });
+    const stats = this.field.stats;
+    this.logs.push({
+      index,
+      tiles: new Map(),
+      bytes: 0,
+      stats: {
+        dirtyCells: stats.dirtyCells,
+        removedVolumeMm3: stats.removedVolumeMm3,
+        stage: [stats.stageRemovedMm3[0], stats.stageRemovedMm3[1]],
+      },
+    });
     beginEpoch(this.field);
   }
 
@@ -172,17 +184,34 @@ export class SimulationSession {
     const base = this.logs[this.logs.length - 1];
     if (base.index > index) {
       // Every retained entry starts after the target: rebuild from pristine.
+      // Cleared tiles must count as changed so collect() emits them and the
+      // display drops the old cuts.
       for (let tile = 0; tile < this.field.heights.length; tile++) {
+        if (this.field.heights[tile] === undefined) continue;
         this.field.heights[tile] = undefined;
         this.field.cellOwner[tile] = undefined;
+        this.field.tileVersions[tile]++;
       }
+      this.field.stats.dirtyCells = 0;
+      this.field.stats.removedVolumeMm3 = 0;
+      this.field.stats.stageRemovedMm3 = [0, 0];
       this.logs.length = 0;
       this.logBytes = 0;
       this.pushLog(0);
       return 0;
     }
     for (const [tile, saved] of base.tiles) this.restoreTile(tile, saved);
+    this.restoreStats(base);
     return base.index;
+  }
+
+  /** Undo entries snapshot the incremental statistics at interval start, so a
+   * rewind restores the exact attribution a forward pass would report — the
+   * per-stage split cannot be reconstructed from final cell owners. */
+  private restoreStats(entry: UndoEntry): void {
+    this.field.stats.dirtyCells = entry.stats.dirtyCells;
+    this.field.stats.removedVolumeMm3 = entry.stats.removedVolumeMm3;
+    this.field.stats.stageRemovedMm3 = [entry.stats.stage[0], entry.stats.stage[1]];
   }
 
   private restoreTile(tile: number, saved: SavedTile): void {
@@ -218,7 +247,6 @@ export class SimulationSession {
         const base = this.rewindToBoundary(targetIndex);
         this.applied = base;
         this.applyRange(base, targetIndex);
-        this.recomputeStats();
       } else {
         if (this.fraction > 0) {
           if (this.applied === targetIndex) {
@@ -246,37 +274,6 @@ export class SimulationSession {
 
   checksum(): string {
     return checksum(this.field);
-  }
-
-  /**
-   * Rewind restores do not replay the incremental bookkeeping, so counts are
-   * recomputed from the field: totals exactly, and the per-stage split by the
-   * final owner of each cell (display statistics, not engine evidence).
-   */
-  private recomputeStats(): void {
-    const field = this.field;
-    let dirtyCells = 0;
-    let volumeLevels = 0;
-    const stageLevels = [0, 0];
-    for (let tile = 0; tile < field.heights.length; tile++) {
-      const heights = field.heights[tile];
-      if (heights === undefined) continue;
-      const owners = field.cellOwner[tile]!;
-      for (let local = 0; local < heights.length; local++) {
-        const level = heights[local];
-        if (level === 0) continue;
-        dirtyCells++;
-        volumeLevels += level;
-        const owner = owners[local];
-        if (owner === 1 || owner === 2) stageLevels[owner - 1] += level;
-      }
-    }
-    field.stats.dirtyCells = dirtyCells;
-    field.stats.removedVolumeMm3 = volumeLevels * field.quantumMm * field.cellAreaMm2;
-    field.stats.stageRemovedMm3 = [
-      stageLevels[0] * field.quantumMm * field.cellAreaMm2,
-      stageLevels[1] * field.quantumMm * field.cellAreaMm2,
-    ];
   }
 
   private collect(): SeekResult {

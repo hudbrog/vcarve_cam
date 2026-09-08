@@ -446,15 +446,14 @@ function applyVbit(
         for (let col = colStart; col <= colEnd; col++) {
           const px = field.x0Mm + (col + 0.5) * field.cellMm - ax;
           const qq = px * px + py * py;
-          if (qq > maxR2) continue;
           // Coverage interval [T0, T1]: parameters whose tip stays within the
-          // cutting radius. Inside it, the cut surface height
-          // z(t) + max(0, dist(t) - tipR)/slope is a linear term plus a
-          // convex term, so its minimum sits at an interval endpoint, the
-          // cell's projection onto the segment, or the tip-flat kink.
+          // cutting radius. Only a plunge can use the start-disc test; a
+          // moving segment covers cells far from its start point, and the
+          // quadratic below finds those intervals.
           let t0: number;
           let t1: number;
           if (plunge) {
+            if (qq > maxR2) continue;
             t0 = 0;
             t1 = 1;
           } else {
@@ -469,7 +468,23 @@ function applyVbit(
             if (t0 > t1) continue;
           }
           let surface = Infinity;
-          for (let candidate = 0; candidate < 5; candidate++) {
+          // Inside [T0, T1] the cut surface is z(t) + max(0, dist(t) - tipR)
+          // / slope: piecewise linear (tip flat) and convex (cone flank).
+          // Its minimum sits at an interval endpoint, a tip-flat kink, or
+          // the stationary point of one of the pieces. On the cone flank the
+          // z term shifts that stationary point away from the XY projection,
+          // so it is solved in closed form: with u = 2 a2 t + b and
+          // K = 4 a2 qq - b^2 (invariant completions of the distance
+          // quadratic), z' + slope^-1 * dist' = 0 gives
+          // u = -dz sqrt(K) / sqrt(slope^-2 a2 - dz^2), which exists only
+          // when the cone rises faster than the tip descends.
+          const bRaw = -2 * (px * dx + py * dy);
+          const coneDenominator = invSlope * invSlope * a2 - dz * dz;
+          const stationaryValid = !plunge && coneDenominator > 0;
+          const stationaryT = stationaryValid
+            ? (-dz * Math.sqrt((4 * a2 * qq - bRaw * bRaw) / coneDenominator) - bRaw) * inv2a
+            : 0;
+          for (let candidate = 0; candidate < 6; candidate++) {
             let t: number;
             if (candidate === 0) t = t0;
             else if (candidate === 1) t = t1;
@@ -478,17 +493,20 @@ function applyVbit(
               t = (px * dx + py * dy) / a2;
               if (t < t0) t = t0;
               if (t > t1) t = t1;
+            } else if (candidate === 5) {
+              if (!stationaryValid) continue;
+              t = stationaryT;
+              if (t < t0 || t > t1) continue;
             } else {
               if (plunge) continue;
-              const b = -2 * (px * dx + py * dy);
-              const disc = b * b - 4 * a2 * (qq - tipR2);
+              const disc = bRaw * bRaw - 4 * a2 * (qq - tipR2);
               if (disc < 0) continue;
               const root = Math.sqrt(disc);
-              const u = candidate === 3 ? (-b - root) * inv2a : (-b + root) * inv2a;
+              const u = candidate === 3 ? (-bRaw - root) * inv2a : (-bRaw + root) * inv2a;
               if (u < t0 || u > t1) continue;
               t = u;
             }
-            const dist = Math.sqrt(a2 * t * t - 2 * (px * dx + py * dy) * t + qq);
+            const dist = Math.sqrt(a2 * t * t + bRaw * t + qq);
             const height = dist <= tipR ? 0 : (dist - tipR) * invSlope;
             const z = az + dz * t + height;
             if (z < surface) surface = z;

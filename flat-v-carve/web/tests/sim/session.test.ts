@@ -133,13 +133,20 @@ describe('simulation session seeks', () => {
     session.seekToEnd();
     for (const fraction of [0.999, 0.5, 0]) {
       for (const index of [motions.length - 1, 60, 24, 12, 4, 0]) {
-        const rewound = session.seek(index, fraction).applied;
-        expect(rewound).toBe(index);
+        const result = session.seek(index, fraction);
+        expect(result.applied).toBe(index);
         const fresh = buildSession(motions);
-        fresh.seek(index, fraction);
+        const freshResult = fresh.seek(index, fraction);
         if (stateDigest(session.field) !== stateDigest(fresh.field)) {
-          throw new Error(`rewind mismatch at index=${index} fraction=${fraction} (session dirty ${session.field.stats.dirtyCells}, fresh ${fresh.field.stats.dirtyCells})`);
+          throw new Error(`rewind mismatch at index=${index} fraction=${fraction}`);
         }
+        // Stage attribution must survive the rewind exactly: undo entries
+        // snapshot the incremental statistics rather than re-deriving them
+        // from final cell owners.
+        expect(result.stats.dirtyCells).toBe(freshResult.stats.dirtyCells);
+        expect(Math.abs(result.stats.removedVolumeMm3 - freshResult.stats.removedVolumeMm3)).toBeLessThan(1e-9);
+        expect(Math.abs(result.stats.stageRemovedMm3[0] - freshResult.stats.stageRemovedMm3[0])).toBeLessThan(1e-9);
+        expect(Math.abs(result.stats.stageRemovedMm3[1] - freshResult.stats.stageRemovedMm3[1])).toBeLessThan(1e-9);
       }
     }
   });
@@ -149,10 +156,15 @@ describe('simulation session seeks', () => {
     // Cap smaller than one saved tile pair, so every entry is evicted.
     const session = buildSession(motions, 4, 1024);
     session.seekToEnd();
+    expect(session.field.stats.dirtyCells).toBeGreaterThan(0);
     const fresh = buildSession(motions);
     fresh.seek(10, 0.5);
-    session.seek(10, 0.5);
+    const rewind = session.seek(10, 0.5);
     expect(stateDigest(session.field)).toBe(stateDigest(fresh.field));
+    // The pristine rebuild must emit tile deltas so the display clears the
+    // cuts that are no longer present.
+    expect(rewind.tiles.length).toBeGreaterThan(0);
+    expect(rewind.stats.dirtyCells).toBe(fresh.field.stats.dirtyCells);
   });
 
   it('emits tile deltas only for changed tiles', () => {
