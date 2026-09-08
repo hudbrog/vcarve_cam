@@ -1,0 +1,215 @@
+use super::*;
+use serde_json::json;
+
+fn instance() -> String {
+    "1f".repeat(16)
+}
+fn hex64(value: &Value) -> &str {
+    value.as_str().unwrap()
+}
+fn parse(reply: &str) -> Value {
+    serde_json::from_str(reply).unwrap()
+}
+
+#[test]
+fn document_open_returns_the_envelope_the_ui_expects() {
+    let job_json = include_str!("../../../fixtures/m3/island.json");
+    let request = json!({"apiVersion": document::API_VERSION, "requestId": "r-1", "revision": 3,
+        "command": {"operation": "open", "json": job_json}});
+    let reply = parse(&document(&request.to_string()));
+    assert_eq!(reply["ok"]["requestId"], "r-1");
+    assert_eq!(reply["ok"]["revision"], 3);
+    assert_eq!(reply["ok"]["apiVersion"], document::API_VERSION);
+    let data = &reply["ok"]["data"];
+    assert!(!data["display"]["components"].as_array().unwrap().is_empty());
+    assert_eq!(data["display"]["coordinateSpace"], "source-page-mm-y-up");
+    assert_eq!(hex64(&data["documentFingerprint"]).len(), 64);
+    assert!(data["missingMachiningFields"].is_array());
+}
+
+#[test]
+fn document_validate_is_authoritative_for_invalid_jobs() {
+    let request = json!({"apiVersion": document::API_VERSION, "requestId": "r-2", "revision": 0,
+        "command": {"operation": "validate", "job": {"schema_version": 3, "unexpected": true}}});
+    let reply = parse(&document(&request.to_string()));
+    let data = &reply["ok"]["data"];
+    assert_eq!(data["valid"], false);
+    assert_eq!(data["authoritative"], true);
+    assert!(data["diagnostics"][0]["severity"] == "error");
+    assert!(data["documentFingerprint"].is_null());
+}
+
+#[test]
+fn document_rejects_api_and_request_identity_mismatch() {
+    let request = json!({"apiVersion": "ui-6", "requestId": "r-3", "revision": 0,
+        "command": {"operation": "validate", "job": {}}});
+    let reply = parse(&document(&request.to_string()));
+    assert_eq!(reply["error"]["code"], "API_VERSION");
+    let request = json!({"apiVersion": document::API_VERSION, "requestId": "bad id!", "revision": 0,
+        "command": {"operation": "validate", "job": {}}});
+    let reply = parse(&document(&request.to_string()));
+    assert_eq!(reply["error"]["code"], "REQUEST_IDENTITY");
+}
+
+fn island_plan_request(revision: u64) -> (String, String) {
+    let job_json = include_str!("../../../fixtures/m3/island.json");
+    let job = Job::from_json(job_json).unwrap();
+    let fingerprint = document::fingerprint(&job);
+    (
+        json!({"apiVersion": document::API_VERSION, "instanceId": instance(), "requestId": "plan-1",
+            "revision": revision, "documentFingerprint": fingerprint, "stage": "endmill",
+            "job": serde_json::to_value(&job).unwrap()})
+        .to_string(),
+        fingerprint,
+    )
+}
+
+#[test]
+fn admit_plan_checks_identity_staleness_and_returns_a_stable_hash() {
+    let (request, fingerprint) = island_plan_request(7);
+    let admitted = parse(&admit_plan(&request, &instance()));
+    assert_eq!(admitted["ok"]["documentFingerprint"], fingerprint);
+    let hash = hex64(&admitted["ok"]["requestHash"]);
+    assert_eq!(hash.len(), 64);
+    assert_eq!(
+        parse(&admit_plan(&request, &instance()))["ok"]["requestHash"],
+        hash
+    );
+    let wrong_instance = request.replace(&instance(), &"ab".repeat(16));
+    assert_eq!(
+        parse(&admit_plan(&wrong_instance, &instance()))["error"]["code"],
+        "TASK_INSTANCE"
+    );
+    let stale = request.replace(&fingerprint, &"0".repeat(64));
+    assert_eq!(
+        parse(&admit_plan(&stale, &instance()))["error"]["code"],
+        "STALE_DOCUMENT"
+    );
+}
+
+#[test]
+fn plan_endmill_returns_a_consistent_summary_motions_and_plan_json() {
+    let input = json!({"stage": "endmill", "job": serde_json::from_str::<Value>(
+        include_str!("../../../fixtures/m3/island.json")).unwrap().to_string()});
+    let reply = parse(&plan(&input.to_string()));
+    let output = &reply["ok"];
+    let motions = output["motions"].as_array().unwrap();
+    assert!(!motions.is_empty());
+    assert_eq!(output["summary"]["motionCount"], motions.len());
+    assert_eq!(output["summary"]["previewMotionCount"], motions.len());
+    assert_eq!(output["summary"]["engineVersion"], ENGINE_VERSION);
+    assert!(hex64(&output["summary"]["inputFingerprint"]).len() == 64);
+    assert!(
+        !output["inspection"]["slices"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(serde_json::from_str::<Value>(output["planJson"].as_str().unwrap()).is_ok());
+    assert!(output["verificationReceipt"].is_null());
+}
+
+fn combined_output() -> Value {
+    let input =
+        json!({"stage": "combined", "job": include_str!("../../../fixtures/m4/wide-floor.json")});
+    let reply = parse(&plan(&input.to_string()));
+    assert!(
+        reply["error"].is_null(),
+        "combined planning failed: {reply}"
+    );
+    reply["ok"].clone()
+}
+
+#[test]
+fn plan_verify_and_export_round_trip_with_matching_identities() {
+    let output = combined_output();
+    assert!(!output["verificationReceipt"].is_null());
+    let identity = json!({"planTaskId": "plan-1",
+        "inputFingerprint": output["summary"]["inputFingerprint"],
+        "motionFingerprint": output["summary"]["motionFingerprint"],
+        "options": cam_core::verification::VerificationOptions::default()});
+    let verify_input = json!({"planJson": output["planJson"], "receipt": output["verificationReceipt"],
+        "identity": identity});
+    let verified = parse(&verify(&verify_input.to_string()))["ok"].clone();
+    assert_eq!(verified["summary"]["status"], "passed");
+    let report: Value = serde_json::from_str(verified["reportJson"].as_str().unwrap()).unwrap();
+    assert_eq!(report["status"], "passed");
+    assert_eq!(
+        report["verification_fingerprint"],
+        verified["summary"]["verificationFingerprint"]
+    );
+
+    let profile = cam_core::post::LinuxCncProfile::from_json(include_str!(
+        "../../../fixtures/m6/macro-stock-bottom.json"
+    ))
+    .unwrap();
+    let export_identity = json!({"planTaskId": "plan-1",
+        "inputFingerprint": output["summary"]["inputFingerprint"],
+        "motionFingerprint": output["summary"]["motionFingerprint"],
+        "profile": profile, "layout": "combined",
+        "options": cam_core::verification::VerificationOptions::default()});
+    let export_input = json!({"planJson": output["planJson"], "receipt": output["verificationReceipt"],
+        "identity": export_identity});
+    let exported = parse(&export_linuxcnc(&export_input.to_string()))["ok"].clone();
+    assert_eq!(exported["summary"]["status"], "passed");
+    assert_eq!(exported["programs"].as_array().unwrap().len(), 1);
+    assert_eq!(exported["programs"][0]["filename"], "combined.ngc");
+    assert!(
+        !exported["programs"][0]["gcode"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn verify_rejects_a_receipt_from_a_different_plan() {
+    let output = combined_output();
+    let identity = json!({"planTaskId": "plan-1",
+        "inputFingerprint": "0".repeat(64),
+        "motionFingerprint": output["summary"]["motionFingerprint"],
+        "options": cam_core::verification::VerificationOptions::default()});
+    let verify_input = json!({"planJson": output["planJson"], "receipt": output["verificationReceipt"],
+        "identity": identity});
+    let reply = parse(&verify(&verify_input.to_string()));
+    assert_eq!(reply["error"]["code"], "VERIFICATION_PLAN_IDENTITY");
+}
+
+#[test]
+fn admission_for_reports_binds_the_combined_source_plan() {
+    let (_, fingerprint) = island_plan_request(9);
+    let source = json!({"stage": "endmill", "revision": 9, "documentFingerprint": fingerprint,
+        "verification": null, "export": null,
+        "summary": {"inputFingerprint": "a".repeat(64), "motionFingerprint": "b".repeat(64)}});
+    let verify_start = json!({"apiVersion": document::API_VERSION, "instanceId": instance(),
+        "requestId": "verify-1", "revision": 9, "documentFingerprint": fingerprint,
+        "verification": {"planTaskId": "plan-1", "inputFingerprint": "a".repeat(64),
+            "motionFingerprint": "b".repeat(64),
+            "options": cam_core::verification::VerificationOptions::default()}});
+    let reply = parse(&admit_verification(
+        &verify_start.to_string(),
+        &instance(),
+        &source.to_string(),
+    ));
+    assert_eq!(reply["error"]["code"], "VERIFICATION_STAGE");
+    let combined_source = json!({"stage": "combined", "revision": 9, "documentFingerprint": fingerprint,
+        "verification": null, "export": null,
+        "summary": {"inputFingerprint": "a".repeat(64), "motionFingerprint": "b".repeat(64)}});
+    let reply = parse(&admit_verification(
+        &verify_start.to_string(),
+        &instance(),
+        &combined_source.to_string(),
+    ));
+    assert_eq!(hex64(&reply["ok"]["requestHash"]).len(), 64);
+    let mismatched = json!({"planTaskId": "plan-1", "inputFingerprint": "a".repeat(64),
+        "motionFingerprint": "c".repeat(64),
+        "options": cam_core::verification::VerificationOptions::default()});
+    let mut wrong = verify_start.clone();
+    wrong["verification"] = mismatched;
+    let reply = parse(&admit_verification(
+        &wrong.to_string(),
+        &instance(),
+        &combined_source.to_string(),
+    ));
+    assert_eq!(reply["error"]["code"], "VERIFICATION_PLAN_IDENTITY");
+}

@@ -286,6 +286,23 @@ cargo fmt --all -- --check
 
 After dependencies have been fetched, these commands also accept `--offline` (except `cargo fmt`, which needs no network). `Cargo.lock` is part of the project. Both geometry crates have default features disabled, and all direct dependency versions are pinned.
 
+### Static web build
+
+The same UI can run without `cam.exe`: the engine is compiled to WebAssembly
+and embedded in the bundle. Build and preview it with:
+
+```sh
+cd web
+pnpm build:wasm   # wasm-pack cam-wasm into src/wasm/gen (requires wasm-pack and rustup target wasm32-unknown-unknown)
+pnpm build        # static bundle in web/dist, engine module included
+pnpm preview      # serve it; the page auto-detects the missing local service
+```
+
+Deploy `web/dist` to any static host. `?mode=wasm` forces the in-browser
+engine and `?mode=live` forces the local service. See the
+[U9 report](../docs/flat-v-carve/web-ui/u9-wasm-static.md) for architecture,
+limits, and browser acceptance evidence.
+
 `cam-core` contains in-memory geometry contracts, narrow dependency adapters, SVG normalization, portable jobs, cutter/target models, independent distance queries, both planners, linear motions, stock analysis, and preview calculations. It has no filesystem or process access. `cam-app` handles command arguments, fixtures, JSON/SVG output, and build metadata. The debug SVGs visualize source geometry, recorded paths, combined stock slices, and sampled finish quality; no G-code is generated.
 
 See the [M4 capability report](../docs/flat-v-carve/m4-capability-report.md) for combined planning, the [M3 report](../docs/flat-v-carve/m3-capability-report.md) for endmill evidence, the [M2 report](../docs/flat-v-carve/m2-capability-report.md) for importer/job evidence and the [M1 report](../docs/flat-v-carve/m1-capability-report.md) for finite-tip and exact-fit geometry. The [M0 report](../docs/flat-v-carve/m0-capability-report.md) records the underlying geometry dependencies and precision policy.

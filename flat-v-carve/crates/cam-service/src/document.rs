@@ -126,7 +126,7 @@ fn diagnostics(geometry: &NormalizedGeometry) -> Vec<UiDiagnostic> {
         .collect()
 }
 // A document receipt, deliberately distinct from planner/verification fingerprints.
-pub(crate) fn fingerprint(job: &Job) -> String {
+pub fn fingerprint(job: &Job) -> String {
     let mut hash = Sha256::new();
     hash.update(b"ui-document-v1\0");
     hash.update(ENGINE_VERSION.as_bytes());

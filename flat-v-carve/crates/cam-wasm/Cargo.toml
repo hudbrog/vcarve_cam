@@ -1,0 +1,28 @@
+[package]
+name = "cam-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+cam-core = { path = "../cam-core" }
+cam-service = { path = "../cam-service" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+wasm-bindgen = "=0.2.128"
+
+# Opt the transitive boostvoronoi -> cpp_map -> rand -> getrandom chain into
+# its browser backend; inert on native targets.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "=0.3.4", features = ["wasm_js"] }
+
+[dev-dependencies]
+cam-core = { path = "../cam-core" }
+
+[lints]
+workspace = true

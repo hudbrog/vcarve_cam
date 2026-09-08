@@ -6,38 +6,16 @@ use crate::{
     planning_worker::{Input, Output, REPORT_BYTES, Stage},
 };
 use cam_core::{
-    post::{LinuxCncProfile, ProgramLayout, export_authenticated_plan},
+    post::export_authenticated_plan,
     vcarve::{AuthenticatedPlan, VerificationReceipt, export_retained_plan},
-    verification::VerificationOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc};
 
-pub const PROFILE_BYTES: usize = 64_000;
-pub const PROGRAM_BYTES: usize = 8_000_000;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Identity {
-    pub plan_task_id: String,
-    pub input_fingerprint: String,
-    pub motion_fingerprint: String,
-    pub profile: LinuxCncProfile,
-    pub layout: ProgramLayout,
-    pub options: VerificationOptions,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Start {
-    pub api_version: String,
-    pub instance_id: String,
-    pub request_id: String,
-    pub revision: u64,
-    pub document_fingerprint: String,
-    pub export: Identity,
-}
+pub use cam_service::export::{Identity, Start};
+pub use cam_service::export::{PROFILE_BYTES, PROGRAM_BYTES};
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Work {

@@ -511,30 +511,46 @@ impl Region {
                 .map_or(1, usize::from)
                 .min(4)
                 .min(components.len());
-            let batches = std::thread::scope(|scope| {
-                let handles: Vec<_> = (0..workers)
-                    .map(|worker| {
-                        let components = &components;
-                        scope.spawn(move || {
-                            components
-                                .iter()
-                                .enumerate()
-                                .skip(worker)
-                                .step_by(workers)
-                                .map(|(i, c)| (i, c.offset(radius_mm, false)))
-                                .collect::<Vec<_>>()
+            let offset_all = |components: &[Self]| -> Vec<Vec<(usize, Result<Self>)>> {
+                vec![
+                    components
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| (i, c.offset(radius_mm, false)))
+                        .collect(),
+                ]
+            };
+            let batches = if workers <= 1 {
+                offset_all(&components)
+            } else {
+                std::thread::scope(|scope| {
+                    let handles: Vec<_> = (0..workers)
+                        .map(|worker| {
+                            let components = &components;
+                            scope.spawn(move || {
+                                components
+                                    .iter()
+                                    .enumerate()
+                                    .skip(worker)
+                                    .step_by(workers)
+                                    .map(|(i, c)| (i, c.offset(radius_mm, false)))
+                                    .collect::<Vec<_>>()
+                            })
                         })
-                    })
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|h| {
-                        h.join().map_err(|_| {
-                            Diagnostic::new("OFFSET_WORKER_PANIC", "component offset worker failed")
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join().map_err(|_| {
+                                Diagnostic::new(
+                                    "OFFSET_WORKER_PANIC",
+                                    "component offset worker failed",
+                                )
+                            })
                         })
-                    })
-                    .collect::<Result<Vec<_>>>()
-            })?;
+                        .collect::<Result<Vec<_>>>()
+                })?
+            };
             let mut results: Vec<_> = batches.into_iter().flatten().collect();
             results.sort_by_key(|(i, _)| *i);
             let results = results

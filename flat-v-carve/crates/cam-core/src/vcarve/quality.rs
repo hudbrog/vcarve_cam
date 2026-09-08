@@ -485,40 +485,58 @@ fn streamed_slices(
         .min(16);
     let workers = parallelism.min(8).min(depths.len()).max(1);
     let inner = (parallelism / workers).clamp(1, 2);
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let batches = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..workers)
-            .map(|_| {
-                let next = &next;
-                scope.spawn(move || {
-                    let mut results = vec![];
-                    loop {
-                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(&depth) = depths.get(i) else {
-                            break;
-                        };
-                        let result = crate::stock::vbit_slice_with_workers(
-                            ctx.target.region().grid(),
-                            moves,
-                            &ctx.tool,
-                            depth,
-                            inner,
-                        )
-                        .map(|v| combined_slice_with_vbit(ctx, endmill, depth, &v));
-                        results.push((i, result));
-                    }
-                    results
+    let evaluate = |i: usize| -> Result<Result<CombinedSlice>> {
+        let depth = depths[i];
+        crate::stock::vbit_slice_with_workers(
+            ctx.target.region().grid(),
+            moves,
+            &ctx.tool,
+            depth,
+            inner,
+        )
+        .map(|v| combined_slice_with_vbit(ctx, endmill, depth, &v))
+    };
+    let batches = if workers == 1 {
+        (0..depths.len())
+            .map(|i| vec![(i, evaluate(i))])
+            .collect::<Vec<_>>()
+    } else {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..workers)
+                .map(|_| {
+                    let next = &next;
+                    scope.spawn(move || {
+                        let mut results = vec![];
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(&depth) = depths.get(i) else {
+                                break;
+                            };
+                            let result = crate::stock::vbit_slice_with_workers(
+                                ctx.target.region().grid(),
+                                moves,
+                                &ctx.tool,
+                                depth,
+                                inner,
+                            )
+                            .map(|v| combined_slice_with_vbit(ctx, endmill, depth, &v));
+                            results.push((i, result));
+                        }
+                        results
+                    })
                 })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| {
-                h.join()
-                    .map_err(|_| error("STOCK_WORKER_PANIC", "stock reconstruction worker failed"))
-            })
-            .collect::<Result<Vec<_>>>()
-    })?;
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join().map_err(|_| {
+                        error("STOCK_WORKER_PANIC", "stock reconstruction worker failed")
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })?
+    };
     let mut results: Vec<_> = batches.into_iter().flatten().collect();
     results.sort_by_key(|(i, _)| *i);
     // All V-bit construction errors precede the tool-comparison errors, as in

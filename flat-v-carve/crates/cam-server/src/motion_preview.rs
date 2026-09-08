@@ -8,7 +8,7 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-pub const PAGE_MOTIONS: usize = 20_000;
+pub use cam_service::task::PAGE_MOTIONS;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Page {

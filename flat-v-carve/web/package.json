@@ -9,12 +9,13 @@
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
-    "build": "tsc --noEmit && vite build && node scripts/write-bundle-manifest.mjs",
+    "build": "pnpm build:wasm && tsc --noEmit && vite build && node scripts/write-bundle-manifest.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
     "test": "vitest run tests",
     "check:live": "vitest run integration",
     "typecheck": "tsc --noEmit",
-    "check:contracts": "node scripts/check-rust-contract.mjs && node scripts/project-display.mjs --check"
+    "check:contracts": "node scripts/check-rust-contract.mjs && node scripts/project-display.mjs --check",
+    "build:wasm": "node scripts/build-wasm.mjs"
   },
   "dependencies": {
     "react": "19.2.8",

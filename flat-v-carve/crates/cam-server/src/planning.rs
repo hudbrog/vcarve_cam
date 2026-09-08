@@ -89,13 +89,7 @@ pub struct Planning {
     pending: Arc<Semaphore>,
     worker: Arc<Semaphore>,
 }
-#[derive(Debug)]
-pub struct Failure(pub u16, pub &'static str, pub String);
-impl Failure {
-    pub(crate) fn new(status: u16, code: &'static str, message: &str) -> Self {
-        Self(status, code, message.into())
-    }
-}
+pub use cam_service::admission::Failure;
 impl Planning {
     pub fn new() -> io::Result<Arc<Self>> {
         let mut id = [0u8; 16];
@@ -180,27 +174,13 @@ impl Planning {
         request_id: &str,
         revision: u64,
     ) -> Result<(), Failure> {
-        if api_version != API_VERSION || instance_id != self.instance_id {
-            return Err(Failure::new(
-                409,
-                "TASK_INSTANCE",
-                "The service changed. Reconnect; previous tasks are not replayed.",
-            ));
-        }
-        if request_id.is_empty()
-            || request_id.len() > 128
-            || !request_id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            || revision > 9_007_199_254_740_991
-        {
-            return Err(Failure::new(
-                400,
-                "REQUEST_IDENTITY",
-                "A short request ID and safe revision are required.",
-            ));
-        }
-        Ok(())
+        cam_service::admission::validate_identity(
+            api_version,
+            instance_id,
+            request_id,
+            revision,
+            &self.instance_id,
+        )
     }
     pub(crate) fn replay(&self, id: &str, hash: &str) -> Result<Option<Snapshot>, Failure> {
         let ledger = self.ledger.lock().unwrap();

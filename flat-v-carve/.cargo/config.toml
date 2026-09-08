@@ -1,0 +1,4 @@
+# Browser builds opt getrandom's transitive backend into crypto.getRandomValues;
+# the flag is required together with the wasm_js feature declared in cam-wasm.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_wasm_js"]

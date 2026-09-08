@@ -31,7 +31,7 @@ The user should not have to coordinate independent pocket and engraving operatio
 | Geometry libraries | Tested in M0 | `clipper2-rust` 1.1.0 and `boostvoronoi` 0.12.1 behind application-owned adapters; see [capability evidence](m0-capability-report.md). |
 | Units and datum | Agreed for export | Millimeters internally; stock top is Z = 0 and cutting Z is negative. The user's M6 TLO establishes work Z0 at stock bottom/worktable; export adds stock thickness. |
 | Distribution | Proposed default | Native local executable; browser assets bundled for everyday use. |
-| WebAssembly | Deferred | Evaluate after the native geometry pipeline works. |
+| WebAssembly | Implemented | The engine core runs in the browser behind the same UI contracts; see [the wasm packing investigation](web-ui/wasm-packing.md) and the [U9 static-web report](web-ui/u9-wasm-static.md). The native local service remains the everyday default. |
 
 These documents live in `docs/flat-v-carve/`; the standalone CAM workspace now lives in `flat-v-carve/`. The planning baseline referenced an unrelated Astro website, but the M0 checkout contained only these docs. CAM development remains isolated from any website project.
 

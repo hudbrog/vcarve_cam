@@ -1,6 +1,6 @@
 //! Private IPC for cam-web's disposable compute process. No shell or user paths.
 use crate::artifact::PlanFile;
-use crate::document::{ENGINE_VERSION, JOB_BYTES, UiDiagnostic};
+use crate::document::{JOB_BYTES, UiDiagnostic};
 use crate::inspection::Inspection;
 use cam_core::{
     job::Job,
@@ -18,17 +18,12 @@ use std::{
 };
 
 pub const PREVIEW_MOTIONS: usize = crate::motion_preview::PAGE_MOTIONS;
-pub const REPORT_BYTES: usize = 16_000_000;
+pub use cam_service::task::REPORT_BYTES;
 // Only bounded display/report data crosses stdout. Complete plans stay on disk.
 pub const WORKER_BYTES: usize = 32_000_000;
 pub const WORKER_INPUT_BYTES: usize = JOB_BYTES * 2 + 100_000;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Stage {
-    Endmill,
-    Combined,
-}
+pub use cam_service::task::Stage;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Input {
@@ -103,18 +98,10 @@ pub fn calculate(input: Input) -> Result<Output, Value> {
     // Readiness is decided by the selected core planner, including its stage-specific
     // settings checks. Editable-job validation alone never implies readiness.
     let mut verification_receipt = None;
-    let (mut summary, motions, inspection) = match input.stage {
+    let (summary, motions, inspection) = match input.stage {
         Stage::Endmill => {
             let plan = plan_endmill(&job).map_err(|d| json!(UiDiagnostic::from(d)))?;
-            let summary = json!({
-                "status": plan.analysis.status, "inputFingerprint": plan.input_fingerprint,
-                "motionFingerprint": plan.motion_fingerprint, "meaning": plan.analysis.meaning,
-                "limitations": plan.analysis.limitations,
-                "diagnostics": plan.analysis.diagnostics.iter().take(100).cloned().map(UiDiagnostic::from).collect::<Vec<_>>(),
-                "omittedDiagnostics": plan.analysis.diagnostics.len().saturating_sub(100),
-                "generationIssues": plan.generation_issues.iter().take(100).collect::<Vec<_>>(),
-                "omittedGenerationIssues": plan.generation_issues.len().saturating_sub(100),
-            });
+            let summary = cam_service::summary::endmill(&plan);
             write_plan(&output_path, &plan).map_err(artifact_error)?;
             let inspection = Inspection::endmill(&plan);
             (summary, plan.motions, inspection)
@@ -123,28 +110,7 @@ pub fn calculate(input: Input) -> Result<Output, Value> {
             let (plan, receipt) =
                 plan_combined_with_receipt(&job).map_err(|d| json!(UiDiagnostic::from(d)))?;
             verification_receipt = Some(receipt);
-            let diagnostics = plan
-                .endmill
-                .analysis
-                .diagnostics
-                .iter()
-                .chain(&plan.analysis.diagnostics)
-                .collect::<Vec<_>>();
-            let issues = plan
-                .endmill
-                .generation_issues
-                .iter()
-                .chain(&plan.generation_issues)
-                .collect::<Vec<_>>();
-            let summary = json!({
-                "status": plan.analysis.status, "inputFingerprint": plan.input_fingerprint,
-                "motionFingerprint": plan.motion_fingerprint, "meaning": plan.analysis.meaning,
-                "limitations": plan.analysis.limitations.iter().chain(&plan.endmill.analysis.limitations).collect::<Vec<_>>(),
-                "diagnostics": diagnostics.iter().take(100).map(|d| UiDiagnostic::from((*d).clone())).collect::<Vec<_>>(),
-                "omittedDiagnostics": diagnostics.len().saturating_sub(100),
-                "generationIssues": issues.iter().take(100).collect::<Vec<_>>(),
-                "omittedGenerationIssues": issues.len().saturating_sub(100),
-            });
+            let summary = cam_service::summary::combined(&plan);
             write_plan(&output_path, &plan).map_err(artifact_error)?;
             let inspection = Inspection::combined(&plan);
             let motions = plan
@@ -156,11 +122,6 @@ pub fn calculate(input: Input) -> Result<Output, Value> {
             (summary, motions, inspection)
         }
     };
-    summary["engineVersion"] = json!(ENGINE_VERSION);
-    summary["motionCount"] = json!(motions.len());
-    summary["cuttingMotionCount"] = json!(motions.iter().filter(|m| m.kind.cutting()).count());
-    summary["previewMotionCount"] = json!(motions.len());
-    summary["omittedMotionCount"] = json!(0);
     let motion_path = input
         .motion_output_path
         .ok_or_else(|| artifact_error("Missing service-owned motion preview file".into()))?;

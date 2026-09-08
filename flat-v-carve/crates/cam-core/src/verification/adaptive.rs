@@ -452,7 +452,7 @@ fn run(
 ) -> Result<StockVerification> {
     let workers = if endmill.len() + vbit.len() >= 1024 && options.max_cells >= 4096 {
         std::thread::available_parallelism()
-            .map_or(1, usize::from)
+            .map_or(0, usize::from)
             .min(8)
     } else {
         0

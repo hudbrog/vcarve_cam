@@ -198,4 +198,6 @@ Compare the target and actual sweeps through independent calculations where poss
 
 After the combined workflow is reliable, evaluate path ordering, verified in-stock links, accelerated stock analysis, multiple clearance tools, arc fitting, bounded LinuxCNC blending, and WebAssembly. Each optimization retains the same fixtures and verification requirements. A changed strategy must not silently weaken the user's finish tolerance or remove small details.
 
+The WebAssembly item shipped: the engine core now also builds for the browser and the UI can be statically hosted. See the [investigation](web-ui/wasm-packing.md) and the [U9 report](web-ui/u9-wasm-static.md); threaded wasm execution remains in this backlog.
+
 Engine 0.7.2 starts real-artwork scalability work ahead of M7. The [scalability report](scalability-report.md) records spatial topology/distance/stock indexes, batch and balanced unions, compact authenticated plan files, successful import through 994,300 vertices, and complete M4 planning for the unchanged flower artwork. The 100× result is import-only. Follow-up acceptance requires connected medial traversal, component-local work, scalable M5 verification, and bounded preview/artifact output, measured on real connected and repeated artwork at 10× and 100× volume.

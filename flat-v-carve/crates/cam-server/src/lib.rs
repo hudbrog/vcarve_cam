@@ -1,7 +1,7 @@
 pub mod artifact;
-pub mod document;
+pub use cam_service::document;
 pub mod exporting;
-pub mod inspection;
+pub use cam_service::inspection;
 pub mod library;
 pub mod motion_preview;
 pub mod planning;
@@ -119,6 +119,9 @@ pub fn load_assets(directory: &Path) -> io::Result<Assets> {
             Some("css") => "text/css; charset=utf-8",
             Some("png") => "image/png",
             Some("woff2") => "font/woff2",
+            // The statically hostable engine rides along in the bundle so
+            // ?mode=wasm also works without the local service.
+            Some("wasm") => "application/wasm",
             _ => continue,
         };
         insert(
@@ -266,7 +269,7 @@ async fn boundary(State(state): State<AppState>, request: Request, next: Next) -
         ("x-frame-options", "DENY"),
         (
             "content-security-policy",
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
         ),
     ] {
         response

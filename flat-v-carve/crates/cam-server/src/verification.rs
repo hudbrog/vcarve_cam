@@ -7,31 +7,14 @@ use crate::{
 };
 use cam_core::{
     vcarve::{AuthenticatedPlan, VerificationReceipt, verify_retained_plan},
-    verification::{VerificationOptions, verify_authenticated_plan},
+    verification::verify_authenticated_plan,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Identity {
-    pub plan_task_id: String,
-    pub input_fingerprint: String,
-    pub motion_fingerprint: String,
-    pub options: VerificationOptions,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Start {
-    pub api_version: String,
-    pub instance_id: String,
-    pub request_id: String,
-    pub revision: u64,
-    pub document_fingerprint: String,
-    pub verification: Identity,
-}
+pub use cam_service::verification::{Identity, Start};
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Work {

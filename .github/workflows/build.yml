@@ -51,6 +51,17 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show
 
+      - name: Add WebAssembly target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: |
+          $url = 'https://github.com/rustwasm/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-pc-windows-msvc.tar.gz'
+          curl.exe -sL $url -o wasm-pack.tar.gz
+          tar xzf wasm-pack.tar.gz
+          Copy-Item wasm-pack-v0.15.0-x86_64-pc-windows-msvc/wasm-pack.exe "$env:USERPROFILE/.cargo/bin/"
+          wasm-pack --version
+
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
@@ -59,6 +70,9 @@ jobs:
 
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
+
+      - name: Check the WebAssembly engine build
+        run: cargo check -p cam-wasm --target wasm32-unknown-unknown --locked
 
       # Build the frontend before any bundled-ui Cargo command so its asset
       # manifest is available. This also installs both sets of locked dependencies.
