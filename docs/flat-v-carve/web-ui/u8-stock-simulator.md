@@ -199,7 +199,11 @@ The clock never runs ahead of a slower worker: model time advances only up
 to the applied prefix plus a small look-ahead window. A requested speed above
 the engine's sustained rate therefore settles at the highest sustainable
 speed instead of desynchronizing surface and tool, and the panel shows the
-effective speed whenever it stays below the requested one.
+effective speed whenever it stays below the requested one. Long jumps (End,
+Start, big scrubs) run as an adaptive seek ladder: intermediate seeks of a
+chunk size tuned toward ~100 ms of engine work, so the surface and
+percentages update continuously and a newer target redirects the jump
+mid-flight.
 
 ### 5.5 Rewind: undo log
 
@@ -561,6 +565,29 @@ curved-medial fixture, 565 motions): job → plan → simulation runs with zero
 errors; end state 100% applied, 432 mm³ removed (endmill 0.2 + V-bit
 0.3 cm³); scrub back to 1:00/3:17 rewinds to 34% applied with 211 mm³ —
 the undo log working through the real worker in the app.
+
+Correctness review fixes (2026-09-08, commit `e48d45d`): the V-bit sweep no
+longer rejects cells outside the start disc (moving cuts crossed them later,
+making End and incremental playback disagree); the pristine-rebuild rewind
+bumps cleared tiles so eviction paths emit clearing deltas; sloped V-bit
+cuts include the closed-form shifted cone stationary point (previously the
+XY projection was assumed minimal even when Z descends along the segment);
+and undo entries snapshot the incremental statistics so per-stage volumes
+survive rewinds exactly instead of being re-attributed to final owners. All
+four carry regression tests, including a brute-force property test for the
+sloped-cut minimum.
+
+Flower-scale measurements (2026-09-08, engine 0.7.7 with the sub-3-second
+planner, real flower job, 22,893 motions, 0.025 mm cells): simulator startup
+after "Open 3D simulation" is ~70 ms (the main thread builds the compact
+store once and transfers array copies; cloning motion objects previously
+froze the UI ~10 s). The fixture-sized End jump completes in 0.74 s; the
+flower End jump at the 0.025 mm cell runs about 1.5–2 minutes of engine
+work, executed through the adaptive seek ladder with continuously updating
+percentages and surface (no frozen display). A coarser default detail for
+very fine V-bit tips (tip/2 instead of tip/4) is the recorded lever should
+that jump time matter; normal-speed playback is unaffected because seeks
+stay small.
 
 ### Phase 3 — extensions (unordered proposals): rapid/approach collision flags
 (the heightfield makes these a cheap byproduct); cross-section plane; result
