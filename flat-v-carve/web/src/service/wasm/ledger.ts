@@ -271,10 +271,10 @@ export class WasmLedger {
         clearTimeout(record.timer);
         this.finish(record, reply);
       },
-      () => {
+      (reason: unknown) => {
         if (record.snapshot.state !== 'running') return;
         clearTimeout(record.timer);
-        this.finish(record, { error: workerFailureDiagnostic(record.kind) });
+        this.finish(record, { error: workerFailureDiagnostic(record.kind, reason) });
       },
     );
   }
@@ -468,11 +468,14 @@ function timeoutDiagnostic(kind: TaskKind): Diagnostic {
     message: 'Calculation exceeded the five-minute service limit. Reduce the job or refine its resource limits.',
   };
 }
-function workerFailureDiagnostic(kind: TaskKind): Diagnostic {
+function workerFailureDiagnostic(kind: TaskKind, reason: unknown): Diagnostic {
+  // A failed script load (for example a bundle replaced mid-session) reports
+  // its URL here; runtime crashes report the engine error instead.
+  const detail = reason instanceof Error && reason.message ? ` (${reason.message})` : '';
   return {
     code: `${taskPrefix(kind)}_WORKER_FAILURE`,
     severity: 'error',
     stage: stageName(kind),
-    message: 'The compute worker exited without a result.',
+    message: `The compute worker exited without a result${detail}. If this repeats, reload the page to load the current build.`,
   };
 }

@@ -25,10 +25,11 @@ function spawnChild(kind: TaskKind, input: unknown): ComputeRunner {
       settled = true;
       resolve(data.reply);
     });
-    child.addEventListener('error', () => {
+    child.addEventListener('error', event => {
       if (settled) return;
       settled = true;
-      reject(new Error('compute worker failed'));
+      const detail = event instanceof ErrorEvent && event.message ? `: ${event.message}` : '';
+      reject(new Error(`the engine worker could not start${detail}`));
     });
   });
   child.postMessage({ id, kind: kind === 'verification' ? 'verify' : kind, input });

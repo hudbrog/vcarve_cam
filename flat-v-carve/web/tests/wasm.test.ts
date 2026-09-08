@@ -16,12 +16,14 @@ class FakeRunner implements ComputeRunner {
   terminated = vi.fn();
   promise: Promise<{ ok?: unknown; error?: unknown }>;
   private settle!: (value: { ok?: unknown; error?: unknown }) => void;
+  private reject!: (reason: unknown) => void;
   constructor(public kind: string, public input: unknown) {
-    this.promise = new Promise(resolve => { this.settle = resolve; });
+    this.promise = new Promise((resolve, reject) => { this.settle = resolve; this.reject = reject; });
   }
   terminate = () => { this.terminated(); };
   succeed(value: unknown) { this.settle({ ok: value }); }
   fail(error: unknown) { this.settle({ error }); }
+  crash(reason: unknown) { this.reject(reason); }
 }
 
 function harness() {
@@ -134,6 +136,19 @@ describe('wasm task ledger', () => {
     const task = ledger.task('a');
     expect(!('code' in task) && task.state).toBe('failed');
     expect(!('code' in task) && task.diagnostic!.code).toBe('PLAN_JOB');
+  });
+  it('a crashed compute child reports the underlying failure with a reload hint', async () => {
+    const { ledger, spawned } = harness();
+    ledger.startPlan(planStart('a'));
+    spawned[0].crash(new Error('Failed to fetch dynamically imported module'));
+    await settle();
+    const task = ledger.task('a');
+    if ('code' in task) throw new Error('expected a snapshot');
+    expect(task.state).toBe('failed');
+    const diagnostic = task.diagnostic!;
+    expect(diagnostic.code).toBe('PLAN_WORKER_FAILURE');
+    expect(diagnostic.message).toContain('Failed to fetch dynamically imported module');
+    expect(diagnostic.message).toContain('reload the page');
   });
   it('evicts only the retained result, keeping summary identity', async () => {
     const { ledger, spawned } = harness();
