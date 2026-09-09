@@ -193,7 +193,7 @@ export function SequenceWorkspace({ service, onExit, initialDocument }: { servic
           {plan.summary.diagnostics.length > 0 && <ul className="sequence-diagnostics">{plan.summary.diagnostics.map((diagnostic, index) => <li key={index}><strong>{diagnostic.code}</strong> {diagnostic.message}</li>)}</ul>}
         </div>}
         {exportResult && <div className="sequence-export">
-          <p>{exportResult.program.filename} · {exportResult.report.motionCount} motions · {exportResult.report.outputDecimalPlaces} places · Z offset {exportResult.report.machineZOffsetMm} mm</p>
+          <p>{exportResult.program.filename} · {exportResult.report.motionCount} motions · {exportResult.report.outputDecimalPlaces} places · work-zero offset {exportResult.report.machineOffsetMm.map(v => v.toFixed(3)).join(', ')} mm</p>
           <button onClick={downloadProgram}>Download program</button>
           <pre aria-label="Program preview">{exportResult.program.gcode.slice(0, 4000)}{exportResult.program.gcode.length > 4000 ? '\n…' : ''}</pre>
         </div>}

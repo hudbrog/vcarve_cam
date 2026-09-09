@@ -46,6 +46,17 @@ export const sequenceDocumentSchema = z.strictObject({
   job: z.unknown(), migrated: z.boolean(),
   operations: z.array(sequenceOperationSchema),
   missingByOperation: z.record(z.string(), z.array(missingEntrySchema)),
+  setup: z.strictObject({
+    stock: z.strictObject({
+      thicknessMm: z.number().positive().nullable(),
+      xy: z.strictObject({
+        minXmm: z.number(), minYmm: z.number(), widthMm: z.number().positive(), lengthMm: z.number().positive(),
+      }).nullable(),
+      physicalXy: z.boolean(),
+    }),
+    workZero: z.strictObject({ xy: z.unknown(), z: z.enum(['stock_top', 'stock_bottom']) }),
+    clearanceAboveStockMm: z.number().positive().nullable(),
+  }),
   documentFingerprint: fingerprint,
 });
 export type SequenceDocument = z.infer<typeof sequenceDocumentSchema>;
@@ -108,7 +119,8 @@ export type PlanResult = z.infer<typeof planResultSchema>;
 export const exportResultSchema = z.strictObject({
   program: z.strictObject({ filename: z.string(), gcode: z.string() }),
   report: z.strictObject({
-    engineVersion: z.string(), outputDecimalPlaces: integer, machineZOffsetMm: z.number(),
+    engineVersion: z.string(), outputDecimalPlaces: integer,
+    machineOffsetMm: z.tuple([z.number(), z.number(), z.number()]),
     motionCount: integer, programSha256: z.string(),
     basicChecks: z.strictObject({
       status: z.enum(['passed', 'failed', 'inconclusive']),

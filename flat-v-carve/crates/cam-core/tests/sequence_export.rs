@@ -97,7 +97,7 @@ fn sequence_export_works_without_running_detailed_quality() {
     let profile = sequence_profile(&[("endmill", 1), ("vbit", 2)]);
     let prepared =
         PreparedExecution::prepare(&TrustedPlan::from_plan(&plan).unwrap(), &profile).unwrap();
-    assert_eq!(prepared.machine_z_offset_mm, 8.);
+    assert_eq!(prepared.machine_offset_mm, [0., 0., -8.]);
     let export = prepared
         .export(&TrustedPlan::from_plan(&plan).unwrap(), &profile)
         .unwrap();
@@ -439,8 +439,11 @@ fn forged_imported_plans_and_receipts_are_rejected() {
 }
 
 #[test]
-fn xy_work_zero_transforms_are_rejected_until_physical_stock_support() {
+fn stock_anchor_work_zero_requires_physical_stock_xy() {
     let mut job = applied_job(M3_RECTANGLE);
+    // Migrated jobs have no physical XY rectangle; an anchor selection must
+    // stay an explicit error, never an inferred artwork-derived rectangle.
+    assert_eq!(job.setup.stock.xy, None);
     job.setup.work_zero.xy = cam_core::project::WorkZeroXY::StockAnchor {
         x_fraction: cam_core::project::AnchorFraction::Center,
         y_fraction: cam_core::project::AnchorFraction::Center,
@@ -451,5 +454,5 @@ fn xy_work_zero_transforms_are_rejected_until_physical_stock_support() {
     let profile = sequence_profile(&[("endmill", 1), ("vbit", 2)]);
     let err =
         PreparedExecution::prepare(&TrustedPlan::from_plan(&plan).unwrap(), &profile).unwrap_err();
-    assert_eq!(err.code, "POST_WORK_ZERO_XY_UNSUPPORTED");
+    assert_eq!(err.code, "SETUP_STOCK_XY_REQUIRED");
 }

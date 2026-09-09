@@ -69,7 +69,7 @@ pub enum AnchorFraction {
     Max,
 }
 impl AnchorFraction {
-    fn fraction(self) -> f64 {
+    pub fn fraction(self) -> f64 {
         match self {
             Self::Min => 0.,
             Self::Center => 0.5,

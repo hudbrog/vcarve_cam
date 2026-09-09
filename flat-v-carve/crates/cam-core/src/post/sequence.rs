@@ -99,7 +99,7 @@ pub struct PreparedExecution {
     pub output_decimal_places: usize,
     /// Z shift applied before output formatting for the selected work-zero
     /// datum; the inverse shift is applied after numeric readback.
-    pub machine_z_offset_mm: f64,
+    pub machine_offset_mm: [f64; 3],
     pub stages: Vec<PreparedStage>,
     pub basic_checks: BasicCheckReport,
 }
@@ -123,7 +123,7 @@ pub struct SequenceExportReport {
     pub profile_fingerprint: String,
     pub process_fingerprint: String,
     pub output_decimal_places: usize,
-    pub machine_z_offset_mm: f64,
+    pub machine_offset_mm: [f64; 3],
     pub basic_checks: BasicCheckReport,
     pub program_sha256: String,
     pub motion_count: usize,
@@ -419,36 +419,19 @@ impl PreparedExecution {
                 "profile clearance differs from the plan's setup clearance; regenerate with the intended clearance",
             ));
         }
-        // Work-zero output transform (plan section 6.2). The Z datum offset
-        // applies now; XY anchors and custom points ship with physical stock
-        // in B1 and are rejected explicitly instead of silently ignored.
-        let machine_z_offset = match plan.job_snapshot.setup.work_zero.z {
-            crate::project::WorkZeroZ::StockTop => 0.,
-            crate::project::WorkZeroZ::StockBottom => {
-                plan.job_snapshot.setup.stock.thickness_mm.ok_or_else(|| {
-                    error(
-                        "POST_Z_DATUM",
-                        "stock-bottom datum requires stock thickness",
-                    )
-                })?
+        // Work-zero output transform (plan section 6.2): the full selected
+        // point, XY anchors included. Machine-profile startup/M6 positions
+        // are already expressed in the controller work frame and are never
+        // transformed again.
+        let work_zero = crate::setup::resolve_work_zero(&plan.job_snapshot)?;
+        let machine_offset = work_zero.output_offset();
+        for value in [machine_offset.0, machine_offset.1, machine_offset.2] {
+            if !value.is_finite() || rounded(value, profile.decimal_places) != value {
+                return Err(error(
+                    "POST_WORK_ZERO_PRECISION",
+                    "work-zero offsets must be exactly representable at output precision",
+                ));
             }
-        };
-        if !machine_z_offset.is_finite()
-            || rounded(machine_z_offset, profile.decimal_places) != machine_z_offset
-        {
-            return Err(error(
-                "POST_Z_DATUM",
-                "stock thickness must be exactly representable at output precision",
-            ));
-        }
-        if !matches!(
-            plan.job_snapshot.setup.work_zero.xy,
-            crate::project::WorkZeroXY::SetupOrigin
-        ) {
-            return Err(error(
-                "POST_WORK_ZERO_XY_UNSUPPORTED",
-                "XY work-zero transforms ship with physical stock support; the setup origin is used until then",
-            ));
         }
         let mut stages = vec![];
         for stage in &plan.stages {
@@ -472,7 +455,7 @@ impl PreparedExecution {
             profile_fingerprint,
             process_fingerprint,
             output_decimal_places: profile.decimal_places,
-            machine_z_offset_mm: machine_z_offset,
+            machine_offset_mm: [machine_offset.0, machine_offset.1, machine_offset.2],
             stages,
             basic_checks,
         })
@@ -516,7 +499,7 @@ impl PreparedExecution {
             profile_fingerprint: self.profile_fingerprint.clone(),
             process_fingerprint: self.process_fingerprint.clone(),
             output_decimal_places: places,
-            machine_z_offset_mm: self.machine_z_offset_mm,
+            machine_offset_mm: self.machine_offset_mm,
             basic_checks: self.basic_checks.clone(),
             program_sha256: format!("{:x}", Sha256::digest(gcode.as_bytes())),
             motion_count: motions.len(),
@@ -598,7 +581,7 @@ impl PreparedExecution {
             if let Some(current) = previous_stage_end {
                 let start = machine_position(
                     first_motion(plan, stage).start,
-                    self.machine_z_offset_mm,
+                    self.machine_offset_mm,
                     places,
                 );
                 if current.z != start.z {
@@ -610,7 +593,7 @@ impl PreparedExecution {
             }
             let motions = &plan.motions[stage.motion_range.0..stage.motion_range.1];
             for motion in motions {
-                let end = machine_position(motion.end, self.machine_z_offset_mm, places);
+                let end = machine_position(motion.end, self.machine_offset_mm, places);
                 let feed = match motion.feed_mm_min {
                     Some(f) => format!(" F{}", scalar(f)?),
                     None => String::new(),
@@ -627,7 +610,7 @@ impl PreparedExecution {
             }
             previous_stage_end = motions
                 .last()
-                .map(|m| machine_position(m.end, self.machine_z_offset_mm, places));
+                .map(|m| machine_position(m.end, self.machine_offset_mm, places));
         }
         lines.extend(["M5".into(), "M9".into(), "M2".into()]);
         if lines.iter().any(|l| l.len() > 240) {
@@ -659,7 +642,7 @@ pub fn verify_program(
         profile_fingerprint: prepared.profile_fingerprint.clone(),
         process_fingerprint: prepared.process_fingerprint.clone(),
         output_decimal_places: prepared.output_decimal_places,
-        machine_z_offset_mm: prepared.machine_z_offset_mm,
+        machine_offset_mm: prepared.machine_offset_mm,
         basic_checks: prepared.basic_checks.clone(),
         program_sha256: format!("{:x}", Sha256::digest(program.gcode.as_bytes())),
         motion_count: motions.len(),
@@ -846,7 +829,7 @@ fn compare_with_plan(
     for (index, (read, planned)) in motions.iter().zip(plan.motions.iter()).enumerate() {
         let expected_end = machine_position(
             planned.end,
-            prepared.machine_z_offset_mm,
+            prepared.machine_offset_mm,
             prepared.output_decimal_places,
         );
         if read.end != expected_end {
@@ -944,13 +927,13 @@ fn rounded_position(p: crate::motion::Position, places: usize) -> crate::motion:
 /// Setup-to-machine output position: work-zero Z datum shift, then rounding.
 fn machine_position(
     p: crate::motion::Position,
-    z_offset: f64,
+    offset: [f64; 3],
     places: usize,
 ) -> crate::motion::Position {
     crate::motion::Position {
-        x: rounded(p.x, places),
-        y: rounded(p.y, places),
-        z: rounded(p.z + z_offset, places),
+        x: rounded(p.x - offset[0], places),
+        y: rounded(p.y - offset[1], places),
+        z: rounded(p.z - offset[2], places),
     }
 }
 fn rounded(v: f64, places: usize) -> f64 {

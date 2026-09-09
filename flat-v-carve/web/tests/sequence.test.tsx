@@ -21,6 +21,11 @@ function documentData(operations: { id: string; enabled?: boolean }[] = [{ id: '
       toolIds: ['endmill', 'vbit'], depth: {},
     })),
     missingByOperation: Object.fromEntries(operations.map(op => [op.id, []])),
+    setup: {
+      stock: { thicknessMm: 8, xy: { minXmm: 0, minYmm: 0, widthMm: 100, lengthMm: 60 }, physicalXy: true },
+      workZero: { xy: { kind: 'setup_origin' }, z: 'stock_bottom' },
+      clearanceAboveStockMm: 5,
+    },
     documentFingerprint: fingerprint64,
   };
 }
@@ -44,7 +49,7 @@ function exportData() {
   return {
     program: { filename: 'sequence.ngc', gcode: 'T1 M6\nM3 S10000\nM2\n' },
     report: {
-      engineVersion, outputDecimalPlaces: 3, machineZOffsetMm: 8, motionCount: 2, programSha256: fingerprint64,
+      engineVersion, outputDecimalPlaces: 3, machineOffsetMm: [50, 30, -8], motionCount: 2, programSha256: fingerprint64,
       basicChecks: { status: 'passed', findings: [], exportReady: true }, diagnostics: [],
     },
     documentFingerprint: fingerprint64,

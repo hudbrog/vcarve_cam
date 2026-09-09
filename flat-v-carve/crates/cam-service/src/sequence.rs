@@ -185,11 +185,27 @@ fn operations_projection(job: &CamJob) -> Value {
 }
 
 fn document_projection(job: &CamJob, migrated: bool) -> Result<Value> {
+    let stock_xy = job.setup.stock.xy.map(|rect| {
+        json!({
+            "minXmm": rect.min_x_mm, "minYmm": rect.min_y_mm,
+            "widthMm": rect.width_mm, "lengthMm": rect.length_mm,
+        })
+    });
     Ok(json!({
         "job": serde_json::to_value(job).expect("validated job serializes"),
         "migrated": migrated,
         "operations": operations_projection(job),
         "missingByOperation": missing_by_operation(job),
+        "setup": {
+            "stock": {
+                "thicknessMm": job.setup.stock.thickness_mm,
+                // None keeps legacy unknown-XY behavior explicit (plan 9.3).
+                "xy": stock_xy,
+                "physicalXy": job.setup.stock.xy.is_some(),
+            },
+            "workZero": {"xy": job.setup.work_zero.xy, "z": job.setup.work_zero.z},
+            "clearanceAboveStockMm": job.setup.clearance_above_stock_mm,
+        },
         "documentFingerprint": fingerprint(job),
     }))
 }
