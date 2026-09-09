@@ -4,6 +4,7 @@ pub mod admission;
 pub mod document;
 pub mod export;
 pub mod inspection;
+pub mod sequence;
 pub mod summary;
 pub mod task;
 pub mod verification;

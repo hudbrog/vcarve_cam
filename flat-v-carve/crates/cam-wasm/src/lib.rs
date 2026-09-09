@@ -21,6 +21,7 @@ use cam_service::{
     document::{self, DocumentRequest, ENGINE_VERSION},
     export,
     inspection::Inspection,
+    sequence::{self, SequenceRequest},
     summary,
     task::{self, Stage},
     verification,
@@ -126,6 +127,37 @@ pub fn document(request_json: &str) -> String {
             ok(envelope)
         }
     }
+}
+
+/// ui-8 sequence operations: open/migrate, operation-list editing, profile
+/// application, sequence planning and sequence export. Same envelope and
+/// admission rules as the HTTP sequence route.
+#[wasm_bindgen]
+pub fn sequence(request_json: &str, instance_id: &str) -> String {
+    let request = match serde_json::from_str::<SequenceRequest>(request_json) {
+        Ok(request) => request,
+        Err(error) => {
+            return admission_error(Failure::new(
+                400,
+                "REQUEST_JSON",
+                &format!("The request body is not valid sequence JSON: {error}"),
+            ));
+        }
+    };
+    if let Err(failure) = sequence::validate_identity(
+        &request.api_version,
+        instance_id,
+        &request.request_id,
+        request.revision,
+        instance_id,
+    ) {
+        return admission_error(failure);
+    }
+    ok(sequence::envelope(
+        &request.request_id,
+        request.revision,
+        sequence::execute(request.command),
+    ))
 }
 
 #[derive(Deserialize)]

@@ -121,6 +121,7 @@ version = "0.7.7"
 dependencies = [
  "cam-core",
  "cam-server",
+ "cam-service",
  "cam-storage",
  "serde",
  "serde_json",

@@ -86,6 +86,11 @@ self.addEventListener('message', async event => {
       const parsed = JSON.parse(core.document(String(request.requestJson))) as { ok?: unknown; error?: { status: number; code: string; message: string } };
       return parsed.error ?? parsed.ok;
     })()
+    : op === 'sequence'
+      ? (() => {
+        const parsed = JSON.parse(core.sequence(String(request.requestJson), instanceId)) as { ok?: unknown; error?: { status: number; code: string; message: string } };
+        return parsed.error ?? parsed.ok;
+      })()
     : op === 'startPlan' ? engine.startPlan(request as never)
     : op === 'startVerification' ? engine.startVerification(request as never)
     : op === 'startExport' ? engine.startExport(request as never)

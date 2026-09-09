@@ -213,3 +213,50 @@ fn admission_for_reports_binds_the_combined_source_plan() {
     ));
     assert_eq!(reply["error"]["code"], "VERIFICATION_PLAN_IDENTITY");
 }
+
+#[test]
+fn sequence_commands_round_trip_through_the_worker_envelope() {
+    let legacy = include_str!("../../../fixtures/m3/rectangle.json");
+    let open = json!({
+        "apiVersion": "ui-8", "requestId": "seq-1", "revision": 1,
+        "command": {"operation": "open", "json": legacy}
+    });
+    let reply = parse(&super::sequence(&open.to_string(), &instance()));
+    let document = reply["ok"]["data"].clone();
+    assert_eq!(document["migrated"], json!(true));
+    assert_eq!(document["job"]["schema_version"], json!(4));
+
+    let edit = json!({
+        "apiVersion": "ui-8", "requestId": "seq-2", "revision": 2,
+        "command": {"operation": "edit", "job": document["job"],
+            "edits": [{"edit": "duplicate", "id": "flat-v-carve", "newId": "carve-2"}]}
+    });
+    let reply = parse(&super::sequence(&edit.to_string(), &instance()));
+    assert_eq!(
+        reply["ok"]["data"]["operations"].as_array().unwrap().len(),
+        2
+    );
+
+    // Admission mirrors the HTTP route: wrong API version and weak identity.
+    let wrong = json!({
+        "apiVersion": "ui-7", "requestId": "seq-3", "revision": 3,
+        "command": {"operation": "capabilities"}
+    });
+    let reply = parse(&super::sequence(&wrong.to_string(), &instance()));
+    assert_eq!(reply["error"]["code"], "TASK_INSTANCE");
+    let weak = json!({
+        "apiVersion": "ui-8", "requestId": "", "revision": 3,
+        "command": {"operation": "capabilities"}
+    });
+    let reply = parse(&super::sequence(&weak.to_string(), &instance()));
+    assert_eq!(reply["error"]["code"], "REQUEST_IDENTITY");
+
+    let plan = json!({
+        "apiVersion": "ui-8", "requestId": "seq-4", "revision": 4,
+        "command": {"operation": "plan", "job": document["job"], "scope": {"kind": "allEnabled"}}
+    });
+    let reply = parse(&super::sequence(&plan.to_string(), &instance()));
+    let summary = &reply["ok"]["data"]["summary"];
+    assert_eq!(summary["basicChecks"]["status"], json!("passed"));
+    assert!(summary["motionCount"].as_u64().unwrap() > 0);
+}

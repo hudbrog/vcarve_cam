@@ -4,6 +4,7 @@ mod job_cli;
 mod job_svg;
 mod plan_svg;
 mod post_cli;
+mod sequence_cli;
 mod svg;
 mod target_cli;
 mod target_svg;
@@ -50,6 +51,9 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     }
     if command == "tool-library" {
         return tool_library_cli::run(args.collect());
+    }
+    if command == "sequence" {
+        return sequence_cli::run(args.collect());
     }
     if matches!(command.as_str(), "export" | "verify-gcode") {
         return post_cli::run(&command, args.collect());

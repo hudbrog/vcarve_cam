@@ -21,6 +21,7 @@ pub enum CheckStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct CheckFinding {
     pub code: String,
@@ -32,6 +33,7 @@ pub struct CheckFinding {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct BasicCheckReport {
     pub status: CheckStatus,

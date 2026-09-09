@@ -61,6 +61,7 @@ pub struct SequenceProfile {
 
 /// Fully resolved process state for one stage; no unresolved markers remain.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct PreparedProcess {
     pub spindle: PreparedSpindle,
@@ -79,6 +80,7 @@ pub enum PreparedSpindle {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct PreparedStage {
     pub stage: ExecutionStage,
@@ -103,6 +105,7 @@ pub struct PreparedExecution {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct SequenceProgram {
     pub filename: String,
@@ -110,6 +113,7 @@ pub struct SequenceProgram {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct SequenceExportReport {
     pub artifact_kind: String,

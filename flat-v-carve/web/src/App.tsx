@@ -1,5 +1,7 @@
 import { useExport } from './service/useExport';
 import { ExportPanel } from './components/ExportPanel';
+import { SequenceWorkspace } from './components/SequenceWorkspace';
+import { createSequenceService } from './service/sequence';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { parseJob, type Job } from './contracts/job';
@@ -35,6 +37,18 @@ const steps = [
 type Step = typeof steps[number]['id'];
 type Theme = 'system' | 'light' | 'dark';
 const recoveryKey = 'flat-v-carve:u1:tab-draft';
+const workspaceKey = 'flat-v-carve:workspace-mode';
+
+export function App({ service = fixtureService }: { service?: CamService }) {
+  const [sequenceMode, setSequenceMode] = useState(() => {
+    try { return sessionStorage.getItem(workspaceKey) === 'sequence'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { sessionStorage.setItem(workspaceKey, sequenceMode ? 'sequence' : 'vcarve'); } catch { /* Mode is per-visit without storage. */ }
+  }, [sequenceMode]);
+  if (sequenceMode) return <SequenceWorkspace service={createSequenceService(new URLSearchParams(location.search).get('mode') === 'wasm' ? 'wasm' : 'http')} onExit={() => setSequenceMode(false)} />;
+  return <VCarveApp service={service} onEnterSequence={() => setSequenceMode(true)} />;
+}
 
 export function readRecovery(storage: Pick<Storage, 'getItem'>): Draft | null {
   let raw: string | null;
@@ -51,7 +65,7 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
   return <section className="inspector-group"><h2>{title}</h2>{children}</section>;
 }
 
-export function App({ service = fixtureService }: { service?: CamService }) {
+function VCarveApp({ service, onEnterSequence }: { service: CamService; onEnterSequence: () => void }) {
   const [boot, setBoot] = useState<{ draft: Draft; capabilities: Capabilities; recovered: boolean } | null>(null);
   const [bootError, setBootError] = useState('');
   const [skipRecovery, setSkipRecovery] = useState(false);
@@ -73,10 +87,10 @@ export function App({ service = fixtureService }: { service?: CamService }) {
   }, [service, skipRecovery]);
   if (bootError) return <main className="startup"><h1>Cannot open the workspace</h1><p role="alert">{bootError}</p><div className="inline-actions"><button onClick={() => location.reload()}>Retry</button><button onClick={() => setSkipRecovery(true)}>Open example (replace recovery)</button></div></main>;
   if (!boot) return <main className="startup" role="status">Opening the CAM workspace…</main>;
-  return <Workspace key={boot.capabilities.engineVersion} initial={boot.draft} recovered={boot.recovered} service={service} capabilities={boot.capabilities} />;
+  return <Workspace key={boot.capabilities.engineVersion} initial={boot.draft} recovered={boot.recovered} service={service} capabilities={boot.capabilities} onEnterSequence={onEnterSequence} />;
 }
 
-function Workspace({ initial, recovered, service, capabilities: initialCapabilities }: { initial: Draft; recovered: boolean; service: CamService; capabilities: Capabilities }) {
+function Workspace({ initial, recovered, service, capabilities: initialCapabilities, onEnterSequence }: { initial: Draft; recovered: boolean; service: CamService; capabilities: Capabilities; onEnterSequence: () => void }) {
   const [capabilities, setCapabilities] = useState(initialCapabilities);
   const [refresh, setRefresh] = useState(0);
   const [connecting, setConnecting] = useState(false);
@@ -270,7 +284,7 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
     <header className="app-bar">
       <a className="brand" href="#" onClick={event => { event.preventDefault(); setStep('artwork'); }}><span className="brand-mark">V</span><span>FLAT V-CARVE<small>CAM WORKSPACE</small></span></a>
       <div className="document-title"><label className="sr-only" htmlFor="job-name">Job name</label><input id="job-name" value={state.draft.base.name} onChange={event => dispatch({ type: 'name', value: event.target.value })} onBlur={() => dispatch({ type: 'commit' })} /><span>{state.downloadedRevision === state.revision ? 'Job download requested' : recovery} · revision {state.revision}</span></div>
-      <div className="app-actions"><button onClick={() => { setOpenError(''); openDialog.current?.showModal(); }}>Open</button><button onClick={download}>Download job</button><span className="action-separator" /><button aria-label="Undo edit" title="Undo (Ctrl/Cmd Z outside a field)" disabled={!state.past.length && !state.editStart} onClick={() => dispatch({ type: 'undo' })}>↶</button><button aria-label="Redo edit" title="Redo" disabled={!state.future.length} onClick={() => dispatch({ type: 'redo' })}>↷</button><button className="primary" onClick={() => { setStep('plan'); setDrawer('issues'); }}>Review setup <span aria-hidden="true">→</span></button></div>
+      <div className="app-actions"><button onClick={() => { setOpenError(''); openDialog.current?.showModal(); }}>Open</button><button onClick={download}>Download job</button><button onClick={onEnterSequence} title="Open the schema-4 ordered-operation workspace">Sequence…</button><span className="action-separator" /><button aria-label="Undo edit" title="Undo (Ctrl/Cmd Z outside a field)" disabled={!state.past.length && !state.editStart} onClick={() => dispatch({ type: 'undo' })}>↶</button><button aria-label="Redo edit" title="Redo" disabled={!state.future.length} onClick={() => dispatch({ type: 'redo' })}>↷</button><button className="primary" onClick={() => { setStep('plan'); setDrawer('issues'); }}>Review setup <span aria-hidden="true">→</span></button></div>
     </header>
     <div className="environment-strip"><span><span className="status-dot" /> {capabilities.mode === 'live' ? 'Local Rust service' : 'Fixture mode'} <span className="divider">/</span> Rust {capabilities.engineVersion}</span><span>{capabilities.mode === 'live' ? <button disabled={connecting} onClick={() => void reconnect()}>{connecting ? 'Connecting…' : 'Reconnect service'}</button> : 'Local service not connected'}</span></div>
     {notice && <div className="notice" role="status"><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss message">×</button></div>}

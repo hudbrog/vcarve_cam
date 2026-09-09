@@ -43,6 +43,7 @@ pub enum MotionEffect {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct PlannedMotion {
     /// Global id, unique across the whole ordered plan.

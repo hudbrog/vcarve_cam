@@ -33,5 +33,11 @@ for (const [file, name, validator] of checks) {
 }
 const jobSource = readFileSync(new URL('../../crates/cam-core/src/job.rs', import.meta.url), 'utf8');
 assert.match(jobSource, /JOB_SCHEMA_VERSION: u32 = 3;/, 'Review frontend schema after Rust job schema changes');
+// The canonical schema-4 job stays opaque to the UI (edited only through ui-8
+// engine commands), so its drift alarm pins the version and the wire constants.
+const projectSource = readFileSync(new URL('../../crates/cam-core/src/project.rs', import.meta.url), 'utf8');
+assert.match(projectSource, /CAM_JOB_SCHEMA_VERSION: u32 = 4;/, 'Review ui-8 contracts after the canonical job schema changes');
+const serviceSequence = readFileSync(new URL('../../crates/cam-service/src/sequence.rs', import.meta.url), 'utf8');
+assert.match(serviceSequence, /SEQUENCE_API_VERSION: &str = "ui-8";/, 'Review the ui-8 wire after the sequence API version changes');
 console.log(`Checked ${checks.length} Rust struct field sets and job schema version (read-only).`);
 console.log(`Schema: ${fileURLToPath(new URL('../src/contracts/job.ts', import.meta.url))}`);

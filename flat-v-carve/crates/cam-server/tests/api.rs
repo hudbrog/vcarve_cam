@@ -510,3 +510,64 @@ fn configured_m4_jobs_roundtrip_without_changed_parameters_or_new_planning_claim
     }
     assert!(checked >= 10, "checked {checked} fixtures");
 }
+
+const M3_RECTANGLE: &str = include_str!("../../../fixtures/m3/rectangle.json");
+
+async fn sequence_call(app: &Router, command: Value) -> (StatusCode, Value) {
+    let token = token(app).await;
+    call(
+        app,
+        "POST",
+        "/api/v1/sequence",
+        &[
+            ("host", "127.0.0.1:4848"),
+            ("origin", "http://127.0.0.1:4848"),
+            ("x-cam-session", &token),
+            ("content-type", "application/json"),
+        ],
+        json!({"apiVersion":"ui-8","requestId":"seq-test","revision":7,"command":command})
+            .to_string(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn sequence_route_opens_plans_and_rejects_foreign_versions() {
+    let app = cam_server::router(4848, Default::default()).unwrap();
+    let (status, value) =
+        sequence_call(&app, json!({"operation":"open","json":M3_RECTANGLE})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["apiVersion"], "ui-8");
+    assert_eq!(value["data"]["migrated"], true);
+    assert_eq!(value["data"]["job"]["schema_version"], 4);
+
+    let job = value["data"]["job"].clone();
+    let (status, value) = sequence_call(
+        &app,
+        json!({"operation":"plan","job":job,"scope":{"kind":"allEnabled"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["data"]["summary"]["basicChecks"]["status"], "passed");
+    assert!(value["data"]["summary"]["motionCount"].as_u64().unwrap() > 0);
+
+    // ui-7 requests are foreign to this route.
+    let token = token(&app).await;
+    let (status, value) = call(
+        &app,
+        "POST",
+        "/api/v1/sequence",
+        &[
+            ("host", "127.0.0.1:4848"),
+            ("origin", "http://127.0.0.1:4848"),
+            ("x-cam-session", &token),
+            ("content-type", "application/json"),
+        ],
+        json!({"apiVersion":"ui-7","requestId":"x","revision":1,
+            "command":{"operation":"capabilities"}})
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(value["error"]["code"], "TASK_INSTANCE");
+}

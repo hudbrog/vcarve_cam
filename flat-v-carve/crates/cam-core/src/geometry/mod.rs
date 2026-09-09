@@ -78,7 +78,7 @@ impl Diagnostic {
         self.source_id = Some(id.into());
         self
     }
-    pub(crate) fn at_stage(mut self, stage: &'static str) -> Self {
+    pub fn at_stage(mut self, stage: &'static str) -> Self {
         self.stage = stage;
         self
     }
@@ -86,7 +86,7 @@ impl Diagnostic {
         self.severity = Severity::Warning;
         self
     }
-    pub(crate) fn new(code: &str, message: impl Into<String>) -> Self {
+    pub fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),
             severity: if matches!(

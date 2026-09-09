@@ -18,6 +18,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use cam_service::sequence::SequenceRequest;
 use document::{API_VERSION, DocumentRequest, ENGINE_VERSION, JOB_BYTES, REQUEST_BYTES};
 use serde_json::{Value, json};
 use std::{
@@ -179,6 +180,10 @@ pub fn router_with_library(
         .route("/api/v1/session", get(session))
         .route("/api/v1/capabilities", get(capabilities))
         .route("/api/v1/document", post(document_request))
+        .route(
+            "/api/v1/sequence",
+            post(sequence_request).layer(DefaultBodyLimit::max(REQUEST_BYTES)),
+        )
         .route(
             "/api/v1/library",
             post(library_metadata).layer(DefaultBodyLimit::max(library::METADATA_BYTES)),
@@ -684,6 +689,68 @@ async fn document_request(
         ),
     }
 }
+/// ui-8 sequence operations on the canonical CamJob document: open/migrate,
+/// operation-list edits, profile application, sequence planning and export.
+async fn sequence_request(
+    State(state): State<AppState>,
+    body: Result<Json<SequenceRequest>, JsonRejection>,
+) -> Response {
+    let request = match body {
+        Ok(Json(value)) => value,
+        Err(rejection) => return error(rejection.status(), "REQUEST_JSON", &rejection.body_text()),
+    };
+    if let Err(failure) = cam_service::sequence::validate_identity(
+        &request.api_version,
+        &state.token,
+        &request.request_id,
+        request.revision,
+        &state.token,
+    ) {
+        return error(
+            failure.0.try_into().unwrap_or(StatusCode::CONFLICT),
+            failure.1,
+            &failure.2,
+        );
+    }
+    let (request_id, revision) = (request.request_id.clone(), request.revision);
+    let permit = match state.workers.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_BUSY",
+                "The engine is inspecting other requests. Retry shortly.",
+            );
+        }
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        cam_service::sequence::execute(request.command)
+    })
+    .await;
+    let mut envelope = json!({
+        "apiVersion": cam_service::sequence::SEQUENCE_API_VERSION,
+        "engineVersion": ENGINE_VERSION,
+        "requestId": request_id,
+        "revision": revision,
+    });
+    match result {
+        Ok(Ok(data)) => {
+            envelope["data"] = data;
+            Json(envelope).into_response()
+        }
+        Ok(Err(diagnostic)) => {
+            envelope["diagnostic"] = json!(cam_service::document::UiDiagnostic::from(diagnostic));
+            (StatusCode::UNPROCESSABLE_ENTITY, Json(envelope)).into_response()
+        }
+        Err(_) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "ENGINE_FAILURE",
+            "The engine could not finish this request. Your draft is unchanged.",
+        ),
+    }
+}
+
 async fn asset(State(state): State<AppState>, request: Request) -> Response {
     if request.method() != Method::GET && request.method() != Method::HEAD {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();

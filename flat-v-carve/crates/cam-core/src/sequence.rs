@@ -81,6 +81,7 @@ pub enum ExecutionItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionStage {
     pub stage_id: String,
@@ -105,6 +106,7 @@ pub enum GenerationStatus {
 /// Names of outputs an operation publishes for later height references
 /// (e.g. a face plane). Payloads arrive with the face milestone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct NamedOutput {
     pub kind: String,
@@ -122,6 +124,7 @@ pub struct LegacyStageEvidence {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct LegacyPassEvidence {
     pub pass_id: usize,
@@ -132,6 +135,7 @@ pub struct LegacyPassEvidence {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct OperationResult {
     pub operation_id: String,
@@ -150,6 +154,7 @@ pub struct OperationResult {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct PlanIssue {
     pub code: String,
@@ -163,6 +168,7 @@ pub struct PlanIssue {
 /// A process field that must be resolved before export preparation.
 /// Requirements are facts about the plan, not executable state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct PreparationRequirement {
     pub code: String,
@@ -283,6 +289,12 @@ impl TrustedPlan {
             ));
         }
         Ok(Self(replanned))
+    }
+    /// Bind a plan this engine just generated in this process. Provenance is
+    /// the trust anchor; generation completeness and export readiness are
+    /// checked where they matter (basic checks, export preparation).
+    pub fn from_generated(plan: OperationPlan) -> Self {
+        Self(plan)
     }
 }
 
