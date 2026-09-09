@@ -2,6 +2,7 @@
 //! readback. No filesystem, machine connection, or arbitrary G-code templates.
 mod profile;
 mod reader;
+pub mod sequence;
 #[cfg(test)]
 mod tests;
 pub use profile::*;

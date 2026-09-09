@@ -5,7 +5,7 @@ use crate::{
     target::Target,
 };
 use serde::{Deserialize, Serialize};
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VBitPlanningSettings {
     pub max_paths: usize,

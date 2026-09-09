@@ -12,7 +12,7 @@ pub enum ClearingStrategy {
     DepthDependent,
     DeepestRegion,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EntryStrategy {
     Plunge,

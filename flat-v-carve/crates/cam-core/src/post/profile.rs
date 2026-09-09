@@ -67,7 +67,7 @@ pub struct ToolMapping {
 /// Position of the NEW tool tip in the selected work frame, AFTER the chosen
 /// length compensation is active. This is a machine-owned contract, not a
 /// claim that M6 or G43 preserves the old tool's displayed position.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum M6Return {
     CallerPosition,
@@ -82,7 +82,7 @@ pub enum M6Return {
         transit_xy_mm: Point,
     },
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct M6Contract {
     pub reference: String,

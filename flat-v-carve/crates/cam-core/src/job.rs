@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 pub const JOB_SCHEMA_VERSION: u32 = 3;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceSnapshot {
     pub filename: String,
@@ -108,14 +108,14 @@ pub struct OperationSettings {
     pub max_floor_ridge_mm: Option<f64>,
     pub max_detail_residual_mm: Option<f64>,
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningTolerances {
     pub motion_tolerance_mm: Option<f64>,
     pub verification_tolerance_mm: Option<f64>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineProfile {
     pub id: String,

@@ -102,7 +102,7 @@ impl From<IncludedAngle> for f64 {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EndmillSpec {
     pub diameter_mm: f64,
@@ -169,7 +169,7 @@ impl Endmill {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VBitSpec {
     pub included_angle_deg: f64,
