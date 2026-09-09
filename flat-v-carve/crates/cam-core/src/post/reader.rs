@@ -88,17 +88,33 @@ impl<'a> Reader<'a> {
         }
         Ok(())
     }
-    fn modal(&mut self, work: &str) -> Result<()> {
-        self.expect(&[
+    fn modal(&mut self, p: &LinuxCncProfile) -> Result<()> {
+        let mut words = vec![
             ('G', 21.),
             ('G', 17.),
             ('G', 90.),
             ('G', 94.),
             ('G', 40.),
             ('G', 80.),
-            ('G', 61.),
-        ])?;
-        self.expect(&[('G', work[1..].parse().expect("validated work offset"))])?;
+        ];
+        match p.path_control {
+            PathControl::ExactPath => words.push(('G', 61.)),
+            PathControl::Blend {
+                tolerance_mm,
+                naive_cam_tolerance_mm,
+            } => {
+                words.push(('G', 64.));
+                words.push(('P', tolerance_mm));
+                if let Some(q) = naive_cam_tolerance_mm {
+                    words.push(('Q', q));
+                }
+            }
+        }
+        self.expect(&words)?;
+        self.expect(&[(
+            'G',
+            p.work_offset[1..].parse().expect("validated work offset"),
+        )])?;
         self.expect(&[('G', 92.1)])
     }
     fn xyz(&mut self, g: f64, feed: Option<f64>) -> Result<Position> {
@@ -135,7 +151,7 @@ pub(super) fn read(
     let mut r = Reader::new(text)?;
     r.expect(&[('M', 5.)])?;
     r.expect(&[('M', 9.)])?;
-    r.modal(&p.work_offset)?;
+    r.modal(p)?;
     let mut previous_stage_end = p.program_start_position_mm;
     let mut result = Readback {
         motions: vec![],
@@ -156,13 +172,36 @@ pub(super) fn read(
         r.expect(&[('M', 5.)])?;
         r.expect(&[('M', 9.)])?;
         // All cutting modes are required anew after each opaque macro call.
-        r.modal(&p.work_offset)?;
+        r.modal(p)?;
         match p.length_compensation {
             LengthCompensation::ToolTable => {
                 r.expect(&[('G', 43.), ('H', tool.length_offset_number.unwrap() as f64)])?
             }
             LengthCompensation::MacroManaged => {}
         }
+        // The spindle starts before any XY travel so spin-up overlaps the
+        // safe transit; the dwell still precedes every axis move it follows.
+        let spindle = |r: &mut Reader| -> Result<()> {
+            r.expect(&[
+                (
+                    'M',
+                    match tool.spindle_direction {
+                        SpindleDirection::Clockwise => 3.,
+                        SpindleDirection::Counterclockwise => 4.,
+                    },
+                ),
+                ('S', stage.spindle),
+            ])?;
+            r.expect(&[('G', 4.), ('P', p.spindle_spinup_seconds)])?;
+            r.expect(&[(
+                'M',
+                match p.coolant {
+                    Coolant::Off => 9.,
+                    Coolant::Flood => 8.,
+                    Coolant::Mist => 7.,
+                },
+            )])
+        };
         let mut current = p.returned_position(previous_stage_end);
         if let M6Return::SafeRetract {
             z_mm,
@@ -170,6 +209,7 @@ pub(super) fn read(
         } = p.m6.return_position
         {
             r.expect(&[('G', 0.), ('Z', z_mm)])?;
+            spindle(&mut r)?;
             let end = r.xyz(0., None)?;
             if end != Position::new(transit_xy_mm, z_mm) {
                 return Err(error(
@@ -179,6 +219,8 @@ pub(super) fn read(
             }
             // These two blocks establish the first known position. Their
             // clearance is the explicit machine contract, not an M5 claim.
+        } else {
+            spindle(&mut r)?;
         }
         let start = machine_position(stage.motions[0].start, p, offset);
         if start.z != clearance || current.z < clearance {
@@ -203,23 +245,6 @@ pub(super) fn read(
             current = end;
             result.clearance_links += 1;
         }
-        r.expect(&[('G', 97.), ('S', stage.spindle)])?;
-        r.expect(&[(
-            'M',
-            match tool.spindle_direction {
-                SpindleDirection::Clockwise => 3.,
-                SpindleDirection::Counterclockwise => 4.,
-            },
-        )])?;
-        r.expect(&[('G', 4.), ('P', p.spindle_spinup_seconds)])?;
-        r.expect(&[(
-            'M',
-            match p.coolant {
-                Coolant::Off => 9.,
-                Coolant::Flood => 8.,
-                Coolant::Mist => 7.,
-            },
-        )])?;
         for expected in stage.motions {
             let end = r.xyz(
                 if expected.kind.rapid() { 0. } else { 1. },

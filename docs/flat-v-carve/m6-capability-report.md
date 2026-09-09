@@ -7,13 +7,13 @@ Status: postprocessor and numeric readback implemented; actual machine macro/con
 
 ## Implemented behavior
 
-`cam export` consumes an authenticated combined plan and an explicit, separately versioned `LinuxCncProfile`. It verifies original motions, generates linear G0/G1 output in G61 exact-path mode, reads the actual output bytes, compares every decoded motion with its source, and runs M5 stock verification on the decoded coordinates. It returns no executable program when a required check fails or remains inconclusive. `cam verify-gcode` repeats the saved-byte checks without trusting the export report.
+`cam export` consumes an authenticated combined plan and an explicit, separately versioned `LinuxCncProfile`. It verifies original motions, generates linear G0/G1 output in the profile's path-control mode (G61 exact path, or G64 blending within a declared tolerance), reads the actual output bytes, compares every decoded motion with its source, and runs M5 stock verification on the decoded coordinates. It returns no executable program when a required check fails or remains inconclusive. `cam verify-gcode` repeats the saved-byte checks without trusting the export report.
 
 The exporter preserves motion count, ordering, feeds, and cutter roles. Endmill work precedes V-bit work. Empty stages generate neither a program nor a tool change. Combined output is `combined.ngc`; per-tool output is `endmill.ngc` and/or `vbit.ngc`. Each file establishes its own modes and finishes with spindle/coolant off and M2. V-bit rest machining still requires the corresponding endmill stock history, recorded in both the report and file comment.
 
 ## Machine contract supplied for this implementation
 
-The user described M6 as introducing TLO so work Z0 is the stock bottom/worktable, preserving XY offsets, and leaving the tool raised at the sensor. They selected provisional T1/T2 and specified a safe Z150 move followed by X0 Y0, without relying on the sensor return coordinates. The [editable profile](../../flat-v-carve/fixtures/m6/macro-stock-bottom.json) records that contract. G54, six decimal places, clockwise spindle, coolant off, and zero added dwell are initial profile choices, not measured machine settings. RPM and cutting/plunge/ramp feeds remain the saved job's settings.
+The user described M6 as introducing TLO so work Z0 is the stock bottom/worktable, preserving XY offsets, and leaving the tool raised at the sensor. They selected provisional T1/T2 and specified a safe Z150 move followed by X0 Y0, without relying on the sensor return coordinates. The [editable profile](../../flat-v-carve/fixtures/m6/macro-stock-bottom.json) records that contract. G54, six decimal places, clockwise spindle, coolant off, zero added dwell, and G64 blending at P0.05/Q0.05 are initial profile choices, not measured machine settings. RPM and cutting/plunge/ramp feeds remain the saved job's settings.
 
 The internal stock-top convention is unchanged. Output uses
 
@@ -30,17 +30,19 @@ Startup with unknown XYZ is supported only under this contract: the machine must
 
 ## Modal and compensation sequence
 
-Every file stops the spindle and coolant, then establishes millimeters, XY plane, absolute XYZ, units-per-minute feed, cutter compensation off, canned cycles off, G61, the selected work offset, and G92.1. Each nonempty stage stops spindle/coolant, emits mapped Tn M6, stops spindle/coolant again, and restores the full setup. The required contract excludes work-frame rotation, XY tool offsets, and G52/G92 use for compensation.
+Every file stops the spindle and coolant, then establishes millimeters, XY plane, absolute XYZ, units-per-minute feed, cutter compensation off, canned cycles off, the profile's path control (G61 exact path, or G64 P/Q tolerance blending), the selected work offset, and G92.1. Each nonempty stage stops spindle/coolant, emits mapped Tn M6, stops spindle/coolant again, and restores the full setup. The required contract excludes work-frame rotation, XY tool offsets, and G52/G92 use for compensation.
 
 For `macro_managed`, no G43, G43.1, or G49 is emitted. For `tool_table`, G43 Hn is applied using the explicit H mapping. No tool length is invented. Standard LinuxCNC M6 does not change TLO itself; the actual custom macro remains machine-owned. [LinuxCNC M6](https://linuxcnc.org/docs/stable/html/gcode/m-code.html#mcode:m6)
 
-After safe positioning, the post emits G97 Sn, M3 or M4, G4 with the configured spin-up dwell, and the chosen coolant state. Each feed move has an explicit F word; feeds are represented independently of XYZ decimal precision. A zero dwell adds no timed wait. The machine's spindle-at-speed interlock or a configured delay must establish readiness. G61 is exact-path mode, distinct from G61.1 exact stop and G64 blending. [LinuxCNC path modes](https://linuxcnc.org/docs/stable/html/gcode/g-code.html#gcode:g61)
+The spindle starts as soon as the stage's travel is safe: after the post-M6 safe-Z lift and before the XY transit (or right after modal setup and G43 under other return contracts), so spin-up overlaps the transit. The post emits one `M3 S…`/`M4 S…` block, then `G4` with the configured spin-up dwell, then the chosen coolant state; the dwell still guarantees settling regardless of transit length. Each feed move has an explicit F word; feeds are represented independently of XYZ decimal precision. A zero dwell adds no timed wait. The machine's spindle-at-speed interlock or a configured delay must establish readiness.
 
-There are no arbitrary header/footer/macro templates, G28/G30/G53 moves, probing commands, controller-side XY cutter compensation, arcs, or blending. These would require additional interpretation and verification contracts.
+Path control is a profile choice recorded in `path_control`. `exact_path` emits G61. `blend` emits `G64 P<tolerance> Q<naive cam>` (Q optional; LinuxCNC requires Q ≤ P), defaulting to P0.05/Q0.05 for profiles that predate the field. Physical validation showed G61 stops the machine at every micro segment of a V-bit carve; G64 blending keeps motion continuous. Stock verification certifies the programmed path, so blending tolerance is bounded by the job's verification tolerance at export, and the report adds a limitation stating the machine may deviate from the programmed path by up to the blend tolerance. [LinuxCNC path modes](https://linuxcnc.org/docs/stable/html/gcode/g-code.html#gcode:g61)
+
+There are no arbitrary header/footer/macro templates, G28/G30/G53 moves, probing commands, controller-side XY cutter compensation, or arcs. These would require additional interpretation and verification contracts.
 
 ## Readback and artifact identity
 
-The reader accepts a deliberately small ASCII numeric subset, not arbitrary LinuxCNC programs. It independently requires the emitted block grammar and modal/tool/spindle sequence, parses XYZ/F/S/T/H/P words, tracks known positions and clearance links, and enforces source motion ordering. Comments can be removed without affecting validation; only inert full-line CAM comments are accepted. Expressions, active comments, unrecognized blocks, missing modes, wrong tool/offset/feed words, changed coordinates, extra motion, and trailing blocks after M2 fail. Output has no lines longer than 240 characters.
+The reader accepts a deliberately small ASCII numeric subset, not arbitrary LinuxCNC programs. It independently requires the emitted block grammar and modal/tool/spindle sequence, parses XYZ/F/S/T/H/P/Q words, tracks known positions and clearance links, and enforces source motion ordering. Comments can be removed without affecting validation; only inert full-line CAM comments are accepted. Expressions, active comments, unrecognized blocks, missing modes, wrong tool/offset/feed words, changed coordinates, extra motion, and trailing blocks after M2 fail. Output has no lines longer than 240 characters.
 
 Formatting-induced collapse, reversal, and loss of required Z displacement fail rather than silently dropping moves. The independently reconstructed list must match the translated/formatted plan and pass M5 overcut, residual, ridge, detail, and entry/clearance checks. Reconstruction uses stock-top coordinates and the decoded clearance/start position, retaining the original target model.
 
@@ -90,7 +92,7 @@ Native Windows debug and release builds pass all 146 tests in each profile; Clip
 | Zero-decimal formatting | Failed, no G-code | — | 0 |
 | One-cell verification limit | Inconclusive, no G-code | — | 0 |
 
-Strict-contact export stops at the original-coordinate M5 gate, which is inconclusive; it does not reach the separate rounded-coordinate failure previously recorded by the M5 fixture runner. These are expected rejection cases, not successful machining programs.
+Strict-contact export stops at the original-coordinate M5 gate, which fails with a point witness (earlier engine builds left its floor bound inconclusive within the resource/arithmetic limits); it does not reach the separate rounded-coordinate failure previously recorded by the M5 fixture runner. These are expected rejection cases, not successful machining programs.
 
 ### Configurable zero allowance by default
 
@@ -100,4 +102,12 @@ A copy of that island with only the allowance changed to zero is saved in `artif
 
 This default change was checked with native Windows debug/release builds, 28 import/job tests, 37 frontend tests, frontend contract/CLI round-trip checks, the frontend production build, and Rust formatting. An actual CLI import confirms a saved zero allowance. No schema migration or reinterpretation of existing plans is involved.
 
-No LinuxCNC preview, rs274 interpreter execution, or physical machine validation is claimed. Both installed WSL Ubuntu environments were checked; neither supplied a LinuxCNC executable/interpreter. Obtaining the actual macro, tool table, INI/HAL configuration, checking work Z150 and travel limits, and running a matching LinuxCNC preview remain M6 integration acceptance work. The geometry/report checks do not establish fixture/holder clearance, hidden probing paths, spindle interlocks, cutting loads, controller dynamics, or actual table/stock measurements.
+### First physical CNC validation (2026-09)
+
+An initial validation run on the physical machine (profile `printnc`) found three issues, all addressed:
+
+1. **G61 stopped the machine at every micro segment.** A V-bit carve emits thousands of sub-millimeter moves; exact-path mode decelerates to zero at each vertex, so the machine never reaches feed and runs jerky. The post now defaults to `G64 P0.05 Q0.05` path blending (see "Modal and compensation sequence" above), configurable per profile through `path_control`.
+2. **Spindle start was late and split across blocks.** The program started the spindle only after all post-tool-change positioning, as a separate `G97 S` plus `M3`. Output now emits one `M3 S…`/`M4 S…` block immediately after the safe-Z lift and before the XY transit, so spin-up overlaps the transit and the dwell guarantees settling.
+3. **V-bit routing ping-ponged between artwork features.** The flower_box carve interleaved tiny cuts across leaves. V-bit ordering now groups candidates by selected artwork component (leaf), completing each feature before traveling to the next; the real flower job's non-floor executions form exactly 15 contiguous feature runs (previously 39), and the same motions remain fully verified.
+
+No LinuxCNC preview, rs274 interpreter execution, or physical machine validation is claimed for the updated output. Both installed WSL Ubuntu environments were checked; neither supplied a LinuxCNC executable/interpreter. Obtaining the actual macro, tool table, INI/HAL configuration, checking work Z150 and travel limits, and running a matching LinuxCNC preview remain M6 integration acceptance work. The geometry/report checks do not establish fixture/holder clearance, hidden probing paths, spindle interlocks, cutting loads, controller dynamics, or actual table/stock measurements.

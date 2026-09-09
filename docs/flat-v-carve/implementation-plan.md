@@ -1,7 +1,7 @@
 # Flat V-carve CAM: implementation plan
 
 Date: 2026-09-05\
-Status: M0–M5 implemented; M6 postprocessor and numeric readback implemented on native Windows x64, with actual controller validation pending. M7's browser workflow is implemented in software (U1–U3, U5, U7–U9 slices: local service, background planning, verification, gated export, tool library, 3D simulator, and the static WebAssembly build); U4 section/inspection contracts, the U6 file-lifecycle/release work, and the M8 measured machining trial remain.
+Status: M0–M5 implemented; M6 postprocessor and numeric readback implemented on native Windows x64, with an initial physical CNC validation round addressed (path blending, spindle sequencing, feature-local V-bit routing) and full controller validation pending. M7's browser workflow is implemented in software (U1–U3, U5, U7–U9 slices: local service, background planning, verification, gated export, tool library, 3D simulator, and the static WebAssembly build); U4 section/inspection contracts, the U6 file-lifecycle/release work, and the M8 measured machining trial remain.
 
 Read [architecture](architecture.md) for agreed scope and [technical design](technical-design.md) for geometry and contracts. This plan orders work by uncertainty: establish the geometric foundation before investing in application polish or relying on machine output. The per-milestone capability reports and per-slice web-UI reports that originally evidenced the completed items below were consolidated on 2026-09-08; the originals remain in Git history under `docs/flat-v-carve/`.
 
@@ -131,10 +131,11 @@ Completed 2026-09-05 with engine 0.6.0 on Windows x64 and pinned Rust 1.95.0. De
 - [x] Document user-described M6 preconditions/postconditions: Z-only TLO, stock-bottom/worktable datum, unchanged XY offsets, and user-specified Z150 then X0 Y0 safe positioning.
 - [x] Set provisional T1/T2 and implement macro-managed and post-managed length compensation policies.
 - [x] Define work offset, stock datum, clearance, spindle/feed state, and output precision in an explicit profile.
-- [x] Emit an explicit modal setup and linear moves with G61 initially.
+- [x] Emit an explicit modal setup and linear moves; path control is profile-selected G61 exact path or G64 tolerance blending (P0.05/Q0.05 default).
 - [x] Group endmill work before V-bit work and support combined/per-tool programs.
 - [x] Restore required cutting state after M6 without overwriting macro-managed offsets.
 - [x] Implement a reader for the emitted numeric G-code subset and recheck its motion list.
+- [x] Address first physical-CNC findings: G61 micro-segment stopping, late/split spindle start, and cross-feature V-bit travels (see the M6 report's validation section).
 - [ ] Check the actual M6 macro, tool table, and INI/HAL configuration against the declared contract.
 - [ ] Inspect programs in LinuxCNC preview or a matching simulation configuration.
 

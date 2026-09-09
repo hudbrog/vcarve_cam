@@ -190,12 +190,27 @@ fn preserves_motions(stages: &[Stage<'_>], profile: &LinuxCncProfile, offset: f6
         })
     })
 }
-fn modal(lines: &mut Vec<String>, p: &LinuxCncProfile) {
+fn modal(lines: &mut Vec<String>, p: &LinuxCncProfile) -> Result<()> {
+    let path_mode = match p.path_control {
+        PathControl::ExactPath => "G61".to_string(),
+        PathControl::Blend {
+            tolerance_mm,
+            naive_cam_tolerance_mm,
+        } => {
+            let p_word = scalar(tolerance_mm)?;
+            match naive_cam_tolerance_mm.map(scalar) {
+                Some(Ok(q_word)) => format!("G64 P{p_word} Q{q_word}"),
+                Some(Err(e)) => return Err(e),
+                None => format!("G64 P{p_word}"),
+            }
+        }
+    };
     lines.extend([
-        "G21 G17 G90 G94 G40 G80 G61".into(),
+        format!("G21 G17 G90 G94 G40 G80 {path_mode}"),
         p.work_offset.clone(),
         "G92.1".into(),
     ]);
+    Ok(())
 }
 fn emit(
     plan: &SourcePlan<'_>,
@@ -222,7 +237,7 @@ fn emit(
     }
     lines.push("M5".into());
     lines.push("M9".into());
-    modal(&mut lines, p);
+    modal(&mut lines, p)?;
     let mut previous_stage_end = p.program_start_position_mm;
     for stage in stages {
         let tool = p.tool(stage.id);
@@ -232,10 +247,32 @@ fn emit(
         lines.push(format!("T{} M6", tool.tool_number));
         lines.push("M5".into());
         lines.push("M9".into());
-        modal(&mut lines, p);
+        modal(&mut lines, p)?;
         if p.length_compensation == LengthCompensation::ToolTable {
             lines.push(format!("G43 H{}", tool.length_offset_number.unwrap()));
         }
+        // Start the spindle before any XY travel so spin-up overlaps the safe
+        // transit; the dwell still guarantees settling regardless of its length.
+        let spindle = |lines: &mut Vec<String>| -> Result<()> {
+            lines.push(format!(
+                "{} S{}",
+                match tool.spindle_direction {
+                    SpindleDirection::Clockwise => "M3",
+                    SpindleDirection::Counterclockwise => "M4",
+                },
+                scalar(stage.spindle)?
+            ));
+            lines.push(format!("G4 P{}", p.spindle_spinup_seconds));
+            lines.push(
+                match p.coolant {
+                    Coolant::Off => "M9",
+                    Coolant::Flood => "M8",
+                    Coolant::Mist => "M7",
+                }
+                .into(),
+            );
+            Ok(())
+        };
         // The contract applies after modal restoration and (if post-managed)
         // G43. Never infer the new tool-tip position from the old tool length.
         let mut current = p.returned_position(previous_stage_end);
@@ -245,10 +282,13 @@ fn emit(
         } = p.m6.return_position
         {
             lines.push(format!("G0 Z{z_mm:.places$}", places = p.decimal_places));
+            spindle(&mut lines)?;
             lines.push(format!(
                 "G0 {}",
                 xyz(Position::new(transit_xy_mm, z_mm), p.decimal_places)
             ));
+        } else {
+            spindle(&mut lines)?;
         }
         let start = machine_position(stage.motions[0].start, p, offset);
         if current.z != start.z {
@@ -262,23 +302,6 @@ fn emit(
         if current != start {
             lines.push(format!("G0 {}", xyz(start, p.decimal_places)));
         }
-        lines.push(format!("G97 S{}", scalar(stage.spindle)?));
-        lines.push(
-            match tool.spindle_direction {
-                SpindleDirection::Clockwise => "M3",
-                SpindleDirection::Counterclockwise => "M4",
-            }
-            .into(),
-        );
-        lines.push(format!("G4 P{}", p.spindle_spinup_seconds));
-        lines.push(
-            match p.coolant {
-                Coolant::Off => "M9",
-                Coolant::Flood => "M8",
-                Coolant::Mist => "M7",
-            }
-            .into(),
-        );
         for m in stage.motions {
             // Format once in xyz; avoid an intermediate format/parse/format.
             let end = Position {
@@ -411,6 +434,11 @@ fn process(
             "Per-tool files restore all required modes independently; V-bit rest machining still requires the matching endmill stock history. No G28/G30/G53 or probing positions are invented.".into(),
         ],
     };
+    if let PathControl::Blend { tolerance_mm, .. } = profile.path_control {
+        report.limitations.push(format!(
+            "Path blending G64 is active: stock verification certifies the programmed path, but the machine may deviate from it by up to the {tolerance_mm} mm blend tolerance."
+        ));
+    }
     if report.status != VerificationStatus::Passed {
         return Ok(ExportResult {
             programs: vec![],

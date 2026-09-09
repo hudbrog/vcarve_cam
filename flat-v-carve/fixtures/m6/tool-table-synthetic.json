@@ -7,6 +7,7 @@
   "decimal_places": 6,
   "program_start_position_mm": {"x": 0, "y": 0, "z": 5},
   "length_compensation": "tool_table",
+  "path_control": {"kind": "exact_path"},
   "tools": [
     {"tool_id": "endmill", "tool_number": 1, "length_offset_number": 11, "spindle_direction": "clockwise"},
     {"tool_id": "vbit", "tool_number": 2, "length_offset_number": 12, "spindle_direction": "counterclockwise"}

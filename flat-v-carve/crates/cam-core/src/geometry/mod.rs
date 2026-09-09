@@ -1,6 +1,6 @@
 //! Millimeter geometry. Dependency containers and graph handles stay in adapters.
 mod polygon;
-mod precision;
+pub(crate) mod precision;
 mod query;
 mod snapping;
 pub(crate) mod spatial;

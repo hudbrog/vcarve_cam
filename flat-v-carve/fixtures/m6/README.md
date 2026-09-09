@@ -6,7 +6,7 @@
 - T1 is the endmill and T2 the V-bit.
 - After M6, `G0 Z150` followed by XY transit to X0 Y0 is the user-specified safe sequence; the macro's exact sensor return coordinates are not required.
 
-G54, six decimal places, clockwise spindle, coolant off, and zero programmed spin-up dwell are editable initial choices. Zero dwell adds no timed wait; spindle-at-speed interlocking or a suitable configured delay is a machine responsibility. Feeds/RPM come from the authenticated job, not the profile. The fixture jobs contain synthetic cutting settings.
+G54, six decimal places, clockwise spindle, coolant off, zero programmed spin-up dwell, and G64 path blending at P0.05/Q0.05 are editable initial choices. Zero dwell adds no timed wait; spindle-at-speed interlocking or a suitable configured delay is a machine responsibility. The spindle starts after the post-M6 safe-Z lift and before the XY transit, so spin-up overlaps the transit. Feeds/RPM come from the authenticated job, not the profile. The fixture jobs contain synthetic cutting settings. A profile may instead select G61 exact path via `path_control`.
 
 `clearance_z_mm` is above stock **top** and must match the plan. The safe-retract Z and optional startup/fixed return positions use the selected **machine work frame**. With 8 mm stock, a planned depth of 2 mm outputs Z6; a 5 mm planning clearance outputs Z13. Z150 is a G54 work coordinate, not G53 machine Z.
 
@@ -24,4 +24,4 @@ The profile requires no G52/G92 compensation, no work-frame rotation, and no XY 
 
 The script regenerates plans with the current engine, exports new bundles, rereads every successful saved program, compares byte hashes, and checks that rejected cases publish no `.ngc`. Use `-OutputDirectory artifacts/m6-another-run` to preserve earlier output. The report and G-code are generated artifacts and stay ignored by Git.
 
-The strict zero-ridge contact case is inconclusive at the original-plan gate (its floor bound cannot be resolved within the resource/arithmetic limits). M5's separate rounded-coordinate check can prove a failure for that fixture, but M6 already withholds output at the original gate. Both outcomes prevent export. Use `-CaseId strict-contact,coarse-rounding,cell-limit` to rerun only those expectations in a new output directory.
+The strict zero-ridge contact case fails at the original-plan gate with a point witness (earlier engine builds left its floor bound inconclusive within the resource/arithmetic limits). The coarse-rounding case passes by exercising the automatic output-precision increase from zero decimal places. M5's separate rounded-coordinate check can also prove a failure for the strict-contact fixture, but M6 already withholds output at the original gate. Use `-CaseId strict-contact,coarse-rounding,cell-limit` to rerun only those expectations in a new output directory.

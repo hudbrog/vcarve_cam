@@ -206,6 +206,8 @@ Recompute residuals after the actual sweeps and retain independent depth-pass ai
 
 Finish with the complete achievable boundary, including island boundaries and rising corner paths. Output order is all endmill work followed by all V-bit work.
 
+Within each V-bit depth pass and path family group, sequencing is feature-local: candidates are grouped by the artwork component (disjoint selected region) that contains them, groups run greedy-nearest against the current position, and each group's internal route reuses the checked nearest-neighbor walk. One leaf of a flower carving completes before the tool travels to the next; depth passes remain level-major, so multi-level jobs revisit each feature per level. Cleanup plunges are ordered the same way instead of in scan order. Only sequencing changes — per-candidate depth progression, stay-down link checks, and final-finish placement are unchanged, and the reordered plan passes the same execution verification.
+
 ### 6.3 Floor ridges
 
 For adjacent parallel V-bit passes at the same depth, spacing `s`, and flat tip radius `r_t`, the ideal ridge height is:
@@ -303,9 +305,9 @@ cam serve
 
 ## 9. LinuxCNC postprocessor
 
-MVP output uses explicit linear `G0`/`G1` moves and a known modal state: millimeters, absolute XYZ, XY plane, units-per-minute feed, and no controller-side XY cutter compensation. Start with exact-path mode `G61`. Arc fitting and bounded blending are later optimizations because they change the executed path assumptions.
+MVP output uses explicit linear `G0`/`G1` moves and a known modal state: millimeters, absolute XYZ, XY plane, units-per-minute feed, and no controller-side XY cutter compensation. Path control is a profile choice (`path_control`): `exact_path` emits `G61`; `blend` emits `G64 P<tolerance> [Q<naive cam>]`, defaulting to P0.05/Q0.05 for profiles that predate the field. Physical validation showed exact path decelerates to zero at every sub-millimeter V-bit segment; bounded blending keeps motion continuous within the declared deviation. Arc fitting remains a later optimization because it changes the executed path assumptions.
 
-LinuxCNC distinguishes `G61` exact path, `G61.1` exact stop, and `G64` blending; unrestricted blending can deviate from programmed geometry. [LinuxCNC path-control documentation](https://linuxcnc.org/docs/stable/html/gcode/g-code.html#gcode:g61)
+LinuxCNC distinguishes `G61` exact path, `G61.1` exact stop, and `G64` blending; unrestricted blending can deviate from programmed geometry, so export rejects a blend tolerance larger than the job's verification tolerance and the report discloses the unmodeled deviation. [LinuxCNC path-control documentation](https://linuxcnc.org/docs/stable/html/gcode/g-code.html#gcode:g61)
 
 The machine profile must select one length-compensation contract:
 
@@ -314,7 +316,7 @@ The machine profile must select one length-compensation contract:
 
 Standard LinuxCNC M6 does not itself change the tool-length offset. Existing custom macros may do more. Verify their behavior before choosing the contract. [LinuxCNC M6 documentation](https://linuxcnc.org/docs/stable/html/gcode/m-code.html#mcode:m6)
 
-Before a tool change, retract according to the known current setup and stop the spindle. Emit the mapped tool selection and M6. Restore the required units, positioning/feed/path modes, work offset, and spindle/feed settings according to the macro contract before cutting resumes. Never blindly cancel a valid dynamic length offset. Do not invent G28/G30/G53 positions or probing commands.
+Before a tool change, retract according to the known current setup and stop the spindle. Emit the mapped tool selection and M6. Restore the required units, positioning/feed/path modes, work offset, and spindle/feed settings according to the macro contract before cutting resumes. Never blindly cancel a valid dynamic length offset. Do not invent G28/G30/G53 positions or probing commands. After the post-M6 safe-Z lift (or modal restore under other return contracts), emit one `M3 S…`/`M4 S…` block, the spin-up dwell, and the coolant state before any XY travel, so spindle spin-up overlaps the safe transit.
 
 The combined program groups both stages with descriptive comments and tool IDs. Separate per-tool exports contain complete setup/end sequences. Account for output rounding by regenerating the numeric move list from emitted words and validating it against the plan. The emitted-subset reader is not a general LinuxCNC interpreter; macro semantics are covered by the profile and machine tests.
 

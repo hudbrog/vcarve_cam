@@ -7,6 +7,7 @@
   "decimal_places": 6,
   "program_start_position_mm": null,
   "length_compensation": "macro_managed",
+  "path_control": {"kind": "blend", "tolerance_mm": 0.05, "naive_cam_tolerance_mm": 0.05},
   "tools": [
     {"tool_id": "endmill", "tool_number": 1, "length_offset_number": null, "spindle_direction": "clockwise"},
     {"tool_id": "vbit", "tool_number": 2, "length_offset_number": null, "spindle_direction": "clockwise"}

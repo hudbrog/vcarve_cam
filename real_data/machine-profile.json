@@ -7,6 +7,7 @@
   "decimal_places": 3,
   "program_start_position_mm": null,
   "length_compensation": "macro_managed",
+  "path_control": {"kind": "blend", "tolerance_mm": 0.05, "naive_cam_tolerance_mm": 0.05},
   "tools": [
     {
       "tool_id": "endmill",

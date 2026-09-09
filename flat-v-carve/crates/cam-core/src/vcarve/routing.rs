@@ -1,7 +1,7 @@
 use super::{Candidate, Context, PathFamily, hash};
 use crate::{
     geometry::{
-        Point, Result, Segment,
+        Grid, GridPoint, Point, Region, Result, Segment, precision,
         spatial::{Aabb, SpatialIndex},
     },
     motion::Position,
@@ -182,6 +182,161 @@ pub(super) fn order(paths: &[Candidate], start: Point) -> Vec<Candidate> {
             c
         })
         .collect()
+}
+
+/// Artwork features (disjoint selected components such as flower leaves) used
+/// to sequence V-bit work: one feature is completed before traveling to the
+/// next, so a greedy nearest walk can no longer ping-pong between components
+/// whose entries converge near shared detail.
+pub(super) struct FeatureIndex {
+    grid: Grid,
+    /// Non-hole rings as `(min_x, min_y, max_x, max_y, points)` in grid units.
+    rings: Vec<(i64, i64, i64, i64, Vec<GridPoint>)>,
+}
+impl FeatureIndex {
+    pub(super) fn new(region: &Region) -> Self {
+        Self {
+            grid: region.grid(),
+            rings: region
+                .rings()
+                .iter()
+                .filter(|r| !r.is_hole())
+                .map(|r| {
+                    let (min_x, min_y, max_x, max_y) = r.points().iter().fold(
+                        (i64::MAX, i64::MAX, i64::MIN, i64::MIN),
+                        |(x0, y0, x1, y1), p| (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y)),
+                    );
+                    (min_x, min_y, max_x, max_y, r.points().to_vec())
+                })
+                .collect(),
+        }
+    }
+    /// Feature id of the component containing `p`. Candidates lie strictly
+    /// inside their component, so the exact parity cast decides; a point in no
+    /// component (a hole, or off-region rounding) falls back to the nearest
+    /// ring so the assignment stays total and deterministic.
+    pub(super) fn feature(&self, p: Point) -> usize {
+        let Ok(q) = self.grid.quantize(p) else {
+            return 0;
+        };
+        let mut nearest: Option<(f64, usize)> = None;
+        for (i, (x0, y0, x1, y1, ring)) in self.rings.iter().enumerate() {
+            if q.x >= *x0 && q.x <= *x1 && q.y >= *y0 && q.y <= *y1 && precision::inside(q, ring) {
+                return i;
+            }
+            let dx = if q.x < *x0 {
+                *x0 - q.x
+            } else if q.x > *x1 {
+                q.x - *x1
+            } else {
+                0
+            };
+            let dy = if q.y < *y0 {
+                *y0 - q.y
+            } else if q.y > *y1 {
+                q.y - *y1
+            } else {
+                0
+            };
+            let distance = (dx as f64).hypot(dy as f64) / self.grid.scale();
+            if nearest.is_none_or(|(d, _)| distance < d) {
+                nearest = Some((distance, i));
+            }
+        }
+        nearest.map_or(0, |(_, i)| i)
+    }
+}
+fn feature_of(features: &FeatureIndex, c: &Candidate) -> usize {
+    // A central vertex names the component the whole path belongs to; holes
+    // never contain candidates, and touching components union into one ring.
+    c.points
+        .get(c.points.len() / 2)
+        .or_else(|| c.points.first())
+        .map_or(0, |p| features.feature(p.xy()))
+}
+
+/// Order paths feature by feature, completing each component's roughing and
+/// finishing locally before the next travel. Both the feature sequence and
+/// the route inside a feature stay greedy-nearest; ties resolve to the lowest
+/// feature id for determinism.
+pub(super) fn feature_order(
+    paths: &[Candidate],
+    start: Point,
+    features: &FeatureIndex,
+) -> Vec<Candidate> {
+    let mut groups: std::collections::BTreeMap<usize, Vec<Candidate>> =
+        std::collections::BTreeMap::new();
+    for c in paths {
+        groups
+            .entry(feature_of(features, c))
+            .or_default()
+            .push(c.clone());
+    }
+    let mut current = start;
+    let mut ordered = vec![];
+    while !groups.is_empty() {
+        // Endpoint distance bounds the travel to enter a group; the full
+        // per-vertex entry choice happens inside `order`.
+        let mut chosen: Option<(usize, f64)> = None;
+        for (&id, group) in &groups {
+            let nearest = group
+                .iter()
+                .flat_map(|c| [c.points.first(), c.points.last()])
+                .flatten()
+                .map(|p| p.xy().distance(current))
+                .fold(f64::INFINITY, f64::min);
+            if chosen.is_none_or(|(_, d)| nearest < d) {
+                chosen = Some((id, nearest));
+            }
+        }
+        let group = groups.remove(&chosen.unwrap().0).unwrap();
+        let sub = order(&group, current);
+        if let Some(end) = sub.last().and_then(|c| c.points.last()) {
+            current = end.xy();
+        }
+        ordered.extend(sub);
+    }
+    ordered
+}
+
+/// Order isolated cleanup plunges feature-first, then nearest, so residual
+/// points do not drag the bit across the whole artwork in scan order.
+pub(super) fn order_points(
+    points: Vec<Point>,
+    start: Point,
+    features: &FeatureIndex,
+) -> Vec<Point> {
+    let mut groups: std::collections::BTreeMap<usize, Vec<Point>> =
+        std::collections::BTreeMap::new();
+    for p in points {
+        groups.entry(features.feature(p)).or_default().push(p);
+    }
+    let mut current = start;
+    let mut ordered = vec![];
+    while !groups.is_empty() {
+        let mut chosen: Option<(usize, f64)> = None;
+        for (&id, group) in &groups {
+            let nearest = group
+                .iter()
+                .map(|p| p.distance(current))
+                .fold(f64::INFINITY, f64::min);
+            if chosen.is_none_or(|(_, d)| nearest < d) {
+                chosen = Some((id, nearest));
+            }
+        }
+        let mut group = groups.remove(&chosen.unwrap().0).unwrap();
+        while !group.is_empty() {
+            let mut best = 0;
+            for (i, p) in group.iter().enumerate() {
+                if p.distance(current) < group[best].distance(current) {
+                    best = i;
+                }
+            }
+            current = group.remove(best);
+            ordered.push(current);
+        }
+    }
+    ordered
 }
 
 /// New links are confined to one stepover and one stepdown from stock top.
@@ -475,5 +630,111 @@ mod tests {
             MotionKind::Cut
         );
         verify_vbit_motions(&job, &endmill.motions, &moves).unwrap();
+    }
+
+    fn two_component_job() -> (Context, FeatureIndex) {
+        let mut job =
+            Job::from_json(include_str!("../../../../fixtures/m4/narrow-channel.json")).unwrap();
+        job.source.svg = job
+            .source
+            .svg
+            .replace("M0 0h3v20h-3z", "M0 0h3v20h-3zM20 0h3v20h-3z");
+        job.selected_region_ids = vec!["pocket::0".into(), "pocket::1".into()];
+        let ctx = Context::new(&job).unwrap();
+        assert_eq!(ctx.target.region().component_count(), 2);
+        let features = FeatureIndex::new(ctx.target.region());
+        (ctx, features)
+    }
+
+    #[test]
+    fn feature_order_completes_each_disjoint_component_before_moving_on() {
+        let (_ctx, features) = two_component_job();
+        let left = features.feature(Point::new(1.5, 10.));
+        let right = features.feature(Point::new(21.5, 10.));
+        assert_ne!(left, right);
+        // Outside every component resolves to the nearest ring, deterministically.
+        assert_eq!(features.feature(Point::new(19., 10.)), right);
+        let p = |x, y| Position::new(Point::new(x, y), -0.5);
+        let medial = |a: (f64, f64), b: (f64, f64)| Candidate {
+            family: PathFamily::Medial,
+            source_branch: None,
+            points: vec![p(a.0, a.1), p(b.0, b.1)],
+        };
+        // Interleave candidates from both components; feature_order must
+        // untangle them into contiguous per-component blocks.
+        let paths = vec![
+            medial((21., 5.), (22., 6.)),
+            medial((1., 15.), (2., 16.)),
+            medial((21., 15.), (22., 14.)),
+            medial((1., 5.), (2., 6.)),
+        ];
+        let ids = |ordered: &[Candidate]| {
+            ordered
+                .iter()
+                .map(|c| features.feature(c.points[0].xy()))
+                .collect::<Vec<_>>()
+        };
+        let ordered = feature_order(&paths, Point::new(0., 0.), &features);
+        assert_eq!(ids(&ordered), vec![left, left, right, right]);
+        // Starting inside the second component flips which block comes first.
+        let flipped = feature_order(&paths, Point::new(21.5, 10.), &features);
+        assert_eq!(ids(&flipped), vec![right, right, left, left]);
+        // The route is deterministic across repeated runs.
+        assert_eq!(
+            ids(&feature_order(&paths, Point::new(0., 0.), &features)),
+            ids(&ordered)
+        );
+    }
+
+    #[test]
+    fn order_points_groups_features_and_walks_nearest_within_each() {
+        let (_ctx, features) = two_component_job();
+        let left = features.feature(Point::new(1.5, 10.));
+        let right = features.feature(Point::new(21.5, 10.));
+        let points = vec![
+            Point::new(21.5, 15.),
+            Point::new(1.5, 15.),
+            Point::new(21.5, 5.),
+            Point::new(1.5, 5.),
+        ];
+        let ordered = order_points(points, Point::new(0., 0.), &features);
+        let ids: Vec<usize> = ordered.iter().map(|p| features.feature(*p)).collect();
+        assert_eq!(ids, vec![left, left, right, right]);
+        assert!(ordered[0].distance(Point::new(1.5, 5.)) < f64::EPSILON);
+    }
+
+    #[test]
+    #[ignore = "real flower planning locality regression"]
+    fn flower_vbit_executions_complete_one_leaf_at_a_time() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../real_data");
+        let job = Job::from_json(
+            &std::fs::read_to_string(data.join("flower_box-svg.job-real.json")).unwrap(),
+        )
+        .unwrap();
+        let plan = crate::vcarve::plan_combined(&job).unwrap();
+        let geometry =
+            crate::svg::import_svg(&job.source.svg, &job.import, Some(&job.selected_region_ids))
+                .unwrap();
+        let features = FeatureIndex::new(&geometry.selected);
+        let sequence: Vec<usize> = plan
+            .executions
+            .iter()
+            .filter(|e| !matches!(e.candidate.family, PathFamily::Floor))
+            .filter_map(|e| e.candidate.points.first())
+            .map(|p| features.feature(p.xy()))
+            .collect();
+        let mut runs = 0;
+        let mut prev = usize::MAX;
+        for &f in &sequence {
+            if f != prev {
+                runs += 1;
+                prev = f;
+            }
+        }
+        assert_eq!(
+            runs,
+            geometry.selected.component_count(),
+            "each artwork component (leaf) must finish before the next one starts"
+        );
     }
 }

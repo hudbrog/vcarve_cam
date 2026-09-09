@@ -1,8 +1,8 @@
 use cam_core::{
     job::Job,
     post::{
-        LengthCompensation, LinuxCncProfile, M6Return, Program, ProgramLayout, export_plan,
-        verify_programs,
+        LengthCompensation, LinuxCncProfile, M6Return, PathControl, Program, ProgramLayout,
+        export_plan, verify_programs,
     },
     vcarve::{CombinedPlan, plan_combined},
     verification::{VerificationOptions, VerificationStatus},
@@ -77,11 +77,14 @@ fn macro_tlo_and_stock_bottom_translate_and_verify_every_output_motion() {
     assert!(!text.contains("G43"));
     assert!(!text.contains("G49"));
     assert!(!text.contains("G53"));
-    assert_eq!(
-        text.matches("G0 Z150.000000\nG0 X0.000000 Y0.000000 Z150.000000\nG0 Z13.000000")
-            .count(),
-        2
-    );
+    assert!(!text.contains("G97"));
+    // The spindle starts right after the safe-Z lift and before the XY transit,
+    // so spin-up overlaps the transit; both stages still end at the start plane.
+    for rpm in [10000, 12000] {
+        assert!(text.contains(&format!(
+            "G0 Z150.000000\nM3 S{rpm}\nG4 P0\nM9\nG0 X0.000000 Y0.000000 Z150.000000\nG0 Z13.000000"
+        )));
+    }
     assert!(text.contains("T1 M6"));
     assert!(text.contains("T2 M6"));
     // Stock top is Z8 and the two-millimeter depth cap is Z6, not Z-2.
@@ -109,9 +112,9 @@ fn post_managed_offsets_and_nondefault_cutting_state_are_restored() {
         result.report.diagnostics
     );
     let text = &result.programs[0].gcode;
-    assert!(text.contains("G43 H11\nG0 Z5.000000"));
-    assert!(text.contains("G43 H12\nG0 Z5.000000"));
-    assert!(text.contains("G97 S12000\nM4\nG4 P1.5\nM8"));
+    assert!(text.contains("G43 H11\nM3 S10000\nG4 P1.5\nM8"));
+    assert!(text.contains("G43 H12\nM4 S12000\nG4 P1.5\nM8"));
+    assert!(text.contains("G21 G17 G90 G94 G40 G80 G61\n"));
     assert_eq!(text.matches("G55\n").count(), 3);
     assert!(!text.contains("G49"));
 }
@@ -131,7 +134,10 @@ fn per_tool_files_have_independent_setup_and_explicit_stock_history() {
     for program in &result.programs {
         assert_eq!(program.gcode.matches(" M6\n").count(), 1);
         assert_eq!(
-            program.gcode.matches("G21 G17 G90 G94 G40 G80 G61").count(),
+            program
+                .gcode
+                .matches("G21 G17 G90 G94 G40 G80 G64 P0.05 Q0.05")
+                .count(),
             2
         );
         assert!(program.gcode.ends_with("M5\nM9\nM2\n"));
@@ -171,17 +177,19 @@ fn altered_modes_tool_selection_compensation_and_spindle_cannot_pass_readback() 
     for (old, new) in [
         ("G90", "G91"),
         ("G21", "G20"),
-        ("G61", "G64"),
+        ("G64 P0.05 Q0.05", "G61"),
+        ("P0.05", "P0.5"),
+        ("Q0.05", "Q0.1"),
         ("G94", "G93"),
         ("G54\n", "G55\n"),
         ("T2 M6", "T1 M6"),
-        ("G97 S12000", "G97 S100"),
-        ("M3\n", "M4\n"),
+        ("M3 S12000", "M3 S100"),
+        ("M3 S12000", "M4 S12000"),
         ("G92.1\n", "G49\n"),
         ("G4 P0", "G4 P5"),
     ] {
         let mut changed = baseline().clone();
-        assert!(changed[0].gcode.contains(old));
+        assert!(changed[0].gcode.contains(old), "missing {old:?}");
         changed[0].gcode = changed[0].gcode.replacen(old, new, 1);
         rejected(&changed);
     }
@@ -191,7 +199,7 @@ fn altered_modes_tool_selection_compensation_and_spindle_cannot_pass_readback() 
 fn omitted_post_m6_setup_and_unsafe_retract_sequences_are_rejected() {
     for (old, new) in [
         (
-            "T2 M6\nM5\nM9\nG21 G17 G90 G94 G40 G80 G61\n",
+            "T2 M6\nM5\nM9\nG21 G17 G90 G94 G40 G80 G64 P0.05 Q0.05\n",
             "T2 M6\nM5\nM9\n",
         ),
         ("G0 Z150.000000\n", ""),
@@ -200,8 +208,14 @@ fn omitted_post_m6_setup_and_unsafe_retract_sequences_are_rejected() {
             "G0 X0.000000 Y0.000000 Z150.000000\n",
             "G0 X0.000000 Y0.000000 Z1.000000\n",
         ),
+        // Starting the spindle after the XY transit must not pass readback.
+        (
+            "G0 Z150.000000\nM3 S12000\nG4 P0\nM9\nG0 X0.000000 Y0.000000 Z150.000000\n",
+            "G0 Z150.000000\nG0 X0.000000 Y0.000000 Z150.000000\nM3 S12000\nG4 P0\nM9\n",
+        ),
     ] {
         let mut changed = baseline().clone();
+        assert!(changed[0].gcode.contains(old), "missing {old:?}");
         changed[0].gcode = changed[0].gcode.replacen(old, new, 1);
         rejected(&changed);
     }
@@ -262,6 +276,137 @@ fn comments_are_not_motion_authority_and_no_cached_pass_is_trusted() {
     let mut altered = plan().clone();
     altered.vbit_motions[3].end.z -= 0.2;
     assert!(export_plan(&altered, &profile(), ProgramLayout::Combined, &options()).is_err());
+}
+
+#[test]
+fn path_control_modes_default_blend_and_bound_the_verification_tolerance() {
+    let job = &plan().endmill.job;
+    // Profiles without the field keep working and select the blend default.
+    let mut legacy = serde_json::from_str::<serde_json::Value>(include_str!(
+        "../../../fixtures/m6/macro-stock-bottom.json"
+    ))
+    .unwrap();
+    assert!(
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("path_control")
+            .is_some()
+    );
+    let defaulted = LinuxCncProfile::from_json(&legacy.to_string()).unwrap();
+    assert_eq!(
+        defaulted.path_control,
+        PathControl::Blend {
+            tolerance_mm: 0.05,
+            naive_cam_tolerance_mm: Some(0.05),
+        }
+    );
+    let mut p = profile();
+    for path_control in [
+        PathControl::ExactPath,
+        PathControl::Blend {
+            tolerance_mm: 0.05,
+            naive_cam_tolerance_mm: Some(0.05),
+        },
+        PathControl::Blend {
+            tolerance_mm: 0.05,
+            naive_cam_tolerance_mm: None,
+        },
+        PathControl::Blend {
+            tolerance_mm: 0.01,
+            naive_cam_tolerance_mm: None,
+        },
+    ] {
+        p.path_control = path_control;
+        p.validate(job).unwrap();
+        let result = export_plan(plan(), &p, ProgramLayout::Combined, &options()).unwrap();
+        assert_eq!(
+            result.report.status,
+            VerificationStatus::Passed,
+            "{path_control:?}: {:?}",
+            result.report.diagnostics
+        );
+        let modal = match path_control {
+            PathControl::ExactPath => "G21 G17 G90 G94 G40 G80 G61",
+            PathControl::Blend {
+                tolerance_mm,
+                naive_cam_tolerance_mm,
+            } => {
+                let q = naive_cam_tolerance_mm
+                    .map(|v| format!(" Q{v}"))
+                    .unwrap_or_default();
+                &format!("G21 G17 G90 G94 G40 G80 G64 P{tolerance_mm}{q}")
+            }
+        };
+        assert_eq!(result.programs[0].gcode.matches(modal).count(), 3);
+    }
+    for path_control in [
+        // LinuxCNC rejects Q > P.
+        PathControl::Blend {
+            tolerance_mm: 0.05,
+            naive_cam_tolerance_mm: Some(0.06),
+        },
+        // Blending beyond the job's verification tolerance invalidates the
+        // certificate that stock verification grants the programmed path.
+        PathControl::Blend {
+            tolerance_mm: 0.06,
+            naive_cam_tolerance_mm: Some(0.06),
+        },
+        PathControl::Blend {
+            tolerance_mm: 0.,
+            naive_cam_tolerance_mm: None,
+        },
+        PathControl::Blend {
+            tolerance_mm: -0.05,
+            naive_cam_tolerance_mm: None,
+        },
+        PathControl::Blend {
+            tolerance_mm: 11.,
+            naive_cam_tolerance_mm: None,
+        },
+    ] {
+        p.path_control = path_control;
+        assert!(p.validate(job).is_err(), "{path_control:?}");
+    }
+    p.path_control = PathControl::Blend {
+        tolerance_mm: 0.06,
+        naive_cam_tolerance_mm: Some(0.06),
+    };
+    assert_eq!(p.validate(job).unwrap_err().code, "POST_BLEND_TOLERANCE");
+    // The blend-mode report discloses the unmodeled deviation.
+    p.path_control = PathControl::Blend {
+        tolerance_mm: 0.05,
+        naive_cam_tolerance_mm: Some(0.05),
+    };
+    let result = export_plan(plan(), &p, ProgramLayout::Combined, &options()).unwrap();
+    assert!(
+        result
+            .report
+            .limitations
+            .iter()
+            .any(|l| l.contains("blend tolerance"))
+    );
+}
+
+#[test]
+fn exact_path_profiles_reject_blending_tamper() {
+    let p = LinuxCncProfile::from_json(include_str!(
+        "../../../fixtures/m6/tool-table-synthetic.json"
+    ))
+    .unwrap();
+    let result = export_plan(plan(), &p, ProgramLayout::Combined, &options()).unwrap();
+    assert_eq!(
+        result.report.status,
+        VerificationStatus::Passed,
+        "{:?}",
+        result.report.diagnostics
+    );
+    assert!(result.programs[0].gcode.contains("G61"));
+    let mut changed = result.programs.clone();
+    changed[0].gcode = changed[0].gcode.replacen("G61", "G64", 1);
+    let report =
+        verify_programs(plan(), &p, ProgramLayout::Combined, &options(), &changed).unwrap();
+    assert_eq!(report.status, VerificationStatus::Failed);
 }
 
 #[test]

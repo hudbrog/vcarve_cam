@@ -31,6 +31,31 @@ pub enum ZDatum {
     StockTop,
     StockBottom,
 }
+/// LinuxCNC path control mode. Exact path stops at every programmed vertex;
+/// tolerance blending keeps continuous velocity within the declared deviation.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PathControl {
+    ExactPath,
+    /// G64: `tolerance_mm` (P) bounds deviation from the programmed path;
+    /// `naive_cam_tolerance_mm` (Q) lets LinuxCNC merge near-collinear
+    /// vertices. LinuxCNC rejects Q > P, so validation enforces Q <= P.
+    Blend {
+        tolerance_mm: f64,
+        naive_cam_tolerance_mm: Option<f64>,
+    },
+}
+impl Default for PathControl {
+    fn default() -> Self {
+        // Wood-carving default from physical validation: exact path stops at
+        // every micro segment; 0.05 mm blending moves smoothly and stays far
+        // below material-visible error.
+        Self::Blend {
+            tolerance_mm: 0.05,
+            naive_cam_tolerance_mm: Some(0.05),
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolMapping {
@@ -88,6 +113,8 @@ pub struct LinuxCncProfile {
     /// With None, startup is macro-owned; no axis move precedes the first M6.
     pub program_start_position_mm: Option<Position>,
     pub length_compensation: LengthCompensation,
+    #[serde(default)]
+    pub path_control: PathControl,
     pub tools: Vec<ToolMapping>,
     pub spindle_spinup_seconds: f64,
     pub coolant: Coolant,
@@ -193,6 +220,43 @@ impl LinuxCncProfile {
                 "POST_TOOL_MAPPING",
                 "map exactly the job's endmill and V-bit",
             ));
+        }
+        if let PathControl::Blend {
+            tolerance_mm,
+            naive_cam_tolerance_mm,
+        } = self.path_control
+        {
+            if !tolerance_mm.is_finite() || !(0.000001..=10.).contains(&tolerance_mm) {
+                return Err(error(
+                    "POST_PROFILE",
+                    "path blending tolerance must be positive, at most 10 mm, and finite",
+                ));
+            }
+            if naive_cam_tolerance_mm
+                .is_some_and(|q| !q.is_finite() || !(0.000001..=tolerance_mm).contains(&q))
+            {
+                return Err(error(
+                    "POST_PROFILE",
+                    "naive cam tolerance must be positive and no greater than the path blending tolerance, as LinuxCNC requires Q <= P",
+                ));
+            }
+            // Stock verification certifies the programmed path; blending may
+            // deviate from it by up to P. Keep the certificate meaningful.
+            let verification = job.tolerances.verification_tolerance_mm.ok_or_else(|| {
+                error(
+                    "POST_BLEND_TOLERANCE",
+                    "path blending requires the job's declared verification tolerance",
+                )
+            })?;
+            if tolerance_mm > verification {
+                return Err(error(
+                    "POST_BLEND_TOLERANCE",
+                    format!(
+                        "path blending tolerance {} mm exceeds the job's verification tolerance {} mm; lower the blend tolerance, select exact path, or regenerate the job with a matching tolerance",
+                        tolerance_mm, verification
+                    ),
+                ));
+            }
         }
         let mut numbers = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();

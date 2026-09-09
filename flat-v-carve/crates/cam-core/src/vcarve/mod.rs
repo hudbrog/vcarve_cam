@@ -660,6 +660,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
     timing.lap("endmill");
     let stock = EndmillStock::new(&endmill, ctx.mill.radius().mm())?;
     let (axis, candidates) = candidates(&ctx, &endmill)?;
+    let features = routing::FeatureIndex::new(ctx.target.region());
     timing.lap("candidates");
     let start = endmill.motions.last().map_or(
         Position::new(
@@ -700,7 +701,7 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
                     .cloned()
                     .collect();
                 let previous = moves.last().map_or(start.xy(), |m: &Motion| m.end.xy());
-                for c in &routing::order(&group, previous) {
+                for c in &routing::feature_order(&group, previous, &features) {
                     if let Err(d) =
                         execute(&ctx, &stock, c, cap, false, &mut moves, &mut executions)
                     {
@@ -737,7 +738,8 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
                 )?);
                 break;
             }
-            for p in points {
+            let previous = moves.last().map_or(start.xy(), |m: &Motion| m.end.xy());
+            for p in routing::order_points(points, previous, &features) {
                 cleanup_added = true;
                 let d = ctx.safe_depth(p)?;
                 if d == 0. {
@@ -782,8 +784,8 @@ pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
                     .filter(|c| c.family != PathFamily::Floor)
                     .cloned()
                     .collect();
-                let previous = moves.last().map_or(start.xy(), |m| m.end.xy());
-                for c in &routing::order(&group, previous) {
+                let previous = moves.last().map_or(start.xy(), |m: &Motion| m.end.xy());
+                for c in &routing::feature_order(&group, previous, &features) {
                     if let Err(e) = execute(
                         &ctx,
                         &stock,

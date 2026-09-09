@@ -12,6 +12,9 @@ export const profileFields: ProfileField[] = [
   {path:'spindle_spinup_seconds',label:'Spindle spin-up delay (seconds)',kind:'number',help:'Pause after starting the spindle, before moving to cut. Use the time your spindle needs to reach speed.'},
   {path:'coolant',label:'Coolant',choices:[['off','Off'],['flood','Flood'],['mist','Mist']]},
   {path:'length_compensation',label:'Tool length compensation',help:'Choose who applies each tool’s measured length: your M6 tool-change macro, or this program using G43 H. This must match your controller setup.',choices:[['macro_managed','Managed by M6 macro'],['tool_table','G43 H from tool table']]},
+  {path:'path_control.kind',label:'Path control',help:'G64 blending keeps motion continuous within a deviation tolerance — recommended for wood carving. G61 exact path stops at every programmed corner.',choices:[['blend','G64 blend with tolerance'],['exact_path','G61 exact path']]},
+  {path:'path_control.tolerance_mm',label:'Path blend tolerance P (mm)',kind:'number',help:'G64 P: the maximum deviation allowed from the programmed path. Export rejects a tolerance larger than the job’s verification tolerance.'},
+  {path:'path_control.naive_cam_tolerance_mm',label:'Naive cam tolerance Q (mm)',kind:'number',help:'G64 Q: lets the controller merge tiny near-collinear detours, avoiding a stop per micro segment. Leave empty to omit; must be no greater than P.'},
   ...[0,1].flatMap(i => [
     {path:`tools.${i}.tool_id`,label:`Mapping ${i + 1} · job tool`,help:'Select the tool used by the job. Its ID can be a name such as endmill or vbit.'},
     {path:`tools.${i}.tool_number`,label:`Mapping ${i + 1} · LinuxCNC T number`,kind:'number' as const,help:'Machine tool number used in Tn M6. Enter a different whole number from 1 to 99999 for each tool.'},
@@ -35,6 +38,7 @@ export function profileFieldActive(path:string, draft:ProfileDraft): boolean {
   if (path.startsWith('program_start_position_mm.')) return draft.start_mode === 'known';
   if (path.startsWith('m6.return_position.position_mm.')) return draft['m6.return_position.kind'] === 'fixed_position';
   if (path === 'm6.return_position.z_mm' || path.startsWith('m6.return_position.transit_xy_mm.')) return draft['m6.return_position.kind'] === 'safe_retract';
+  if (path.startsWith('path_control.')) return path === 'path_control.kind' || draft['path_control.kind'] === 'blend';
   return true;
 }
 export function profileDraft(profile?:MachineProfile): ProfileDraft {
@@ -45,16 +49,26 @@ export function profileDraft(profile?:MachineProfile): ProfileDraft {
     draft[field.path] = value === null || value === undefined ? '' : String(value);
   }
   if (profile) draft.start_mode = profile.program_start_position_mm ? 'known' : 'macro';
+  else {
+    // New profiles start at the wood-carving default; exact path stays one choice away.
+    draft['path_control.kind'] = 'blend';
+    draft['path_control.tolerance_mm'] = '0.05';
+    draft['path_control.naive_cam_tolerance_mm'] = '0.05';
+  }
   return draft;
 }
-export function parseProfileDraft(draft:ProfileDraft, job?:Pick<Job,'operation'>): {profile:MachineProfile|null;errors:Record<string,string>} {
+export function parseProfileDraft(draft:ProfileDraft, job?:Pick<Job,'operation'|'tolerances'>): {profile:MachineProfile|null;errors:Record<string,string>} {
   const number = (key:string) => /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i.test(draft[key]?.trim() ?? '') ? Number(draft[key]) : NaN;
   const xyz = (prefix:string) => ({x:number(`${prefix}.x`),y:number(`${prefix}.y`),z:number(`${prefix}.z`)});
   const kind = draft['m6.return_position.kind'];
+  const pathControl = draft['path_control.kind'] === 'exact_path' ? {kind:'exact_path' as const}
+    : {kind:'blend' as const, tolerance_mm:number('path_control.tolerance_mm'),
+       naive_cam_tolerance_mm:draft['path_control.naive_cam_tolerance_mm'].trim() === '' ? null : number('path_control.naive_cam_tolerance_mm')};
   const result = profileSchema.safeParse({schema_version:1,id:draft.id,work_offset:draft.work_offset,z_datum:draft.z_datum,
     clearance_z_mm:number('clearance_z_mm'),decimal_places:number('decimal_places'),
     program_start_position_mm:draft.start_mode === 'known' ? xyz('program_start_position_mm') : null,
-    length_compensation:draft.length_compensation,tools:[0,1].map(i => ({tool_id:draft[`tools.${i}.tool_id`],
+    length_compensation:draft.length_compensation,path_control: pathControl,
+    tools:[0,1].map(i => ({tool_id:draft[`tools.${i}.tool_id`],
       tool_number:number(`tools.${i}.tool_number`),length_offset_number:draft.length_compensation === 'macro_managed' ? null : number(`tools.${i}.length_offset_number`),
       spindle_direction:draft[`tools.${i}.spindle_direction`]})),
     spindle_spinup_seconds:number('spindle_spinup_seconds'),coolant:draft.coolant,
@@ -82,6 +96,15 @@ export function parseProfileDraft(draft:ProfileDraft, job?:Pick<Job,'operation'>
       errors[hPath] = 'Tool-table compensation requires an H number from 1 to 99999 for this tool’s measured length.';
   }
   if (!['known','macro'].includes(draft.start_mode)) errors.start_mode = 'Choose the startup positioning contract.';
+  if (draft['path_control.kind'] === 'blend') {
+    const blend = number('path_control.tolerance_mm');
+    const naive = number('path_control.naive_cam_tolerance_mm');
+    if (!Number.isNaN(naive) && !Number.isNaN(blend) && naive > blend)
+      errors['path_control.naive_cam_tolerance_mm'] = 'Naive cam tolerance Q must be no greater than the blend tolerance P.';
+    const verification = job?.tolerances.verification_tolerance_mm;
+    if (!Number.isNaN(blend) && typeof verification === 'number' && blend > verification)
+      errors['path_control.tolerance_mm'] = `This job’s verification tolerance is ${verification} mm; export rejects a larger blend tolerance.`;
+  }
   return {profile:result.success && !Object.keys(errors).length ? result.data : null, errors};
 }
 export function reviewedProfile(profile:MachineProfile|null): boolean {
