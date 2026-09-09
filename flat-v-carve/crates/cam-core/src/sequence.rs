@@ -355,6 +355,25 @@ impl OperationPlan {
         let mut preparation_requirements = vec![];
         let mut planned_ids = BTreeSet::new();
         let mut current_tool: Option<String> = None;
+        // Prefix stock identities (plan section 9.2): the initial view hashes
+        // stock/artwork/planning inputs once; each operation extends it with
+        // its settings, the tool snapshots it used and its actual execution,
+        // so editing an earlier operation stales every later stock id.
+        let mut stock_before = crate::plan_hash::hash(&(
+            "stock-initial",
+            OPERATION_PLAN_ARTIFACT_KIND,
+            OPERATION_PLAN_SCHEMA_VERSION,
+            env!("CARGO_PKG_VERSION"),
+            &job.setup.stock,
+            job.source.as_ref().map(|s| s.svg.as_str()),
+            &job.import,
+            &job.tolerances,
+            &job.tools
+                .iter()
+                .map(|tool| (&tool.id, &tool.geometry, &tool.capabilities))
+                .collect::<Vec<_>>(),
+        ))
+        .map_err(|e| error("PLAN_JSON", e.to_string()))?;
         for op in enabled {
             if !planned_ids.insert(op.id.clone()) {
                 return Err(error(
@@ -376,7 +395,44 @@ impl OperationPlan {
                     format!("operation '{}' exceeds the remaining motion budget", op.id),
                 ));
             }
-            let stock_after = format!("stock:after:{}", op.id);
+            let executed_snapshot: Vec<(
+                usize,
+                crate::motion::Position,
+                crate::motion::Position,
+                crate::toolpath::Interpolation,
+                crate::toolpath::MotionEffect,
+                Option<f64>,
+            )> = motions[base..]
+                .iter()
+                .map(|m: &crate::toolpath::PlannedMotion| {
+                    (
+                        m.id,
+                        m.start,
+                        m.end,
+                        m.interpolation,
+                        m.effect,
+                        m.feed_mm_min,
+                    )
+                })
+                .collect();
+            let stage_snapshot: Vec<_> = planned
+                .stages
+                .iter()
+                .map(|s| (&s.stage_id, s.role, &s.tool_id))
+                .collect();
+            let stock_after = crate::plan_hash::hash(&(
+                &stock_before,
+                &op.id,
+                &op.settings,
+                &job.tools
+                    .iter()
+                    .filter(|tool| tool_ids_of(&op.settings).contains(&tool.id.as_str()))
+                    .map(|tool| (&tool.id, &tool.geometry, &tool.capabilities))
+                    .collect::<Vec<_>>(),
+                &stage_snapshot,
+                &executed_snapshot,
+            ))
+            .map_err(|e| error("PLAN_JSON", e.to_string()))?;
             for mut motion in planned.motions {
                 motion.id += base;
                 motions.push(motion);
@@ -440,12 +496,13 @@ impl OperationPlan {
                     .filter(|s| s.operation_id == op.id)
                     .map(|s| s.stage_id.clone())
                     .collect(),
-                stock_before_id: "stock:initial".into(),
-                stock_after_id: stock_after,
+                stock_before_id: stock_before.clone(),
+                stock_after_id: stock_after.clone(),
                 named_outputs: vec![],
                 legacy_stage_evidence: planned.stage_evidence,
                 legacy_pass_evidence: planned.pass_evidence,
             });
+            stock_before = stock_after;
         }
         let engine_version = env!("CARGO_PKG_VERSION").to_string();
         let input_fingerprint = crate::plan_hash::hash(&(
@@ -521,5 +578,84 @@ pub(crate) fn legacy_motion_mapping(
             },
             MotionEffect::MillingSweep,
         ),
+    }
+}
+
+/// Tool IDs referenced by one operation's settings, in assignment order.
+fn tool_ids_of(settings: &OperationSettings) -> Vec<&str> {
+    match settings {
+        OperationSettings::FlatVcarve(s) => {
+            vec![s.endmill.tool_id.as_str(), s.vbit.tool_id.as_str()]
+        }
+        OperationSettings::Face(s) => vec![s.assignment.tool_id.as_str()],
+        OperationSettings::Profile(s) => vec![s.assignment.tool_id.as_str()],
+        OperationSettings::DragKnife(s) => vec![s.assignment.tool_id.as_str()],
+    }
+}
+
+impl OperationPlan {
+    /// Compose the ordered removal history of the executed prefix ending at
+    /// `through` (all operations when None). Knife traces never enter the
+    /// model; only motions with a milling effect become sweeps.
+    pub fn stock_history(
+        &self,
+        through: Option<&str>,
+    ) -> Result<crate::stock::history::StockHistory> {
+        let thickness = self.job_snapshot.setup.stock.thickness_mm.ok_or_else(|| {
+            error(
+                "SETUP_STOCK_THICKNESS_REQUIRED",
+                "stock history requires the stock thickness",
+            )
+        })?;
+        let mut history =
+            crate::stock::history::StockHistory::new(thickness, self.job_snapshot.setup.stock.xy)?;
+        for stage in &self.stages {
+            let cutter = self
+                .job_snapshot
+                .tools
+                .iter()
+                .find(|tool| tool.id == stage.tool_id)
+                .and_then(|tool| match &tool.geometry {
+                    Some(crate::project::ToolGeometry::Endmill(g)) => {
+                        Some(crate::stock::history::SweepCutter::FlatEndmill {
+                            radius_mm: g.diameter_mm / 2.,
+                        })
+                    }
+                    Some(crate::project::ToolGeometry::Vbit(spec)) => {
+                        Some(crate::stock::history::SweepCutter::VBit { spec: spec.clone() })
+                    }
+                    _ => None,
+                });
+            let Some(cutter) = cutter else {
+                return Err(error(
+                    "STOCK_HISTORY_TOOL",
+                    format!(
+                        "stage '{}' uses a tool without milling geometry",
+                        stage.stage_id
+                    ),
+                ));
+            };
+            let motions: Vec<crate::stock::history::SweepMotion> = self.motions
+                [stage.motion_range.0..stage.motion_range.1]
+                .iter()
+                .filter(|motion| motion.effect == crate::toolpath::MotionEffect::MillingSweep)
+                .map(|motion| crate::stock::history::SweepMotion {
+                    start: motion.start,
+                    end: motion.end,
+                })
+                .collect();
+            if !motions.is_empty() {
+                history.push(crate::stock::history::SweepBatch {
+                    stage_id: stage.stage_id.clone(),
+                    operation_id: stage.operation_id.clone(),
+                    cutter,
+                    motions,
+                });
+            }
+            if through == Some(stage.operation_id.as_str()) {
+                break;
+            }
+        }
+        Ok(history)
     }
 }

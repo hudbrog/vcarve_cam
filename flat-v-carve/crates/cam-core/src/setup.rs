@@ -75,3 +75,76 @@ pub fn resolve_work_zero(job: &CamJob) -> Result<WorkZeroPoint> {
     }
     Ok(WorkZeroPoint { x_mm, y_mm, z_mm })
 }
+
+/// Resolved concrete heights of one operation, in setup coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedHeights {
+    pub top_z: f64,
+    pub bottom_z: f64,
+}
+
+/// Resolve a height reference (plan section 6.3). `published_planes` carries
+/// the face planes established by preceding face operations; B2 accepts an
+/// empty map because the face planner ships in C1, and an unresolvable
+/// reference stays an explicit error rather than defaulting to stock top.
+pub fn resolve_heights(
+    job: &CamJob,
+    _operation_index: usize,
+    top: &crate::project::HeightRef,
+    bottom: &crate::project::HeightRef,
+    published_planes: &std::collections::BTreeMap<String, f64>,
+) -> Result<ResolvedHeights> {
+    let thickness = job.setup.stock.thickness_mm.ok_or_else(|| {
+        error(
+            "SETUP_STOCK_THICKNESS_REQUIRED",
+            "height references require the stock thickness",
+        )
+    })?;
+    let stock_bottom = -thickness;
+    let resolve = |height: &crate::project::HeightRef, is_bottom: bool| -> Result<f64> {
+        let base = match &height.reference {
+            crate::project::HeightReference::StockTop => 0.,
+            crate::project::HeightReference::StockBottom => stock_bottom,
+            crate::project::HeightReference::OperationTop => {
+                // Legal only for bottoms (document validation enforces the
+                // placement); it resolves to this operation's own top.
+                if !is_bottom {
+                    return Err(error(
+                        "HEIGHT_REFERENCE_INVALID",
+                        "operation_top is legal only for bottom heights",
+                    ));
+                }
+                return Ok(f64::NAN); // replaced by the resolved top plus the offset below
+            }
+            crate::project::HeightReference::FaceResult { operation_id } => {
+                published_planes.get(operation_id).copied().ok_or_else(|| {
+                    error(
+                        "HEIGHT_REFERENCE_UNRESOLVED",
+                        format!(
+                            "the face plane of operation '{operation_id}' is not established; face planning ships with the face milestone"
+                        ),
+                    )
+                })?
+            }
+        };
+        Ok(base + height.offset_mm)
+    };
+    let top_z = resolve(top, false)?;
+    let mut bottom_z = resolve(bottom, true)?;
+    if bottom_z.is_nan() {
+        bottom_z = top_z + bottom.offset_mm;
+    }
+    if !top_z.is_finite() || !bottom_z.is_finite() {
+        return Err(error("SETUP_PARAMETER", "resolved heights must be finite"));
+    }
+    if bottom_z >= top_z {
+        return Err(error(
+            "HEIGHT_RANGE_INVALID",
+            format!(
+                "the resolved bottom ({bottom_z:.4}) must lie below the resolved top ({top_z:.4}) for positive-depth operations"
+            ),
+        ));
+    }
+    Ok(ResolvedHeights { top_z, bottom_z })
+}

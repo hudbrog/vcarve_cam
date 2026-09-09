@@ -7,6 +7,7 @@ use crate::{
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 mod chains;
+pub mod history;
 mod slices;
 pub(crate) use slices::vbit_removal_at_slices;
 pub(crate) use slices::vbit_slice_with_workers;
