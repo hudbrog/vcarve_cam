@@ -1,20 +1,25 @@
-//! Basic profile planner (plan section 10, D2 slice): explicit-side closed
-//! contour offsets, climb/conventional traversal from the retained side,
-//! depth passes ending exactly at the bottom, through allowance, and a
-//! simple plunge entry. Finishing, tabs, leads, ramps and anchor starts ship
-//! in later slices and produce specific diagnostics, never silent changes.
+//! Profile planner (plan sections 10.1-10.3, slices D2-E1): explicit-side
+//! closed contour offsets, climb/conventional traversal from the retained
+//! side, depth passes ending exactly at the bottom, through allowance, a
+//! simple plunge entry, and rectangular tabs with protected footprints
+//! applied to every deep pass. Finishing allowances, leads, ramps and anchor
+//! starts ship in later slices and produce specific diagnostics, never
+//! silent changes.
+mod tabs;
+
 use crate::{
-    contours::{ContourCatalogue, ContourRole},
+    contours::{ContourCatalogue, ContourRole, ResolvedAnchor},
     geometry::{Diagnostic, Grid, Point, Result},
     motion::Position,
     operations::{LocatedDiagnostic, PublishedFace},
     project::{
         CamJob, ContourOrder, ContourSide, CutDirection, HeightReference, MillingAssignment,
-        ProfileEntry, ProfileSettings, StartSelection, ToolGeometry, TraversalDirection,
+        ProfileEntry, ProfileSettings, StartSelection, TabPlacement, ToolGeometry,
+        TraversalDirection,
     },
     sequence::{
-        CoolantIntent, GenerationStatus, LocalStage, PathControlIntent, PlanIssue,
-        PlannedOperation, ProcessIntent, ProcessSpindle, StageRole,
+        CoolantIntent, GenerationStatus, LocalStage, NamedOutput, PathControlIntent, PlanIssue,
+        PlannedOperation, ProcessIntent, ProcessSpindle, StageRole, TabPlacementOutput,
     },
     setup::resolve_heights,
     toolpath::{Interpolation, MotionEffect, MotionPurpose, PlannedMotion},
@@ -134,6 +139,20 @@ pub fn missing_fields(
             "spindle_direction",
         );
     }
+    if let Some(tab) = &settings.tabs {
+        if tab.height_mm.is_none() {
+            push(
+                format!("operations[{operation_id}].tabs.height_mm"),
+                "the tab height",
+            );
+        }
+        if tab.width_mm.is_none() {
+            push(
+                format!("operations[{operation_id}].tabs.width_mm"),
+                "the tab width",
+            );
+        }
+    }
     missing
 }
 
@@ -171,6 +190,9 @@ struct CompensatedLoop {
     /// to the first vertex).
     vertices: Vec<Point>,
     cut_feed: f64,
+    /// Resolved protected tab spans (empty when tabs are disabled).
+    tab_spans: Vec<tabs::TabSpan>,
+    perimeter_mm: f64,
 }
 
 /// Ray-casting containment for nesting order; contours are simple closed
@@ -354,11 +376,6 @@ pub(crate) fn plan(
             "radial finishing ships with the finishing slice",
         ),
         (
-            settings.tabs.is_some(),
-            "PROFILE_TABS_UNSUPPORTED",
-            "tabs ship with the tabs slice",
-        ),
-        (
             !matches!(settings.lead_in, crate::project::LeadSpec::None)
                 || !matches!(settings.lead_out, crate::project::LeadSpec::None),
             "PROFILE_LEAD_UNSUPPORTED",
@@ -454,6 +471,71 @@ pub(crate) fn plan(
     }
     let layers = crate::operations::face::depth_layers(&heights, stepdown);
 
+    // Tabs (plan section 10.3): the protected bridge is measured from the
+    // physical stock bottom, independent of any through-cut allowance.
+    let thickness = job.setup.stock.thickness_mm.expect("checked above");
+    let margin = job.tolerances.motion_tolerance_mm.expect("checked above");
+    let mut tab_top_z: Option<f64> = None;
+    let mut tab_anchors: BTreeMap<String, Vec<ResolvedAnchor>> = BTreeMap::new();
+    if let Some(tab) = &settings.tabs {
+        let height = tab.height_mm.expect("checked above");
+        if height >= thickness {
+            return Ok(incomplete(vec![issue(
+                "PROFILE_TAB_RANGE",
+                format!(
+                    "tab height {height} mm must leave stock below the tab top in {thickness} mm stock"
+                ),
+                operation_id,
+            )]));
+        }
+        let top = -thickness + height;
+        if !layers.iter().any(|z| *z < top - 1e-9) {
+            return Ok(incomplete(vec![issue(
+                "PROFILE_TAB_INEFFECTIVE",
+                format!(
+                    "no depth pass of this profile reaches below the tab top {:.4}; \
+                     the tabs would not hold any material",
+                    top
+                ),
+                operation_id,
+            )]));
+        }
+        // Manual anchors resolve against the source geometry now: a stale
+        // fingerprint or unknown contour is a located generation error.
+        if let TabPlacement::Manual { anchors } = &tab.placement {
+            for anchor in anchors {
+                if !settings
+                    .contours
+                    .iter()
+                    .any(|c| c.contour_id == anchor.contour_id)
+                {
+                    return Ok(incomplete(vec![issue(
+                        "CONTOUR_REFERENCE",
+                        format!(
+                            "tab anchor references contour '{}' which this profile does not select",
+                            anchor.contour_id
+                        ),
+                        operation_id,
+                    )]));
+                }
+                match catalogue.resolve_anchor(anchor) {
+                    Ok(resolved) => tab_anchors
+                        .entry(anchor.contour_id.clone())
+                        .or_default()
+                        .push(resolved),
+                    Err(d) => {
+                        return Ok(incomplete(vec![issue(
+                            &d.code,
+                            format!("tab anchor: {}", d.message),
+                            operation_id,
+                        )]));
+                    }
+                }
+            }
+        }
+        tab_top_z = Some(top);
+    }
+
     let ordered = order_contours(&selected, settings.order);
     let grid = Grid::new(
         job.tolerances.motion_tolerance_mm.expect("checked above"),
@@ -508,6 +590,32 @@ pub(crate) fn plan(
             } else {
                 loop_vertices.into_iter().rev().collect()
             };
+            let perimeter = vertices
+                .windows(2)
+                .map(|w| w[0].distance(w[1]))
+                .sum::<f64>()
+                + vertices[vertices.len() - 1].distance(vertices[0]);
+            let tab_spans = match &settings.tabs {
+                Some(tab) => match tabs::resolve_spans(
+                    tab,
+                    &vertices,
+                    perimeter,
+                    // The compensated centerline sits one cutter radius from
+                    // the source contour (rough offset; E2 adds allowance).
+                    radius,
+                    margin,
+                    tab_top_z.expect("set when tabs are configured"),
+                    tab_anchors
+                        .get(&contour.id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                    &contour.id,
+                ) {
+                    Ok(spans) => spans,
+                    Err(d) => return Ok(incomplete(vec![issue(&d.code, d.message, operation_id)])),
+                },
+                None => vec![],
+            };
             loops.push(CompensatedLoop {
                 contour_id: contour.id.clone(),
                 vertices,
@@ -515,6 +623,8 @@ pub(crate) fn plan(
                     .assignment
                     .cutting_feed_mm_min
                     .expect("checked above"),
+                tab_spans,
+                perimeter_mm: perimeter,
             });
         }
     }
@@ -611,37 +721,103 @@ pub(crate) fn plan(
                 pass,
                 layer_index,
             ));
+            // Traverse the loop under the tab envelope: commanded depth is
+            // max(pass_z, tab_top) split exactly at the protected intervals,
+            // with feed-controlled vertical rise/lower moves at each boundary
+            // (plan section 10.3). Passes at or above every tab top cut an
+            // unsplit loop, byte-identical to the tab-free construction.
+            let pieces = tabs::depth_pieces(&cut_loop.tab_spans, cut_z, cut_loop.perimeter_mm);
+            let mut current_z = cut_z;
             let mut previous = entry;
-            for &vertex in cut_loop.vertices.iter().skip(1) {
-                let end = Position {
-                    x: vertex.x,
-                    y: vertex.y,
-                    z: cut_z,
-                };
-                motions.push(motion(
-                    MotionPurpose::Rough,
-                    Interpolation::LinearFeed,
-                    MotionEffect::MillingSweep,
-                    previous,
-                    end,
-                    Some(cut_loop.cut_feed),
-                    contour.clone(),
-                    pass,
-                    layer_index,
-                ));
-                previous = end;
+            let vertex_count = cut_loop.vertices.len();
+            for edge in 0..vertex_count {
+                let a = cut_loop.vertices[edge];
+                let b = cut_loop.vertices[(edge + 1) % vertex_count];
+                let edge_len = a.distance(b);
+                if edge_len <= 0. {
+                    continue;
+                }
+                let edge_start = (0..edge)
+                    .map(|i| cut_loop.vertices[i].distance(cut_loop.vertices[i + 1]))
+                    .sum::<f64>();
+                for piece in &pieces {
+                    let lo = piece.start.max(edge_start);
+                    let hi = piece.end.min(edge_start + edge_len);
+                    if hi <= lo {
+                        continue;
+                    }
+                    let at = |arc: f64| {
+                        Point::new(
+                            a.x + (b.x - a.x) * (arc - edge_start) / edge_len,
+                            a.y + (b.y - a.y) * (arc - edge_start) / edge_len,
+                        )
+                    };
+                    let p = at(lo);
+                    let q = at(hi);
+                    if (p.x - previous.x).abs() > 1e-12 || (p.y - previous.y).abs() > 1e-12 {
+                        // Defensive: piece boundaries always lie inside edges
+                        // and pieces tile the perimeter, so travel is
+                        // continuous; a gap would mean a construction bug.
+                        return Ok(incomplete(vec![issue(
+                            "PROFILE_TAB_PROTECTION_FAILED",
+                            format!(
+                                "tab envelope split produced a travel gap on pass {pass} layer {layer_index}"
+                            ),
+                            operation_id,
+                        )]));
+                    }
+                    if (piece.z - current_z).abs() > 1e-12 {
+                        // Vertical transition at the tab boundary (rise into
+                        // the tab, lower out of it).
+                        motions.push(motion(
+                            MotionPurpose::TabTransition,
+                            Interpolation::LinearFeed,
+                            MotionEffect::MillingSweep,
+                            Position {
+                                x: p.x,
+                                y: p.y,
+                                z: current_z,
+                            },
+                            Position {
+                                x: p.x,
+                                y: p.y,
+                                z: piece.z,
+                            },
+                            Some(plunge_feed),
+                            contour.clone(),
+                            pass,
+                            layer_index,
+                        ));
+                        current_z = piece.z;
+                        previous = Position {
+                            x: p.x,
+                            y: p.y,
+                            z: piece.z,
+                        };
+                    }
+                    let end = Position {
+                        x: q.x,
+                        y: q.y,
+                        z: piece.z,
+                    };
+                    motions.push(motion(
+                        if piece.on_tab {
+                            MotionPurpose::TabTransition
+                        } else {
+                            MotionPurpose::Rough
+                        },
+                        Interpolation::LinearFeed,
+                        MotionEffect::MillingSweep,
+                        previous,
+                        end,
+                        Some(cut_loop.cut_feed),
+                        contour.clone(),
+                        pass,
+                        layer_index,
+                    ));
+                    previous = end;
+                }
             }
-            motions.push(motion(
-                MotionPurpose::Rough,
-                Interpolation::LinearFeed,
-                MotionEffect::MillingSweep,
-                previous,
-                entry,
-                Some(cut_loop.cut_feed),
-                contour,
-                pass,
-                layer_index,
-            ));
             motions.push(motion(
                 MotionPurpose::Clearance,
                 Interpolation::Rapid,
@@ -669,8 +845,37 @@ pub(crate) fn plan(
         coolant: CoolantIntent::UseMachineProfile,
         path_control: PathControlIntent::UseMachineProfile,
     };
+    // Resolved placements are stored in the plan so the preview shows exactly
+    // what was generated (plan section 10.3).
+    let tab_placements: Vec<TabPlacementOutput> = loops
+        .iter()
+        .flat_map(|cut_loop| {
+            cut_loop
+                .tab_spans
+                .iter()
+                .map(|span| TabPlacementOutput {
+                    contour_id: cut_loop.contour_id.clone(),
+                    bridge_start_mm: span.bridge.0,
+                    bridge_end_mm: span.bridge.1,
+                    restricted_start_mm: span.restricted.0,
+                    restricted_end_mm: span.restricted.1,
+                    top_z_mm: span.top_z,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
     Ok(PlannedOperation {
-        named_outputs: vec![],
+        named_outputs: if tab_placements.is_empty() {
+            vec![]
+        } else {
+            vec![NamedOutput {
+                kind: "profile_tabs".into(),
+                source_operation_id: Some(operation_id.into()),
+                z_mm: None,
+                covered: None,
+                tab_placements,
+            }]
+        },
         status: if motion_count == 0 {
             GenerationStatus::Empty
         } else {

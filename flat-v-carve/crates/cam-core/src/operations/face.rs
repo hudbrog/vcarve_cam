@@ -693,6 +693,7 @@ pub(crate) fn plan(
                 source_operation_id: Some(operation_id.into()),
                 z_mm: Some(*layers.last().expect("layers are nonempty")),
                 covered: Some(coverage),
+                tab_placements: vec![],
             }]
         },
         status: if motion_count == 0 {

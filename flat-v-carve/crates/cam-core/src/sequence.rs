@@ -103,6 +103,25 @@ pub enum GenerationStatus {
     Inconclusive,
 }
 
+/// One resolved tab placement in the plan: the protected bridge interval on
+/// the compensated centerline (arc length along the executed travel) and the
+/// tab top, so previews show exactly what was generated (plan section 10.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+pub struct TabPlacementOutput {
+    pub contour_id: String,
+    /// Arc-length interval `[start_mm, end_mm]` of the minimum full-height
+    /// bridge along the resolved loop.
+    pub bridge_start_mm: f64,
+    pub bridge_end_mm: f64,
+    /// The wider centerline interval where the cutter must stay at or above
+    /// the tab top (bridge dilated by the cutter radius and margin).
+    pub restricted_start_mm: f64,
+    pub restricted_end_mm: f64,
+    pub top_z_mm: f64,
+}
+
 /// Names of outputs an operation publishes for later height references
 /// (e.g. a face plane). Payloads arrive with the face milestone.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -118,6 +137,9 @@ pub struct NamedOutput {
     pub z_mm: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub covered: Option<crate::project::RectXY>,
+    /// Profile tab payload: the resolved placements of one profile operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tab_placements: Vec<TabPlacementOutput>,
 }
 
 /// Legacy planner evidence retained per adapted operation so candidate and

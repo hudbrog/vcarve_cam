@@ -479,6 +479,14 @@ fn plan_summary(plan: &OperationPlan, checks: &BasicCheckReport) -> Value {
                 "stageIds": result.stage_ids,
                 "stockBeforeId": result.stock_before_id,
                 "stockAfterId": result.stock_after_id,
+                // Resolved outputs (face planes, tab placements) so previews
+                // show exactly what was generated.
+                "namedOutputs": result.named_outputs.iter().map(|output| json!({
+                    "kind": output.kind,
+                    "zMm": output.z_mm,
+                    "covered": output.covered,
+                    "tabPlacements": output.tab_placements,
+                })).collect::<Vec<_>>(),
             })
         }).collect::<Vec<_>>(),
         "stages": plan.stages.iter().map(|stage| {

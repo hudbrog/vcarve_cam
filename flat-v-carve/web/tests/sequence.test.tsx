@@ -37,7 +37,7 @@ function planData() {
     summary: {
       engineVersion, inputFingerprint: fingerprint64, executionFingerprint: fingerprint64,
       motionCount: 59, cuttingMotionCount: 12,
-      operations: [{ operationId: 'flat-v-carve', generationStatus: 'complete', stageIds: ['flat-v-carve-vcarve-rough'], stockBeforeId: 'stock:initial', stockAfterId: 'stock:after:flat-v-carve' }],
+      operations: [{ operationId: 'flat-v-carve', generationStatus: 'complete', stageIds: ['flat-v-carve-vcarve-rough'], stockBeforeId: 'stock:initial', stockAfterId: 'stock:after:flat-v-carve', namedOutputs: [] }],
       stages: [{ stageId: 'flat-v-carve-vcarve-rough', operationId: 'flat-v-carve', toolId: 'endmill', role: 'vcarve_rough', motionCount: 59 }],
       execution: [],
       basicChecks: { status: 'passed', findings: [], exportReady: true },

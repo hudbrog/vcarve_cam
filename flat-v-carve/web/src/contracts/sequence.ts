@@ -76,6 +76,21 @@ export const plannedMotionSchema = z.strictObject({
 });
 export type PlannedMotion = z.infer<typeof plannedMotionSchema>;
 
+// Resolved operation outputs: face planes and tab placements as generated.
+export const namedOutputSchema = z.strictObject({
+  kind: z.string(),
+  zMm: z.number().nullable(),
+  covered: z.strictObject({
+    min_x_mm: z.number(), min_y_mm: z.number(), width_mm: z.number(), length_mm: z.number(),
+  }).nullable(),
+  tabPlacements: z.array(z.strictObject({
+    contourId: z.string(),
+    bridgeStartMm: z.number(), bridgeEndMm: z.number(),
+    restrictedStartMm: z.number(), restrictedEndMm: z.number(), topZMm: z.number(),
+  })),
+});
+export type NamedOutputInfo = z.infer<typeof namedOutputSchema>;
+
 export const planSummarySchema = z.strictObject({
   engineVersion: z.string(), inputFingerprint: fingerprint, executionFingerprint: fingerprint,
   motionCount: integer, cuttingMotionCount: integer,
@@ -83,6 +98,7 @@ export const planSummarySchema = z.strictObject({
     operationId: z.string(),
     generationStatus: z.enum(['complete', 'empty', 'incomplete', 'inconclusive']),
     stageIds: z.array(z.string()), stockBeforeId: z.string(), stockAfterId: z.string(),
+    namedOutputs: z.array(namedOutputSchema),
   })),
   stages: z.array(z.strictObject({
     stageId: z.string(), operationId: z.string(), toolId: z.string(),
