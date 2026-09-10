@@ -419,6 +419,7 @@ pub(crate) fn plan(
                 })
                 .collect(),
             preparation: vec![],
+            named_outputs: vec![],
         });
     }
     let legacy = to_legacy_job(job, operation_id, settings)?;
@@ -464,6 +465,7 @@ pub(crate) fn plan(
                 pass_evidence: vec![],
                 issues,
                 preparation: vec![],
+                named_outputs: vec![],
             })
         }
         FlatVcarveMode::Combined => {
@@ -580,6 +582,7 @@ pub(crate) fn plan(
                 pass_evidence,
                 issues,
                 preparation: vec![],
+                named_outputs: vec![],
             })
         }
     }

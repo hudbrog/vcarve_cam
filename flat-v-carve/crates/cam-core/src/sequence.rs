@@ -105,13 +105,19 @@ pub enum GenerationStatus {
 
 /// Names of outputs an operation publishes for later height references
 /// (e.g. a face plane). Payloads arrive with the face milestone.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct NamedOutput {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_operation_id: Option<String>,
+    /// Face plane payload: the established Z and the covered rectangle
+    /// (plan section 6.3). Other kinds add their own payloads later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub z_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered: Option<crate::project::RectXY>,
 }
 
 /// Legacy planner evidence retained per adapted operation so candidate and
@@ -312,6 +318,7 @@ pub(crate) struct PlannedOperation {
     pub status: GenerationStatus,
     pub stages: Vec<LocalStage>,
     pub motions: Vec<PlannedMotion>,
+    pub named_outputs: Vec<NamedOutput>,
     pub stage_evidence: Vec<LegacyStageEvidence>,
     pub pass_evidence: Vec<LegacyPassEvidence>,
     pub issues: Vec<PlanIssue>,
@@ -333,10 +340,12 @@ impl OperationPlan {
                 ),
             ));
         }
-        if let Some(op) = enabled
-            .iter()
-            .find(|op| !matches!(op.settings, OperationSettings::FlatVcarve(_)))
-        {
+        if let Some(op) = enabled.iter().find(|op| {
+            !matches!(
+                op.settings,
+                OperationSettings::FlatVcarve(_) | OperationSettings::Face(_)
+            )
+        }) {
             return Err(error(
                 "OPERATION_PLANNER_UNAVAILABLE",
                 format!(
@@ -498,7 +507,7 @@ impl OperationPlan {
                     .collect(),
                 stock_before_id: stock_before.clone(),
                 stock_after_id: stock_after.clone(),
-                named_outputs: vec![],
+                named_outputs: planned.named_outputs,
                 legacy_stage_evidence: planned.stage_evidence,
                 legacy_pass_evidence: planned.pass_evidence,
             });

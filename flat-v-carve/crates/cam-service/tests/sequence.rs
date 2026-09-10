@@ -240,7 +240,7 @@ fn export_requires_resolved_process_state_until_a_profile_is_applied() {
 fn capabilities_advertise_only_implemented_features() {
     let capabilities = execute(SequenceCommand::Capabilities).unwrap();
     assert_eq!(capabilities["apiVersion"], json!(SEQUENCE_API_VERSION));
-    assert_eq!(capabilities["operationKinds"], json!(["flat_vcarve"]));
+    assert_eq!(capabilities["operationKinds"], json!(["flat_vcarve", "face"]));
     assert_eq!(capabilities["features"]["openContours"], json!(false));
     assert_eq!(capabilities["features"]["knifeReplay"], json!(false));
     assert_eq!(capabilities["features"]["legacyJobMigration"], json!(true));

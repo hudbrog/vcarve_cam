@@ -153,9 +153,21 @@ pub fn missing_by_operation(job: &CamJob) -> serde_json::Map<String, Value> {
             }
             // Planners for these kinds ship in later slices; their settings
             // are reported as a whole until each slice defines resolution.
-            OperationSettings::Face(_)
-            | OperationSettings::Profile(_)
-            | OperationSettings::DragKnife(_) => vec![json!({
+            OperationSettings::Face(settings) => {
+                operations::face::missing_fields(job, &operation.id, settings)
+                    .iter()
+                    .map(|d| {
+                        json!({
+                            "fieldPath": d.field_path,
+                            "message": d.message,
+                            "toolId": d.tool_id,
+                        })
+                    })
+                    .collect()
+            }
+            // Profile and knife planners ships in later slices; their settings
+            // are reported as a whole until each slice defines resolution.
+            OperationSettings::Profile(_) | OperationSettings::DragKnife(_) => vec![json!({
                 "fieldPath": format!("operations[{}]", operation.id),
                 "message": "this operation kind ships in a later slice",
                 "toolId": null,
@@ -442,7 +454,7 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
             "apiVersion": SEQUENCE_API_VERSION,
             "engineVersion": ENGINE_VERSION,
             // Advertise only implemented features (plan section 16.2).
-            "operationKinds": ["flat_vcarve"],
+            "operationKinds": ["flat_vcarve", "face"],
             "planScopes": ["all_enabled", "through_operation"],
             "features": {
                 "openContours": false,

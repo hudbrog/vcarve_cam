@@ -7,6 +7,7 @@ use crate::{
     sequence::PlannedOperation,
 };
 
+pub mod face;
 pub mod flat_vcarve;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -44,8 +45,10 @@ pub(crate) fn plan_operation(job: &CamJob, operation: &Operation) -> Result<Plan
         }
         // The dispatcher never silently skips an unsupported operation; the
         // sequence planner rejects them with OPERATION_PLANNER_UNAVAILABLE.
-        crate::project::OperationSettings::Face(_)
-        | crate::project::OperationSettings::Profile(_)
+        crate::project::OperationSettings::Face(settings) => {
+            face::plan(job, &operation.id, settings)
+        }
+        crate::project::OperationSettings::Profile(_)
         | crate::project::OperationSettings::DragKnife(_) => Err(Diagnostic::new(
             "OPERATION_PLANNER_UNAVAILABLE",
             "operation planner ships in a later slice",

@@ -383,43 +383,47 @@ fn missing_machining_fields_yield_incomplete_result_not_silent_skip() {
 #[test]
 fn unsupported_enabled_operations_are_rejected_with_a_specific_diagnostic() {
     let mut cam = migrate_legacy_json(M4_CONTACT_LINE).unwrap();
-    let face_settings = cam_core::project::FaceSettings {
-        area: cam_core::project::FaceArea::EntireStock,
-        margins: Default::default(),
-        entry_overrun_mm: None,
-        exit_overrun_mm: None,
-        top: cam_core::project::HeightRef {
-            reference: cam_core::project::HeightReference::StockTop,
-            offset_mm: 0.,
-        },
-        bottom: cam_core::project::HeightRef {
-            reference: cam_core::project::HeightReference::StockTop,
-            offset_mm: -0.5,
-        },
-        stepdown_mm: None,
-        stepover_mm: None,
-        pass_angle_deg: None,
-        pattern: Default::default(),
-        assignment: cam_core::project::MillingAssignment {
-            tool_id: "endmill".into(),
-            spindle_rpm: None,
-            spindle_direction: None,
-            cutting_feed_mm_min: None,
-            plunge_feed_mm_min: None,
-            max_stepdown_mm: None,
-            stepover_mm: None,
-        },
-    };
+    // Profile planning ships in a later slice; an enabled profile must be
+    // rejected specifically, never silently skipped. (Face is planned since C1.)
     cam.operations.push(cam_core::project::Operation {
-        id: "face-1".into(),
-        name: "Face".into(),
+        id: "profile-1".into(),
+        name: "Cutout".into(),
         enabled: true,
-        settings: OperationSettings::Face(face_settings),
+        settings: OperationSettings::Profile(cam_core::project::ProfileSettings {
+            contours: vec![],
+            assignment: cam_core::project::MillingAssignment {
+                tool_id: "endmill".into(),
+                spindle_rpm: None,
+                spindle_direction: None,
+                cutting_feed_mm_min: None,
+                plunge_feed_mm_min: None,
+                max_stepdown_mm: None,
+                stepover_mm: None,
+            },
+            top: cam_core::project::HeightRef {
+                reference: cam_core::project::HeightReference::StockTop,
+                offset_mm: 0.,
+            },
+            bottom: cam_core::project::HeightRef {
+                reference: cam_core::project::HeightReference::StockTop,
+                offset_mm: -1.,
+            },
+            stepdown_mm: None,
+            through_cut_allowance_mm: None,
+            direction: None,
+            order: Default::default(),
+            start: Default::default(),
+            finish: Default::default(),
+            entry: Default::default(),
+            lead_in: Default::default(),
+            lead_out: Default::default(),
+            tabs: None,
+        }),
     });
     let err = OperationPlan::plan_job(&cam, &PlanLimits::default()).unwrap_err();
     assert_eq!(err.code, "OPERATION_PLANNER_UNAVAILABLE");
-    assert!(err.message.contains("face-1"), "{}", err.message);
-    assert!(err.message.contains("face"), "{}", err.message);
+    assert!(err.message.contains("profile-1"), "{}", err.message);
+    assert!(err.message.contains("profile"), "{}", err.message);
 
     // Disabled unsupported operations are excluded from planning readiness.
     cam.operations[1].enabled = false;
