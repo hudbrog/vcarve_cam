@@ -672,6 +672,7 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
                 "openContours": false,
                 "rampedTabs": false,
                 "rotatedFacing": false,
+                "profileFinishing": true,
                 "knifeReplay": false,
                 "legacyJobMigration": true,
                 "contourCatalogue": true,

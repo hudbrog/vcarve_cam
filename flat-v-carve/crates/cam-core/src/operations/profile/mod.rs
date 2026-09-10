@@ -153,6 +153,21 @@ pub fn missing_fields(
             );
         }
     }
+    if settings.finish.enabled {
+        // Zero allowance is meaningful and supplied, not missing.
+        if settings.finish.radial_allowance_mm.is_none() {
+            push(
+                format!("operations[{operation_id}].finish.radial_allowance_mm"),
+                "the radial finishing allowance (zero is meaningful)",
+            );
+        }
+        if settings.finish.feed_mm_min.is_none() {
+            push(
+                format!("operations[{operation_id}].finish.feed_mm_min"),
+                "the finishing feed",
+            );
+        }
+    }
     missing
 }
 
@@ -330,8 +345,219 @@ fn canonical_loop(points: &[Point]) -> Vec<Point> {
     pts
 }
 
-fn stage_id(operation_id: &str) -> String {
-    format!("{operation_id}-profile-rough")
+/// Emit one loop's full depth pass sequence: plunge entry per layer, the
+/// tab-envelope traversal, and the clearance retract. Shared by rough and
+/// finishing passes; only the cutting purpose and feed differ.
+#[allow(clippy::too_many_arguments)]
+fn emit_loop_layers(
+    motions: &mut Vec<PlannedMotion>,
+    next_id: &mut usize,
+    operation_id: &str,
+    stage: &str,
+    tool_id: &str,
+    cut_loop: &CompensatedLoop,
+    layers: &[f64],
+    top_z: f64,
+    clearance: f64,
+    plunge_feed: f64,
+    cut_purpose: MotionPurpose,
+    pass: usize,
+) -> std::result::Result<(), Diagnostic> {
+    let mut motion = |motions: &mut Vec<PlannedMotion>,
+                      purpose: MotionPurpose,
+                      interpolation: Interpolation,
+                      effect: MotionEffect,
+                      start: Position,
+                      end: Position,
+                      feed: Option<f64>,
+                      contour_id: Option<String>,
+                      layer: usize| {
+        motions.push(PlannedMotion {
+            id: *next_id,
+            operation_id: operation_id.into(),
+            stage_id: stage.into(),
+            tool_id: tool_id.into(),
+            contour_id,
+            pass_id: pass,
+            layer,
+            interpolation,
+            purpose,
+            effect,
+            start,
+            end,
+            feed_mm_min: feed,
+        });
+        *next_id += 1;
+    };
+    let start_xy = cut_loop.vertices[0];
+    for (layer_index, &cut_z) in layers.iter().enumerate() {
+        // Material above this layer at the start point was already removed
+        // by the previous pass of the same loop.
+        let previous_z = if layer_index == 0 {
+            top_z
+        } else {
+            layers[layer_index - 1]
+        };
+        let entry = Position {
+            x: start_xy.x,
+            y: start_xy.y,
+            z: cut_z,
+        };
+        // The stage assumes the tool rests at the clearance plane above the
+        // entry; descending beyond the previous layer would assert knowledge
+        // this planner does not have.
+        let plunge_from_z = previous_z.min(clearance);
+        let contour = Some(cut_loop.contour_id.clone());
+        if clearance > plunge_from_z {
+            motion(
+                motions,
+                MotionPurpose::Approach,
+                Interpolation::Rapid,
+                MotionEffect::None,
+                Position {
+                    x: start_xy.x,
+                    y: start_xy.y,
+                    z: clearance,
+                },
+                Position {
+                    x: start_xy.x,
+                    y: start_xy.y,
+                    z: plunge_from_z,
+                },
+                None,
+                contour.clone(),
+                layer_index,
+            );
+        }
+        motion(
+            motions,
+            MotionPurpose::Entry,
+            Interpolation::LinearFeed,
+            MotionEffect::MillingSweep,
+            Position {
+                x: start_xy.x,
+                y: start_xy.y,
+                z: plunge_from_z,
+            },
+            entry,
+            Some(plunge_feed),
+            contour.clone(),
+            layer_index,
+        );
+        // Traverse the loop under the tab envelope: commanded depth is
+        // max(pass_z, tab_top) split exactly at the protected intervals,
+        // with feed-controlled vertical rise/lower moves at each boundary
+        // (plan section 10.3). Passes at or above every tab top cut an
+        // unsplit loop, byte-identical to the tab-free construction.
+        let pieces = tabs::depth_pieces(&cut_loop.tab_spans, cut_z, cut_loop.perimeter_mm);
+        let mut current_z = cut_z;
+        let mut previous = entry;
+        let vertex_count = cut_loop.vertices.len();
+        for edge in 0..vertex_count {
+            let a = cut_loop.vertices[edge];
+            let b = cut_loop.vertices[(edge + 1) % vertex_count];
+            let edge_len = a.distance(b);
+            if edge_len <= 0. {
+                continue;
+            }
+            let edge_start = (0..edge)
+                .map(|i| cut_loop.vertices[i].distance(cut_loop.vertices[i + 1]))
+                .sum::<f64>();
+            for piece in &pieces {
+                let lo = piece.start.max(edge_start);
+                let hi = piece.end.min(edge_start + edge_len);
+                if hi <= lo {
+                    continue;
+                }
+                let at = |arc: f64| {
+                    Point::new(
+                        a.x + (b.x - a.x) * (arc - edge_start) / edge_len,
+                        a.y + (b.y - a.y) * (arc - edge_start) / edge_len,
+                    )
+                };
+                let p = at(lo);
+                let q = at(hi);
+                if (p.x - previous.x).abs() > 1e-12 || (p.y - previous.y).abs() > 1e-12 {
+                    // Defensive: piece boundaries always lie inside edges and
+                    // pieces tile the perimeter, so travel is continuous; a
+                    // gap would mean a construction bug.
+                    return Err(Diagnostic::new(
+                        "PROFILE_TAB_PROTECTION_FAILED",
+                        format!(
+                            "tab envelope split produced a travel gap on pass {pass} layer {layer_index}"
+                        ),
+                    )
+                    .at_stage("profile"));
+                }
+                if (piece.z - current_z).abs() > 1e-12 {
+                    // Vertical transition at the tab boundary (rise into the
+                    // tab, lower out of it).
+                    motion(
+                        motions,
+                        MotionPurpose::TabTransition,
+                        Interpolation::LinearFeed,
+                        MotionEffect::MillingSweep,
+                        Position {
+                            x: p.x,
+                            y: p.y,
+                            z: current_z,
+                        },
+                        Position {
+                            x: p.x,
+                            y: p.y,
+                            z: piece.z,
+                        },
+                        Some(plunge_feed),
+                        contour.clone(),
+                        layer_index,
+                    );
+                    current_z = piece.z;
+                    previous = Position {
+                        x: p.x,
+                        y: p.y,
+                        z: piece.z,
+                    };
+                }
+                let end = Position {
+                    x: q.x,
+                    y: q.y,
+                    z: piece.z,
+                };
+                motion(
+                    motions,
+                    if piece.on_tab {
+                        MotionPurpose::TabTransition
+                    } else {
+                        cut_purpose
+                    },
+                    Interpolation::LinearFeed,
+                    MotionEffect::MillingSweep,
+                    previous,
+                    end,
+                    Some(cut_loop.cut_feed),
+                    contour.clone(),
+                    layer_index,
+                );
+                previous = end;
+            }
+        }
+        motion(
+            motions,
+            MotionPurpose::Clearance,
+            Interpolation::Rapid,
+            MotionEffect::None,
+            entry,
+            Position {
+                z: clearance,
+                x: entry.x,
+                y: entry.y,
+            },
+            None,
+            None,
+            layer_index,
+        );
+    }
+    Ok(())
 }
 
 /// Plan one profile operation.
@@ -369,11 +595,6 @@ pub(crate) fn plan(
             !matches!(settings.start, StartSelection::Automatic),
             "PROFILE_START_UNSUPPORTED",
             "anchor starts ship with the entries slice; the deterministic automatic start is used",
-        ),
-        (
-            settings.finish.enabled,
-            "PROFILE_FINISH_UNSUPPORTED",
-            "radial finishing ships with the finishing slice",
         ),
         (
             !matches!(settings.lead_in, crate::project::LeadSpec::None)
@@ -536,12 +757,95 @@ pub(crate) fn plan(
         tab_top_z = Some(top);
     }
 
+    // Radial finishing (plan section 10.2, E2): one final pass at the exact
+    // offset, depth-stepped like the rough work, with its own feed. Rough
+    // offsets carry the allowance; on-contour selections cannot use one.
+    let finish = if settings.finish.enabled {
+        let allowance = settings.finish.radial_allowance_mm.expect("checked above");
+        let feed = settings.finish.feed_mm_min.expect("checked above");
+        if !allowance.is_finite() || allowance < 0. || !feed.is_finite() || feed <= 0. {
+            return Ok(incomplete(vec![issue(
+                "PROFILE_FINISH_RANGE",
+                "the finishing allowance must be nonnegative and the feed positive",
+                operation_id,
+            )]));
+        }
+        if settings
+            .contours
+            .iter()
+            .any(|c| c.side == ContourSide::On && allowance > 0.)
+        {
+            return Ok(incomplete(vec![issue(
+                "PROFILE_FINISH_ALLOWANCE",
+                "on-contour selections have zero offset and cannot use a radial allowance",
+                operation_id,
+            )]));
+        }
+        Some((allowance, feed))
+    } else {
+        None
+    };
+    let rough_allowance = finish.map(|(allowance, _)| allowance).unwrap_or(0.);
+
     let ordered = order_contours(&selected, settings.order);
     let grid = Grid::new(
         job.tolerances.motion_tolerance_mm.expect("checked above"),
         contour_extent(&ordered),
     )?;
-    let mut loops: Vec<CompensatedLoop> = vec![];
+    /// Rough and finishing loops of one contour: its complete work happens
+    /// before the next contour's (inner-before-outer, plan section 10.2).
+    struct ContourWork {
+        rough: Vec<CompensatedLoop>,
+        finish: Vec<CompensatedLoop>,
+    }
+    let build_loops = |contour: &crate::contours::Contour,
+                       entry_side: ContourSide,
+                       offset: f64,
+                       cut_feed: f64,
+                       forward: bool|
+     -> Result<Vec<CompensatedLoop>> {
+        let mut loops = vec![];
+        for canonical in compensated_loops(contour, entry_side, offset, grid)? {
+            // The ring is canonicalized CCW from its smallest vertex; the
+            // resolved cut direction decides the travel order, and tab spans
+            // are arc-addressed along that final travel.
+            let mut vertices = canonical;
+            if !forward {
+                vertices.reverse();
+            }
+            let perimeter = vertices
+                .windows(2)
+                .map(|w| w[0].distance(w[1]))
+                .sum::<f64>()
+                + vertices[vertices.len() - 1].distance(vertices[0]);
+            let tab_spans = match &settings.tabs {
+                Some(tab) => tabs::resolve_spans(
+                    tab,
+                    &vertices,
+                    perimeter,
+                    offset,
+                    radius,
+                    margin,
+                    tab_top_z.expect("set when tabs are configured"),
+                    tab_anchors
+                        .get(&contour.id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                    &contour.id,
+                )?,
+                None => vec![],
+            };
+            loops.push(CompensatedLoop {
+                contour_id: contour.id.clone(),
+                vertices,
+                cut_feed,
+                tab_spans,
+                perimeter_mm: perimeter,
+            });
+        }
+        Ok(loops)
+    };
+    let mut work: Vec<ContourWork> = vec![];
     for contour in ordered {
         let entry = settings
             .contours
@@ -554,17 +858,6 @@ pub(crate) fn plan(
                 format!(
                     "on-contour selection '{}' needs an explicit traversal direction",
                     entry.contour_id
-                ),
-                operation_id,
-            )]));
-        }
-        let mut contour_loops = compensated_loops(contour, entry.side, radius, grid)?;
-        if contour_loops.is_empty() {
-            return Ok(incomplete(vec![issue(
-                "PROFILE_OFFSET_UNAVAILABLE",
-                format!(
-                    "the compensated path of contour '{}' on the {:?} side collapses; choose a smaller tool or side",
-                    entry.contour_id, entry.side
                 ),
                 operation_id,
             )]));
@@ -584,49 +877,50 @@ pub(crate) fn plan(
             ),
             None => entry.traversal == Some(TraversalDirection::Forward),
         };
-        for loop_vertices in contour_loops.drain(..) {
-            let vertices = if forward {
-                loop_vertices
-            } else {
-                loop_vertices.into_iter().rev().collect()
-            };
-            let perimeter = vertices
-                .windows(2)
-                .map(|w| w[0].distance(w[1]))
-                .sum::<f64>()
-                + vertices[vertices.len() - 1].distance(vertices[0]);
-            let tab_spans = match &settings.tabs {
-                Some(tab) => match tabs::resolve_spans(
-                    tab,
-                    &vertices,
-                    perimeter,
-                    // The compensated centerline sits one cutter radius from
-                    // the source contour (rough offset; E2 adds allowance).
-                    radius,
-                    margin,
-                    tab_top_z.expect("set when tabs are configured"),
-                    tab_anchors
-                        .get(&contour.id)
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[]),
-                    &contour.id,
-                ) {
-                    Ok(spans) => spans,
-                    Err(d) => return Ok(incomplete(vec![issue(&d.code, d.message, operation_id)])),
-                },
-                None => vec![],
-            };
-            loops.push(CompensatedLoop {
-                contour_id: contour.id.clone(),
-                vertices,
-                cut_feed: settings
-                    .assignment
-                    .cutting_feed_mm_min
-                    .expect("checked above"),
-                tab_spans,
-                perimeter_mm: perimeter,
-            });
+        let rough = match build_loops(
+            contour,
+            entry.side,
+            radius + rough_allowance,
+            settings
+                .assignment
+                .cutting_feed_mm_min
+                .expect("checked above"),
+            forward,
+        ) {
+            Ok(loops) => loops,
+            Err(d) => return Ok(incomplete(vec![issue(&d.code, d.message, operation_id)])),
+        };
+        if rough.is_empty() {
+            return Ok(incomplete(vec![issue(
+                "PROFILE_OFFSET_UNAVAILABLE",
+                format!(
+                    "the compensated path of contour '{}' on the {:?} side collapses; choose a smaller tool or side",
+                    entry.contour_id, entry.side
+                ),
+                operation_id,
+            )]));
         }
+        let finish = match finish {
+            Some((_, finish_feed)) => {
+                let loops = match build_loops(contour, entry.side, radius, finish_feed, forward) {
+                    Ok(loops) => loops,
+                    Err(d) => return Ok(incomplete(vec![issue(&d.code, d.message, operation_id)])),
+                };
+                if loops.is_empty() {
+                    return Ok(incomplete(vec![issue(
+                        "PROFILE_OFFSET_UNAVAILABLE",
+                        format!(
+                            "the finishing path of contour '{}' collapses; choose a smaller tool or side",
+                            entry.contour_id
+                        ),
+                        operation_id,
+                    )]));
+                }
+                loops
+            }
+            None => vec![],
+        };
+        work.push(ContourWork { rough, finish });
     }
 
     let clearance = job.setup.clearance_above_stock_mm.expect("checked above");
@@ -634,205 +928,78 @@ pub(crate) fn plan(
         .assignment
         .plunge_feed_mm_min
         .expect("checked above");
-    let stage = stage_id(operation_id);
     let mut motions: Vec<PlannedMotion> = vec![];
     let mut next_id = 0usize;
-    let mut motion = |purpose: MotionPurpose,
-                      interpolation: Interpolation,
-                      effect: MotionEffect,
-                      start: Position,
-                      end: Position,
-                      feed: Option<f64>,
-                      contour_id: Option<String>,
-                      pass: usize,
-                      layer: usize|
-     -> PlannedMotion {
-        let motion = PlannedMotion {
-            id: next_id,
-            operation_id: operation_id.into(),
-            stage_id: stage.clone(),
-            tool_id: settings.assignment.tool_id.clone(),
-            contour_id,
-            pass_id: pass,
-            layer,
-            interpolation,
-            purpose,
-            effect,
-            start,
-            end,
-            feed_mm_min: feed,
-        };
-        next_id += 1;
-        motion
-    };
-    for (pass, cut_loop) in loops.iter().enumerate() {
-        let start_xy = cut_loop.vertices[0];
-        for (layer_index, &cut_z) in layers.iter().enumerate() {
-            // Material above this layer at the start point was already
-            // removed by the previous pass of the same loop.
-            let previous_z = if layer_index == 0 {
-                heights.top_z
+    // Contiguous same-role runs become stages; a contour's rough and finish
+    // work complete before the next contour begins (plan section 10.2), so
+    // multi-contour jobs alternate stage roles in nesting order.
+    let mut stage_runs: Vec<(String, StageRole, usize)> = vec![];
+    let open_stage = |stage_runs: &mut Vec<(String, StageRole, usize)>,
+                      role: StageRole,
+                      motion_start: usize|
+     -> String {
+        if let Some(last) = stage_runs.last()
+            && last.1 == role
+        {
+            return last.0.clone();
+        }
+        let ordinal = stage_runs.iter().filter(|run| run.1 == role).count();
+        let stage = format!(
+            "{operation_id}-profile-{}{}",
+            match role {
+                StageRole::ProfileRough => "rough",
+                _ => "finish",
+            },
+            if ordinal == 0 {
+                String::new()
             } else {
-                layers[layer_index - 1]
-            };
-            let entry = Position {
-                x: start_xy.x,
-                y: start_xy.y,
-                z: cut_z,
-            };
-            // The stage assumes the tool rests at the clearance plane above
-            // the entry; descending beyond the previous layer would assert
-            // knowledge this planner does not have.
-            let plunge_from_z = previous_z.min(clearance);
-            let contour = Some(cut_loop.contour_id.clone());
-            if clearance > plunge_from_z {
-                motions.push(motion(
-                    MotionPurpose::Approach,
-                    Interpolation::Rapid,
-                    MotionEffect::None,
-                    Position {
-                        x: start_xy.x,
-                        y: start_xy.y,
-                        z: clearance,
-                    },
-                    Position {
-                        x: start_xy.x,
-                        y: start_xy.y,
-                        z: plunge_from_z,
-                    },
-                    None,
-                    contour.clone(),
-                    pass,
-                    layer_index,
-                ));
+                format!("-{}", ordinal + 1)
             }
-            motions.push(motion(
-                MotionPurpose::Entry,
-                Interpolation::LinearFeed,
-                MotionEffect::MillingSweep,
-                Position {
-                    x: start_xy.x,
-                    y: start_xy.y,
-                    z: plunge_from_z,
-                },
-                entry,
-                Some(plunge_feed),
-                contour.clone(),
-                pass,
-                layer_index,
-            ));
-            // Traverse the loop under the tab envelope: commanded depth is
-            // max(pass_z, tab_top) split exactly at the protected intervals,
-            // with feed-controlled vertical rise/lower moves at each boundary
-            // (plan section 10.3). Passes at or above every tab top cut an
-            // unsplit loop, byte-identical to the tab-free construction.
-            let pieces = tabs::depth_pieces(&cut_loop.tab_spans, cut_z, cut_loop.perimeter_mm);
-            let mut current_z = cut_z;
-            let mut previous = entry;
-            let vertex_count = cut_loop.vertices.len();
-            for edge in 0..vertex_count {
-                let a = cut_loop.vertices[edge];
-                let b = cut_loop.vertices[(edge + 1) % vertex_count];
-                let edge_len = a.distance(b);
-                if edge_len <= 0. {
-                    continue;
-                }
-                let edge_start = (0..edge)
-                    .map(|i| cut_loop.vertices[i].distance(cut_loop.vertices[i + 1]))
-                    .sum::<f64>();
-                for piece in &pieces {
-                    let lo = piece.start.max(edge_start);
-                    let hi = piece.end.min(edge_start + edge_len);
-                    if hi <= lo {
-                        continue;
-                    }
-                    let at = |arc: f64| {
-                        Point::new(
-                            a.x + (b.x - a.x) * (arc - edge_start) / edge_len,
-                            a.y + (b.y - a.y) * (arc - edge_start) / edge_len,
-                        )
-                    };
-                    let p = at(lo);
-                    let q = at(hi);
-                    if (p.x - previous.x).abs() > 1e-12 || (p.y - previous.y).abs() > 1e-12 {
-                        // Defensive: piece boundaries always lie inside edges
-                        // and pieces tile the perimeter, so travel is
-                        // continuous; a gap would mean a construction bug.
-                        return Ok(incomplete(vec![issue(
-                            "PROFILE_TAB_PROTECTION_FAILED",
-                            format!(
-                                "tab envelope split produced a travel gap on pass {pass} layer {layer_index}"
-                            ),
-                            operation_id,
-                        )]));
-                    }
-                    if (piece.z - current_z).abs() > 1e-12 {
-                        // Vertical transition at the tab boundary (rise into
-                        // the tab, lower out of it).
-                        motions.push(motion(
-                            MotionPurpose::TabTransition,
-                            Interpolation::LinearFeed,
-                            MotionEffect::MillingSweep,
-                            Position {
-                                x: p.x,
-                                y: p.y,
-                                z: current_z,
-                            },
-                            Position {
-                                x: p.x,
-                                y: p.y,
-                                z: piece.z,
-                            },
-                            Some(plunge_feed),
-                            contour.clone(),
-                            pass,
-                            layer_index,
-                        ));
-                        current_z = piece.z;
-                        previous = Position {
-                            x: p.x,
-                            y: p.y,
-                            z: piece.z,
-                        };
-                    }
-                    let end = Position {
-                        x: q.x,
-                        y: q.y,
-                        z: piece.z,
-                    };
-                    motions.push(motion(
-                        if piece.on_tab {
-                            MotionPurpose::TabTransition
-                        } else {
-                            MotionPurpose::Rough
-                        },
-                        Interpolation::LinearFeed,
-                        MotionEffect::MillingSweep,
-                        previous,
-                        end,
-                        Some(cut_loop.cut_feed),
-                        contour.clone(),
-                        pass,
-                        layer_index,
-                    ));
-                    previous = end;
-                }
+        );
+        stage_runs.push((stage.clone(), role, motion_start));
+        stage
+    };
+    let mut pass_counter = 0usize;
+    for contour_work in &work {
+        for cut_loop in &contour_work.rough {
+            let stage = open_stage(&mut stage_runs, StageRole::ProfileRough, motions.len());
+            if let Err(d) = emit_loop_layers(
+                &mut motions,
+                &mut next_id,
+                operation_id,
+                &stage,
+                &settings.assignment.tool_id,
+                cut_loop,
+                &layers,
+                heights.top_z,
+                clearance,
+                plunge_feed,
+                MotionPurpose::Rough,
+                pass_counter,
+            ) {
+                return Ok(incomplete(vec![issue(&d.code, d.message, operation_id)]));
             }
-            motions.push(motion(
-                MotionPurpose::Clearance,
-                Interpolation::Rapid,
-                MotionEffect::None,
-                entry,
-                Position {
-                    z: clearance,
-                    x: entry.x,
-                    y: entry.y,
-                },
-                None,
-                None,
-                pass,
-                layer_index,
-            ));
+            pass_counter += 1;
+        }
+        for cut_loop in &contour_work.finish {
+            let stage = open_stage(&mut stage_runs, StageRole::ProfileFinish, motions.len());
+            if let Err(d) = emit_loop_layers(
+                &mut motions,
+                &mut next_id,
+                operation_id,
+                &stage,
+                &settings.assignment.tool_id,
+                cut_loop,
+                &layers,
+                heights.top_z,
+                clearance,
+                plunge_feed,
+                MotionPurpose::Finish,
+                pass_counter,
+            ) {
+                return Ok(incomplete(vec![issue(&d.code, d.message, operation_id)]));
+            }
+            pass_counter += 1;
         }
     }
 
@@ -846,9 +1013,11 @@ pub(crate) fn plan(
         path_control: PathControlIntent::UseMachineProfile,
     };
     // Resolved placements are stored in the plan so the preview shows exactly
-    // what was generated (plan section 10.3).
-    let tab_placements: Vec<TabPlacementOutput> = loops
+    // what was generated (plan section 10.3). Rough and finishing loops share
+    // the same protected footprints; the rough loops report them.
+    let tab_placements: Vec<TabPlacementOutput> = work
         .iter()
+        .flat_map(|contour_work| &contour_work.rough)
         .flat_map(|cut_loop| {
             cut_loop
                 .tab_spans
@@ -881,17 +1050,23 @@ pub(crate) fn plan(
         } else {
             GenerationStatus::Complete
         },
-        stages: if motion_count == 0 {
-            vec![]
-        } else {
-            vec![LocalStage {
-                stage_id: stage,
-                role: StageRole::ProfileRough,
+        stages: stage_runs
+            .iter()
+            .enumerate()
+            .map(|(index, (stage_id, role, start))| LocalStage {
+                stage_id: stage_id.clone(),
+                role: *role,
                 tool_id: settings.assignment.tool_id.clone(),
-                motion_range: (0, motion_count),
-                intent,
-            }]
-        },
+                motion_range: (
+                    *start,
+                    stage_runs
+                        .get(index + 1)
+                        .map(|(_, _, next)| *next)
+                        .unwrap_or(motion_count),
+                ),
+                intent: intent.clone(),
+            })
+            .collect(),
         motions,
         stage_evidence: vec![],
         pass_evidence: vec![],

@@ -90,14 +90,17 @@ fn straight_runs(vertices: &[Point]) -> Vec<StraightRun> {
 }
 
 /// Resolve this loop's tab spans from the settings. `perimeter` is the loop
-/// length; `expected_offset` is the compensation distance of the centerline
-/// from the source contour (cutter radius for the rough pass).
+/// length; `anchor_offset` is the compensation distance of this centerline
+/// from the source contour (cutter radius for a final pass, radius plus the
+/// allowance when roughing) used to match manual anchors; `cutter_radius` is
+/// the cutter disc radius whose dilation protects the bridge.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_spans(
     settings: &TabSettings,
     vertices: &[Point],
     perimeter: f64,
-    expected_offset: f64,
+    anchor_offset: f64,
+    cutter_radius: f64,
     margin: f64,
     tab_top_z: f64,
     anchors: &[ResolvedAnchor],
@@ -115,7 +118,7 @@ pub(crate) fn resolve_spans(
     let runs = straight_runs(vertices);
     // Dilate the bridge by the cutter radius (plus margin) at both ends: the
     // cutter disc must clear the protected volume, not just its center.
-    let dilation = expected_offset + margin;
+    let dilation = cutter_radius + margin;
 
     let mut bridges: Vec<(f64, f64)> = vec![];
     match &settings.placement {
@@ -217,7 +220,7 @@ pub(crate) fn resolve_spans(
                     if !parallel || !(0. ..=run.len()).contains(&along) {
                         continue;
                     }
-                    let err = (perp.abs() - expected_offset).abs();
+                    let err = (perp.abs() - anchor_offset).abs();
                     if best.is_none_or(|(_, _, best_err)| err < best_err) {
                         best = Some((index, along, err));
                     }
