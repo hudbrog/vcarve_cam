@@ -1,8 +1,8 @@
 //! F1 knife stage data contract: spindle-off process preparation between
 //! milling stages, the pivot/tip display contract on knife motions, and the
-//! unadvertised planner boundary. The plans here are hand-assembled to the
-//! exact sequence contract; the knife planner itself ships in F2 and stays
-//! unadvertised.
+//! planner admission boundary. The process plans here are hand-assembled to
+//! the exact sequence contract; the knife geometry planner's own fixtures
+//! live in `knife_geometry.rs` (F2).
 use cam_core::{
     checks::{CheckStatus, check_plan},
     geometry::Point,
@@ -697,14 +697,25 @@ fn knife_motions_carry_blade_headings_and_never_mill() {
 }
 
 #[test]
-fn the_knife_planner_stays_unadvertised_and_unplanned() {
-    // The document accepts knife operations, but no planner is advertised:
-    // planning an enabled knife operation is a located rejection, never a
-    // silent skip or a partial plan.
-    let error = OperationPlan::plan_job(&job(), &PlanLimits::default()).unwrap_err();
-    assert_eq!(error.code, "OPERATION_PLANNER_UNAVAILABLE");
-    assert!(error.message.contains("knife-1"), "{error}");
-    // A disabled knife operation plans the rest of the job.
+fn knife_planning_reports_missing_settings_never_a_silent_skip() {
+    // The planner exists (F2): an enabled but unconfigured knife operation
+    // plans to an incomplete result with located missing fields — the rest
+    // of the job stays inspectable, and a disabled knife operation is
+    // excluded from planning readiness entirely.
+    let plan = OperationPlan::plan_job(&job(), &PlanLimits::default()).unwrap();
+    let knife = plan
+        .operation_results
+        .iter()
+        .find(|result| result.operation_id == "knife-1")
+        .unwrap();
+    assert_eq!(knife.generation_status, GenerationStatus::Incomplete);
+    assert!(
+        plan.generation_diagnostics
+            .iter()
+            .any(|issue| issue.operation_id.as_deref() == Some("knife-1")
+                && issue.code == "MISSING_MACHINING_SETTING")
+    );
+
     let mut mixed = job();
     mixed.operations[1].enabled = false;
     let plan = OperationPlan::plan_job(&mixed, &PlanLimits::default()).unwrap();

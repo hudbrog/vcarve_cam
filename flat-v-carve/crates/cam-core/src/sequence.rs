@@ -373,6 +373,7 @@ impl OperationPlan {
                 OperationSettings::FlatVcarve(_)
                     | OperationSettings::Face(_)
                     | OperationSettings::Profile(_)
+                    | OperationSettings::DragKnife(_)
             )
         }) {
             return Err(error(
@@ -659,6 +660,14 @@ impl OperationPlan {
         let mut history =
             crate::stock::history::StockHistory::new(thickness, self.job_snapshot.setup.stock.xy)?;
         for stage in &self.stages {
+            // Knife traces never enter the milling-stock model (plan section
+            // 9.1); knife stages contribute no sweeps and need no cutter.
+            if stage.role == StageRole::Knife {
+                if through == Some(stage.operation_id.as_str()) {
+                    break;
+                }
+                continue;
+            }
             let cutter = self
                 .job_snapshot
                 .tools

@@ -687,7 +687,8 @@ impl Reader {
                 ),
             )
             .source(&id));
-        }        let has_stroke =
+        }
+        let has_stroke =
             style.stroke != "none" && style.stroke_width > 0. && style.stroke_opacity > 0.;
         let has_fill = style.fill != "none" && style.fill_opacity != 0.;
         if self.centerline {

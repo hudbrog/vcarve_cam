@@ -308,22 +308,18 @@ fn update_settings_replaces_operation_settings_through_strict_parsing() {
 fn capabilities_advertise_only_implemented_features() {
     let capabilities = execute(SequenceCommand::Capabilities).unwrap();
     assert_eq!(capabilities["apiVersion"], json!(SEQUENCE_API_VERSION));
-    // The drag-knife planner is not implemented: knife data/import exist but
-    // the operation kind stays unadvertised (F1 acceptance).
+    // The knife geometry planner ships with F2: the operation kind and its
+    // independent replay gate are advertised alongside the milling kinds.
     assert_eq!(
         capabilities["operationKinds"],
-        json!(["flat_vcarve", "face", "profile"])
-    );
-    assert!(
-        !capabilities["operationKinds"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|kind| kind == "drag_knife")
+        json!(["flat_vcarve", "face", "profile", "drag_knife"])
     );
     assert_eq!(capabilities["features"]["openContours"], json!(true));
     assert_eq!(capabilities["features"]["knifeToolLibrary"], json!(true));
-    assert_eq!(capabilities["features"]["knifeReplay"], json!(false));
+    assert_eq!(capabilities["features"]["knifeReplay"], json!(true));
+    // Unimplemented features stay unadvertised.
+    assert_eq!(capabilities["features"]["rampedTabs"], json!(false));
+    assert_eq!(capabilities["features"]["rotatedFacing"], json!(false));
     assert_eq!(capabilities["features"]["legacyJobMigration"], json!(true));
     assert_eq!(capabilities["features"]["profileEntries"], json!(true));
 }
@@ -825,7 +821,7 @@ fn mixed_fixture_job() -> Value {
 }
 
 #[test]
-fn open_chains_project_and_the_knife_planner_stays_unadvertised() {
+fn open_chains_project_and_knife_planning_round_trips() {
     use cam_core::job::{PlanningTolerances, SourceSnapshot};
     use cam_core::project::*;
     use cam_core::svg::{ImportMode, ImportOptions};
@@ -918,12 +914,70 @@ fn open_chains_project_and_the_knife_planner_stays_unadvertised() {
     assert_eq!(chains[0]["suggestedSide"], json!("on"));
     assert_eq!(chains[0]["bounds"]["maxXmm"], json!(25.));
 
-    // No unsupported knife planner is advertised: planning the enabled knife
-    // operation is a located rejection, never a silent partial plan.
-    let error = execute(SequenceCommand::Plan {
+    // The knife planner is advertised with its replay gate (F2), and the
+    // unconfigured initial heading is a located missing field — never a
+    // silently defaulted one.
+    let capabilities = execute(SequenceCommand::Capabilities).unwrap();
+    assert!(
+        capabilities["operationKinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|kind| kind == "drag_knife")
+    );
+    assert_eq!(capabilities["features"]["knifeReplay"], json!(true));
+    assert!(
+        document["missingByOperation"]["knife-1"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["fieldPath"]
+                .as_str()
+                .unwrap()
+                .contains("alignment.initial_heading_deg"))
+    );
+    let summary = execute(SequenceCommand::Plan {
         job: job_of(&document),
         scope: PlanScope::AllEnabled,
     })
-    .unwrap_err();
-    assert_eq!(error.code, "OPERATION_PLANNER_UNAVAILABLE");
+    .unwrap();
+    assert_eq!(
+        summary["summary"]["operations"][0]["generationStatus"],
+        json!("incomplete")
+    );
+
+    // Supplying the heading through the strict UpdateSettings command (and
+    // the motion tolerance on the job) plans the knife operation completely;
+    // motion pages carry the pivot/tip display contract (bladeHeadingDeg).
+    let mut configured = document["job"].clone();
+    configured["tolerances"]["motion_tolerance_mm"] = json!(0.01);
+    let mut settings = document["job"]["operations"][0]["settings"].clone();
+    settings["settings"]["alignment"]["initial_heading_deg"] = json!(90.);
+    let updated = execute(SequenceCommand::UpdateSettings {
+        job: configured,
+        operation_id: "knife-1".into(),
+        settings,
+    })
+    .unwrap();
+    let summary = execute(SequenceCommand::Plan {
+        job: job_of(&updated),
+        scope: PlanScope::AllEnabled,
+    })
+    .unwrap();
+    assert_eq!(
+        summary["summary"]["operations"][0]["generationStatus"],
+        json!("complete"),
+        "{summary}"
+    );
+    assert_eq!(summary["summary"]["stages"][0]["role"], json!("knife"));
+    assert!(summary["summary"]["motionCount"].as_u64().unwrap() > 0);
+    let motions = &summary["motions"]["motions"];
+    assert!(
+        motions
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|motion| motion["purpose"] == json!("knife_cut")
+                && motion["bladeHeadingDeg"].is_array())
+    );
 }

@@ -212,8 +212,6 @@ pub fn missing_by_operation(job: &CamJob) -> serde_json::Map<String, Value> {
                     })
                     .collect()
             }
-            // The knife planner ships in a later slice; its settings are
-            // reported as a whole until that slice defines resolution.
             OperationSettings::Profile(settings) => {
                 operations::profile::missing_fields(job, &operation.id, settings)
                     .iter()
@@ -226,11 +224,18 @@ pub fn missing_by_operation(job: &CamJob) -> serde_json::Map<String, Value> {
                     })
                     .collect()
             }
-            OperationSettings::DragKnife(_) => vec![json!({
-                "fieldPath": format!("operations[{}]", operation.id),
-                "message": "this operation kind ships in a later slice",
-                "toolId": null,
-            })],
+            OperationSettings::DragKnife(settings) => {
+                operations::drag_knife::missing_fields(job, &operation.id, settings)
+                    .iter()
+                    .map(|d| {
+                        json!({
+                            "fieldPath": d.field_path,
+                            "message": d.message,
+                            "toolId": d.tool_id,
+                        })
+                    })
+                    .collect()
+            }
         };
         missing.insert(operation.id.clone(), Value::Array(entries));
     }
@@ -669,10 +674,9 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
         SequenceCommand::Capabilities => Ok(json!({
             "apiVersion": SEQUENCE_API_VERSION,
             "engineVersion": ENGINE_VERSION,
-            // Advertise only implemented features (plan section 16.2). The
-            // drag-knife planner is not implemented yet: knife data/import
-            // exist, but the operation kind stays unadvertised until F2/F3.
-            "operationKinds": ["flat_vcarve", "face", "profile"],
+            // The knife planner ships its geometry in F2: the operation kind
+            // is advertised and the independent replay gates its plans.
+            "operationKinds": ["flat_vcarve", "face", "profile", "drag_knife"],
             "planScopes": ["all_enabled", "through_operation"],
             "features": {
                 "openContours": true,
@@ -680,7 +684,7 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
                 "rotatedFacing": false,
                 "profileFinishing": true,
                 "profileEntries": true,
-                "knifeReplay": false,
+                "knifeReplay": true,
                 "knifeToolLibrary": true,
                 "legacyJobMigration": true,
                 "contourCatalogue": true,

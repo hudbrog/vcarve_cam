@@ -381,11 +381,11 @@ fn missing_machining_fields_yield_incomplete_result_not_silent_skip() {
 }
 
 #[test]
-fn unsupported_enabled_operations_are_rejected_with_a_specific_diagnostic() {
+fn unconfigured_knife_operations_plan_incomplete_never_silently() {
     let mut cam = migrate_legacy_json(M4_CONTACT_LINE).unwrap();
-    // Knife planning ships in a later slice; an enabled knife operation must
-    // be rejected specifically, never silently skipped. (Face is planned
-    // since C1; profile since D2.)
+    // The knife planner ships with F2: an enabled but unconfigured knife
+    // operation is an incomplete result with located missing fields — never
+    // a silent skip — and a disabled one is excluded from readiness.
     cam.tools.push(cam_core::project::JobTool {
         id: "knife".into(),
         name: "Drag knife".into(),
@@ -427,12 +427,26 @@ fn unsupported_enabled_operations_are_rejected_with_a_specific_diagnostic() {
             alignment: Default::default(),
         }),
     });
-    let err = OperationPlan::plan_job(&cam, &PlanLimits::default()).unwrap_err();
-    assert_eq!(err.code, "OPERATION_PLANNER_UNAVAILABLE");
-    assert!(err.message.contains("knife-1"), "{}", err.message);
-    assert!(err.message.contains("drag_knife"), "{}", err.message);
+    let plan = OperationPlan::plan_job(&cam, &PlanLimits::default()).unwrap();
+    let knife = plan
+        .operation_results
+        .iter()
+        .find(|result| result.operation_id == "knife-1")
+        .expect("the knife operation is planned, not skipped");
+    assert_eq!(
+        knife.generation_status,
+        cam_core::sequence::GenerationStatus::Incomplete
+    );
+    assert!(plan.generation_diagnostics.iter().any(|d| {
+        d.code == "MISSING_MACHINING_SETTING" && d.operation_id.as_deref() == Some("knife-1")
+    }));
 
-    // Disabled unsupported operations are excluded from planning readiness.
+    // Disabled operations are excluded from planning readiness.
     cam.operations[1].enabled = false;
-    OperationPlan::plan_job(&cam, &PlanLimits::default()).unwrap();
+    let plan = OperationPlan::plan_job(&cam, &PlanLimits::default()).unwrap();
+    assert!(
+        plan.operation_results
+            .iter()
+            .all(|result| result.operation_id != "knife-1")
+    );
 }

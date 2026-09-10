@@ -7,6 +7,7 @@ use crate::{
     sequence::PlannedOperation,
 };
 
+pub mod drag_knife;
 pub mod face;
 pub mod flat_vcarve;
 pub mod profile;
@@ -64,10 +65,8 @@ pub(crate) fn plan_operation(
         crate::project::OperationSettings::Profile(settings) => {
             profile::plan(job, &operation.id, settings, published_faces)
         }
-        crate::project::OperationSettings::DragKnife(_) => Err(Diagnostic::new(
-            "OPERATION_PLANNER_UNAVAILABLE",
-            "operation planner ships in a later slice",
-        )
-        .at_stage("operations")),
+        crate::project::OperationSettings::DragKnife(settings) => {
+            drag_knife::plan(job, &operation.id, settings, published_faces)
+        }
     }
 }
