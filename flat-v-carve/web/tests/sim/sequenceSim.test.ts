@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { depthAt } from '../../src/sim/engine';
 import {
   applyRange, buildSequenceStore, captureCheckpoint, createSequenceField,
-  pageAllMotions, restoreCheckpoint, sequenceTools,
+  pageAllMotions, probeDepth, restoreCheckpoint, sequenceTools,
 } from '../../src/sim/sequenceSim';
 import { KIND_APPROACH, KIND_CUT, KIND_PLUNGE, KIND_RAMP, KIND_RAPID_RETRACT, KIND_RAPID_XY } from '../../src/sim/store';
 import type { PlannedMotion } from '../../src/contracts/sequence';
@@ -118,6 +118,21 @@ describe('sequence stock application', () => {
     expect(depthAt(field, Math.floor(15 / field.cellMm), Math.floor(23 / field.cellMm))).toBe(0);
     expect(depthAt(field, Math.floor(15 / field.cellMm), Math.floor(10 / field.cellMm))).toBeCloseTo(2, 1);
     expect(state.opOwner[Math.floor(10 / field.cellMm) * field.cols + Math.floor(15 / field.cellMm)]).toBe(1);
+  });
+
+  it('probes remaining material depth with its resolution (tab inspection)', () => {
+    const { store, state } = built();
+    applyRange(state, 0, store.count);
+    // Inside op-a's slot: ~2 mm removed; the probe reports the cell size so
+    // a sub-cell tab is never mistaken for absent material.
+    const slot = probeDepth(state, 15, 10);
+    expect(slot).not.toBeNull();
+    expect(slot!.depthMm).toBeCloseTo(2, 1);
+    expect(slot!.cellMm).toBeGreaterThan(0);
+    expect(probeDepth(state, 5, 5)?.depthMm).toBe(0);
+    // Outside the physical stock rectangle there is no material to probe.
+    expect(probeDepth(state, 45, 10)).toBeNull();
+    expect(probeDepth(state, -1, 10)).toBeNull();
   });
 });
 

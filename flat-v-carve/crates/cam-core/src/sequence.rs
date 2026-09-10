@@ -120,6 +120,11 @@ pub struct TabPlacementOutput {
     pub restricted_start_mm: f64,
     pub restricted_end_mm: f64,
     pub top_z_mm: f64,
+    /// Setup-space quad of the bridge's protected cross-section (the cutter
+    /// corridor over the bridge) for exact preview overlays, independent of
+    /// display-grid resolution (plan section 15.3). Empty in older plans.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub footprint_mm: Vec<(f64, f64)>,
 }
 
 /// Names of outputs an operation publishes for later height references

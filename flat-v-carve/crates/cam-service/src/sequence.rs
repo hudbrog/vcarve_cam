@@ -634,6 +634,10 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
                             cam_core::project::ContourSide::Outside => "outside",
                             cam_core::project::ContourSide::On => "on",
                         },
+                        // Anchors (starts, manual tabs) bind to the source
+                        // geometry; the UI needs the fingerprint to build
+                        // them and detect stale attachments.
+                        "sourceFingerprint": contour.source_fingerprint,
                         "bounds": {
                             "minXmm": min_x, "minYmm": min_y, "maxXmm": max_x, "maxYmm": max_y,
                         },
@@ -673,6 +677,7 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
                 "rampedTabs": false,
                 "rotatedFacing": false,
                 "profileFinishing": true,
+                "profileEntries": true,
                 "knifeReplay": false,
                 "legacyJobMigration": true,
                 "contourCatalogue": true,

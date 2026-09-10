@@ -1,8 +1,10 @@
-// Profile settings editor (D3): explicit contour selection with per-contour
-// side, heights, stepdown, through allowance, cut direction and the milling
-// assignment. Submitted whole through the engine's strict UpdateSettings
-// command inside the kind envelope — the canonical job is never edited in
-// place, and the contour list comes from the engine's catalogue projection.
+// Profile settings editor (D3 + E3): explicit contour selection with
+// per-contour side, heights, stepdown, through allowance, cut direction, the
+// milling assignment, radial finishing, tabs, the depth entry (plunge or
+// ramp), tangent line/arc leads, and automatic or anchor starts. Submitted
+// whole through the engine's strict UpdateSettings command inside the kind
+// envelope — the canonical job is never edited in place, and the contour
+// list comes from the engine's catalogue projection.
 import { useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
 import type { ContourInfo, SequenceDocument, SequenceService } from '../contracts/sequence';
@@ -18,6 +20,12 @@ type ProfileSettings = {
   order?: string;
   [key: string]: unknown;
 };
+
+type EntrySpec = { kind?: string; [key: string]: unknown };
+type LeadSpec = { kind?: string; [key: string]: unknown };
+type StartSpec = { kind?: string; [key: string]: unknown };
+type TabsSpec = { height_mm?: number | null; width_mm?: number | null; [key: string]: unknown };
+type FinishSpec = { enabled?: boolean; [key: string]: unknown };
 
 function parseNumber(text: string): number | null {
   const trimmed = text.trim();
@@ -106,6 +114,65 @@ export function ProfileSettingsEditor({
   const topFace = topRef?.operation_id ?? faceOperations[0]?.id ?? '';
   const bottomRef = (draft.bottom as { reference?: { kind?: string }; offset_mm?: number }) ?? {};
   const bottomDepth = -(bottomRef.offset_mm ?? 0);
+
+  // E3 entry/lead/start/tabs/finish specs ride along in the draft; each
+  // control replaces one spec object wholesale so the engine always parses
+  // a complete, self-describing shape.
+  const entry = (draft.entry ?? { kind: 'plunge' }) as EntrySpec;
+  const leadIn = (draft.lead_in ?? { kind: 'none' }) as LeadSpec;
+  const leadOut = (draft.lead_out ?? { kind: 'none' }) as LeadSpec;
+  const start = (draft.start ?? { kind: 'automatic' }) as StartSpec;
+  const tabs = (draft.tabs ?? null) as TabsSpec | null;
+  const finish = (draft.finish ?? { enabled: false }) as FinishSpec;
+
+  const leadEditor = (label: string, spec: LeadSpec, key: 'lead_in' | 'lead_out'): ReactElement => {
+    const kind = spec.kind ?? 'none';
+    return <div className="sequence-lead-editor">
+      <label className="sequence-field">
+        <span>{label}</span>
+        <select aria-label={label} value={kind}
+          onChange={event => {
+            const next = event.target.value;
+            setDraft({
+              ...draft,
+              [key]: next === 'none' ? { kind: 'none' }
+                : next === 'tangent_line' ? { kind: 'tangent_line', length_mm: null, feed_mm_min: null }
+                  : { kind: 'tangent_arc', radius_mm: null, sweep_deg: null, feed_mm_min: null },
+            });
+          }}>
+          <option value="none">None</option>
+          <option value="tangent_line">Tangent line</option>
+          <option value="tangent_arc">Tangent arc</option>
+        </select>
+      </label>
+      {kind === 'tangent_line' && <>
+        {numberField('Lead length (mm)', spec.length_mm as number | null | undefined, text => {
+          setDraft({ ...draft, [key]: { ...spec, length_mm: parseNumber(text) } });
+        })}
+        {numberField('Lead feed (mm/min)', spec.feed_mm_min as number | null | undefined, text => {
+          setDraft({ ...draft, [key]: { ...spec, feed_mm_min: parseNumber(text) } });
+        })}
+      </>}
+      {kind === 'tangent_arc' && <>
+        {numberField('Arc radius (mm)', spec.radius_mm as number | null | undefined, text => {
+          setDraft({ ...draft, [key]: { ...spec, radius_mm: parseNumber(text) } });
+        })}
+        {numberField('Arc sweep (deg)', spec.sweep_deg as number | null | undefined, text => {
+          setDraft({ ...draft, [key]: { ...spec, sweep_deg: parseNumber(text) } });
+        })}
+        {numberField('Lead feed (mm/min)', spec.feed_mm_min as number | null | undefined, text => {
+          setDraft({ ...draft, [key]: { ...spec, feed_mm_min: parseNumber(text) } });
+        })}
+      </>}
+    </div>;
+  };
+
+  // Anchor starts bind to the source fingerprint of their contour; the
+  // catalogue entry of the first selected contour supplies it.
+  const anchorContourId = (start.contour_id as string | undefined) ?? draft.contours[0]?.contour_id ?? '';
+  const anchorContour = contours?.find(contour => contour.id === anchorContourId) ?? null;
+  const anchorFingerprint =
+    (start.source_geometry_fingerprint as string | undefined) ?? anchorContour?.sourceFingerprint ?? '';
 
   async function apply() {
     setError('');
@@ -209,10 +276,141 @@ export function ProfileSettingsEditor({
       {assignmentNumber('plunge_feed_mm_min', 'Plunge feed (mm/min)')}
       {assignmentNumber('max_stepdown_mm', 'Max stepdown (mm)')}
     </div>
+    <div className="sequence-fields-grid">
+      <label className="sequence-field">
+        <span>Depth entry</span>
+        <select aria-label="Depth entry" value={entry.kind ?? 'plunge'}
+          onChange={event => setDraft({
+            ...draft,
+            entry: event.target.value === 'ramp'
+              ? { kind: 'ramp', max_angle_deg: null, feed_mm_min: null }
+              : { kind: 'plunge' },
+          })}>
+          <option value="plunge">Plunge</option>
+          <option value="ramp">Contour ramp</option>
+        </select>
+      </label>
+      {entry.kind === 'ramp' && <>
+        {numberField('Ramp angle (deg)', entry.max_angle_deg as number | null | undefined, text => {
+          setDraft({ ...draft, entry: { ...entry, max_angle_deg: parseNumber(text) } });
+        })}
+        {numberField('Ramp feed (mm/min)', entry.feed_mm_min as number | null | undefined, text => {
+          setDraft({ ...draft, entry: { ...entry, feed_mm_min: parseNumber(text) } });
+        })}
+      </>}
+      {leadEditor('Lead-in', leadIn, 'lead_in')}
+      {leadEditor('Lead-out', leadOut, 'lead_out')}
+    </div>
+    <div className="sequence-fields-grid">
+      <label className="sequence-field">
+        <span>Start</span>
+        <select aria-label="Start selection" value={start.kind ?? 'automatic'}
+          onChange={event => setDraft({
+            ...draft,
+            start: event.target.value === 'anchor'
+              ? {
+                kind: 'anchor',
+                contour_id: anchorContourId,
+                source_geometry_fingerprint: anchorFingerprint,
+                fraction_along_source_contour: 0,
+              }
+              : { kind: 'automatic' },
+          })}>
+          <option value="automatic">Automatic</option>
+          <option value="anchor" disabled={!anchorContour}>Anchor</option>
+        </select>
+      </label>
+      {start.kind === 'anchor' && <label className="sequence-field">
+        <span>Anchor contour</span>
+        <select aria-label="Anchor contour" value={anchorContourId}
+          onChange={event => {
+            const contour = contours?.find(entry => entry.id === event.target.value);
+            setDraft({
+              ...draft,
+              start: {
+                ...start,
+                kind: 'anchor',
+                contour_id: event.target.value,
+                source_geometry_fingerprint: contour?.sourceFingerprint ?? null,
+              },
+            });
+          }}>
+          {draft.contours.map(entry => <option key={entry.contour_id} value={entry.contour_id}>{entry.contour_id}</option>)}
+        </select>
+      </label>}
+      {start.kind === 'anchor' && numberField('Start fraction along contour', start.fraction_along_source_contour as number | null | undefined, text => {
+        setDraft({ ...draft, start: { ...start, kind: 'anchor', fraction_along_source_contour: parseNumber(text) } });
+      })}
+    </div>
+    <div className="sequence-fields-grid">
+      <label className="sequence-field">
+        <span>Tabs</span>
+        <select aria-label="Tabs" value={tabs ? 'rectangular' : 'none'}
+          onChange={event => setDraft({
+            ...draft,
+            tabs: event.target.value === 'rectangular'
+              ? {
+                height_mm: null,
+                width_mm: null,
+                shape: 'rectangular',
+                placement: { kind: 'automatic', count: null, spacing_mm: null },
+              }
+              : null,
+          })}>
+          <option value="none">None</option>
+          <option value="rectangular">Rectangular (automatic)</option>
+        </select>
+      </label>
+      {tabs && <>
+        {numberField('Tab height (mm)', tabs.height_mm ?? null, text => {
+          setDraft({ ...draft, tabs: { ...tabs, height_mm: parseNumber(text) } });
+        })}
+        {numberField('Tab width (mm)', tabs.width_mm ?? null, text => {
+          setDraft({ ...draft, tabs: { ...tabs, width_mm: parseNumber(text) } });
+        })}
+        {numberField('Tab count', (tabs.placement as { count?: number | null })?.count ?? null, text => {
+          const count = parseNumber(text);
+          setDraft({
+            ...draft,
+            tabs: {
+              ...tabs,
+              placement: {
+                kind: 'automatic',
+                count: count === null ? null : Math.max(0, Math.round(count)),
+                spacing_mm: null,
+              },
+            },
+          });
+        })}
+      </>}
+    </div>
+    <div className="sequence-fields-grid">
+      <label className="sequence-field">
+        <span>Finish</span>
+        <select aria-label="Finishing" value={finish.enabled ? 'on' : 'off'}
+          onChange={event => setDraft({
+            ...draft,
+            finish: event.target.value === 'on'
+              ? { enabled: true, radial_allowance_mm: null, feed_mm_min: null }
+              : { enabled: false },
+          })}>
+          <option value="off">Single rough pass</option>
+          <option value="on">Rough + finish</option>
+        </select>
+      </label>
+      {finish.enabled && <>
+        {numberField('Radial allowance (mm)', finish.radial_allowance_mm as number | null | undefined, text => {
+          setDraft({ ...draft, finish: { ...finish, enabled: true, radial_allowance_mm: parseNumber(text) } });
+        })}
+        {numberField('Finish feed (mm/min)', finish.feed_mm_min as number | null | undefined, text => {
+          setDraft({ ...draft, finish: { ...finish, enabled: true, feed_mm_min: parseNumber(text) } });
+        })}
+      </>}
+    </div>
     <div className="inline-actions">
       <button className="primary" disabled={busy} onClick={() => void apply()}>Apply profile settings</button>
       {error && <p role="alert" className="inline-warning">{error}</p>}
     </div>
-    <p className="hint">Contours and sides are explicit per selection; values are parsed and validated by the engine.</p>
+    <p className="hint">Contours and sides are explicit per selection; entries, leads, tabs and finishing are parsed and validated by the engine.</p>
   </div>;
 }

@@ -37,7 +37,18 @@ function planData() {
     summary: {
       engineVersion, inputFingerprint: fingerprint64, executionFingerprint: fingerprint64,
       motionCount: 59, cuttingMotionCount: 12,
-      operations: [{ operationId: 'flat-v-carve', generationStatus: 'complete', stageIds: ['flat-v-carve-vcarve-rough'], stockBeforeId: 'stock:initial', stockAfterId: 'stock:after:flat-v-carve', namedOutputs: [] }],
+      operations: [{
+        operationId: 'flat-v-carve', generationStatus: 'complete', stageIds: ['flat-v-carve-vcarve-rough'],
+        stockBeforeId: 'stock:initial', stockAfterId: 'stock:after:flat-v-carve',
+        namedOutputs: [{
+          kind: 'profile_tabs', zMm: null, covered: null,
+          tabPlacements: [{
+            contourId: 'pocket-0-outer', bridgeStartMm: 14.5, bridgeEndMm: 19.5,
+            restrictedStartMm: 12.49, restrictedEndMm: 21.51, topZMm: -6,
+            footprintMm: [[14.5, 5], [19.5, 5], [19.5, 1], [14.5, 1]],
+          }],
+        }],
+      }],
       stages: [{ stageId: 'flat-v-carve-vcarve-rough', operationId: 'flat-v-carve', toolId: 'endmill', role: 'vcarve_rough', motionCount: 59 }],
       execution: [],
       basicChecks: { status: 'passed', findings: [], exportReady: true },
@@ -66,6 +77,7 @@ function contoursData() {
     contours: [{
       id: 'pocket-0-outer', componentId: 'pocket::0', closed: true, role: 'outer',
       parentContourId: null, perimeterMm: 100.5, suggestedSide: 'outside',
+      sourceFingerprint: 'fp-1',
       bounds: { minXmm: 5, minYmm: 5, maxXmm: 35, maxYmm: 25 },
     }],
   };
@@ -184,6 +196,7 @@ describe('http sequence service', () => {
     const catalogue = await service.contours(document.job);
     expect(catalogue.contours[0].id).toBe('pocket-0-outer');
     expect(catalogue.contours[0].suggestedSide).toBe('outside');
+    expect(catalogue.contours[0].sourceFingerprint).toBe('fp-1');
     const page = await service.planMotions(document.job, { kind: 'allEnabled' }, 0);
     expect(page.motions.total).toBe(5);
     expect(motionPageResultSchema.parse(motionsData(0)).motions.offset).toBe(0);
@@ -192,6 +205,39 @@ describe('http sequence service', () => {
       .filter(command => command.operation === 'motions');
     expect(motionCommands[0].offset).toBe(0);
     expect(motionCommands[0].scope).toEqual({ kind: 'allEnabled' });
+  });
+  it('sends profile entry and lead settings through UpdateSettings inside the kind envelope', async () => {
+    const { fetcher, bodies } = scripted();
+    const service = createHttpSequenceService(fetcher);
+    const document = await service.open(legacyJob);
+    await service.updateSettings(document.job, 'profile-1', {
+      kind: 'profile',
+      settings: {
+        contours: [{ contour_id: 'pocket-0-outer', side: 'outside', traversal: null }],
+        assignment: { tool_id: 'endmill' },
+        top: { reference: { kind: 'stock_top' }, offset_mm: 0 },
+        bottom: { reference: { kind: 'operation_top' }, offset_mm: -4 },
+        stepdown_mm: 2,
+        direction: 'climb',
+        start: { kind: 'anchor', contour_id: 'pocket-0-outer', source_geometry_fingerprint: 'fp-1', fraction_along_source_contour: 0.15 },
+        entry: { kind: 'ramp', max_angle_deg: 30, feed_mm_min: 140 },
+        lead_in: { kind: 'tangent_line', length_mm: 3, feed_mm_min: 180 },
+        lead_out: { kind: 'none' },
+        tabs: { height_mm: 2, width_mm: 5, shape: 'rectangular', placement: { kind: 'automatic', count: 2, spacing_mm: null } },
+      },
+    });
+    const command = bodies.at(-1)?.command as Record<string, unknown>;
+    expect(command.operation).toBe('updateSettings');
+    // The engine parses OperationSettings strictly: the adjacently tagged
+    // kind envelope must survive the wire exactly.
+    expect(command.settings).toEqual({
+      kind: 'profile',
+      settings: expect.objectContaining({
+        entry: { kind: 'ramp', max_angle_deg: 30, feed_mm_min: 140 },
+        lead_in: { kind: 'tangent_line', length_mm: 3, feed_mm_min: 180 },
+        start: { kind: 'anchor', contour_id: 'pocket-0-outer', source_geometry_fingerprint: 'fp-1', fraction_along_source_contour: 0.15 },
+      }),
+    });
   });
 });
 
@@ -265,7 +311,7 @@ describe('sequence workspace', () => {
     expect(html).toContain('value="40"');
     expect(html).toContain('value="1"');
   });
-  it('renders the profile editor with the engine catalogue and explicit sides', async () => {
+  it('renders the profile editor with entry, lead, start, tabs and finish controls', async () => {
     const applied: unknown[] = [];
     const editorService = {
       ...service,
@@ -281,8 +327,12 @@ describe('sequence workspace', () => {
       stepdown_mm: 3, through_cut_allowance_mm: 0.2, direction: 'climb',
       order: 'inner_before_outer',
       assignment: { tool_id: 'endmill', spindle_rpm: 12000, spindle_direction: 'clockwise', cutting_feed_mm_min: 350, plunge_feed_mm_min: 100, max_stepdown_mm: 8 },
-      start: { kind: 'automatic' }, finish: { enabled: false }, entry: { kind: 'plunge' },
-      lead_in: { kind: 'none' }, lead_out: { kind: 'none' }, tabs: null,
+      start: { kind: 'automatic' },
+      finish: { enabled: true, radial_allowance_mm: 0.5, feed_mm_min: 300 },
+      entry: { kind: 'ramp', max_angle_deg: 30, feed_mm_min: 140 },
+      lead_in: { kind: 'tangent_line', length_mm: 3, feed_mm_min: 180 },
+      lead_out: { kind: 'tangent_arc', radius_mm: 5, sweep_deg: 90, feed_mm_min: 190 },
+      tabs: { height_mm: 2, width_mm: 5, shape: 'rectangular', placement: { kind: 'automatic', count: 2, spacing_mm: null } },
     };
     const html = renderToStaticMarkup(
       <ProfileSettingsEditor
@@ -297,7 +347,20 @@ describe('sequence workspace', () => {
     );
     expect(html).toContain('profile-1');
     expect(html).toContain('loading contour catalogue');
-    // The catalogue arrives asynchronously; SSR shows the pending state.
+    // The E3 inspector fields render with the engine-parsed values intact.
+    expect(html).toContain('Depth entry');
+    expect(html).toContain('Ramp angle (deg)');
+    expect(html).toContain('value="30"');
+    expect(html).toContain('Lead-in');
+    expect(html).toContain('Lead length (mm)');
+    expect(html).toContain('Lead-out');
+    expect(html).toContain('Arc radius (mm)');
+    expect(html).toContain('value="90"');
+    expect(html).toContain('Start');
+    expect(html).toContain('Tab height (mm)');
+    expect(html).toContain('Radial allowance (mm)');
+    expect(html).toContain('Finish feed (mm/min)');
+    // SSR shows the pending catalogue state; interaction arrives with it.
   });
   it('renders the stock/timeline display with operation checkpoints', () => {
     const html = renderToStaticMarkup(
@@ -312,5 +375,9 @@ describe('sequence workspace', () => {
     expect(html).toContain('Stock &amp; timeline');
     expect(html).toContain('loading motions');
     expect(html).toContain('flat-v-carve');
+    // Tab inspection (E3): the resolved bridge is announced with exact
+    // geometry and a depth probe, independent of the display grid.
+    expect(html).toContain('Tab inspection: 1 resolved bridge');
+    expect(html).toContain('depth probe');
   });
 });

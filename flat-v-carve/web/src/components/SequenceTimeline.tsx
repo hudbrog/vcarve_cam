@@ -1,8 +1,9 @@
-// Stock/timeline display for sequence plans (D3, plan section 15.2): pages
-// the complete ordered motion stream, tracks per-operation ownership in the
-// heightfield, and renders a top-down stock view with operation checkpoints
-// and scrubbing. Rendering is a 2D depth/operation map; the 3D viewport
-// stays with the legacy workflow until the sequence sim replaces it.
+// Stock/timeline display for sequence plans (D3 + E3, plan sections 15.2,
+// 15.3): pages the complete ordered motion stream, tracks per-operation
+// ownership in the heightfield, and renders a top-down stock view with
+// operation checkpoints and scrubbing. Inspection: resolved tab bridges are
+// drawn as an exact overlay (never implied by the display grid) and a depth
+// probe reads remaining material under the cursor with its resolution.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import type { MotionPageResult, PlanSummary, SequenceService } from '../contracts/sequence';
@@ -14,6 +15,7 @@ import {
   createSequenceField,
   operationColors,
   pageAllMotions,
+  probeDepth,
   restoreCheckpoint,
   sequenceTools,
   stockViewColor,
@@ -26,6 +28,13 @@ export interface TimelineOperationInfo {
   id: string;
   name: string;
   stages: string[];
+}
+
+/** Resolved profile tab bridges (exact geometry, setup millimetres). */
+interface TabBridge {
+  contourId: string;
+  topZMm: number;
+  footprintMm: [number, number][];
 }
 
 export function SequenceTimeline({
@@ -47,6 +56,8 @@ export function SequenceTimeline({
   const [loaded, setLoaded] = useState<{ field: SequenceField; checkpoints: StockCheckpoint[]; operationIds: string[] } | null>(null);
   const [position, setPosition] = useState(0);
   const [operationMode, setOperationMode] = useState(false);
+  const [showTabs, setShowTabs] = useState(true);
+  const [probe, setProbe] = useState<{ x: number; y: number; depthMm: number; cellMm: number } | null>(null);
   const canvas = useRef<HTMLCanvasElement | null>(null);
 
   const operations = useMemo<TimelineOperationInfo[]>(() => {
@@ -57,6 +68,25 @@ export function SequenceTimeline({
       names.set(stage.operationId, entry);
     }
     return [...names.values()];
+  }, [planSummary]);
+
+  const tabBridges = useMemo<TabBridge[]>(() => {
+    const bridges: TabBridge[] = [];
+    for (const operation of planSummary.operations) {
+      for (const output of operation.namedOutputs) {
+        if (output.kind !== 'profile_tabs') continue;
+        for (const placement of output.tabPlacements) {
+          if (placement.footprintMm.length === 4) {
+            bridges.push({
+              contourId: placement.contourId,
+              topZMm: placement.topZMm,
+              footprintMm: placement.footprintMm,
+            });
+          }
+        }
+      }
+    }
+    return bridges;
   }, [planSummary]);
 
   // Page the complete ordered stream, then build the field and capture a
@@ -144,7 +174,38 @@ export function SequenceTimeline({
       }
     }
     context.putImageData(image, 0, 0);
-  }, [loaded, position, operationMode]);
+    // Exact tab-bridge overlay: resolved plan geometry, so a bridge is never
+    // hidden by display-grid resolution (plan section 15.3).
+    if (showTabs && tabBridges.length > 0) {
+      context.lineWidth = Math.max(1, stock.cellMm * 0.15);
+      context.strokeStyle = 'rgba(255,176,32,0.95)';
+      for (const bridge of tabBridges) {
+        context.beginPath();
+        bridge.footprintMm.forEach(([x, y], index) => {
+          const col = (x - stock.x0Mm) / stock.cellMm;
+          const row = (y - stock.y0Mm) / stock.cellMm;
+          if (index === 0) context.moveTo(col, row);
+          else context.lineTo(col, row);
+        });
+        context.closePath();
+        context.stroke();
+      }
+    }
+  }, [loaded, position, operationMode, showTabs, tabBridges]);
+
+  // Depth probe: remaining material under the cursor, with the display
+  // resolution reported so tab heights are inspected, not guessed from the
+  // color ramp.
+  function probeAt(event: React.MouseEvent<HTMLCanvasElement>) {
+    if (!loaded) return;
+    const element = canvas.current;
+    if (!element) return;
+    const bounds = element.getBoundingClientRect();
+    const xMm = stock.x0 + (event.clientX - bounds.left) / bounds.width * (stock.x1 - stock.x0);
+    const yMm = stock.y0 + (event.clientY - bounds.top) / bounds.height * (stock.y1 - stock.y0);
+    const result = probeDepth(loaded.field, xMm, yMm);
+    setProbe(result ? { x: xMm, y: yMm, ...result } : null);
+  }
 
   const currentOperation = loaded && position > 0
     ? loaded.operationIds[loaded.field.store.opIndex[Math.min(position, loaded.field.store.count) - 1]]
@@ -155,15 +216,21 @@ export function SequenceTimeline({
     <h3>Stock & timeline</h3>
     {!loaded && <p className="hint" role="status">{error || status}</p>}
     {error && <p className="inline-warning" role="alert">{error}</p>}
+    {tabBridges.length > 0 && <p className="hint">Tab inspection: {tabBridges.length} resolved bridge{tabBridges.length === 1 ? '' : 's'} on {new Set(tabBridges.map(bridge => bridge.contourId)).size} contour(s), drawn as exact-plan overlays with a depth probe — never implied by the display grid.</p>}
     {loaded && <>
       <div className="sequence-timeline-canvas-row">
         <canvas
           ref={canvas}
           className="sequence-stock-canvas"
           aria-label="Top-down stock view after the selected motions"
+          onMouseMove={probeAt}
+          onMouseLeave={() => setProbe(null)}
         />
         {workZero && <small className="hint">Work zero marker at setup ({workZero.x.toFixed(1)}, {workZero.y.toFixed(1)}) mm; the stock rectangle never moves with it.</small>}
       </div>
+      {probe
+        ? <p className="hint" role="status">Depth probe at ({probe.x.toFixed(2)}, {probe.y.toFixed(2)}) mm: {probe.depthMm.toFixed(2)} mm of material remaining · cell {probe.cellMm.toFixed(2)} mm</p>
+        : <p className="hint">Hover the stock view to probe the remaining material depth.</p>}
       <label className="sequence-field sequence-scrub">
         <span>Motion {position} of {loaded.field.store.count}</span>
         <input
@@ -183,6 +250,15 @@ export function SequenceTimeline({
             <option value="operation">Operation</option>
           </select>
         </label>
+        {tabBridges.length > 0 && <label className="sequence-field sequence-tab-toggle">
+          <input
+            type="checkbox"
+            checked={showTabs}
+            aria-label="Show resolved tab bridges"
+            onChange={event => setShowTabs(event.target.checked)}
+          />
+          <span>{tabBridges.length} tab bridge{tabBridges.length === 1 ? '' : 's'} (exact geometry at Z {tabBridges[0].topZMm.toFixed(1)})</span>
+        </label>}
         {loaded.checkpoints.map((checkpoint, index) => index === 0 ? null : (
           <button key={index} onClick={() => setPosition(checkpoint.motionIndex)}>
             After {loaded.operationIds[index - 1]}

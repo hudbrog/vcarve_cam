@@ -421,7 +421,9 @@ fn missing_direction_and_later_slice_features_are_explicit() {
                 && d.message.contains("climb or conventional"))
     );
 
-    // Later-slice features produce specific diagnostics, never silent drops.
+    // Later-slice features produce specific diagnostics, never silent drops:
+    // a ramp on this fixture's non-ramp-capable endmill is a capability
+    // conflict (the ramp itself ships with the E3 entries slice).
     let mut settings = profile_settings_for(CIRCLE_SVG, Some(CutDirection::Climb));
     settings.entry = ProfileEntry::Ramp {
         max_angle_deg: Some(15.),
@@ -431,7 +433,7 @@ fn missing_direction_and_later_slice_features_are_explicit() {
     assert!(
         plan.generation_diagnostics
             .iter()
-            .any(|d| d.code == "PROFILE_ENTRY_UNSUPPORTED")
+            .any(|d| d.code == "PROFILE_ENTRY_CAPABILITY")
     );
     // And an unknown contour reference is located.
     let mut settings = profile_settings_for(CIRCLE_SVG, Some(CutDirection::Climb));

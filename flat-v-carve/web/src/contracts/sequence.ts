@@ -87,6 +87,9 @@ export const namedOutputSchema = z.strictObject({
     contourId: z.string(),
     bridgeStartMm: z.number(), bridgeEndMm: z.number(),
     restrictedStartMm: z.number(), restrictedEndMm: z.number(), topZMm: z.number(),
+    // Exact bridge cross-section quad in setup coordinates for overlays
+    // (empty in plans that predate the entries slice).
+    footprintMm: z.array(z.tuple([z.number(), z.number()])),
   })),
 });
 export type NamedOutputInfo = z.infer<typeof namedOutputSchema>;
@@ -138,7 +141,8 @@ export const motionPageResultSchema = z.strictObject({
 export type MotionPageResult = z.infer<typeof motionPageResultSchema>;
 
 // Contour catalogue projection (plan section 7.1) for explicit per-contour
-// selection: stable IDs, roles with lineage, and the suggested side.
+// selection: stable IDs, roles with lineage, the suggested side, and the
+// source fingerprint that anchors (starts, manual tabs) bind to.
 export const contourInfoSchema = z.strictObject({
   id: z.string(),
   componentId: z.string(),
@@ -147,6 +151,7 @@ export const contourInfoSchema = z.strictObject({
   parentContourId: z.string().nullable(),
   perimeterMm: z.number().finite().positive(),
   suggestedSide: z.enum(['inside', 'outside', 'on']),
+  sourceFingerprint: z.string(),
   bounds: z.strictObject({
     minXmm: z.number(), minYmm: z.number(), maxXmm: z.number(), maxYmm: z.number(),
   }),

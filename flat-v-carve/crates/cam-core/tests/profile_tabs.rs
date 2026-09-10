@@ -524,14 +524,30 @@ fn tab_placement_output_serializes_strictly() {
             restricted_start_mm: -2.,
             restricted_end_mm: 7.,
             top_z_mm: -6.,
+            footprint_mm: vec![(0., 2.), (5., 2.), (5., -2.), (0., -2.)],
         }],
     };
     let json = serde_json::to_string(&output).unwrap();
     assert!(json.contains("\"bridgeStartMm\""));
+    assert!(json.contains("\"footprintMm\""));
     let parsed: NamedOutput = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.tab_placements.len(), 1);
+    assert_eq!(parsed.tab_placements[0].footprint_mm.len(), 4);
     assert!(
         serde_json::from_str::<NamedOutput>(&json.replace("bridgeStartMm", "bridge_start"))
             .is_err()
     );
+    // The footprint stays optional on parse so older plan documents load.
+    let legacy = serde_json::to_string(&cam_core::sequence::TabPlacementOutput {
+        contour_id: "c".into(),
+        bridge_start_mm: 0.,
+        bridge_end_mm: 5.,
+        restricted_start_mm: -2.,
+        restricted_end_mm: 7.,
+        top_z_mm: -6.,
+        footprint_mm: vec![],
+    })
+    .unwrap();
+    let parsed: cam_core::sequence::TabPlacementOutput = serde_json::from_str(&legacy).unwrap();
+    assert!(parsed.footprint_mm.is_empty());
 }

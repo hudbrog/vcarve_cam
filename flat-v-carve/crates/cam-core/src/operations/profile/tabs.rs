@@ -3,12 +3,15 @@
 //! where the cutter must stay at or above the tab top, so the full-height
 //! bridge survives every deep rough and finish pass. Rectangular tabs only;
 //! ramped shoulders arrive with their own slice and are diagnosed, never
-//! silently substituted.
+//! silently substituted. Automatic placement excludes the seam neighborhood
+//! occupied by the entry, ramp and leads (plan section 10.3).
 use crate::{
     contours::ResolvedAnchor,
     geometry::{Diagnostic, Point, Result},
     project::{TabPlacement, TabSettings, TabShape},
 };
+
+use super::entries::edge_dir;
 
 fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("profile")
@@ -93,7 +96,10 @@ fn straight_runs(vertices: &[Point]) -> Vec<StraightRun> {
 /// length; `anchor_offset` is the compensation distance of this centerline
 /// from the source contour (cutter radius for a final pass, radius plus the
 /// allowance when roughing) used to match manual anchors; `cutter_radius` is
-/// the cutter disc radius whose dilation protects the bridge.
+/// the cutter disc radius whose dilation protects the bridge. `exclude` are
+/// arc intervals around the seam occupied by entry/lead motion: automatic
+/// placements never bridge there (manual anchors keep precedence and are
+/// checked against the leads by the caller).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_spans(
     settings: &TabSettings,
@@ -105,6 +111,7 @@ pub(crate) fn resolve_spans(
     tab_top_z: f64,
     anchors: &[ResolvedAnchor],
     contour_id: &str,
+    exclude: &[(f64, f64)],
 ) -> Result<Vec<TabSpan>> {
     if settings.shape != TabShape::Rectangular {
         return Err(error(
@@ -120,50 +127,71 @@ pub(crate) fn resolve_spans(
     // cutter disc must clear the protected volume, not just its center.
     let dilation = cutter_radius + margin;
 
+    // Eligible bridge-start windows: bridges fit inside straight runs with
+    // their restricted interval clear of run ends and excluded arcs.
     let mut bridges: Vec<(f64, f64)> = vec![];
     match &settings.placement {
         TabPlacement::Automatic { count, spacing_mm } => {
-            let eligible: Vec<(usize, f64, f64)> = runs
-                .iter()
-                .enumerate()
-                .filter_map(|(index, run)| {
-                    let lo = run.start + dilation;
-                    let hi = run.end - dilation - width;
-                    (hi >= lo).then_some((index, lo, hi)) // bridge [a, a+width] fits
-                })
-                .collect();
+            let mut windows: Vec<(f64, f64)> = vec![];
+            for run in &runs {
+                let mut candidates = vec![(run.start + dilation, run.end - dilation - width)];
+                for &(excluded_start, excluded_end) in exclude {
+                    // A bridge start `a` is invalid when its restricted
+                    // interval [a - dilation, a + width + dilation] reaches
+                    // into the excluded arc.
+                    let mut next = vec![];
+                    for (lo, hi) in candidates {
+                        let cut_lo = excluded_start - width - dilation;
+                        let cut_hi = excluded_end + dilation;
+                        if cut_lo > lo {
+                            let end = hi.min(cut_lo);
+                            if end >= lo - 1e-9 {
+                                next.push((lo, end));
+                            }
+                        }
+                        if cut_hi < hi {
+                            let start = lo.max(cut_hi);
+                            if hi >= start - 1e-9 {
+                                next.push((start, hi));
+                            }
+                        }
+                    }
+                    candidates = next;
+                }
+                windows.extend(candidates.into_iter().filter(|&(lo, hi)| hi >= lo - 1e-9));
+            }
             match count {
                 Some(count) => {
-                    // Even distribution round-robin over eligible runs; a
-                    // run hosts at most `capacity` tabs with at least one
+                    // Even distribution round-robin over eligible windows; a
+                    // window hosts at most `capacity` tabs with at least one
                     // bridge-width gap between them.
                     let gap = spacing_mm.unwrap_or(width);
                     let capacity =
                         |lo: f64, hi: f64| 1 + ((hi - lo) / (width + gap)).floor() as usize;
-                    let total: usize = eligible.iter().map(|(_, lo, hi)| capacity(*lo, *hi)).sum();
+                    let total: usize = windows.iter().map(|&(lo, hi)| capacity(lo, hi)).sum();
                     if total < *count as usize {
                         return Err(error(
                             "PROFILE_TAB_NO_SPACE",
                             format!(
-                                "requested {count} tabs on contour '{contour_id}' but only {total} fit its straight spans; \
-                                 reduce the count, width, or use manual placement",
+                                "requested {count} tabs on contour '{contour_id}' but only {total} fit its straight spans \
+                                 (excluding the entry/lead neighborhood); reduce the count or width, or use manual placement",
                             ),
                         ));
                     }
-                    let mut assigned = vec![0usize; eligible.len()];
+                    let mut assigned = vec![0usize; windows.len()];
                     let mut placed = 0usize;
                     'outer: loop {
-                        for (slot, (_, lo, hi)) in eligible.iter().enumerate() {
+                        for (slot, &(lo, hi)) in windows.iter().enumerate() {
                             if placed >= *count as usize {
                                 break 'outer;
                             }
-                            if assigned[slot] < capacity(*lo, *hi) {
+                            if assigned[slot] < capacity(lo, hi) {
                                 assigned[slot] += 1;
                                 placed += 1;
                             }
                         }
                     }
-                    for (slot, (_, lo, hi)) in eligible.iter().enumerate() {
+                    for (slot, &(lo, hi)) in windows.iter().enumerate() {
                         let k = assigned[slot];
                         for j in 0..k {
                             let start = if k == 1 {
@@ -183,8 +211,8 @@ pub(crate) fn resolve_spans(
                             "automatic tab placement needs a count or a spacing",
                         )
                     })?;
-                    for (_, lo, hi) in &eligible {
-                        let mut start = *lo;
+                    for &(lo, hi) in &windows {
+                        let mut start = lo;
                         while start <= hi + 1e-9 {
                             bridges.push((start, start + width));
                             start += spacing;
@@ -360,4 +388,67 @@ pub(crate) fn depth_pieces(spans: &[TabSpan], pass_z: f64, perimeter: f64) -> Ve
     }
     pieces.retain(|p| p.end > p.start + 1e-12);
     pieces
+}
+
+/// Point on the closed travel-order loop at arc length `arc` (wrapped into
+/// `[0, perimeter)`).
+pub(crate) fn point_at_arc(vertices: &[Point], perimeter: f64, arc: f64) -> Point {
+    let arc = arc.rem_euclid(perimeter.max(1e-12));
+    let n = vertices.len();
+    let mut walked = 0f64;
+    for index in 0..n {
+        let a = vertices[index];
+        let b = vertices[(index + 1) % n];
+        let len = a.distance(b);
+        if arc <= walked + len {
+            let t = if len > 1e-12 {
+                (arc - walked) / len
+            } else {
+                0.
+            };
+            return Point::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+        }
+        walked += len;
+    }
+    vertices[0]
+}
+
+/// Unit travel direction at an arc position: the edge containing it, or the
+/// outgoing edge when the position lands exactly on a vertex.
+pub(crate) fn tangent_at_arc(vertices: &[Point], arc: f64) -> Option<Point> {
+    let n = vertices.len();
+    let mut walked = 0f64;
+    for index in 0..n {
+        let a = vertices[index];
+        let b = vertices[(index + 1) % n];
+        let len = a.distance(b);
+        if arc <= walked + len {
+            return edge_dir(a, b).or_else(|| edge_dir(b, vertices[(index + 2) % n]));
+        }
+        walked += len;
+    }
+    edge_dir(vertices[0], vertices[1 % n])
+}
+
+/// Setup-space quad of a resolved bridge's protected cross-section: the
+/// cutter corridor over the bridge interval, i.e. the material that must
+/// survive every deep pass. Bridges live on straight spans in this release,
+/// so the quad is an exact rectangle; previews draw exactly this geometry
+/// instead of relying on display-grid resolution (plan section 15.3).
+pub(crate) fn span_footprint(
+    vertices: &[Point],
+    perimeter: f64,
+    bridge: (f64, f64),
+    half_width: f64,
+) -> Option<Vec<(f64, f64)>> {
+    let a = point_at_arc(vertices, perimeter, bridge.0);
+    let b = point_at_arc(vertices, perimeter, bridge.1);
+    let dir = edge_dir(a, b)?;
+    let normal = Point::new(-dir.y, dir.x);
+    Some(vec![
+        (a.x + normal.x * half_width, a.y + normal.y * half_width),
+        (b.x + normal.x * half_width, b.y + normal.y * half_width),
+        (b.x - normal.x * half_width, b.y - normal.y * half_width),
+        (a.x - normal.x * half_width, a.y - normal.y * half_width),
+    ])
 }

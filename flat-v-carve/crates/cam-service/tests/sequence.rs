@@ -315,6 +315,7 @@ fn capabilities_advertise_only_implemented_features() {
     assert_eq!(capabilities["features"]["openContours"], json!(false));
     assert_eq!(capabilities["features"]["knifeReplay"], json!(false));
     assert_eq!(capabilities["features"]["legacyJobMigration"], json!(true));
+    assert_eq!(capabilities["features"]["profileEntries"], json!(true));
 }
 
 #[test]
@@ -448,6 +449,140 @@ fn profile_workflow_commands_plan_page_and_catalogue_the_mixed_fixture() {
         }
     }
     assert_eq!(tool_groups, vec!["1", "1", "2", "1"]);
+}
+
+/// The E3 entries slice through the whole service path: the mixed fixture's
+/// profile grows a ramp entry, tangent leads, tabs and finishing through the
+/// strict UpdateSettings command, plans completely with lead/ramp motions
+/// and drawable tab footprints, and exports through the readback.
+#[test]
+fn profile_entries_plan_and_export_through_the_service() {
+    let job = mixed_fixture_job();
+    // The catalogue supplies the anchor fingerprint the start binds to.
+    let catalogue = execute(SequenceCommand::Contours { job: job.clone() }).unwrap();
+    let fingerprint = catalogue["contours"][0]["sourceFingerprint"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let settings = json!({
+        "kind": "profile",
+        "settings": {
+            "contours": [
+                {"contour_id": "pocket-0-outer", "side": "outside", "traversal": null}
+            ],
+            "assignment": {
+                "tool_id": "endmill", "spindle_rpm": 10000,
+                "spindle_direction": "clockwise",
+                "cutting_feed_mm_min": 350, "plunge_feed_mm_min": 100,
+                "max_stepdown_mm": 8
+            },
+            "top": {"reference": {"kind": "face_result", "operation_id": "face-1"}, "offset_mm": 0},
+            "bottom": {"reference": {"kind": "stock_bottom"}, "offset_mm": -0.2},
+            "stepdown_mm": 3, "through_cut_allowance_mm": 0.2,
+            "direction": "climb",
+            "start": {
+                "kind": "anchor", "contour_id": "pocket-0-outer",
+                "source_geometry_fingerprint": fingerprint,
+                "fraction_along_source_contour": 0.15
+            },
+            "entry": {"kind": "ramp", "max_angle_deg": 30, "feed_mm_min": 140},
+            "lead_in": {"kind": "tangent_line", "length_mm": 3, "feed_mm_min": 180},
+            "lead_out": {"kind": "tangent_line", "length_mm": 2, "feed_mm_min": 200},
+            "tabs": {
+                "height_mm": 2, "width_mm": 5, "shape": "rectangular",
+                "placement": {"kind": "automatic", "count": 2, "spacing_mm": null}
+            },
+            "finish": {"enabled": true, "radial_allowance_mm": 0.5, "feed_mm_min": 300}
+        }
+    });
+    let updated = execute(SequenceCommand::UpdateSettings {
+        job: job.clone(),
+        operation_id: "profile-1".into(),
+        settings,
+    })
+    .unwrap();
+    let job = job_of(&updated);
+
+    let plan = execute(SequenceCommand::Plan {
+        job: job.clone(),
+        scope: PlanScope::AllEnabled,
+    })
+    .unwrap();
+    let summary = &plan["summary"];
+    for op in summary["operations"].as_array().unwrap() {
+        assert_eq!(op["generationStatus"], json!("complete"), "{op}");
+    }
+    assert_eq!(summary["basicChecks"]["status"], json!("passed"));
+    let roles: Vec<&str> = summary["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles.last(), Some(&"profile_finish"));
+
+    // Paging surfaces the E3 motion purposes: sloped ramp entries, lead-in
+    // and lead-out moves, and tab transitions protecting the bridges.
+    let total = summary["motionCount"].as_u64().unwrap() as usize;
+    let mut purposes = std::collections::BTreeSet::new();
+    let mut offset = 0;
+    while offset < total {
+        let page = execute(SequenceCommand::Motions {
+            job: job.clone(),
+            scope: PlanScope::AllEnabled,
+            offset,
+        })
+        .unwrap();
+        let motions = page["motions"]["motions"].as_array().unwrap();
+        for motion in motions {
+            purposes.insert(motion["purpose"].as_str().unwrap().to_string());
+        }
+        offset += motions.len();
+    }
+    for expected in [
+        "entry",
+        "lead_in",
+        "lead_out",
+        "tab_transition",
+        "rough",
+        "finish",
+    ] {
+        assert!(
+            purposes.contains(expected),
+            "missing {expected}: {purposes:?}"
+        );
+    }
+
+    // Resolved tab bridges carry exact drawable footprints for overlays.
+    let profile_output = summary["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|op| op["operationId"] == json!("profile-1"))
+        .unwrap();
+    let placements = profile_output["namedOutputs"][0]["tabPlacements"]
+        .as_array()
+        .unwrap();
+    assert_eq!(placements.len(), 2);
+    for placement in placements {
+        let footprint = placement["footprintMm"].as_array().unwrap();
+        assert_eq!(footprint.len(), 4, "a drawable bridge quad");
+        assert_eq!(placement["topZMm"], json!(-6.0));
+    }
+
+    let export = execute(SequenceCommand::Export {
+        job,
+        profile: sequence_profile(),
+    })
+    .unwrap();
+    assert_eq!(export["report"]["basicChecks"]["status"], json!("passed"));
+    let gcode = export["program"]["gcode"].as_str().unwrap();
+    for feed in ["F140", "F180", "F200", "F300"] {
+        assert!(
+            gcode.contains(feed),
+            "feed {feed} survives into the program"
+        );
+    }
 }
 
 /// Added face/profile operations bind an explicit tool and report every
@@ -651,7 +786,7 @@ fn mixed_fixture_job() -> Value {
                 })),
                 capabilities: ToolCapabilities {
                     plunge_capable: Some(true),
-                    ramp_capable: Some(false),
+                    ramp_capable: Some(true),
                 },
             },
             JobTool {

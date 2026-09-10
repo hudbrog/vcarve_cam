@@ -320,6 +320,22 @@ export function restoreCheckpoint(state: SequenceField, checkpoint: StockCheckpo
   state.removedByOperationMm3 = checkpoint.removedByOperationMm3.slice();
 }
 
+/** Remaining-material depth probe at a setup-space point (plan section
+ * 15.3): adequate to inspect tab heights without trusting the display grid,
+ * so the resolution is reported alongside the value. Points outside the
+ * physical stock return null. */
+export function probeDepth(
+  state: SequenceField,
+  xMm: number,
+  yMm: number,
+): { depthMm: number; cellMm: number } | null {
+  const { field } = state;
+  const col = Math.floor((xMm - field.x0Mm) / field.cellMm);
+  const row = Math.floor((yMm - field.y0Mm) / field.cellMm);
+  if (col < 0 || row < 0 || col >= field.cols || row >= field.rows) return null;
+  return { depthMm: depthAt(field, col, row), cellMm: field.cellMm };
+}
+
 /** Display color mapping for the top-down stock view. Returns RGBA bytes. */
 export interface StockViewColors {
   /** operation index + 1 → [r, g, b] for operation coloring mode */
