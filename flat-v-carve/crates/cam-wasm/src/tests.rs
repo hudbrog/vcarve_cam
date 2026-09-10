@@ -259,4 +259,37 @@ fn sequence_commands_round_trip_through_the_worker_envelope() {
     let summary = &reply["ok"]["data"]["summary"];
     assert_eq!(summary["basicChecks"]["status"], json!("passed"));
     assert!(summary["motionCount"].as_u64().unwrap() > 0);
+
+    // Motion paging and the contour catalogue flow through the worker
+    // envelope like every other sequence command (D3 timeline/profile UI).
+    let total = summary["motionCount"].as_u64().unwrap();
+    let motions = json!({
+        "apiVersion": "ui-8", "requestId": "seq-5", "revision": 5,
+        "command": {"operation": "motions", "job": document["job"],
+            "scope": {"kind": "allEnabled"}, "offset": 0}
+    });
+    let reply = parse(&super::sequence(&motions.to_string(), &instance()));
+    let page = &reply["ok"]["data"]["motions"];
+    assert_eq!(page["offset"], json!(0));
+    assert_eq!(page["total"], json!(total));
+    assert!(!page["motions"].as_array().unwrap().is_empty());
+    let beyond = json!({
+        "apiVersion": "ui-8", "requestId": "seq-6", "revision": 6,
+        "command": {"operation": "motions", "job": document["job"],
+            "scope": {"kind": "allEnabled"}, "offset": total + 1}
+    });
+    let reply = parse(&super::sequence(&beyond.to_string(), &instance()));
+    assert_eq!(
+        reply["ok"]["diagnostic"]["code"],
+        json!("SEQUENCE_MOTION_OFFSET")
+    );
+
+    let contours = json!({
+        "apiVersion": "ui-8", "requestId": "seq-7", "revision": 7,
+        "command": {"operation": "contours", "job": document["job"]}
+    });
+    let reply = parse(&super::sequence(&contours.to_string(), &instance()));
+    let catalogue = reply["ok"]["data"]["contours"].as_array().unwrap();
+    assert!(!catalogue.is_empty());
+    assert!(catalogue[0]["id"].as_str().unwrap().ends_with("-outer"));
 }

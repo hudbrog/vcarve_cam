@@ -341,3 +341,340 @@ fn fingerprints_track_document_content_not_identity() {
     assert_ne!(fingerprint(&job), fingerprint(&renamed_job));
     assert_eq!(fingerprint(&job), fingerprint(&job.clone()));
 }
+
+/// The D3 mixed fixture through the ui-8 projection: face -> carve (rough +
+/// finish) -> profile with the recurring endmill, plus the contour catalogue
+/// and motion paging the stock/timeline display consumes.
+#[test]
+fn profile_workflow_commands_plan_page_and_catalogue_the_mixed_fixture() {
+    let job = mixed_fixture_job();
+    let scope = PlanScope::AllEnabled;
+    let plan = execute(SequenceCommand::Plan {
+        job: job.clone(),
+        scope: scope.clone(),
+    })
+    .unwrap();
+    let summary = &plan["summary"];
+    let operations: Vec<&str> = summary["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|op| op["operationId"].as_str().unwrap())
+        .collect();
+    assert_eq!(operations, vec!["face-1", "carve-1", "profile-1"]);
+    for op in summary["operations"].as_array().unwrap() {
+        assert_eq!(op["generationStatus"], json!("complete"), "{op}");
+    }
+    let stages = summary["stages"].as_array().unwrap();
+    let stage_tools: Vec<&str> = stages
+        .iter()
+        .map(|s| s["toolId"].as_str().unwrap())
+        .collect();
+    assert_eq!(stage_tools, vec!["endmill", "endmill", "vbit", "endmill"]);
+    let roles: Vec<&str> = stages.iter().map(|s| s["role"].as_str().unwrap()).collect();
+    assert_eq!(
+        roles,
+        vec!["face", "vcarve_rough", "vcarve_finish", "profile_rough"]
+    );
+    assert_eq!(summary["basicChecks"]["status"], json!("passed"));
+
+    // Motion paging: pages tile the complete ordered stream, offsets beyond
+    // the end are located errors, and page contents are motion-identical.
+    let total = summary["motionCount"].as_u64().unwrap() as usize;
+    let first = execute(SequenceCommand::Motions {
+        job: job.clone(),
+        scope: scope.clone(),
+        offset: 0,
+    })
+    .unwrap();
+    let page_size = first["motions"]["motions"].as_array().unwrap().len();
+    assert!(page_size > 0 && page_size <= total);
+    let mut collected: Vec<Value> = first["motions"]["motions"].as_array().unwrap().clone();
+    let mut offset = page_size;
+    while offset < total {
+        let page = execute(SequenceCommand::Motions {
+            job: job.clone(),
+            scope: scope.clone(),
+            offset,
+        })
+        .unwrap();
+        assert_eq!(page["motions"]["offset"], json!(offset));
+        collected.extend(
+            page["motions"]["motions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+        );
+        offset += page["motions"]["motions"].as_array().unwrap().len();
+    }
+    assert_eq!(collected.len(), total, "paging covers every motion");
+    assert_eq!(
+        collected[0]["id"],
+        json!(0),
+        "global motion ids stay dense across pages"
+    );
+    let error = execute(SequenceCommand::Motions {
+        job: job.clone(),
+        scope: scope.clone(),
+        offset: total + 1,
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "SEQUENCE_MOTION_OFFSET");
+
+    // The contour catalogue projects stable IDs with roles and suggestions.
+    let catalogue = execute(SequenceCommand::Contours { job: job.clone() }).unwrap();
+    let contours = catalogue["contours"].as_array().unwrap();
+    assert_eq!(contours.len(), 1);
+    assert_eq!(contours[0]["id"], json!("pocket-0-outer"));
+    assert_eq!(contours[0]["role"], json!("outer"));
+    assert_eq!(contours[0]["suggestedSide"], json!("outside"));
+    assert_eq!(contours[0]["parentContourId"], Value::Null);
+
+    // The ordered export of the mixed fixture passes through the service.
+    let export = execute(SequenceCommand::Export {
+        job: job.clone(),
+        profile: sequence_profile(),
+    })
+    .unwrap();
+    assert_eq!(export["report"]["basicChecks"]["status"], json!("passed"));
+    let gcode = export["program"]["gcode"].as_str().unwrap();
+    let mut tool_groups = vec![];
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix('T')
+            && let Some(number) = rest.strip_suffix(" M6")
+        {
+            tool_groups.push(number.to_string());
+        }
+    }
+    assert_eq!(tool_groups, vec!["1", "1", "2", "1"]);
+}
+
+/// Added face/profile operations bind an explicit tool and report every
+/// unset machining value through missing-field resolution.
+#[test]
+fn add_operation_edits_create_incomplete_face_and_profile_operations() {
+    let document = opened();
+    let job = job_of(&document);
+    let added = execute(SequenceCommand::Edit {
+        job: job.clone(),
+        edits: vec![OperationEdit::Add {
+            id: "profile-9".into(),
+            name: "Cutout".into(),
+            kind: cam_service::sequence::AddOperationKind::Profile,
+            tool_id: "endmill".into(),
+        }],
+    })
+    .unwrap();
+    assert_eq!(added["operations"].as_array().unwrap().len(), 2);
+    assert_eq!(added["operations"][1]["kind"], json!("profile"));
+    assert_eq!(added["operations"][1]["toolIds"], json!(["endmill"]));
+    let missing = added["missingByOperation"]["profile-9"].as_array().unwrap();
+    assert!(missing.len() >= 5, "unset machining values are reported");
+    assert!(
+        missing
+            .iter()
+            .any(|entry| entry["fieldPath"].as_str().unwrap().contains("stepdown_mm"))
+    );
+    // Colliding IDs and unknown tools are located errors.
+    let error = execute(SequenceCommand::Edit {
+        job: job.clone(),
+        edits: vec![OperationEdit::Add {
+            id: "flat-v-carve".into(),
+            name: "Collision".into(),
+            kind: cam_service::sequence::AddOperationKind::Face,
+            tool_id: "endmill".into(),
+        }],
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "SEQUENCE_OPERATION_ID");
+    let error = execute(SequenceCommand::Edit {
+        job,
+        edits: vec![OperationEdit::Add {
+            id: "face-9".into(),
+            name: "Face".into(),
+            kind: cam_service::sequence::AddOperationKind::Face,
+            tool_id: "ghost".into(),
+        }],
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "PROJECT_TOOL_REFERENCE");
+}
+
+/// Face(T1) -> combined carve (T1 rough, T2 finish) -> profile (T1) on
+/// 40x30x8 stock with one rectangular pocket component.
+fn mixed_fixture_job() -> Value {
+    use cam_core::job::{PlanningTolerances, SourceSnapshot};
+    use cam_core::project::*;
+    let milling = |tool: &str, feed: f64, stepover: f64| MillingAssignment {
+        tool_id: tool.into(),
+        spindle_rpm: Some(10_000.),
+        spindle_direction: Some(SpindleDirection::Clockwise),
+        cutting_feed_mm_min: Some(feed),
+        plunge_feed_mm_min: Some(100.),
+        max_stepdown_mm: Some(8.),
+        stepover_mm: Some(stepover),
+    };
+    let stock_top = || HeightRef {
+        reference: HeightReference::StockTop,
+        offset_mm: 0.,
+    };
+    let face = Operation {
+        id: "face-1".into(),
+        name: "Face".into(),
+        enabled: true,
+        settings: OperationSettings::Face(FaceSettings {
+            area: FaceArea::Rectangle {
+                rect: RectXY {
+                    min_x_mm: 0.,
+                    min_y_mm: 0.,
+                    width_mm: 40.,
+                    length_mm: 30.,
+                },
+            },
+            margins: FaceMargins::default(),
+            entry_overrun_mm: Some(1.),
+            exit_overrun_mm: Some(1.),
+            top: stock_top(),
+            bottom: HeightRef {
+                reference: HeightReference::StockTop,
+                offset_mm: -0.5,
+            },
+            stepdown_mm: Some(0.5),
+            stepover_mm: Some(3.),
+            pass_angle_deg: Some(0.),
+            pattern: FacePattern::ZigZag,
+            assignment: milling("endmill", 300., 3.),
+        }),
+    };
+    let carve = Operation {
+        id: "carve-1".into(),
+        name: "Carve".into(),
+        enabled: true,
+        settings: OperationSettings::FlatVcarve(FlatVcarveSettings {
+            component_ids: vec!["pocket::0".into()],
+            mode: FlatVcarveMode::Combined,
+            top: HeightRef {
+                reference: HeightReference::FaceResult {
+                    operation_id: "face-1".into(),
+                },
+                offset_mm: 0.,
+            },
+            endmill: milling("endmill", 300., 1.5),
+            vbit: milling("vbit", 250., 0.5),
+            max_depth_mm: Some(2.),
+            wall_allowance_mm: Some(0.5),
+            max_floor_ridge_mm: Some(0.),
+            max_detail_residual_mm: Some(0.),
+            rough: Some(FlatVcarveRoughSettings {
+                strategy: cam_core::pocket::ClearingStrategy::DepthDependent,
+                entry: cam_core::pocket::EntryStrategy::Plunge,
+                max_layers: 16,
+                max_loops_per_layer: 64,
+                max_motions: 10_000,
+            }),
+            finish: Some(cam_core::vcarve::VBitPlanningSettings {
+                max_paths: 4096,
+                max_motions: 100_000,
+                max_curve_segments: 20_000,
+                max_depth_passes: 8,
+                max_cleanup_iterations: 2,
+                quality_sample_spacing_mm: 0.5,
+                max_quality_samples: 20_000,
+                reachability_max_cells: 4096,
+                stock_slices: 4,
+            }),
+        }),
+    };
+    let profile = Operation {
+        id: "profile-1".into(),
+        name: "Profile".into(),
+        enabled: true,
+        settings: OperationSettings::Profile(ProfileSettings {
+            contours: vec![ProfileContour {
+                contour_id: "pocket-0-outer".into(),
+                side: ContourSide::Outside,
+                traversal: None,
+            }],
+            assignment: milling("endmill", 350., 1.5),
+            top: HeightRef {
+                reference: HeightReference::FaceResult {
+                    operation_id: "face-1".into(),
+                },
+                offset_mm: 0.,
+            },
+            bottom: HeightRef {
+                reference: HeightReference::StockBottom,
+                offset_mm: -0.2,
+            },
+            stepdown_mm: Some(3.),
+            through_cut_allowance_mm: Some(0.2),
+            direction: Some(CutDirection::Climb),
+            order: Default::default(),
+            start: Default::default(),
+            finish: Default::default(),
+            entry: Default::default(),
+            lead_in: Default::default(),
+            lead_out: Default::default(),
+            tabs: None,
+        }),
+    };
+    let job = CamJob {
+        schema_version: 4,
+        name: "Mixed".into(),
+        source: Some(SourceSnapshot {
+            filename: "art.svg".into(),
+            svg: r#"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><path id="pocket" fill-rule="evenodd" d="M5 5h30v20h-30z"/></svg>"#.into(),
+        }),
+        import: Default::default(),
+        setup: SetupSettings {
+            stock: StockSetup {
+                thickness_mm: Some(8.),
+                xy: Some(RectXY {
+                    min_x_mm: 0.,
+                    min_y_mm: 0.,
+                    width_mm: 40.,
+                    length_mm: 30.,
+                }),
+            },
+            work_zero: Default::default(),
+            clearance_above_stock_mm: Some(5.),
+            start_xy_mm: Some(cam_core::geometry::Point::new(0., 0.)),
+        },
+        tools: vec![
+            JobTool {
+                id: "endmill".into(),
+                name: "4mm endmill".into(),
+                geometry: Some(ToolGeometry::Endmill(EndmillGeometry {
+                    diameter_mm: 4.,
+                    cutting_length_mm: 12.,
+                })),
+                capabilities: ToolCapabilities {
+                    plunge_capable: Some(true),
+                    ramp_capable: Some(false),
+                },
+            },
+            JobTool {
+                id: "vbit".into(),
+                name: "90 degree V-bit".into(),
+                geometry: Some(ToolGeometry::Vbit(cam_core::model::VBitSpec {
+                    included_angle_deg: 90.,
+                    tip_diameter_mm: 1.,
+                    max_cutting_diameter_mm: 12.,
+                    cutting_height_mm: 5.,
+                })),
+                capabilities: ToolCapabilities {
+                    plunge_capable: Some(true),
+                    ramp_capable: None,
+                },
+            },
+        ],
+        operations: vec![face, carve, profile],
+        tolerances: PlanningTolerances {
+            motion_tolerance_mm: Some(0.01),
+            verification_tolerance_mm: Some(0.05),
+        },
+        legacy_machine_profile: None,
+    };
+    serde_json::to_value(job).unwrap()
+}

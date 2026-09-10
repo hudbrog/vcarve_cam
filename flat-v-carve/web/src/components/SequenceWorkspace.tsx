@@ -1,12 +1,14 @@
 // Sequence workspace (ui-8): one ordered operation list over the canonical
-// schema-4 sequenceDoc, with engine-side editing, planning and export. This is
-// the A4 basic milestone; stock simulation of sequence plans arrives with the
-// timeline slice and stays available through the legacy workflow meanwhile.
+// schema-4 sequenceDoc, with engine-side editing (including face/profile
+// creation), planning, export and the stock/timeline display of sequence
+// plans.
 import { useEffect, useRef, useState } from 'react';
 import type {
   ExportResult, OperationEdit, PlanResult, PlanScope, SequenceCapabilities, SequenceDocument, SequenceService,
 } from '../contracts/sequence';
 import { FaceSettingsEditor } from './FaceSettingsEditor';
+import { ProfileSettingsEditor } from './ProfileSettingsEditor';
+import { SequenceTimeline } from './SequenceTimeline';
 
 const recoveryKey = 'flat-v-carve:sequence:v1';
 const profileKey = 'flat-v-carve:sequence:profile';
@@ -119,6 +121,45 @@ export function SequenceWorkspace({ service, onExit, initialDocument }: { servic
 
   const missingCount = (id: string) => sequenceDoc?.missingByOperation[id]?.length ?? 0;
 
+  // Milling tools of the raw job (display + new-operation binding only;
+  // edits always go through the engine).
+  const jobTools = (() => {
+    const tools = (sequenceDoc?.job as { tools?: { id: string; geometry?: { kind: string } | null }[] } | null)?.tools ?? [];
+    return tools.filter(tool => tool.geometry?.kind === 'endmill' || tool.geometry?.kind === 'vbit');
+  })();
+  const [addKind, setAddKind] = useState<'face' | 'profile'>('profile');
+  const [addId, setAddId] = useState('profile-1');
+  const [addTool, setAddTool] = useState('');
+  const nextTool = addTool || jobTools[0]?.id || '';
+
+  function addOperation() {
+    if (!sequenceDoc || !nextTool) return;
+    const used = new Set(sequenceDoc.operations.map(op => op.id));
+    let id = addId.trim();
+    let suffix = 2;
+    while (used.has(id)) id = `${addId.trim()}-${suffix++}`;
+    void edit(
+      [{ edit: 'add', id, name: addKind === 'face' ? 'Face' : 'Profile', kind: addKind, toolId: nextTool }],
+      `${addKind} operation '${id}' added with tool '${nextTool}'; set its machining values next.`,
+    );
+  }
+
+  // Work-zero point in setup coordinates (marker only): setup origin, custom
+  // points and stock anchors resolve against the physical rectangle.
+  const workZero = (() => {
+    if (!sequenceDoc) return null;
+    const xy = sequenceDoc.setup.workZero.xy as { kind?: string; x_mm?: number; y_mm?: number; x_fraction?: number; y_fraction?: number };
+    const rect = sequenceDoc.setup.stock.xy;
+    if (xy?.kind === 'custom_point') return { x: xy.x_mm ?? 0, y: xy.y_mm ?? 0 };
+    if (xy?.kind === 'stock_anchor' && rect) {
+      return {
+        x: rect.minXmm + (xy.x_fraction ?? 0) * rect.widthMm,
+        y: rect.minYmm + (xy.y_fraction ?? 0) * rect.lengthMm,
+      };
+    }
+    return { x: 0, y: 0 };
+  })();
+
   return <div className="app-shell sequence-shell">
     <header className="app-bar">
       <a className="brand" href="#" onClick={event => { event.preventDefault(); onExit(); }}><span className="brand-mark">V</span><span>SEQUENCE<small>SCHEMA-4 WORKSPACE</small></span></a>
@@ -164,6 +205,26 @@ export function SequenceWorkspace({ service, onExit, initialDocument }: { servic
             </div>
           </li>)}
         </ul>}
+        {sequenceDoc && <div className="sequence-add-row">
+          <label className="sequence-field">
+            <span>Add operation</span>
+            <select aria-label="Operation kind to add" value={addKind} onChange={event => setAddKind(event.target.value === 'face' ? 'face' : 'profile')}>
+              <option value="profile">Profile</option>
+              <option value="face">Face</option>
+            </select>
+          </label>
+          <label className="sequence-field">
+            <span>ID</span>
+            <input value={addId} aria-label="New operation ID" onChange={event => setAddId(event.target.value)} />
+          </label>
+          <label className="sequence-field">
+            <span>Tool</span>
+            <select aria-label="Tool for the new operation" value={nextTool} onChange={event => setAddTool(event.target.value)}>
+              {jobTools.map(tool => <option key={tool.id} value={tool.id}>{tool.id}</option>)}
+            </select>
+          </label>
+          <button disabled={!!busy || !nextTool || !addId.trim()} onClick={addOperation}>Add</button>
+        </div>}
         {(() => {
           // Face settings editor for the selected face operation. The job
           // document is read for display only; edits go through the engine.
@@ -180,6 +241,30 @@ export function SequenceWorkspace({ service, onExit, initialDocument }: { servic
             job={sequenceDoc.job}
             operationId={selected}
             settings={settings as never}
+            busy={!!busy}
+            onApplied={(document, message) => { setDocument(document); setNotice(message); }}
+          />;
+        })()}
+        {(() => {
+          // Profile settings editor for the selected profile operation, with
+          // the engine's contour catalogue and preceding faces as tops.
+          if (!sequenceDoc || !selected) return null;
+          const operation = sequenceDoc.operations.find(op => op.id === selected);
+          if (!operation || operation.kind !== 'profile') return null;
+          const raw = sequenceDoc.job as { operations?: { id: string; settings?: { settings?: unknown } }[] };
+          const settings = raw.operations?.find(op => op.id === selected)?.settings?.settings as
+            | { contours: { contour_id: string; side: string; traversal?: string | null }[]; assignment: Record<string, unknown>; top: unknown; bottom: unknown; [key: string]: unknown }
+            | undefined;
+          if (!settings) return null;
+          const faceOperations = sequenceDoc.operations
+            .filter(op => op.kind === 'face' && op.enabled)
+            .map(op => ({ id: op.id }));
+          return <ProfileSettingsEditor
+            service={service}
+            job={sequenceDoc.job}
+            operationId={selected}
+            settings={settings}
+            faceOperations={faceOperations}
             busy={!!busy}
             onApplied={(document, message) => { setDocument(document); setNotice(message); }}
           />;
@@ -216,6 +301,20 @@ export function SequenceWorkspace({ service, onExit, initialDocument }: { servic
           <button className="primary" disabled={!profile || busy === 'export'} onClick={() => sequenceDoc && profile && run('export', async signal => setExportResult(await service.export(sequenceDoc.job, profile, signal)), 'Export verified by numeric readback.')}>{busy === 'export' ? 'Exporting…' : 'Export program'}</button>
           {plan.summary.diagnostics.length > 0 && <ul className="sequence-diagnostics">{plan.summary.diagnostics.map((diagnostic, index) => <li key={index}><strong>{diagnostic.code}</strong> {diagnostic.message}</li>)}</ul>}
         </div>}
+        {plan && sequenceDoc?.setup.stock.xy && <SequenceTimeline
+          service={service}
+          job={sequenceDoc.job}
+          planSummary={plan.summary}
+          stock={{
+            x0: sequenceDoc.setup.stock.xy.minXmm,
+            y0: sequenceDoc.setup.stock.xy.minYmm,
+            x1: sequenceDoc.setup.stock.xy.minXmm + sequenceDoc.setup.stock.xy.widthMm,
+            y1: sequenceDoc.setup.stock.xy.minYmm + sequenceDoc.setup.stock.xy.lengthMm,
+            thicknessMm: sequenceDoc.setup.stock.thicknessMm ?? 1,
+          }}
+          workZero={workZero}
+        />}
+        {plan && !sequenceDoc?.setup.stock.xy && <p className="hint">Stock & timeline display needs physical stock XY dimensions; the job still plans and exports without them.</p>}
         {exportResult && <div className="sequence-export">
           <p>{exportResult.program.filename} · {exportResult.report.motionCount} motions · {exportResult.report.outputDecimalPlaces} places · work-zero offset {exportResult.report.machineOffsetMm.map(v => v.toFixed(3)).join(', ')} mm</p>
           <button onClick={downloadProgram}>Download program</button>

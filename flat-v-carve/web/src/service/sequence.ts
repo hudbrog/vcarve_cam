@@ -4,7 +4,8 @@
 import { z } from 'zod';
 import {
   sequenceApiVersion, sequenceCapabilitiesSchema, sequenceDocumentSchema, sequenceEnvelopeSchema,
-  exportResultSchema, planResultSchema, type SequenceService,
+  contourCatalogueResultSchema, exportResultSchema, motionPageResultSchema, planResultSchema,
+  type SequenceService,
 } from '../contracts/sequence';
 import type { WasmConnect, WasmTransport } from './wasm';
 import type { WasmInit, WasmReply } from './wasm/protocol';
@@ -37,6 +38,8 @@ function client(dispatch: Dispatcher): SequenceService {
     applyProfile: (job, profile, signal) => call(sequenceDocumentSchema, { operation: "applyProfile", job, profile }, signal),
     updateSettings: (job, operationId, settings, signal) => call(sequenceDocumentSchema, { operation: "updateSettings", job, operationId, settings }, signal),
     plan: (job, scope, signal) => call(planResultSchema, { operation: 'plan', job, scope }, signal),
+    planMotions: (job, scope, offset, signal) => call(motionPageResultSchema, { operation: 'motions', job, scope, offset }, signal),
+    contours: (job, signal) => call(contourCatalogueResultSchema, { operation: 'contours', job }, signal),
     export: (job, profile, signal) => call(exportResultSchema, { operation: 'export', job, profile }, signal),
   };
 }

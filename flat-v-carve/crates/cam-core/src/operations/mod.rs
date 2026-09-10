@@ -61,15 +61,9 @@ pub(crate) fn plan_operation(
         crate::project::OperationSettings::Face(settings) => {
             face::plan(job, &operation.id, settings)
         }
-        crate::project::OperationSettings::Profile(settings) => profile::plan(
-            job,
-            &operation.id,
-            settings,
-            &published_faces
-                .iter()
-                .map(|(id, face)| (id.clone(), face.z_mm))
-                .collect(),
-        ),
+        crate::project::OperationSettings::Profile(settings) => {
+            profile::plan(job, &operation.id, settings, published_faces)
+        }
         crate::project::OperationSettings::DragKnife(_) => Err(Diagnostic::new(
             "OPERATION_PLANNER_UNAVAILABLE",
             "operation planner ships in a later slice",

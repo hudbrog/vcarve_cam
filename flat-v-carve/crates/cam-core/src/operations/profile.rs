@@ -7,10 +7,10 @@ use crate::{
     contours::{ContourCatalogue, ContourRole},
     geometry::{Diagnostic, Grid, Point, Result},
     motion::Position,
-    operations::LocatedDiagnostic,
+    operations::{LocatedDiagnostic, PublishedFace},
     project::{
-        CamJob, ContourOrder, ContourSide, CutDirection, MillingAssignment, ProfileEntry,
-        ProfileSettings, StartSelection, ToolGeometry, TraversalDirection,
+        CamJob, ContourOrder, ContourSide, CutDirection, HeightReference, MillingAssignment,
+        ProfileEntry, ProfileSettings, StartSelection, ToolGeometry, TraversalDirection,
     },
     sequence::{
         CoolantIntent, GenerationStatus, LocalStage, PathControlIntent, PlanIssue,
@@ -318,7 +318,7 @@ pub(crate) fn plan(
     job: &CamJob,
     operation_id: &str,
     settings: &ProfileSettings,
-    published_planes: &BTreeMap<String, f64>,
+    published_faces: &BTreeMap<String, PublishedFace>,
 ) -> Result<PlannedOperation> {
     let missing = missing_fields(job, operation_id, settings);
     if !missing.is_empty() {
@@ -388,7 +388,44 @@ pub(crate) fn plan(
     };
 
     let radius = cutter_radius(job, &settings.assignment)?;
-    let heights = resolve_heights(job, 0, &settings.top, &settings.bottom, published_planes)?;
+    // A top height referencing a face plane admits only geometry inside that
+    // face's established planar coverage (plan section 6.3). The check uses
+    // the cutter corridor — source contour dilated by the cutter radius —
+    // because the compensated centerline never leaves it on any side.
+    if let HeightReference::FaceResult { operation_id: face } = &settings.top.reference {
+        let Some(plane) = published_faces.get(face) else {
+            return Ok(incomplete(vec![issue(
+                "HEIGHT_REFERENCE_UNRESOLVED",
+                format!("the face plane of operation '{face}' is not established"),
+                operation_id,
+            )]));
+        };
+        let reserve = radius + job.tolerances.motion_tolerance_mm.expect("checked above");
+        let covered = plane.covered;
+        for contour in &selected {
+            for vertex in &contour.vertices {
+                if vertex.x < covered.min_x_mm - reserve
+                    || vertex.y < covered.min_y_mm - reserve
+                    || vertex.x > covered.min_x_mm + covered.width_mm + reserve
+                    || vertex.y > covered.min_y_mm + covered.length_mm + reserve
+                {
+                    return Ok(incomplete(vec![issue(
+                        "SURFACE_REFERENCE_OUTSIDE_COVERAGE",
+                        format!(
+                            "contour '{}' lies outside the planar coverage established by face operation '{face}'",
+                            contour.id
+                        ),
+                        operation_id,
+                    )]));
+                }
+            }
+        }
+    }
+    let published_planes: BTreeMap<String, f64> = published_faces
+        .iter()
+        .map(|(id, face)| (id.clone(), face.z_mm))
+        .collect();
+    let heights = resolve_heights(job, 0, &settings.top, &settings.bottom, &published_planes)?;
     // Through cutting is permission, not a moved bottom (plan section 6.4).
     let allowance = settings.through_cut_allowance_mm.unwrap_or(0.);
     if let Some(thickness) = job.setup.stock.thickness_mm {

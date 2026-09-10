@@ -54,6 +54,16 @@ pub enum SequenceCommand {
     },
     /// Plan the enabled operations, all of them or a prefix.
     Plan { job: Value, scope: PlanScope },
+    /// One page of the complete ordered motion stream of a scope (plan
+    /// section 15.2: a bounded preview page is not a complete simulation).
+    Motions {
+        job: Value,
+        scope: PlanScope,
+        offset: usize,
+    },
+    /// The contour catalogue of the job's SVG source (plan section 7.1) for
+    /// explicit per-contour selection in profile editing.
+    Contours { job: Value },
     /// Export the plan with a schema-2 sequence profile.
     Export { job: Value, profile: Value },
     /// Advertised operation kinds and optional features.
@@ -84,11 +94,41 @@ pub enum PlanScope {
     deny_unknown_fields
 )]
 pub enum OperationEdit {
-    Rename { id: String, name: String },
-    SetEnabled { id: String, enabled: bool },
-    Move { id: String, to_index: usize },
-    Delete { id: String },
-    Duplicate { id: String, new_id: String },
+    Rename {
+        id: String,
+        name: String,
+    },
+    SetEnabled {
+        id: String,
+        enabled: bool,
+    },
+    Move {
+        id: String,
+        to_index: usize,
+    },
+    Delete {
+        id: String,
+    },
+    Duplicate {
+        id: String,
+        new_id: String,
+    },
+    /// Append a face or profile operation with default settings bound to an
+    /// explicit existing tool. Nothing is invented: every machining value the
+    /// defaults leave unset is reported through missing-field resolution.
+    Add {
+        id: String,
+        name: String,
+        kind: AddOperationKind,
+        tool_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AddOperationKind {
+    Face,
+    Profile,
 }
 
 /// Document receipt for canonical jobs, deliberately distinct from planner
@@ -172,9 +212,21 @@ pub fn missing_by_operation(job: &CamJob) -> serde_json::Map<String, Value> {
                     })
                     .collect()
             }
-            // Profile and knife planners ships in later slices; their settings
-            // are reported as a whole until each slice defines resolution.
-            OperationSettings::Profile(_) | OperationSettings::DragKnife(_) => vec![json!({
+            // The knife planner ships in a later slice; its settings are
+            // reported as a whole until that slice defines resolution.
+            OperationSettings::Profile(settings) => {
+                operations::profile::missing_fields(job, &operation.id, settings)
+                    .iter()
+                    .map(|d| {
+                        json!({
+                            "fieldPath": d.field_path,
+                            "message": d.message,
+                            "toolId": d.tool_id,
+                        })
+                    })
+                    .collect()
+            }
+            OperationSettings::DragKnife(_) => vec![json!({
                 "fieldPath": format!("operations[{}]", operation.id),
                 "message": "this operation kind ships in a later slice",
                 "toolId": null,
@@ -312,6 +364,79 @@ fn apply_edits(mut job: CamJob, edits: &[OperationEdit]) -> Result<CamJob> {
                     .position(|op| op.id == *id)
                     .expect("source exists");
                 job.operations.insert(position + 1, copy);
+            }
+            OperationEdit::Add {
+                id,
+                name,
+                kind,
+                tool_id,
+            } => {
+                if job.operations.iter().any(|op| op.id == *id) {
+                    return Err(error(
+                        "SEQUENCE_OPERATION_ID",
+                        format!("operation ID '{id}' is already in use"),
+                    ));
+                }
+                let assignment = cam_core::project::MillingAssignment {
+                    tool_id: tool_id.clone(),
+                    spindle_rpm: None,
+                    spindle_direction: None,
+                    cutting_feed_mm_min: None,
+                    plunge_feed_mm_min: None,
+                    max_stepdown_mm: None,
+                    stepover_mm: None,
+                };
+                // Defaults leave every machining value unset (heights rest at
+                // their zero-offset references until the editor supplies
+                // them); the tool reference is the only supplied binding.
+                let zero_top = cam_core::project::HeightRef {
+                    reference: Default::default(),
+                    offset_mm: 0.,
+                };
+                let settings = match kind {
+                    AddOperationKind::Face => {
+                        OperationSettings::Face(cam_core::project::FaceSettings {
+                            area: cam_core::project::FaceArea::EntireStock,
+                            margins: Default::default(),
+                            entry_overrun_mm: None,
+                            exit_overrun_mm: None,
+                            top: zero_top.clone(),
+                            bottom: zero_top,
+                            stepdown_mm: None,
+                            stepover_mm: None,
+                            pass_angle_deg: None,
+                            pattern: Default::default(),
+                            assignment,
+                        })
+                    }
+                    AddOperationKind::Profile => {
+                        OperationSettings::Profile(cam_core::project::ProfileSettings {
+                            contours: vec![],
+                            assignment,
+                            top: zero_top,
+                            bottom: cam_core::project::HeightRef {
+                                reference: cam_core::project::HeightReference::OperationTop,
+                                offset_mm: 0.,
+                            },
+                            stepdown_mm: None,
+                            through_cut_allowance_mm: None,
+                            direction: None,
+                            order: Default::default(),
+                            start: Default::default(),
+                            finish: Default::default(),
+                            entry: Default::default(),
+                            lead_in: Default::default(),
+                            lead_out: Default::default(),
+                            tabs: None,
+                        })
+                    }
+                };
+                job.operations.push(cam_core::project::Operation {
+                    id: id.clone(),
+                    name: name.clone(),
+                    enabled: true,
+                    settings,
+                });
             }
         }
         // Every intermediate state stays a valid document; an edit that
@@ -459,6 +584,56 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
                 "scope": scope,
             }))
         }
+        SequenceCommand::Motions { job, scope, offset } => {
+            let job = parse_job(&job)?;
+            let scoped = scoped_job(&job, &scope)?;
+            let plan = OperationPlan::plan_job(&scoped, &PlanLimits::default())?;
+            Ok(json!({
+                "motions": motion_page(&plan, offset)?,
+                "scope": scope,
+            }))
+        }
+        SequenceCommand::Contours { job } => {
+            let job = parse_job(&job)?;
+            let catalogue = cam_core::contours::ContourCatalogue::build(&job)?;
+            let contours: Vec<Value> = catalogue
+                .contours
+                .iter()
+                .map(|contour| {
+                    let mut min_x = f64::INFINITY;
+                    let mut min_y = f64::INFINITY;
+                    let mut max_x = f64::NEG_INFINITY;
+                    let mut max_y = f64::NEG_INFINITY;
+                    for vertex in &contour.vertices {
+                        min_x = min_x.min(vertex.x);
+                        min_y = min_y.min(vertex.y);
+                        max_x = max_x.max(vertex.x);
+                        max_y = max_y.max(vertex.y);
+                    }
+                    json!({
+                        "id": contour.id,
+                        "componentId": contour.component_id,
+                        "closed": contour.closed,
+                        "role": match contour.role {
+                            cam_core::contours::ContourRole::Outer => "outer",
+                            cam_core::contours::ContourRole::Hole => "hole",
+                            cam_core::contours::ContourRole::Open => "open",
+                        },
+                        "parentContourId": contour.parent_contour_id,
+                        "perimeterMm": contour.perimeter_mm,
+                        "suggestedSide": match contour.suggested_side() {
+                            cam_core::project::ContourSide::Inside => "inside",
+                            cam_core::project::ContourSide::Outside => "outside",
+                            cam_core::project::ContourSide::On => "on",
+                        },
+                        "bounds": {
+                            "minXmm": min_x, "minYmm": min_y, "maxXmm": max_x, "maxYmm": max_y,
+                        },
+                    })
+                })
+                .collect();
+            Ok(json!({ "contours": contours }))
+        }
         SequenceCommand::Export { job, profile } => {
             let job = parse_job(&job)?;
             let profile = parse_profile(&profile)?;
@@ -491,6 +666,8 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
                 "rotatedFacing": false,
                 "knifeReplay": false,
                 "legacyJobMigration": true,
+                "contourCatalogue": true,
+                "motionPaging": true,
             },
             "limits": {
                 "pageMotions": crate::task::PAGE_MOTIONS,

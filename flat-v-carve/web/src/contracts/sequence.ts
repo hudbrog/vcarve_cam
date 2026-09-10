@@ -29,6 +29,9 @@ export const operationEditSchema = z.discriminatedUnion('edit', [
   z.strictObject({ edit: z.literal('move'), id: z.string(), toIndex: integer }),
   z.strictObject({ edit: z.literal('delete'), id: z.string() }),
   z.strictObject({ edit: z.literal('duplicate'), id: z.string(), newId: z.string().min(1) }),
+  // Appends an incomplete face/profile operation bound to an explicit tool;
+  // every machining value stays unset until edited through UpdateSettings.
+  z.strictObject({ edit: z.literal('add'), id: z.string().min(1), name: z.string().min(1), kind: z.enum(['face', 'profile']), toolId: z.string().min(1) }),
 ]);
 export type OperationEdit = z.infer<typeof operationEditSchema>;
 
@@ -111,6 +114,33 @@ export const motionPageSchema = z.strictObject({
 });
 export type MotionPage = z.infer<typeof motionPageSchema>;
 
+// One page of the complete ordered motion stream (the timeline display pages
+// until total is reached; a single page is not a complete simulation).
+export const motionPageResultSchema = z.strictObject({
+  motions: motionPageSchema, scope: planScopeSchema,
+});
+export type MotionPageResult = z.infer<typeof motionPageResultSchema>;
+
+// Contour catalogue projection (plan section 7.1) for explicit per-contour
+// selection: stable IDs, roles with lineage, and the suggested side.
+export const contourInfoSchema = z.strictObject({
+  id: z.string(),
+  componentId: z.string(),
+  closed: z.boolean(),
+  role: z.enum(['outer', 'hole', 'open']),
+  parentContourId: z.string().nullable(),
+  perimeterMm: z.number().finite().positive(),
+  suggestedSide: z.enum(['inside', 'outside', 'on']),
+  bounds: z.strictObject({
+    minXmm: z.number(), minYmm: z.number(), maxXmm: z.number(), maxYmm: z.number(),
+  }),
+});
+export const contourCatalogueResultSchema = z.strictObject({
+  contours: z.array(contourInfoSchema),
+});
+export type ContourInfo = z.infer<typeof contourInfoSchema>;
+export type ContourCatalogueResult = z.infer<typeof contourCatalogueResultSchema>;
+
 export const planResultSchema = z.strictObject({
   summary: planSummarySchema, motions: motionPageSchema, scope: planScopeSchema,
 });
@@ -164,5 +194,7 @@ export interface SequenceService {
   applyProfile(job: unknown, profile: unknown, signal?: AbortSignal): Promise<SequenceDocument>;
   updateSettings(job: unknown, operationId: string, settings: unknown, signal?: AbortSignal): Promise<SequenceDocument>;
   plan(job: unknown, scope: PlanScope, signal?: AbortSignal): Promise<PlanResult>;
+  planMotions(job: unknown, scope: PlanScope, offset: number, signal?: AbortSignal): Promise<MotionPageResult>;
+  contours(job: unknown, signal?: AbortSignal): Promise<ContourCatalogueResult>;
   export(job: unknown, profile: unknown, signal?: AbortSignal): Promise<ExportResult>;
 }

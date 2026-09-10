@@ -200,3 +200,21 @@
 .sequence-summary dt { opacity: 0.7; }
 .sequence-diagnostics { margin: 10px 0 0; padding-left: 18px; }
 .sequence-export pre { max-height: 300px; overflow: auto; font-size: 0.72rem; background: var(--surface-2, #1d2027); border: 1px solid var(--border, #2a2d35); border-radius: 8px; padding: 10px; }
+.sequence-face-editor, .sequence-profile-editor, .sequence-timeline { margin-top: 14px; border-top: 1px solid var(--border, #2a2d35); padding-top: 10px; }
+.sequence-fields-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 10px; }
+.sequence-field { display: flex; flex-direction: column; gap: 3px; font-size: 0.78rem; }
+.sequence-field span { opacity: 0.7; }
+.sequence-field input, .sequence-field select { background: var(--surface-2, #1d2027); border: 1px solid var(--border, #2a2d35); border-radius: 6px; color: inherit; padding: 5px 7px; font: inherit; }
+.inline-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
+.inline-warning { color: #e0a55e; margin: 0; font-size: 0.8rem; }
+.sequence-add-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 12px; border-top: 1px solid var(--border, #2a2d35); padding-top: 10px; }
+.sequence-contour-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sequence-contour-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; border: 1px solid var(--border, #2a2d35); border-radius: 6px; padding: 6px 8px; }
+.sequence-contour-list li.selected { border-color: #4a80d4; }
+.sequence-contour-list label { display: flex; align-items: center; gap: 6px; flex: 1; }
+.sequence-contour-list small { opacity: 0.7; }
+.sequence-timeline-canvas-row { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.sequence-stock-canvas { width: 100%; max-width: 560px; aspect-ratio: auto; image-rendering: pixelated; border: 1px solid var(--border, #2a2d35); border-radius: 8px; background: #0c0e11; }
+.sequence-scrub { margin: 6px 0; }
+.sequence-scrub input { width: 100%; }
+.sequence-timeline-ops { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; }

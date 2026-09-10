@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
-  exportResultSchema, planResultSchema, sequenceCapabilitiesSchema, sequenceDocumentSchema,
-  sequenceEnvelopeSchema, sequenceApiVersion,
+  contourCatalogueResultSchema, exportResultSchema, planResultSchema, sequenceCapabilitiesSchema,
+  sequenceDocumentSchema, sequenceEnvelopeSchema, sequenceApiVersion, motionPageResultSchema,
 } from '../src/contracts/sequence';
 import { createHttpSequenceService } from '../src/service/sequence';
 import { FaceSettingsEditor } from '../src/components/FaceSettingsEditor';
+import { ProfileSettingsEditor } from '../src/components/ProfileSettingsEditor';
+import { SequenceTimeline } from '../src/components/SequenceTimeline';
 import { readSequenceRecovery, SequenceWorkspace } from '../src/components/SequenceWorkspace';
 
 const legacyJob = readFileSync(new URL('../../fixtures/m3/rectangle.json', import.meta.url), 'utf8');
@@ -59,6 +61,24 @@ function exportData() {
 function envelope(data: unknown, requestId: string, revision: number) {
   return { apiVersion: sequenceApiVersion, engineVersion, requestId, revision, data };
 }
+function contoursData() {
+  return {
+    contours: [{
+      id: 'pocket-0-outer', componentId: 'pocket::0', closed: true, role: 'outer',
+      parentContourId: null, perimeterMm: 100.5, suggestedSide: 'outside',
+      bounds: { minXmm: 5, minYmm: 5, maxXmm: 35, maxYmm: 25 },
+    }],
+  };
+}
+const timelineMotions = Array.from({ length: 5 }, (_, index) => ({
+  id: index, operationId: 'flat-v-carve', stageId: 's', toolId: 'endmill', passId: 0, layer: 0,
+  interpolation: 'linear_feed', purpose: 'rough', effect: 'milling_sweep',
+  start: { x: 0, y: 0, z: -1 }, end: { x: 1, y: 0, z: -1 }, feedMmMin: 300,
+}));
+function motionsData(offset: number) {
+  const from = Math.min(offset, timelineMotions.length);
+  return { motions: { offset: from, count: timelineMotions.length - from, total: timelineMotions.length, motions: timelineMotions.slice(from) }, scope: { kind: 'allEnabled' } };
+}
 
 describe('ui-8 wire contracts', () => {
   it('parse the open, plan, export and capabilities projections', () => {
@@ -99,6 +119,8 @@ describe('http sequence service', () => {
       if (command.operation === 'plan') return Response.json(envelope(planData(), requestId, revision));
       if (command.operation === 'export') return Response.json(envelope(exportData(), requestId, revision));
       if (command.operation === 'updateSettings') return Response.json(envelope(documentData(), requestId, revision));
+      if (command.operation === 'contours') return Response.json(envelope(contoursData(), requestId, revision));
+      if (command.operation === 'motions') return Response.json(envelope(motionsData(Number(command.offset ?? 0)), requestId, revision));
       return Response.json({ error: { status: 422, code: 'UNKNOWN', message: 'unexpected' } }, { status: 422 });
     }) as typeof fetch;
     return { fetcher, bodies };
@@ -155,6 +177,22 @@ describe('http sequence service', () => {
       }),
     });
   });
+  it('pages motions and fetches the contour catalogue', async () => {
+    const { fetcher, bodies } = scripted();
+    const service = createHttpSequenceService(fetcher);
+    const document = await service.open(legacyJob);
+    const catalogue = await service.contours(document.job);
+    expect(catalogue.contours[0].id).toBe('pocket-0-outer');
+    expect(catalogue.contours[0].suggestedSide).toBe('outside');
+    const page = await service.planMotions(document.job, { kind: 'allEnabled' }, 0);
+    expect(page.motions.total).toBe(5);
+    expect(motionPageResultSchema.parse(motionsData(0)).motions.offset).toBe(0);
+    const motionCommands = bodies
+      .map(body => body.command as Record<string, unknown>)
+      .filter(command => command.operation === 'motions');
+    expect(motionCommands[0].offset).toBe(0);
+    expect(motionCommands[0].scope).toEqual({ kind: 'allEnabled' });
+  });
 });
 
 describe('sequence workspace', () => {
@@ -168,6 +206,8 @@ describe('sequence workspace', () => {
     applyProfile: async () => sequenceDocumentSchema.parse(documentData()),
     updateSettings: async () => sequenceDocumentSchema.parse(documentData()),
     plan: async () => planResultSchema.parse(planData()),
+    planMotions: async () => motionPageResultSchema.parse(motionsData(0)),
+    contours: async () => contourCatalogueResultSchema.parse(contoursData()),
     export: async () => exportResultSchema.parse(exportData()),
   };
   it('renders the ordered operation list with per-operation controls', async () => {
@@ -224,5 +264,53 @@ describe('sequence workspace', () => {
     // job in place, and the form's untouched fields ride along unchanged.
     expect(html).toContain('value="40"');
     expect(html).toContain('value="1"');
+  });
+  it('renders the profile editor with the engine catalogue and explicit sides', async () => {
+    const applied: unknown[] = [];
+    const editorService = {
+      ...service,
+      updateSettings: async (_job: unknown, operationId: string, settings: unknown) => {
+        applied.push({ operationId, settings });
+        return sequenceDocumentSchema.parse(documentData());
+      },
+    };
+    const settings = {
+      contours: [{ contour_id: 'pocket-0-outer', side: 'outside', traversal: null }],
+      top: { reference: { kind: 'stock_top' }, offset_mm: 0 },
+      bottom: { reference: { kind: 'operation_top' }, offset_mm: -4 },
+      stepdown_mm: 3, through_cut_allowance_mm: 0.2, direction: 'climb',
+      order: 'inner_before_outer',
+      assignment: { tool_id: 'endmill', spindle_rpm: 12000, spindle_direction: 'clockwise', cutting_feed_mm_min: 350, plunge_feed_mm_min: 100, max_stepdown_mm: 8 },
+      start: { kind: 'automatic' }, finish: { enabled: false }, entry: { kind: 'plunge' },
+      lead_in: { kind: 'none' }, lead_out: { kind: 'none' }, tabs: null,
+    };
+    const html = renderToStaticMarkup(
+      <ProfileSettingsEditor
+        service={editorService as never}
+        job={{ schema_version: 4 }}
+        operationId="profile-1"
+        settings={settings as never}
+        faceOperations={[{ id: 'face-1' }]}
+        busy={false}
+        onApplied={() => {}}
+      />,
+    );
+    expect(html).toContain('profile-1');
+    expect(html).toContain('loading contour catalogue');
+    // The catalogue arrives asynchronously; SSR shows the pending state.
+  });
+  it('renders the stock/timeline display with operation checkpoints', () => {
+    const html = renderToStaticMarkup(
+      <SequenceTimeline
+        service={service as never}
+        job={{ schema_version: 4, tools: [{ id: 'endmill', geometry: { kind: 'endmill', dimensions: { diameter_mm: 4, cutting_length_mm: 12 } } }] }}
+        planSummary={planResultSchema.parse(planData()).summary}
+        stock={{ x0: 0, y0: 0, x1: 40, y1: 30, thicknessMm: 8 }}
+        workZero={{ x: 20, y: 15 }}
+      />,
+    );
+    expect(html).toContain('Stock &amp; timeline');
+    expect(html).toContain('loading motions');
+    expect(html).toContain('flat-v-carve');
   });
 });
