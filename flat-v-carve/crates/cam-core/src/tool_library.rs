@@ -195,8 +195,10 @@ pub struct LibraryTool {
     pub ramp_capable: Option<bool>,
     pub plunge_capable: Option<bool>,
     pub cutting_presets: Vec<CuttingPreset>,
-    /// Typed knife presets; carried only by knife tools.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Typed knife presets; nonempty only on knife tools. Always serialized,
+    /// even when empty, so CLI exports byte-match the HTTP library snapshot;
+    /// the default keeps libraries saved before this field loadable.
+    #[serde(default)]
     pub knife_cutting_presets: Vec<KnifeCuttingPreset>,
 }
 fn empty_settings(id: String) -> ToolSettings {
