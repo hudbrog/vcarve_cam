@@ -1,5 +1,6 @@
 //! Application-owned geometry contracts for the Flat V-carve CAM engine.
 pub mod checks;
+pub mod contours;
 pub mod geometry;
 pub mod job;
 pub mod model;
