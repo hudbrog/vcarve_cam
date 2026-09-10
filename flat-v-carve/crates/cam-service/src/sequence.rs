@@ -45,6 +45,13 @@ pub enum SequenceCommand {
     },
     /// Apply a legacy schema-1 machine profile to a canonical job.
     ApplyProfile { job: Value, profile: Value },
+    /// Replace one operation's settings (strict engine parsing; the UI never
+    /// edits the canonical job in place).
+    UpdateSettings {
+        job: Value,
+        operation_id: String,
+        settings: Value,
+    },
     /// Plan the enabled operations, all of them or a prefix.
     Plan { job: Value, scope: PlanScope },
     /// Export the plan with a schema-2 sequence profile.
@@ -418,6 +425,28 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
             let legacy = cam_core::post::LinuxCncProfile::from_json(&raw)?;
             let applied = apply_legacy_profile(&legacy, &job)?;
             document_projection(&applied, false)
+        }
+        SequenceCommand::UpdateSettings {
+            job,
+            operation_id,
+            settings,
+        } => {
+            let mut job = parse_job(&job)?;
+            let parsed: OperationSettings = serde_json::from_value(settings)
+                .map_err(|e| error("SEQUENCE_SETTINGS_JSON", e.to_string()))?;
+            let operation = job
+                .operations
+                .iter_mut()
+                .find(|op| op.id == operation_id)
+                .ok_or_else(|| {
+                    error(
+                        "SEQUENCE_OPERATION_ID",
+                        format!("cannot update unknown operation '{operation_id}'"),
+                    )
+                })?;
+            operation.settings = parsed;
+            job.validate()?;
+            document_projection(&job, false)
         }
         SequenceCommand::Plan { job, scope } => {
             let job = parse_job(&job)?;

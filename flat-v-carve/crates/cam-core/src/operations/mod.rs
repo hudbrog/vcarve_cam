@@ -38,10 +38,22 @@ impl LocatedDiagnostic {
     }
 }
 
-pub(crate) fn plan_operation(job: &CamJob, operation: &Operation) -> Result<PlannedOperation> {
+/// A face plane published by a preceding face operation (plan section 6.3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PublishedFace {
+    pub z_mm: f64,
+    pub covered: crate::project::RectXY,
+}
+
+pub(crate) fn plan_operation(
+    job: &CamJob,
+    operation: &Operation,
+    published_faces: &std::collections::BTreeMap<String, PublishedFace>,
+    prior_motions: &[crate::toolpath::PlannedMotion],
+) -> Result<PlannedOperation> {
     match &operation.settings {
         crate::project::OperationSettings::FlatVcarve(settings) => {
-            flat_vcarve::plan(job, &operation.id, settings)
+            flat_vcarve::plan(job, &operation.id, settings, published_faces, prior_motions)
         }
         // The dispatcher never silently skips an unsupported operation; the
         // sequence planner rejects them with OPERATION_PLANNER_UNAVAILABLE.

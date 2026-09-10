@@ -6,6 +6,7 @@ import {
   sequenceEnvelopeSchema, sequenceApiVersion,
 } from '../src/contracts/sequence';
 import { createHttpSequenceService } from '../src/service/sequence';
+import { FaceSettingsEditor } from '../src/components/FaceSettingsEditor';
 import { readSequenceRecovery, SequenceWorkspace } from '../src/components/SequenceWorkspace';
 
 const legacyJob = readFileSync(new URL('../../fixtures/m3/rectangle.json', import.meta.url), 'utf8');
@@ -97,6 +98,7 @@ describe('http sequence service', () => {
       if (command.operation === 'open') return Response.json(envelope(documentData(), requestId, revision));
       if (command.operation === 'plan') return Response.json(envelope(planData(), requestId, revision));
       if (command.operation === 'export') return Response.json(envelope(exportData(), requestId, revision));
+      if (command.operation === 'updateSettings') return Response.json(envelope(documentData(), requestId, revision));
       return Response.json({ error: { status: 422, code: 'UNKNOWN', message: 'unexpected' } }, { status: 422 });
     }) as typeof fetch;
     return { fetcher, bodies };
@@ -125,6 +127,34 @@ describe('http sequence service', () => {
     const service = createHttpSequenceService(fetcher);
     await expect(service.open(legacyJob)).rejects.toThrow('PROCESS_SPINDLE_STATE');
   });
+  it('sends face settings through UpdateSettings inside the kind envelope', async () => {
+    const { fetcher, bodies } = scripted();
+    const service = createHttpSequenceService(fetcher);
+    const document = await service.open(legacyJob);
+    await service.updateSettings(document.job, 'flat-v-carve', {
+      kind: 'face',
+      settings: {
+        area: { kind: 'rectangle', rect: { min_x_mm: 0, min_y_mm: 0, width_mm: 40, length_mm: 30 } },
+        margins: { min_x_mm: 1 },
+        top: { reference: { kind: 'stock_top' }, offset_mm: 0 },
+        bottom: { reference: { kind: 'stock_top' }, offset_mm: -0.5 },
+        pattern: 'zig_zag',
+        assignment: { tool_id: 'endmill' },
+      },
+    });
+    const command = bodies.at(-1)?.command as Record<string, unknown>;
+    expect(command.operation).toBe('updateSettings');
+    expect(command.operationId).toBe('flat-v-carve');
+    // The engine parses OperationSettings strictly: the adjacently tagged
+    // kind envelope must survive the wire exactly.
+    expect(command.settings).toEqual({
+      kind: 'face',
+      settings: expect.objectContaining({
+        area: { kind: 'rectangle', rect: { min_x_mm: 0, min_y_mm: 0, width_mm: 40, length_mm: 30 } },
+        pattern: 'zig_zag',
+      }),
+    });
+  });
 });
 
 describe('sequence workspace', () => {
@@ -136,6 +166,7 @@ describe('sequence workspace', () => {
     open: async () => sequenceDocumentSchema.parse(documentData([{ id: 'carve-1' }, { id: 'carve-2', enabled: false }])),
     edit: async () => sequenceDocumentSchema.parse(documentData()),
     applyProfile: async () => sequenceDocumentSchema.parse(documentData()),
+    updateSettings: async () => sequenceDocumentSchema.parse(documentData()),
     plan: async () => planResultSchema.parse(planData()),
     export: async () => exportResultSchema.parse(exportData()),
   };
@@ -158,5 +189,40 @@ describe('sequence workspace', () => {
     expect(readSequenceRecovery({ getItem: key => storage.get(key) ?? null })).toEqual(job);
     storage.set('flat-v-carve:sequence:v1', JSON.stringify({ version: 2, job }));
     expect(() => readSequenceRecovery({ getItem: key => storage.get(key) ?? null })).toThrow('Unsupported sequence recovery.');
+  });
+  it('renders the face settings editor with area, margin and raster controls', () => {
+    const editorService = {
+      ...service,
+      updateSettings: async () => sequenceDocumentSchema.parse(documentData()),
+    };
+    const settings = {
+      area: { kind: 'rectangle', rect: { min_x_mm: 0, min_y_mm: 0, width_mm: 40, length_mm: 30 } },
+      margins: { min_x_mm: 1, max_x_mm: null, min_y_mm: null, max_y_mm: null },
+      entry_overrun_mm: 2, exit_overrun_mm: 1,
+      top: { reference: { kind: 'stock_top' }, offset_mm: 0 },
+      bottom: { reference: { kind: 'stock_top' }, offset_mm: -0.5 },
+      stepdown_mm: 0.5, stepover_mm: 3, pass_angle_deg: 0, pattern: 'zig_zag',
+      assignment: { tool_id: 'endmill' },
+    };
+    const html = renderToStaticMarkup(
+      <FaceSettingsEditor
+        service={editorService as never}
+        job={{ schema_version: 4 }}
+        operationId="face-1"
+        settings={settings as never}
+        busy={false}
+        onApplied={() => {}}
+      />,
+    );
+    expect(html).toContain('face-1');
+    expect(html).toContain('Rectangle min X (mm)');
+    expect(html).toContain('Margin min X (mm)');
+    expect(html).toContain('Stepdown (mm)');
+    expect(html).toContain('Entry overrun (mm)');
+    expect(html).toContain('Apply face settings');
+    // The engine parses the whole settings object; the editor never edits the
+    // job in place, and the form's untouched fields ride along unchanged.
+    expect(html).toContain('value="40"');
+    expect(html).toContain('value="1"');
   });
 });

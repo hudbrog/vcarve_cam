@@ -27,6 +27,19 @@ use crate::{
     vcarve::plan_combined,
 };
 
+fn incomplete(_operation_id: &str, issues: Vec<PlanIssue>) -> PlannedOperation {
+    PlannedOperation {
+        status: GenerationStatus::Incomplete,
+        stages: vec![],
+        motions: vec![],
+        stage_evidence: vec![],
+        pass_evidence: vec![],
+        issues,
+        preparation: vec![],
+        named_outputs: vec![],
+    }
+}
+
 fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("flat_vcarve")
 }
@@ -400,6 +413,8 @@ pub(crate) fn plan(
     job: &CamJob,
     operation_id: &str,
     settings: &FlatVcarveSettings,
+    published_faces: &std::collections::BTreeMap<String, crate::operations::PublishedFace>,
+    prior_motions: &[PlannedMotion],
 ) -> Result<PlannedOperation> {
     let missing = missing_fields(job, operation_id, settings);
     if !missing.is_empty() {
@@ -422,13 +437,64 @@ pub(crate) fn plan(
             named_outputs: vec![],
         });
     }
-    let legacy = to_legacy_job(job, operation_id, settings)?;
+    // The resolved carving top in setup coordinates (plan section 13.2): a
+    // face-referenced top shifts the legacy planner into a local frame with
+    // the faced plane at local Z=0.
+    let planes: std::collections::BTreeMap<String, f64> = published_faces
+        .iter()
+        .map(|(id, face)| (id.clone(), face.z_mm))
+        .collect();
+    // Top resolution and uniform-surface admission are generation outcomes,
+    // not document errors: the rest of the job stays plannable for inspection.
+    let admission = crate::setup::resolve_top(job, &settings.top, &planes).and_then(|top_z| {
+        if let crate::project::HeightReference::FaceResult {
+            operation_id: face_id,
+        } = &settings.top.reference
+        {
+            admit_uniform_faced_top(
+                job,
+                operation_id,
+                settings,
+                face_id,
+                published_faces,
+                prior_motions,
+                top_z,
+            )?;
+        }
+        Ok(top_z)
+    });
+    let top_z = match admission {
+        Ok(top_z) => top_z,
+        Err(diagnostic) => {
+            return Ok(incomplete(
+                operation_id,
+                vec![PlanIssue {
+                    code: diagnostic.code,
+                    message: diagnostic.message,
+                    operation_id: Some(operation_id.into()),
+                    stage_id: None,
+                }],
+            ));
+        }
+    };
+    let mut legacy = to_legacy_job(job, operation_id, settings)?;
+    if top_z != 0. {
+        // local_z = setup_z - top_z for every target, query and report; the
+        // physical stock bottom moves to local -(thickness + top_z) and the
+        // clearance plane to clearance - top_z above the faced surface.
+        let thickness = legacy.stock.thickness_mm.expect("missing fields checked") + top_z;
+        legacy.stock.thickness_mm = Some(thickness);
+        if let Some(planning) = &mut legacy.endmill_planning {
+            planning.clearance_z_mm -= top_z;
+        }
+    }
+    let legacy = legacy;
     let rough_stage_id = format!("{operation_id}-vcarve-rough");
     let finish_stage_id = format!("{operation_id}-vcarve-finish");
     match settings.mode {
         FlatVcarveMode::EndmillOnly => {
             let plan = plan_endmill(&legacy)?;
-            let motions = map_motions(
+            let mut motions = map_motions(
                 &plan.motions,
                 operation_id,
                 &rough_stage_id,
@@ -436,6 +502,7 @@ pub(crate) fn plan(
                 false,
                 |_| 0,
             );
+            shift_to_setup(&mut motions, top_z);
             let issues: Vec<PlanIssue> = plan
                 .generation_issues
                 .iter()
@@ -470,7 +537,7 @@ pub(crate) fn plan(
         }
         FlatVcarveMode::Combined => {
             let plan = plan_combined(&legacy)?;
-            let endmill_motions = map_motions(
+            let mut endmill_motions = map_motions(
                 &plan.endmill.motions,
                 operation_id,
                 &rough_stage_id,
@@ -478,6 +545,7 @@ pub(crate) fn plan(
                 false,
                 |_| 0,
             );
+            shift_to_setup(&mut endmill_motions, top_z);
             // V-bit pass identity comes from the recorded executions; motions
             // outside any execution keep the fallback pass 0.
             let mut pass_by_motion = std::collections::BTreeMap::new();
@@ -486,7 +554,7 @@ pub(crate) fn plan(
                     pass_by_motion.insert(id, pass);
                 }
             }
-            let vbit_motions = map_motions(
+            let mut vbit_motions = map_motions(
                 &plan.vbit_motions,
                 operation_id,
                 &finish_stage_id,
@@ -494,6 +562,7 @@ pub(crate) fn plan(
                 true,
                 |id| pass_by_motion.get(&id).copied().unwrap_or(0),
             );
+            shift_to_setup(&mut vbit_motions, top_z);
             let mut issues: Vec<PlanIssue> = plan
                 .endmill
                 .generation_issues
@@ -586,4 +655,101 @@ pub(crate) fn plan(
             })
         }
     }
+}
+
+/// Shift local-frame legacy motions back into setup coordinates.
+fn shift_to_setup(motions: &mut [PlannedMotion], top_z: f64) {
+    for motion in motions.iter_mut() {
+        motion.start.z += top_z;
+        motion.end.z += top_z;
+    }
+}
+
+/// Uniform-top admission (plan section 13.2): a face-referenced carve may run
+/// only where the referenced face established a plane across the whole carve
+/// target, and no earlier removal went below that plane inside the target.
+#[allow(clippy::too_many_arguments)]
+fn admit_uniform_faced_top(
+    job: &CamJob,
+    operation_id: &str,
+    settings: &FlatVcarveSettings,
+    face_id: &str,
+    published_faces: &std::collections::BTreeMap<String, crate::operations::PublishedFace>,
+    prior_motions: &[PlannedMotion],
+    top_z: f64,
+) -> Result<()> {
+    let Some(face) = published_faces.get(face_id) else {
+        return Err(error(
+            "HEIGHT_REFERENCE_UNRESOLVED",
+            format!(
+                "operation '{operation_id}' references face '{face_id}' whose plane is not established"
+            ),
+        ));
+    };
+    let geometry = crate::svg::import_svg(
+        &job.source.as_ref().expect("missing fields checked").svg,
+        &job.import,
+        Some(&settings.component_ids),
+    )?;
+    let Some(bounds) = geometry.bounds else {
+        return Err(error(
+            "SURFACE_REFERENCE_OUTSIDE_COVERAGE",
+            format!(
+                "operation '{operation_id}' selects no geometry to bound against the faced plane"
+            ),
+        ));
+    };
+    let covered_max_x = face.covered.min_x_mm + face.covered.width_mm;
+    let covered_max_y = face.covered.min_y_mm + face.covered.length_mm;
+    let margin = 1e-9;
+    if bounds.min.x < face.covered.min_x_mm - margin
+        || bounds.max.x > covered_max_x + margin
+        || bounds.min.y < face.covered.min_y_mm - margin
+        || bounds.max.y > covered_max_y + margin
+    {
+        return Err(error(
+            "SURFACE_REFERENCE_OUTSIDE_COVERAGE",
+            format!(
+                "operation '{operation_id}' selects geometry outside the area faced by '{face_id}'; no assumed global surface shift"
+            ),
+        ));
+    }
+    // Earlier removal strictly below the faced plane inside the target would
+    // invalidate the fresh-planar starting surface the legacy engine assumes.
+    let epsilon = 1e-9;
+    for motion in prior_motions {
+        if motion.effect != crate::toolpath::MotionEffect::MillingSweep {
+            continue;
+        }
+        let touches_target = overlaps_bounds(
+            motion,
+            bounds.min.x,
+            bounds.min.y,
+            bounds.max.x,
+            bounds.max.y,
+        );
+        if !touches_target {
+            continue;
+        }
+        if motion.start.z.min(motion.end.z) < top_z - epsilon {
+            return Err(error(
+                "SURFACE_REFERENCE_OUTSIDE_COVERAGE",
+                format!(
+                    "earlier milling inside the carve target reached below the faced plane;                      '{}' cannot assume a fresh planar surface",
+                    operation_id
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn overlaps_bounds(motion: &PlannedMotion, min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> bool {
+    let a = motion.start;
+    let b = motion.end;
+    let motion_min_x = a.x.min(b.x);
+    let motion_max_x = a.x.max(b.x);
+    let motion_min_y = a.y.min(b.y);
+    let motion_max_y = a.y.max(b.y);
+    motion_min_x <= max_x && motion_max_x >= min_x && motion_min_y <= max_y && motion_max_y >= min_y
 }

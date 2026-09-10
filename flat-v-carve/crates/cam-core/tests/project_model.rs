@@ -398,6 +398,7 @@ fn flat_vcarve_mode_and_finish_settings_must_agree() {
         enabled: true,
         settings: OperationSettings::FlatVcarve(FlatVcarveSettings {
             component_ids: vec![],
+            top: Default::default(),
             mode: FlatVcarveMode::EndmillOnly,
             endmill: milling("t1"),
             vbit: milling("t2"),

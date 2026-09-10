@@ -363,6 +363,7 @@ impl OperationPlan {
         let mut generation_diagnostics = vec![];
         let mut preparation_requirements = vec![];
         let mut planned_ids = BTreeSet::new();
+        let mut published_faces = std::collections::BTreeMap::new();
         let mut current_tool: Option<String> = None;
         // Prefix stock identities (plan section 9.2): the initial view hashes
         // stock/artwork/planning inputs once; each operation extends it with
@@ -396,7 +397,7 @@ impl OperationPlan {
                     "job exceeds the stage or motion budget before completing all operations",
                 ));
             }
-            let planned = crate::operations::plan_operation(job, op)?;
+            let planned = crate::operations::plan_operation(job, op, &published_faces, &motions)?;
             let base = motions.len();
             if base + planned.motions.len() > limits.max_motions {
                 return Err(error(
@@ -512,6 +513,16 @@ impl OperationPlan {
                 legacy_pass_evidence: planned.pass_evidence,
             });
             stock_before = stock_after;
+            for output in &operation_results.last().expect("just pushed").named_outputs {
+                if output.kind == "face_plane"
+                    && let (Some(z_mm), Some(covered)) = (output.z_mm, output.covered)
+                {
+                    published_faces.insert(
+                        op.id.clone(),
+                        crate::operations::PublishedFace { z_mm, covered },
+                    );
+                }
+            }
         }
         let engine_version = env!("CARGO_PKG_VERSION").to_string();
         let input_fingerprint = crate::plan_hash::hash(&(

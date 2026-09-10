@@ -7,7 +7,9 @@
 //! block generation, and a passing one cannot authorize a broken plan.
 use crate::{
     geometry::{Diagnostic, Result},
-    sequence::{ExecutionItem, GenerationStatus, OperationPlan, ProcessSpindle, StageRole},
+    sequence::{
+        ExecutionItem, ExecutionStage, GenerationStatus, OperationPlan, ProcessSpindle, StageRole,
+    },
     toolpath::{Interpolation, MotionEffect},
 };
 use serde::{Deserialize, Serialize};
@@ -60,6 +62,14 @@ impl BasicCheckReport {
             None
         }
     }
+}
+
+/// One expected execution step during the ordered walk.
+#[derive(Debug)]
+enum Expected<'a> {
+    ToolChange(&'a str, &'a ExecutionStage),
+    Intent(&'a ExecutionStage),
+    Run(&'a ExecutionStage),
 }
 
 /// Run the automatic basic checks over a finished plan.
@@ -234,108 +244,72 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
         }
     }
 
-    // Execution accounting: every nonempty stage runs exactly once, tool
-    // changes precede the run, and each stage's intent covers its motion.
-    let mut expected_stage = 0usize;
-    let mut iter = plan.execution.iter();
-    while expected_stage < plan.stages.len() {
-        let stage = &plan.stages[expected_stage];
-        match iter.next() {
-            Some(ExecutionItem::ToolChange { tool_id }) => {
-                if tool_id != &stage.tool_id {
+    // Execution accounting: every stage runs exactly once in order under its
+    // own process intent. A tool change appears exactly when the selected
+    // tool changes — consecutive same-tool stages continue without one, and
+    // recurring tools are re-selected rather than regrouped.
+    let mut expected: Vec<Expected<'_>> = vec![];
+    let mut selected: Option<&str> = None;
+    for stage in &plan.stages {
+        if selected != Some(stage.tool_id.as_str()) {
+            expected.push(Expected::ToolChange(&stage.tool_id, stage));
+            selected = Some(stage.tool_id.as_str());
+        }
+        expected.push(Expected::Intent(stage));
+        expected.push(Expected::Run(stage));
+    }
+    let mut actual = plan.execution.iter();
+    for want in &expected {
+        let Some(got) = actual.next() else {
+            let mut f = finding(
+                "PLAN_EXECUTION_INCOMPLETE",
+                format!(
+                    "execution ends before the ordered steps of stage '{}'",
+                    stage_of(want).stage_id
+                ),
+            );
+            f.stage_id = Some(stage_of(want).stage_id.clone());
+            findings.push(f);
+            failed = true;
+            break;
+        };
+        let ok = match (want, got) {
+            (Expected::ToolChange(tool, _), ExecutionItem::ToolChange { tool_id }) => {
+                tool == tool_id
+            }
+            (Expected::Intent(stage), ExecutionItem::SetProcessIntent { intent }) => {
+                if matches!(intent.spindle, ProcessSpindle::Off) && stage.role != StageRole::Knife {
                     let mut f = finding(
-                        "PLAN_EXECUTION_TOOL",
-                        format!(
-                            "tool change to '{tool_id}' does not match stage '{}'",
-                            stage.stage_id
-                        ),
+                        "PROCESS_SPINDLE_STATE",
+                        format!("milling stage '{}' requests spindle off", stage.stage_id),
                     );
                     f.stage_id = Some(stage.stage_id.clone());
                     findings.push(f);
                     failed = true;
                 }
-                match iter.next() {
-                    Some(ExecutionItem::SetProcessIntent { intent }) => {
-                        if matches!(intent.spindle, ProcessSpindle::Off)
-                            && !matches!(stage.role, StageRole::Knife)
-                        {
-                            let mut f = finding(
-                                "PROCESS_SPINDLE_STATE",
-                                format!("milling stage '{}' requests spindle off", stage.stage_id),
-                            );
-                            f.stage_id = Some(stage.stage_id.clone());
-                            findings.push(f);
-                            failed = true;
-                        }
-                    }
-                    other => {
-                        let mut f = finding(
-                            "PLAN_EXECUTION_ORDER",
-                            format!(
-                                "stage '{}' lacks its process intent before running",
-                                stage.stage_id
-                            ),
-                        );
-                        f.stage_id = Some(stage.stage_id.clone());
-                        findings.push(f);
-                        failed = true;
-                        if other.is_none() {
-                            break;
-                        }
-                        continue;
-                    }
-                }
-                match iter.next() {
-                    Some(ExecutionItem::RunStage { stage_id }) if stage_id == &stage.stage_id => {}
-                    other => {
-                        let mut f = finding(
-                            "PLAN_EXECUTION_ORDER",
-                            format!(
-                                "expected run of stage '{}', found {:?}",
-                                stage.stage_id,
-                                other.map(|i| match i {
-                                    ExecutionItem::ToolChange { tool_id } =>
-                                        format!("tool change {tool_id}"),
-                                    ExecutionItem::SetProcessIntent { .. } => "intent".into(),
-                                    ExecutionItem::RunStage { stage_id } =>
-                                        format!("run {stage_id}"),
-                                })
-                            ),
-                        );
-                        f.stage_id = Some(stage.stage_id.clone());
-                        findings.push(f);
-                        failed = true;
-                        if other.is_none() {
-                            break;
-                        }
-                        continue;
-                    }
-                }
+                true
             }
-            Some(ExecutionItem::SetProcessIntent { .. }) | Some(ExecutionItem::RunStage { .. }) => {
-                let mut f = finding(
-                    "PLAN_EXECUTION_ORDER",
-                    format!("stage '{}' must begin with its tool change", stage.stage_id),
-                );
-                f.stage_id = Some(stage.stage_id.clone());
-                findings.push(f);
-                failed = true;
-                continue;
+            (Expected::Run(stage), ExecutionItem::RunStage { stage_id }) => {
+                &stage.stage_id == stage_id
             }
-            None => {
-                let mut f = finding(
-                    "PLAN_EXECUTION_INCOMPLETE",
-                    format!("stage '{}' never runs", stage.stage_id),
-                );
-                f.stage_id = Some(stage.stage_id.clone());
-                findings.push(f);
-                failed = true;
-                break;
-            }
+            _ => false,
+        };
+        if !ok {
+            let stage = stage_of(want);
+            let mut f = finding(
+                "PLAN_EXECUTION_ORDER",
+                format!(
+                    "execution step for stage '{}' does not match the ordered plan",
+                    stage.stage_id
+                ),
+            );
+            f.stage_id = Some(stage.stage_id.clone());
+            findings.push(f);
+            failed = true;
+            break;
         }
-        expected_stage += 1;
     }
-    if iter.next().is_some() {
+    if actual.next().is_some() {
         fail!(
             "PLAN_EXECUTION_EXTRA",
             "execution contains items after the last stage ran".to_string()
@@ -352,6 +326,12 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
         findings,
         export_ready: status == CheckStatus::Passed,
     })
+}
+
+fn stage_of<'a>(expected: &'a Expected<'_>) -> &'a ExecutionStage {
+    match expected {
+        Expected::ToolChange(_, stage) | Expected::Intent(stage) | Expected::Run(stage) => stage,
+    }
 }
 
 fn stage_role(plan: &OperationPlan, stage_id: &str) -> Option<StageRole> {

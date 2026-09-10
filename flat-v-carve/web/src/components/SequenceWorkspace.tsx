@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import type {
   ExportResult, OperationEdit, PlanResult, PlanScope, SequenceCapabilities, SequenceDocument, SequenceService,
 } from '../contracts/sequence';
+import { FaceSettingsEditor } from './FaceSettingsEditor';
 
 const recoveryKey = 'flat-v-carve:sequence:v1';
 const profileKey = 'flat-v-carve:sequence:profile';
@@ -33,6 +34,7 @@ export function SequenceWorkspace({ service, onExit, initialDocument }: { servic
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  const [selected, setSelected] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const profileInput = useRef<HTMLInputElement>(null);
   const [profile, setProfile] = useState<unknown>(null);
@@ -148,7 +150,9 @@ export function SequenceWorkspace({ service, onExit, initialDocument }: { servic
         {sequenceDoc && <ul className="sequence-list">
           {sequenceDoc.operations.map((operation, index) => <li key={operation.id} className={!operation.enabled ? 'disabled' : ''}>
             <div className="sequence-op-line">
-              <strong>{index + 1}. {operation.name}</strong>
+              <button className="source-name" aria-pressed={selected === operation.id} onClick={() => setSelected(selected === operation.id ? null : operation.id)}>
+                <strong>{index + 1}. {operation.name}</strong>
+              </button>
               <small>{operation.kind}{operation.enabled ? '' : ' · disabled'}{missingCount(operation.id) ? ` · ${missingCount(operation.id)} missing` : ''}</small>
             </div>
             <div className="sequence-op-actions">
@@ -160,6 +164,26 @@ export function SequenceWorkspace({ service, onExit, initialDocument }: { servic
             </div>
           </li>)}
         </ul>}
+        {(() => {
+          // Face settings editor for the selected face operation. The job
+          // document is read for display only; edits go through the engine.
+          if (!sequenceDoc || !selected) return null;
+          const operation = sequenceDoc.operations.find(op => op.id === selected);
+          if (!operation || operation.kind !== 'face') return null;
+          const raw = sequenceDoc.job as { operations?: { id: string; settings?: { settings?: unknown } }[] };
+          const settings = raw.operations?.find(op => op.id === selected)?.settings?.settings as
+            | { area: { kind: string; rect?: Record<string, number> }; margins: Record<string, number | null | undefined>; [key: string]: unknown }
+            | undefined;
+          if (!settings) return null;
+          return <FaceSettingsEditor
+            service={service}
+            job={sequenceDoc.job}
+            operationId={selected}
+            settings={settings as never}
+            busy={!!busy}
+            onApplied={(document, message) => { setDocument(document); setNotice(message); }}
+          />;
+        })()}
       </section>
       <section aria-label="Plan" className="sequence-plan">
         <h2>Plan & export</h2>

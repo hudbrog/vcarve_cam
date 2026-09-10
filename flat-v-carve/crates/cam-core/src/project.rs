@@ -359,9 +359,10 @@ impl KnifeAssignment {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HeightReference {
+    #[default]
     StockTop,
     StockBottom,
     /// That same operation's resolved top; legal only for bottom heights.
@@ -372,7 +373,7 @@ pub enum HeightReference {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct HeightRef {
     pub reference: HeightReference,
@@ -467,6 +468,11 @@ pub struct FlatVcarveSettings {
     /// Kept even in endmill-only mode: its geometry defines the nominal
     /// V-shaped target the rough stage clears toward.
     pub vbit: MillingAssignment,
+    /// Where carving starts: the original stock top by default, or a plane
+    /// published by a preceding face operation. Depth is measured below it.
+    #[serde(default)]
+    pub top: HeightRef,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth_mm: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

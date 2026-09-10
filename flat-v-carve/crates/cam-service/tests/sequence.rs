@@ -237,10 +237,81 @@ fn export_requires_resolved_process_state_until_a_profile_is_applied() {
 }
 
 #[test]
+fn update_settings_replaces_operation_settings_through_strict_parsing() {
+    let document = opened();
+    let job = job_of(&document);
+    let face_settings = |margin: f64| {
+        json!({
+            "kind": "face",
+            "settings": {
+                "area": {"kind": "rectangle", "rect": {
+                    "min_x_mm": 0, "min_y_mm": 0, "width_mm": 40, "length_mm": 30}},
+                "margins": {"min_x_mm": margin},
+                "entry_overrun_mm": 2, "exit_overrun_mm": 1,
+                "top": {"reference": {"kind": "stock_top"}, "offset_mm": 0},
+                "bottom": {"reference": {"kind": "stock_top"}, "offset_mm": -0.5},
+                "stepdown_mm": 0.5, "stepover_mm": 3, "pass_angle_deg": 0,
+                "pattern": "zig_zag",
+                "assignment": {
+                    "tool_id": "endmill", "spindle_rpm": 10000,
+                    "spindle_direction": "clockwise",
+                    "cutting_feed_mm_min": 300, "plunge_feed_mm_min": 100,
+                    "max_stepdown_mm": 1
+                }
+            }
+        })
+    };
+    // The whole settings object is replaced (never merged); the document
+    // projection reports the face operation with its updated values.
+    let updated = execute(SequenceCommand::UpdateSettings {
+        job: job.clone(),
+        operation_id: "flat-v-carve".into(),
+        settings: face_settings(1.),
+    })
+    .unwrap();
+    assert_eq!(updated["operations"][0]["kind"], json!("face"));
+    assert_eq!(updated["operations"][0]["toolIds"], json!(["endmill"]));
+    let updated_job: CamJob = serde_json::from_value(job_of(&updated)).unwrap();
+    assert!(matches!(
+        updated_job.operations[0].settings,
+        cam_core::project::OperationSettings::Face(_)
+    ));
+
+    // Invalid supplied values are rejected immediately; unknown fields never
+    // parse. Both leave the document unchanged (the caller still holds `job`).
+    let error = execute(SequenceCommand::UpdateSettings {
+        job: job.clone(),
+        operation_id: "flat-v-carve".into(),
+        settings: face_settings(-1.),
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "PROJECT_PARAMETER");
+    let mut unknown_field = face_settings(1.);
+    unknown_field["settings"]["surprise"] = json!(true);
+    let error = execute(SequenceCommand::UpdateSettings {
+        job: job.clone(),
+        operation_id: "flat-v-carve".into(),
+        settings: unknown_field,
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "SEQUENCE_SETTINGS_JSON");
+    let error = execute(SequenceCommand::UpdateSettings {
+        job,
+        operation_id: "ghost".into(),
+        settings: face_settings(1.),
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "SEQUENCE_OPERATION_ID");
+}
+
+#[test]
 fn capabilities_advertise_only_implemented_features() {
     let capabilities = execute(SequenceCommand::Capabilities).unwrap();
     assert_eq!(capabilities["apiVersion"], json!(SEQUENCE_API_VERSION));
-    assert_eq!(capabilities["operationKinds"], json!(["flat_vcarve", "face"]));
+    assert_eq!(
+        capabilities["operationKinds"],
+        json!(["flat_vcarve", "face"])
+    );
     assert_eq!(capabilities["features"]["openContours"], json!(false));
     assert_eq!(capabilities["features"]["knifeReplay"], json!(false));
     assert_eq!(capabilities["features"]["legacyJobMigration"], json!(true));

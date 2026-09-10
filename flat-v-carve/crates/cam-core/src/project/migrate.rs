@@ -127,6 +127,7 @@ pub fn migrate_job(legacy: &LegacyJob) -> Result<CamJob> {
             enabled: true,
             settings: OperationSettings::FlatVcarve(FlatVcarveSettings {
                 component_ids: legacy.selected_region_ids.clone(),
+                top: Default::default(),
                 mode,
                 endmill: migrated_assignment(endmill_tool),
                 vbit: migrated_assignment(vbit_tool),

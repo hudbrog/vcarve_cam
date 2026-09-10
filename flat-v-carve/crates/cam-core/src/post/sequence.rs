@@ -488,8 +488,19 @@ impl PreparedExecution {
         while places < 9 && !motions_preserved(plan, places) {
             places += 1;
         }
-        let gcode = self.emit(plan, profile, places)?;
-        let motions = readback(&gcode, self, places)?;
+        let (gcode, _bridge_blocks) = self.emit(plan, profile, places)?;
+        let stage_entries: Vec<crate::motion::Position> = self
+            .stages
+            .iter()
+            .map(|stage| {
+                machine_position(
+                    plan.motions[stage.stage.motion_range.0].start,
+                    self.machine_offset_mm,
+                    places,
+                )
+            })
+            .collect();
+        let motions = readback(&gcode, self, places, &stage_entries)?;
         compare_with_plan(self, plan, &gcode, &motions)?;
         let report = SequenceExportReport {
             artifact_kind: "sequence_export_report".into(),
@@ -519,7 +530,7 @@ impl PreparedExecution {
         plan: &OperationPlan,
         profile: &SequenceProfile,
         places: usize,
-    ) -> Result<String> {
+    ) -> Result<(String, Vec<usize>)> {
         let mut lines =
             vec![
             "(CAM sequence program; basic checks passed; detailed quality analysis is separate)"
@@ -532,6 +543,11 @@ impl PreparedExecution {
         ];
         lines.extend(modal_lines(profile));
         let mut previous_stage_end = profile.program_start_position_mm;
+        // Per-stage count of machine-owned bridge blocks written after the
+        // M6/modal group; the readback skips exactly these positioning moves
+        // (like the legacy contract positioning blocks, they are not planned
+        // motions and never authorize anything).
+        let mut bridge_blocks: Vec<usize> = vec![];
         for prepared in &self.stages {
             let stage = &prepared.stage;
             lines.push(format!(
@@ -578,6 +594,7 @@ impl PreparedExecution {
             );
             // The M6 bridge is machine-owned; never fabricate a continuous
             // XYZ line through the macro (plan section 8.3).
+            let mut bridges = 0usize;
             if let Some(current) = previous_stage_end {
                 let start = machine_position(
                     first_motion(plan, stage).start,
@@ -586,11 +603,14 @@ impl PreparedExecution {
                 );
                 if current.z != start.z {
                     lines.push(format!("G0 Z{:.p$}", start.z, p = places));
+                    bridges += 1;
                 }
                 if current.xy() != start.xy() {
                     lines.push(format!("G0 {}", xyz(start, places)));
+                    bridges += 1;
                 }
             }
+            bridge_blocks.push(bridges);
             let motions = &plan.motions[stage.motion_range.0..stage.motion_range.1];
             for motion in motions {
                 let end = machine_position(motion.end, self.machine_offset_mm, places);
@@ -619,7 +639,7 @@ impl PreparedExecution {
                 "an emitted block exceeds the 240-character limit",
             ));
         }
-        Ok(lines.join("\n") + "\n")
+        Ok((lines.join("\n") + "\n", bridge_blocks))
     }
 }
 
@@ -632,7 +652,23 @@ pub fn verify_program(
     program: &SequenceProgram,
 ) -> Result<SequenceExportReport> {
     let plan = plan.plan();
-    let motions = readback(&program.gcode, prepared, prepared.output_decimal_places)?;
+    let stage_entries: Vec<crate::motion::Position> = prepared
+        .stages
+        .iter()
+        .map(|stage| {
+            machine_position(
+                plan.motions[stage.stage.motion_range.0].start,
+                prepared.machine_offset_mm,
+                prepared.output_decimal_places,
+            )
+        })
+        .collect();
+    let motions = readback(
+        &program.gcode,
+        prepared,
+        prepared.output_decimal_places,
+        &stage_entries,
+    )?;
     compare_with_plan(prepared, plan, &program.gcode, &motions)?;
     Ok(SequenceExportReport {
         artifact_kind: "sequence_export_report".into(),
@@ -665,6 +701,7 @@ fn readback(
     gcode: &str,
     prepared: &PreparedExecution,
     places: usize,
+    stage_entries: &[crate::motion::Position],
 ) -> Result<Vec<ReadbackMotion>> {
     if gcode.len() > 128_000_000 || !gcode.is_ascii() {
         return Err(error(
@@ -725,10 +762,17 @@ fn readback(
             Interpolation::LinearFeed
         };
         let mut end: Option<crate::motion::Position> = None;
+        let mut words = 0u8;
         for token in line.split_ascii_whitespace().skip(1) {
             let letter = token.as_bytes()[0];
             let Ok(value) = token[1..].parse::<f64>() else {
                 continue;
+            };
+            words |= match letter {
+                b'X' => 1,
+                b'Y' => 2,
+                b'Z' => 4,
+                _ => 0,
             };
             let slot = end.get_or_insert(crate::motion::Position::new(
                 crate::geometry::Point::new(0., 0.),
@@ -747,6 +791,24 @@ fn readback(
         };
         let tool_number =
             tool.ok_or_else(|| error("POST_SEQUENCE_MISMATCH", "motion before any tool change"))?;
+        // Machine-owned bridge moves follow the M6 group before the stage's
+        // first planned motion and end exactly at that motion's start (plan
+        // section 8.3); they are positioning, never planned motions. A Z-only
+        // bridge matches on Z alone, an XYZ bridge on the full point.
+        let current_stage = tool_changes.len().saturating_sub(1);
+        let stage_motions_started = stage_of_motion
+            .last()
+            .is_some_and(|slot| *slot + 1 == tool_changes.len());
+        if interpolation == Interpolation::Rapid
+            && !stage_motions_started
+            && let Some(entry) = stage_entries.get(current_stage)
+        {
+            let z_only = words == 4;
+            let full = words == 7;
+            if (z_only && entry.z == end.z) || (full && entry == &end) {
+                continue;
+            }
+        }
         motions.push(ReadbackMotion {
             interpolation,
             end,

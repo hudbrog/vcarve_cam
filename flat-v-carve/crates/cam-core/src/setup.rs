@@ -148,3 +148,42 @@ pub fn resolve_heights(
     }
     Ok(ResolvedHeights { top_z, bottom_z })
 }
+
+/// Resolve a single height reference to a concrete Z (no range check).
+/// FaceResult resolves against published face planes; OperationTop is
+/// meaningless without an operation's own top and stays an error here.
+pub fn resolve_top(
+    job: &CamJob,
+    height: &crate::project::HeightRef,
+    published_planes: &std::collections::BTreeMap<String, f64>,
+) -> Result<f64> {
+    let thickness = job.setup.stock.thickness_mm.ok_or_else(|| {
+        error(
+            "SETUP_STOCK_THICKNESS_REQUIRED",
+            "height references require the stock thickness",
+        )
+    })?;
+    let base = match &height.reference {
+        crate::project::HeightReference::StockTop => 0.,
+        crate::project::HeightReference::StockBottom => -thickness,
+        crate::project::HeightReference::OperationTop => {
+            return Err(error(
+                "HEIGHT_REFERENCE_INVALID",
+                "operation_top resolves only as an operation bottom",
+            ));
+        }
+        crate::project::HeightReference::FaceResult { operation_id } => {
+            published_planes.get(operation_id).copied().ok_or_else(|| {
+                error(
+                    "HEIGHT_REFERENCE_UNRESOLVED",
+                    format!("the face plane of operation '{operation_id}' is not established"),
+                )
+            })?
+        }
+    };
+    let z = base + height.offset_mm;
+    if !z.is_finite() {
+        return Err(error("SETUP_PARAMETER", "resolved heights must be finite"));
+    }
+    Ok(z)
+}

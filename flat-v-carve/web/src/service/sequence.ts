@@ -34,7 +34,8 @@ function client(dispatch: Dispatcher): SequenceService {
     capabilities: signal => call(sequenceCapabilitiesSchema, { operation: 'capabilities' }, signal),
     open: (json, signal) => call(sequenceDocumentSchema, { operation: 'open', json }, signal),
     edit: (job, edits, signal) => call(sequenceDocumentSchema, { operation: 'edit', job, edits }, signal),
-    applyProfile: (job, profile, signal) => call(sequenceDocumentSchema, { operation: 'applyProfile', job, profile }, signal),
+    applyProfile: (job, profile, signal) => call(sequenceDocumentSchema, { operation: "applyProfile", job, profile }, signal),
+    updateSettings: (job, operationId, settings, signal) => call(sequenceDocumentSchema, { operation: "updateSettings", job, operationId, settings }, signal),
     plan: (job, scope, signal) => call(planResultSchema, { operation: 'plan', job, scope }, signal),
     export: (job, profile, signal) => call(exportResultSchema, { operation: 'export', job, profile }, signal),
   };

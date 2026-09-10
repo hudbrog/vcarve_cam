@@ -141,11 +141,28 @@ export const sequenceCapabilitiesSchema = z.strictObject({
 });
 export type SequenceCapabilities = z.infer<typeof sequenceCapabilitiesSchema>;
 
+// Operation settings are opaque to the UI (strict engine parsing); only the
+// face editor composes them, field by field, through UpdateSettings.
+export type FaceSettingsInput = {
+  area: { kind: 'entireStock' } | { kind: 'rectangle'; rect: { min_x_mm: number; min_y_mm: number; width_mm: number; length_mm: number } };
+  margins: { min_x_mm?: number | null; max_x_mm?: number | null; min_y_mm?: number | null; max_y_mm?: number | null };
+  entry_overrun_mm?: number | null;
+  exit_overrun_mm?: number | null;
+  top: unknown;
+  bottom: unknown;
+  stepdown_mm?: number | null;
+  stepover_mm?: number | null;
+  pass_angle_deg?: number | null;
+  pattern: 'zigzag' | 'one_way';
+  assignment: unknown;
+};
+
 export interface SequenceService {
   capabilities(signal?: AbortSignal): Promise<SequenceCapabilities>;
   open(json: string, signal?: AbortSignal): Promise<SequenceDocument>;
   edit(job: unknown, edits: OperationEdit[], signal?: AbortSignal): Promise<SequenceDocument>;
   applyProfile(job: unknown, profile: unknown, signal?: AbortSignal): Promise<SequenceDocument>;
+  updateSettings(job: unknown, operationId: string, settings: unknown, signal?: AbortSignal): Promise<SequenceDocument>;
   plan(job: unknown, scope: PlanScope, signal?: AbortSignal): Promise<PlanResult>;
   export(job: unknown, profile: unknown, signal?: AbortSignal): Promise<ExportResult>;
 }
