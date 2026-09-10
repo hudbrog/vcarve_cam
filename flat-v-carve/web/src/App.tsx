@@ -230,7 +230,7 @@ function Workspace({ initial, recovered, service, capabilities: initialCapabilit
         if (!capabilities.importArtwork || !service.importArtwork) throw new Error('SVG import needs the local Rust service.');
         if (!importTolerance.trim() || !Number.isFinite(Number(importTolerance))) throw new Error('Enter an import tolerance in millimeters.');
         return (await service.importArtwork(file.name, text, { geometry_tolerance_mm: Number(importTolerance), ticks_per_mm: null,
-          placement: { origin_mm: { x: 0, y: 0 }, scale: 1, rotation_deg: 0 } }, state.revision, signal)).job;
+          placement: { origin_mm: { x: 0, y: 0 }, scale: 1, rotation_deg: 0 }, mode: 'fill' }, state.revision, signal)).job;
       }
       return capabilities.openJob && service.openJob ? (await service.openJob(text, state.revision, signal)).job : parseJob(JSON.parse(text));
     }, svg ? 'SVG imported by Rust. Cutting settings need setup; wall allowance defaults to 0 mm.'

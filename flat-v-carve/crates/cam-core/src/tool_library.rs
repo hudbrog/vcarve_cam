@@ -1,9 +1,15 @@
 //! Reusable local cutter definitions and explicit cutting presets.
 //! Library data has its own schema; jobs always embed independent tool snapshots.
+//!
+//! Knife tools (plan section 5.3) carry typed geometry (`blade_offset_mm`,
+//! `max_cut_depth_mm`) and typed knife cutting presets — swivel feed instead
+//! of stepover, and no spindle speed, because a passive knife never spins.
 use crate::{
     geometry::{Diagnostic, Result},
     job::{Job, ToolGeometry, ToolSettings},
+    model::{EndmillSpec, VBitSpec},
     preview::valid_id,
+    project::{CamJob, DragKnifeSpec, OperationSettings},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -50,11 +56,35 @@ impl ToolSlot {
             Self::Vbit => &job.operation.vbit_id,
         }
     }
-    fn accepts(self, geometry: &ToolGeometry) -> bool {
+    fn accepts(self, geometry: &LibraryGeometry) -> bool {
         matches!(
             (self, geometry),
-            (Self::Endmill, ToolGeometry::Endmill(_)) | (Self::Vbit, ToolGeometry::Vbit(_))
+            (Self::Endmill, LibraryGeometry::Endmill(_)) | (Self::Vbit, LibraryGeometry::Vbit(_))
         )
+    }
+}
+
+/// Library tool geometry: the legacy endmill/V-bit shapes plus the passive
+/// drag knife. Wire-compatible with the job's legacy geometry for the milling
+/// kinds; knife tools never enter a legacy job slot.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "dimensions",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum LibraryGeometry {
+    Endmill(EndmillSpec),
+    Vbit(VBitSpec),
+    DragKnife(DragKnifeSpec),
+}
+impl From<ToolGeometry> for LibraryGeometry {
+    fn from(geometry: ToolGeometry) -> Self {
+        match geometry {
+            ToolGeometry::Endmill(spec) => Self::Endmill(spec),
+            ToolGeometry::Vbit(spec) => Self::Vbit(spec),
+        }
     }
 }
 
@@ -108,15 +138,66 @@ impl CuttingPreset {
     }
 }
 
+/// Typed knife cutting preset (plan section 5.3): the values a
+/// [`crate::project::KnifeAssignment`] accepts. Spindle speed and stepover
+/// do not apply to a passive knife and cannot be stored here.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KnifeCuttingPreset {
+    pub id: String,
+    pub name: String,
+    /// User-supplied context, not an automatic feed recommendation.
+    pub material: Option<String>,
+    pub machine: Option<String>,
+    pub cutting_feed_mm_min: Option<f64>,
+    pub plunge_feed_mm_min: Option<f64>,
+    pub swivel_feed_mm_min: Option<f64>,
+    pub max_stepdown_mm: Option<f64>,
+}
+impl KnifeCuttingPreset {
+    fn validate(&self) -> Result<()> {
+        id(&self.id)?;
+        label(&self.name)?;
+        for value in [&self.material, &self.machine].into_iter().flatten() {
+            label(value)?;
+        }
+        for (value, name) in [
+            (self.cutting_feed_mm_min, "cutting_feed_mm_min"),
+            (self.plunge_feed_mm_min, "plunge_feed_mm_min"),
+            (self.swivel_feed_mm_min, "swivel_feed_mm_min"),
+            (self.max_stepdown_mm, "max_stepdown_mm"),
+        ] {
+            if value.is_some_and(|v| !v.is_finite() || v < 0.) {
+                return Err(error(
+                    "JOB_PARAMETER",
+                    format!("knife preset {name} must be finite and nonnegative"),
+                ));
+            }
+        }
+        Ok(())
+    }
+    /// Copy into a knife assignment; unset preset values stay unset in the
+    /// assignment (a partial preset copies its nulls as well).
+    fn copy_into(&self, assignment: &mut crate::project::KnifeAssignment) {
+        assignment.cutting_feed_mm_min = self.cutting_feed_mm_min;
+        assignment.plunge_feed_mm_min = self.plunge_feed_mm_min;
+        assignment.swivel_feed_mm_min = self.swivel_feed_mm_min;
+        assignment.max_stepdown_mm = self.max_stepdown_mm;
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LibraryTool {
     pub id: String,
     pub name: String,
-    pub geometry: ToolGeometry,
+    pub geometry: LibraryGeometry,
     pub ramp_capable: Option<bool>,
     pub plunge_capable: Option<bool>,
     pub cutting_presets: Vec<CuttingPreset>,
+    /// Typed knife presets; carried only by knife tools.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub knife_cutting_presets: Vec<KnifeCuttingPreset>,
 }
 fn empty_settings(id: String) -> ToolSettings {
     ToolSettings {
@@ -138,34 +219,80 @@ impl LibraryTool {
         let tool = Self {
             id,
             name,
-            geometry: settings.geometry.clone().ok_or_else(|| {
-                error(
-                    "LIBRARY_GEOMETRY",
-                    "a saved tool requires complete geometry",
-                )
-            })?,
+            geometry: settings
+                .geometry
+                .clone()
+                .map(LibraryGeometry::from)
+                .ok_or_else(|| {
+                    error(
+                        "LIBRARY_GEOMETRY",
+                        "a saved tool requires complete geometry",
+                    )
+                })?,
             ramp_capable: settings.ramp_capable,
             plunge_capable: settings.plunge_capable,
             cutting_presets: vec![],
+            knife_cutting_presets: vec![],
         };
         tool.validate()?;
         Ok(tool)
     }
-    fn snapshot(&self, job_id: String, preset: Option<&CuttingPreset>) -> ToolSettings {
+    fn snapshot(&self, job_id: String, preset: Option<&CuttingPreset>) -> Result<ToolSettings> {
+        let geometry = match &self.geometry {
+            LibraryGeometry::Endmill(spec) => ToolGeometry::Endmill(spec.clone()),
+            LibraryGeometry::Vbit(spec) => ToolGeometry::Vbit(spec.clone()),
+            // A knife tool has no legacy representation and never enters a
+            // legacy job slot; apply_to_job rejects it before this runs.
+            LibraryGeometry::DragKnife(_) => {
+                return Err(error(
+                    "LIBRARY_TOOL_KIND",
+                    "knife tools cannot be applied to a legacy job slot",
+                ));
+            }
+        };
         let mut settings = empty_settings(job_id);
-        settings.geometry = Some(self.geometry.clone());
+        settings.geometry = Some(geometry);
         settings.ramp_capable = self.ramp_capable;
         settings.plunge_capable = self.plunge_capable;
         if let Some(preset) = preset {
             preset.copy_into(&mut settings);
         }
-        settings
+        Ok(settings)
     }
     pub fn validate(&self) -> Result<()> {
         id(&self.id)?;
         label(&self.name)?;
-        self.snapshot(self.id.clone(), None).validate()?;
-        if self.cutting_presets.len() > MAX_PRESETS_PER_TOOL {
+        let is_knife = matches!(self.geometry, LibraryGeometry::DragKnife(_));
+        if is_knife {
+            if let LibraryGeometry::DragKnife(spec) = &self.geometry {
+                spec.validate()?;
+            }
+            // Milling entry capabilities and milling presets never apply to a
+            // passive knife (plan section 5.3).
+            if self.ramp_capable.is_some() || self.plunge_capable.is_some() {
+                return Err(error(
+                    "LIBRARY_TOOL_KIND",
+                    "knife tools carry no milling entry capabilities",
+                ));
+            }
+            if !self.cutting_presets.is_empty() {
+                return Err(error(
+                    "LIBRARY_TOOL_KIND",
+                    "knife tools carry knife cutting presets, not milling presets",
+                ));
+            }
+        } else {
+            self.snapshot(self.id.clone(), None)?.validate()?;
+            if !self.knife_cutting_presets.is_empty() {
+                return Err(error(
+                    "LIBRARY_TOOL_KIND",
+                    "milling tools carry milling presets, not knife presets",
+                ));
+            }
+        }
+        // Exactly one of the two preset lists can be nonempty (enforced
+        // above), so iterating both validates exactly the active kind.
+        if self.cutting_presets.len() + self.knife_cutting_presets.len() > MAX_PRESETS_PER_TOOL {
             return Err(error(
                 "LIBRARY_RESOURCE_LIMIT",
                 "too many cutting presets for one tool",
@@ -174,10 +301,19 @@ impl LibraryTool {
         let mut ids = BTreeSet::new();
         for preset in &self.cutting_presets {
             preset.validate()?;
-            if !ids.insert(&preset.id) {
+            if !ids.insert(preset.id.as_str()) {
                 return Err(error(
                     "LIBRARY_DUPLICATE_ID",
                     "cutting preset IDs must be unique within each tool",
+                ));
+            }
+        }
+        for preset in &self.knife_cutting_presets {
+            preset.validate()?;
+            if !ids.insert(preset.id.as_str()) {
+                return Err(error(
+                    "LIBRARY_DUPLICATE_ID",
+                    "knife preset IDs must be unique within each tool",
                 ));
             }
         }
@@ -194,6 +330,17 @@ impl LibraryTool {
                         "cutting preset {preset_id:?} not found in tool {:?}",
                         self.id
                     ),
+                )
+            })
+    }
+    pub fn knife_preset(&self, preset_id: &str) -> Result<&KnifeCuttingPreset> {
+        self.knife_cutting_presets
+            .iter()
+            .find(|p| p.id == preset_id)
+            .ok_or_else(|| {
+                error(
+                    "LIBRARY_NOT_FOUND",
+                    format!("knife preset {preset_id:?} not found in tool {:?}", self.id),
                 )
             })
     }
@@ -248,6 +395,25 @@ pub enum LibraryChange {
         preset_id: String,
     },
     DuplicatePreset {
+        tool_id: String,
+        preset_id: String,
+        new_id: String,
+        name: String,
+    },
+    /// Knife-preset CRUD; rejects milling tools (LIBRARY_TOOL_KIND).
+    AddKnifePreset {
+        tool_id: String,
+        preset: KnifeCuttingPreset,
+    },
+    ReplaceKnifePreset {
+        tool_id: String,
+        preset: KnifeCuttingPreset,
+    },
+    RemoveKnifePreset {
+        tool_id: String,
+        preset_id: String,
+    },
+    DuplicateKnifePreset {
         tool_id: String,
         preset_id: String,
         new_id: String,
@@ -360,7 +526,10 @@ impl ToolLibrary {
                 library.validate()?;
                 next.tools.extend(library.tools);
             }
-            change => {
+            change @ (LibraryChange::AddPreset { .. }
+            | LibraryChange::ReplacePreset { .. }
+            | LibraryChange::RemovePreset { .. }
+            | LibraryChange::DuplicatePreset { .. }) => {
                 let tool_id = match &change {
                     LibraryChange::AddPreset { tool_id, .. }
                     | LibraryChange::ReplacePreset { tool_id, .. }
@@ -399,6 +568,50 @@ impl ToolLibrary {
                     _ => unreachable!(),
                 }
             }
+            change @ (LibraryChange::AddKnifePreset { .. }
+            | LibraryChange::ReplaceKnifePreset { .. }
+            | LibraryChange::RemoveKnifePreset { .. }
+            | LibraryChange::DuplicateKnifePreset { .. }) => {
+                let tool_id = match &change {
+                    LibraryChange::AddKnifePreset { tool_id, .. }
+                    | LibraryChange::ReplaceKnifePreset { tool_id, .. }
+                    | LibraryChange::RemoveKnifePreset { tool_id, .. }
+                    | LibraryChange::DuplicateKnifePreset { tool_id, .. } => tool_id,
+                    _ => unreachable!(),
+                };
+                let index = next.tool_index(tool_id)?;
+                let tool = &mut next.tools[index];
+                match change {
+                    LibraryChange::AddKnifePreset { preset, .. } => {
+                        tool.knife_cutting_presets.push(preset)
+                    }
+                    LibraryChange::ReplaceKnifePreset { preset, .. } => {
+                        tool.knife_preset(&preset.id)?;
+                        let index = tool
+                            .knife_cutting_presets
+                            .iter()
+                            .position(|p| p.id == preset.id)
+                            .unwrap();
+                        tool.knife_cutting_presets[index] = preset;
+                    }
+                    LibraryChange::RemoveKnifePreset { preset_id, .. } => {
+                        tool.knife_preset(&preset_id)?;
+                        tool.knife_cutting_presets.retain(|p| p.id != preset_id);
+                    }
+                    LibraryChange::DuplicateKnifePreset {
+                        preset_id,
+                        new_id,
+                        name,
+                        ..
+                    } => {
+                        let mut preset = tool.knife_preset(&preset_id)?.clone();
+                        preset.id = new_id;
+                        preset.name = name;
+                        tool.knife_cutting_presets.push(preset);
+                    }
+                    _ => unreachable!(),
+                }
+            }
         }
         // validate() enforces the browser-exact upper bound before any save.
         next.revision += 1;
@@ -432,8 +645,67 @@ impl ToolLibrary {
             .iter()
             .position(|t| t.id == job_id)
             .ok_or_else(|| error("LIBRARY_NOT_FOUND", "job tool slot not found"))?;
-        candidate.tools[index] = tool.snapshot(job_id.to_owned(), preset);
+        candidate.tools[index] = tool.snapshot(job_id.to_owned(), preset)?;
         candidate.validate_settings()?;
+        Ok(candidate)
+    }
+
+    /// Apply a knife library tool (and optionally one of its typed presets)
+    /// to exactly one drag-knife operation of a canonical job: the job gains
+    /// or replaces a tool snapshot with that geometry, and only the selected
+    /// operation's assignment receives the preset values (plan sections 5.3
+    /// and 16.3 — applying to one operation never updates another).
+    pub fn apply_knife_to_job(
+        &self,
+        job: &CamJob,
+        operation_id: &str,
+        tool_id: &str,
+        preset_id: Option<&str>,
+    ) -> Result<CamJob> {
+        self.validate()?;
+        job.validate()?;
+        let tool = self.tool(tool_id)?;
+        let LibraryGeometry::DragKnife(spec) = &tool.geometry else {
+            return Err(error(
+                "LIBRARY_TOOL_KIND",
+                "tool is not a drag knife; use the milling preset application",
+            ));
+        };
+        let preset = preset_id.map(|id| tool.knife_preset(id)).transpose()?;
+        let mut candidate = job.clone();
+        let operation = candidate
+            .operations
+            .iter_mut()
+            .find(|op| op.id == operation_id)
+            .ok_or_else(|| {
+                error(
+                    "LIBRARY_NOT_FOUND",
+                    format!("operation {operation_id:?} not found in the job"),
+                )
+            })?;
+        let OperationSettings::DragKnife(settings) = &mut operation.settings else {
+            return Err(error(
+                "LIBRARY_TOOL_KIND",
+                format!("operation '{operation_id}' is not a drag-knife operation"),
+            ));
+        };
+        // The job tool snapshot is replaced or added under the library ID;
+        // the job keeps an independent copy (never a live dependency).
+        let snapshot = crate::project::JobTool {
+            id: tool.id.clone(),
+            name: tool.name.clone(),
+            geometry: Some(crate::project::ToolGeometry::DragKnife(spec.clone())),
+            capabilities: Default::default(),
+        };
+        match candidate.tools.iter_mut().find(|t| t.id == tool.id) {
+            Some(existing) => *existing = snapshot,
+            None => candidate.tools.push(snapshot),
+        }
+        settings.assignment.tool_id = tool.id.clone();
+        if let Some(preset) = preset {
+            preset.copy_into(&mut settings.assignment);
+        }
+        candidate.validate()?;
         Ok(candidate)
     }
 }

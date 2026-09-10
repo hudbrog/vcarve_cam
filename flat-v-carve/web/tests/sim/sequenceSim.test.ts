@@ -8,7 +8,7 @@ import {
   pageAllMotions, probeDepth, restoreCheckpoint, sequenceTools,
 } from '../../src/sim/sequenceSim';
 import { KIND_APPROACH, KIND_CUT, KIND_PLUNGE, KIND_RAMP, KIND_RAPID_RETRACT, KIND_RAPID_XY } from '../../src/sim/store';
-import type { PlannedMotion } from '../../src/contracts/sequence';
+import { plannedMotionSchema, type PlannedMotion } from '../../src/contracts/sequence';
 
 const job = {
   tools: [
@@ -149,5 +149,42 @@ describe('motion paging', () => {
     const stalled = await pageAllMotions(async () => ({ motions: { count: 0, total: 100, motions: [] } }));
     expect(stalled.motions).toEqual([]);
     expect(stalled.total).toBe(100);
+  });
+});
+
+// F1 knife display contract: knife motions program the holder pivot; the
+// visible tip derives from the blade offset and the modeled heading carried
+// on the motion. Knife tools never enter the milling field.
+describe('knife display contract', () => {
+  it('exposes knife tool geometry for pivot/tip traces without milling it', () => {
+    const tools = sequenceTools(job);
+    expect(tools.knifeTools).toEqual([{ id: 'k1', bladeOffsetMm: 1, maxCutDepthMm: 1 }]);
+    expect(tools.ids).toEqual(['t1', 't2']);
+    expect(tools.scanRadiusMm).toEqual([2, 6]);
+  });
+
+  it('parses knife motions that carry modeled blade headings', () => {
+    const parsed = plannedMotionSchema.parse({
+      ...motion(0, 'knife-op', 'k1', 'knife_swivel', 'knife_trace', 'linear_feed', [21, 0, -1], [20, 1, -1]),
+      bladeHeadingDeg: [180, 270],
+    });
+    expect(parsed.bladeHeadingDeg).toEqual([180, 270]);
+    // The heading is optional data on the wire; the store never cuts with it.
+    const store = buildSequenceStore([parsed], sequenceTools(job), ['knife-op']);
+    expect(store.kind[0]).toBe(KIND_APPROACH);
+  });
+
+  it('derives the blade tip from the pivot, heading and offset', () => {
+    // tip = pivot + offset * u(heading); the section-19.1 corner numbers.
+    const tip = (x: number, y: number, headingDeg: number, offset: number): [number, number] => [
+      x + offset * Math.cos(headingDeg * Math.PI / 180),
+      y + offset * Math.sin(headingDeg * Math.PI / 180),
+    ];
+    const cornerA = tip(11, 0, 180, 1);
+    const cornerB = tip(10, 1, 270, 1);
+    expect(cornerA[0]).toBeCloseTo(10, 9);
+    expect(cornerA[1]).toBeCloseTo(0, 9);
+    expect(cornerB[0]).toBeCloseTo(10, 9);
+    expect(cornerB[1]).toBeCloseTo(0, 9);
   });
 });

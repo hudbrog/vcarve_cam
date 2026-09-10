@@ -453,6 +453,7 @@ pub(crate) fn plan(
             start,
             end,
             feed_mm_min: feed,
+            blade_heading_deg: None,
         };
         next_id += 1;
         motion

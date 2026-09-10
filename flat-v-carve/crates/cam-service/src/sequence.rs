@@ -604,47 +604,47 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
         SequenceCommand::Contours { job } => {
             let job = parse_job(&job)?;
             let catalogue = cam_core::contours::ContourCatalogue::build(&job)?;
-            let contours: Vec<Value> = catalogue
-                .contours
-                .iter()
-                .map(|contour| {
-                    let mut min_x = f64::INFINITY;
-                    let mut min_y = f64::INFINITY;
-                    let mut max_x = f64::NEG_INFINITY;
-                    let mut max_y = f64::NEG_INFINITY;
-                    for vertex in &contour.vertices {
-                        min_x = min_x.min(vertex.x);
-                        min_y = min_y.min(vertex.y);
-                        max_x = max_x.max(vertex.x);
-                        max_y = max_y.max(vertex.y);
-                    }
-                    json!({
-                        "id": contour.id,
-                        "componentId": contour.component_id,
-                        "closed": contour.closed,
-                        "role": match contour.role {
-                            cam_core::contours::ContourRole::Outer => "outer",
-                            cam_core::contours::ContourRole::Hole => "hole",
-                            cam_core::contours::ContourRole::Open => "open",
-                        },
-                        "parentContourId": contour.parent_contour_id,
-                        "perimeterMm": contour.perimeter_mm,
-                        "suggestedSide": match contour.suggested_side() {
-                            cam_core::project::ContourSide::Inside => "inside",
-                            cam_core::project::ContourSide::Outside => "outside",
-                            cam_core::project::ContourSide::On => "on",
-                        },
-                        // Anchors (starts, manual tabs) bind to the source
-                        // geometry; the UI needs the fingerprint to build
-                        // them and detect stale attachments.
-                        "sourceFingerprint": contour.source_fingerprint,
-                        "bounds": {
-                            "minXmm": min_x, "minYmm": min_y, "maxXmm": max_x, "maxYmm": max_y,
-                        },
-                    })
+            let entry = |contour: &cam_core::contours::Contour| {
+                let mut min_x = f64::INFINITY;
+                let mut min_y = f64::INFINITY;
+                let mut max_x = f64::NEG_INFINITY;
+                let mut max_y = f64::NEG_INFINITY;
+                for vertex in &contour.vertices {
+                    min_x = min_x.min(vertex.x);
+                    min_y = min_y.min(vertex.y);
+                    max_x = max_x.max(vertex.x);
+                    max_y = max_y.max(vertex.y);
+                }
+                json!({
+                    "id": contour.id,
+                    "componentId": contour.component_id,
+                    "closed": contour.closed,
+                    "role": match contour.role {
+                        cam_core::contours::ContourRole::Outer => "outer",
+                        cam_core::contours::ContourRole::Hole => "hole",
+                        cam_core::contours::ContourRole::Open => "open",
+                    },
+                    "parentContourId": contour.parent_contour_id,
+                    "perimeterMm": contour.perimeter_mm,
+                    "suggestedSide": match contour.suggested_side() {
+                        cam_core::project::ContourSide::Inside => "inside",
+                        cam_core::project::ContourSide::Outside => "outside",
+                        cam_core::project::ContourSide::On => "on",
+                    },
+                    // Anchors (starts, manual tabs) bind to the source
+                    // geometry; the UI needs the fingerprint to build
+                    // them and detect stale attachments.
+                    "sourceFingerprint": contour.source_fingerprint,
+                    "bounds": {
+                        "minXmm": min_x, "minYmm": min_y, "maxXmm": max_x, "maxYmm": max_y,
+                    },
                 })
-                .collect();
-            Ok(json!({ "contours": contours }))
+            };
+            let contours: Vec<Value> = catalogue.contours.iter().map(entry).collect();
+            // Open centerline chains (knife import) carry the same shape with
+            // role "open"; their vertices stay in source order.
+            let open_chains: Vec<Value> = catalogue.open_chains.iter().map(entry).collect();
+            Ok(json!({ "contours": contours, "openChains": open_chains }))
         }
         SequenceCommand::Export { job, profile } => {
             let job = parse_job(&job)?;
@@ -669,16 +669,19 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
         SequenceCommand::Capabilities => Ok(json!({
             "apiVersion": SEQUENCE_API_VERSION,
             "engineVersion": ENGINE_VERSION,
-            // Advertise only implemented features (plan section 16.2).
+            // Advertise only implemented features (plan section 16.2). The
+            // drag-knife planner is not implemented yet: knife data/import
+            // exist, but the operation kind stays unadvertised until F2/F3.
             "operationKinds": ["flat_vcarve", "face", "profile"],
             "planScopes": ["all_enabled", "through_operation"],
             "features": {
-                "openContours": false,
+                "openContours": true,
                 "rampedTabs": false,
                 "rotatedFacing": false,
                 "profileFinishing": true,
                 "profileEntries": true,
                 "knifeReplay": false,
+                "knifeToolLibrary": true,
                 "legacyJobMigration": true,
                 "contourCatalogue": true,
                 "motionPaging": true,

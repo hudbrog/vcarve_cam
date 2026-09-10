@@ -400,6 +400,7 @@ fn map_motions(
                 start: m.start,
                 end: m.end,
                 feed_mm_min: m.feed_mm_min,
+                blade_heading_deg: None,
             }
         })
         .collect()

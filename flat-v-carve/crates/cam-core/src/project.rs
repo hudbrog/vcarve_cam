@@ -223,7 +223,7 @@ pub struct DragKnifeSpec {
     pub max_cut_depth_mm: f64,
 }
 impl DragKnifeSpec {
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if !self.blade_offset_mm.is_finite()
             || self.blade_offset_mm <= 0.
             || !self.max_cut_depth_mm.is_finite()

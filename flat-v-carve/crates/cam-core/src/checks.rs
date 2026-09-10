@@ -10,7 +10,7 @@ use crate::{
     sequence::{
         ExecutionItem, ExecutionStage, GenerationStatus, OperationPlan, ProcessSpindle, StageRole,
     },
-    toolpath::{Interpolation, MotionEffect},
+    toolpath::{Interpolation, MotionEffect, MotionPurpose},
 };
 use serde::{Deserialize, Serialize};
 
@@ -222,9 +222,11 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
                 }
             }
         }
+        let role = stage_role(plan, &motion.stage_id);
+        let knife_stage = role == Some(StageRole::Knife);
         if motion.effect == MotionEffect::MillingSweep
             && !matches!(
-                stage_role(plan, &motion.stage_id),
+                role,
                 Some(
                     StageRole::VcarveRough
                         | StageRole::VcarveFinish
@@ -239,6 +241,76 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
                 format!("motion {} removes stock outside a milling stage", motion.id),
             );
             f.stage_id = Some(motion.stage_id.clone());
+            findings.push(f);
+            failed = true;
+        }
+        // Knife semantics: blade traces and knife purposes belong to knife
+        // stages only, and every knife motion carries the modeled blade
+        // headings the pivot/tip display contract needs (plan sections 12.1
+        // and 15.3). Milling motions never carry headings.
+        if motion.effect == MotionEffect::KnifeTrace && !knife_stage {
+            let mut f = finding(
+                "PLAN_EFFECT_ROLE_MISMATCH",
+                format!(
+                    "motion {} traces knife material outside a knife stage",
+                    motion.id
+                ),
+            );
+            f.stage_id = Some(motion.stage_id.clone());
+            findings.push(f);
+            failed = true;
+        }
+        if matches!(
+            motion.purpose,
+            MotionPurpose::KnifeCut | MotionPurpose::KnifeAlign | MotionPurpose::KnifeSwivel
+        ) && !knife_stage
+        {
+            let mut f = finding(
+                "PLAN_EFFECT_ROLE_MISMATCH",
+                format!(
+                    "motion {} uses a knife purpose outside a knife stage",
+                    motion.id
+                ),
+            );
+            f.stage_id = Some(motion.stage_id.clone());
+            findings.push(f);
+            failed = true;
+        }
+        match (&motion.blade_heading_deg, knife_stage) {
+            (None, true) => {
+                let mut f = finding(
+                    "PLAN_KNIFE_HEADING",
+                    format!(
+                        "knife motion {} lacks the modeled blade heading the tip display needs",
+                        motion.id
+                    ),
+                );
+                f.stage_id = Some(motion.stage_id.clone());
+                findings.push(f);
+                failed = true;
+            }
+            (Some(_), false) => {
+                let mut f = finding(
+                    "PLAN_KNIFE_HEADING",
+                    format!(
+                        "motion {} carries blade headings outside a knife stage",
+                        motion.id
+                    ),
+                );
+                f.stage_id = Some(motion.stage_id.clone());
+                findings.push(f);
+                failed = true;
+            }
+            _ => {}
+        }
+        if let Some((start, end)) = motion.blade_heading_deg
+            && (!start.is_finite() || !end.is_finite())
+        {
+            let mut f = finding(
+                "PLAN_MOTION_NUMERIC",
+                format!("motion {} has non-finite blade headings", motion.id),
+            );
+            f.operation_id = Some(motion.operation_id.clone());
             findings.push(f);
             failed = true;
         }

@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type Dispatch } from 'react';
 import type { CamService, Capabilities } from '../contracts/service';
 import { toolLibrarySchema, slotIndex, type LibraryConnection, type LibraryJobInput,
   type LibrarySnapshot, type LibraryTool, type CuttingPreset, type ToolSlot, type LibraryChange } from '../contracts/library';
-import { libraryText, libraryToolFields, presetFields, parseLibraryTool, parseLibraryPreset, resolveDraftLibraryTool, draftToolChanges,
-  displayLibraryValue, type LibraryFields, type LibraryField, type DraftLibraryReview, type DraftLibrarySelection } from '../state/library';
+import { libraryText, libraryToolFields, presetFields, knifePresetFields, parseLibraryTool, parseLibraryPreset, resolveDraftLibraryTool, draftToolChanges,
+  displayLibraryValue, type LibraryFields, type LibraryField, type LibraryGeometryKind, type DraftLibraryReview, type DraftLibrarySelection } from '../state/library';
 import type { WorkspaceAction } from '../state/workspace';
 import { containDialogFocus } from './dialogFocus';
 import { downloadText } from './ExportPanel';
@@ -14,7 +14,7 @@ import type { LibraryAssignment } from '../service/useLibraryAssignments';
 export interface LibraryOpen { serial: number; slot?: ToolSlot }
 type Mode = 'tool' | 'preset' | 'duplicate-tool' | 'duplicate-preset' | 'remove-tool' | 'remove-preset' | 'import' | 'capture';
 interface Editor {
-  mode: Mode; connection: LibraryConnection; revision: number; text: LibraryFields; geometry: ToolSlot;
+  mode: Mode; connection: LibraryConnection; revision: number; text: LibraryFields; geometry: LibraryGeometryKind;
   tool?: LibraryTool; preset?: CuttingPreset; json?: string; source?: LibraryJobInput; includePreset: boolean;
 }
 const identity = (s: LibrarySnapshot): LibraryConnection => ({ instanceId: s.instanceId, engineVersion: s.engineVersion });
@@ -86,7 +86,9 @@ export function ToolLibraryDialog({ request, service, capabilities, draft, revis
     setReview(null); setError(''); setMessage('');
   }
   function update(path: string, value: string) { setEditor(e => e && ({ ...e, text: { ...e.text, [path]: value } })); }
-  const parsedTool = editor?.mode === 'tool' ? parseLibraryTool(editor.text, editor.geometry, editor.tool?.cutting_presets) : null;
+  const parsedTool = editor?.mode === 'tool'
+    ? parseLibraryTool(editor.text, editor.geometry, editor.tool?.cutting_presets, editor.tool?.knife_cutting_presets)
+    : null;
   const parsedPreset = editor?.mode === 'preset' ? parseLibraryPreset(editor.text) : null;
   const basicValid = !!editor?.text.id?.match(/^[A-Za-z0-9_-]{1,100}$/) && !!editor.text.name?.trim();
   const canSave = !!editor && editorCurrent && !busy && (editor.mode === 'tool' ? !!parsedTool : editor.mode === 'preset' ? !!parsedPreset
@@ -97,10 +99,14 @@ export function ToolLibraryDialog({ request, service, capabilities, draft, revis
     await run(async () => {
       const e = editor; let result: LibrarySnapshot;
       if (e.mode === 'import') result = await service.importLibrary!(e.connection, e.revision, e.json!);
-      else if (e.mode === 'capture') result = await service.captureLibraryTool!(e.connection, {
-        ...e.source!, expectedRevision: e.revision, slot: e.geometry, toolId: e.text.id, name: e.text.name,
-        preset: e.includePreset ? { id: e.text.presetId ?? '', name: e.text.presetName ?? '', material: e.text.material || null, machine: e.text.machine || null } : null,
-      });
+      else if (e.mode === 'capture') {
+        // Capture always starts from a job tool slot, never from knife geometry.
+        if (e.geometry === 'drag_knife') throw new Error('Job tool slots never hold knife geometry.');
+        result = await service.captureLibraryTool!(e.connection, {
+          ...e.source!, expectedRevision: e.revision, slot: e.geometry, toolId: e.text.id, name: e.text.name,
+          preset: e.includePreset ? { id: e.text.presetId ?? '', name: e.text.presetName ?? '', material: e.text.material || null, machine: e.text.machine || null } : null,
+        });
+      }
       else {
         let change: LibraryChange;
         switch (e.mode) {
@@ -170,7 +176,7 @@ export function ToolLibraryDialog({ request, service, capabilities, draft, revis
       <label className="field"><span>Search tools and presets</span><input value={query} onChange={e => { setQuery(e.target.value); setLimit(50); }} /></label>
       <label className="field"><span>Cutter filter</span><select value={filter} onChange={e => { setFilter(e.target.value as typeof filter); setLimit(50); }}><option value="all">All cutters</option><option value="endmill">Endmills</option><option value="vbit">V-bits</option></select></label>
       <p className="hint">{visible.length} tools</p><div className="library-list">{visible.slice(0, limit).map(t => <button key={t.id} disabled={busy || !!editor} aria-pressed={selected === t.id}
-        onClick={() => { setSelected(t.id); setPresetId(undefined); setReview(null); }}><strong>{t.name}</strong><small>{t.id} · {t.geometry.kind} · {t.cutting_presets.length} presets</small>{selected === t.id && <span className="library-selection-badge">Selected for review</span>}</button>)}</div>
+        onClick={() => { setSelected(t.id); setPresetId(undefined); setReview(null); }}><strong>{t.name}</strong><small>{t.id} · {t.geometry.kind} · {(t.geometry.kind === 'drag_knife' ? t.knife_cutting_presets.length : t.cutting_presets.length)} presets</small>{selected === t.id && <span className="library-selection-badge">Selected for review</span>}</button>)}</div>
       {visible.length > limit && <button onClick={() => setLimit(n => n + 50)}>Show more tools</button>}
       {!library.tools.length && <p className="hint">No tools saved yet.</p>}
       <div className="dialog-divider">CURRENT JOB</div><label className="field"><span>Job tool slot</span><select value={slot} disabled={busy || !!editor} onChange={e => { setSlot(e.target.value as ToolSlot); setReview(null); }}><option value="endmill">Endmill clearing</option><option value="vbit">V-bit rest & finish</option></select></label>
@@ -179,7 +185,7 @@ export function ToolLibraryDialog({ request, service, capabilities, draft, revis
     </section><section aria-label="Tool details" className="library-details">
       {editor ? <fieldset className="library-form" disabled={busy}><legend>{title}</legend><p className="hint">Editing library revision {editor.revision}. Closing this dialog keeps unfinished fields until this tab reloads.</p>
         {!editorCurrent && <p role="alert" className="inline-warning">The library changed. Your fields have been kept. Discard this edit and open the latest record before saving.</p>}
-        {editor.mode === 'tool' && <><label className="field"><span>Cutter type</span><select disabled={!!editor.tool || busy} value={editor.geometry} onChange={e => setEditor({ ...editor, geometry: e.target.value as ToolSlot })}><option value="endmill">Endmill</option><option value="vbit">V-bit</option></select></label>
+        {editor.mode === 'tool' && <><label className="field"><span>Cutter type</span><select disabled={!!editor.tool || busy} value={editor.geometry} onChange={e => setEditor({ ...editor, geometry: e.target.value as ToolSlot })}><option value="endmill">Endmill</option><option value="vbit">V-bit</option>{editor.geometry === 'drag_knife' && <option value="drag_knife">Drag knife</option>}</select></label>
           <FormFields fields={libraryToolFields(editor.geometry)} text={editor.text} lockedId={!!editor.tool} update={update} /><p className="hint">All geometry fields are required. Nullable capabilities may be left unspecified. Existing presets are preserved.</p></>}
         {editor.mode === 'preset' && <><FormFields fields={presetFields} text={editor.text} lockedId={!!editor.preset} update={update} /><p className="hint">Blank cutting values mean not specified. Context labels describe intended use and do not validate a material or machine.</p></>}
         {editor.mode.startsWith('duplicate') && <FormFields fields={metadataFields(editor.mode === 'duplicate-preset')} text={editor.text} update={update} />}
@@ -194,9 +200,12 @@ export function ToolLibraryDialog({ request, service, capabilities, draft, revis
       </fieldset> : tool ? <><LibraryApplyPanel tool={tool} slot={slot} presetId={presetId} onPreset={id => {setPresetId(id);setReview(null);}} review={review} current={reviewCurrent} jobAvailable={slotIndex(draft.base,slot) >= 0} busy={busy} onReview={() => void preview()} onApply={() => void apply()} />
         <details><summary>Manage this tool and its cutting presets</summary><h3>{tool.name}</h3><p className="hint">{tool.id}</p><table className="stock-metrics"><caption>Tool geometry and capabilities</caption><tbody>{libraryToolFields(tool.geometry.kind).slice(2).map(f => <tr key={f.path}><th>{f.label}</th><td>{displayLibraryValue(readPath(tool, f.path))}</td></tr>)}</tbody></table>
         <div className="inline-actions"><button disabled={busy} onClick={() => start('tool', tool)}>Edit tool</button><button disabled={busy} onClick={() => start('duplicate-tool', tool)}>Duplicate tool</button><button disabled={busy} onClick={() => start('remove-tool', tool)}>Remove tool</button></div>
-        <h3>Cutting presets</h3>{tool.cutting_presets.map(p => <details key={p.id} className="library-preset"><summary>{p.name}</summary><p className="hint">{p.id}</p><table className="stock-metrics"><tbody>{presetFields.slice(2).map(f => <tr key={f.path}><th>{f.label}</th><td>{displayLibraryValue(p[f.path as keyof CuttingPreset])}</td></tr>)}</tbody></table>
-          <div className="inline-actions"><button disabled={busy} onClick={() => start('preset', tool, p)}>Edit preset</button><button disabled={busy} onClick={() => start('duplicate-preset', tool, p)}>Duplicate preset</button><button disabled={busy} onClick={() => start('remove-preset', tool, p)}>Remove preset</button></div></details>)}
-        <button disabled={busy} onClick={() => start('preset', tool)}>Add cutting preset</button>
+        {tool.geometry.kind === 'drag_knife'
+          ? <><h3>Knife cutting presets</h3>{tool.knife_cutting_presets.map(p => <details key={p.id} className="library-preset"><summary>{p.name}</summary><p className="hint">{p.id}</p><table className="stock-metrics"><tbody>{knifePresetFields.slice(2).map(f => <tr key={f.path}><th>{f.label}</th><td>{displayLibraryValue(p[f.path as keyof typeof p])}</td></tr>)}</tbody></table></details>)}
+            <p className="hint">Knife presets carry cutting, plunge and swivel feeds — no spindle speed or stepover. Editing them here arrives with the knife workflow; the library data itself is complete.</p></>
+          : <><h3>Cutting presets</h3>{tool.cutting_presets.map(p => <details key={p.id} className="library-preset"><summary>{p.name}</summary><p className="hint">{p.id}</p><table className="stock-metrics"><tbody>{presetFields.slice(2).map(f => <tr key={f.path}><th>{f.label}</th><td>{displayLibraryValue(p[f.path as keyof CuttingPreset])}</td></tr>)}</tbody></table>
+            <div className="inline-actions"><button disabled={busy} onClick={() => start('preset', tool, p)}>Edit preset</button><button disabled={busy} onClick={() => start('duplicate-preset', tool, p)}>Duplicate preset</button><button disabled={busy} onClick={() => start('remove-preset', tool, p)}>Remove preset</button></div></details>)}
+          <button disabled={busy} onClick={() => start('preset', tool)}>Add cutting preset</button></>}
         </details>
       </> : <p className="hint">Select a tool to inspect its geometry, manage presets, or review changes to your job.</p>}
     </section></div>}

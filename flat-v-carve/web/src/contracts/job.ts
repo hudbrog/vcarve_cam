@@ -26,6 +26,9 @@ export const toolSchema = z.strictObject({
 export const importSchema = z.strictObject({
   geometry_tolerance_mm: number, ticks_per_mm: optionalNumber,
   placement: z.strictObject({ origin_mm: pointSchema, scale: number, rotation_deg: number }),
+  // Centerline mode imports stroked/line artwork as knife centerlines; it is
+  // absent from legacy documents (fill-only behavior).
+  mode: z.enum(['fill', 'centerline']).optional(),
 });
 export const stockSchema = z.strictObject({ thickness_mm: optionalNumber });
 export const operationSchema = z.strictObject({

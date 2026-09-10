@@ -10,15 +10,29 @@ export const slotSchema = z.enum(['endmill','vbit']);
 export type ToolSlot = z.infer<typeof slotSchema>;
 export const cuttingPresetSchema = z.strictObject({id:libraryId,name:label,material:label.nullable().default(null),machine:label.nullable().default(null),
   spindle_rpm:scalar,cutting_feed_mm_min:scalar,plunge_feed_mm_min:scalar,max_stepdown_mm:scalar,stepover_mm:scalar});
+// Typed knife presets (plan section 5.3): swivel feed instead of stepover,
+// and no spindle speed — a passive knife never spins.
+export const knifeCuttingPresetSchema = z.strictObject({id:libraryId,name:label,material:label.nullable().default(null),machine:label.nullable().default(null),
+  cutting_feed_mm_min:scalar,plunge_feed_mm_min:scalar,swivel_feed_mm_min:scalar,max_stepdown_mm:scalar});
+export const dragKnifeSpecSchema = z.strictObject({blade_offset_mm:z.number().finite().positive(),max_cut_depth_mm:z.number().finite().positive()});
+export const libraryGeometrySchema = z.discriminatedUnion('kind',[
+  z.strictObject({kind:z.literal('endmill'),dimensions:endmillSpecSchema}),
+  z.strictObject({kind:z.literal('vbit'),dimensions:vbitSpecSchema}),
+  z.strictObject({kind:z.literal('drag_knife'),dimensions:dragKnifeSpecSchema}),
+]);
 export const libraryToolSchema = z.strictObject({id:libraryId,name:label,
-  geometry:z.discriminatedUnion('kind',[
-    z.strictObject({kind:z.literal('endmill'),dimensions:endmillSpecSchema}),
-    z.strictObject({kind:z.literal('vbit'),dimensions:vbitSpecSchema}),
-  ]),ramp_capable:z.boolean().nullable().default(null),plunge_capable:z.boolean().nullable().default(null),cutting_presets:z.array(cuttingPresetSchema).max(100),
-}).refine(t => new Set(t.cutting_presets.map(p => p.id)).size === t.cutting_presets.length);
+  geometry:libraryGeometrySchema,
+  ramp_capable:z.boolean().nullable().default(null),plunge_capable:z.boolean().nullable().default(null),
+  cutting_presets:z.array(cuttingPresetSchema).max(100),
+  // Knife tools carry typed knife presets; the list is additive so legacy
+  // libraries without it keep loading.
+  knife_cutting_presets:z.array(knifeCuttingPresetSchema).max(100).default([]),
+}).refine(t => new Set(t.cutting_presets.map(p => p.id)).size === t.cutting_presets.length
+  && new Set(t.knife_cutting_presets.map(p => p.id)).size === t.knife_cutting_presets.length);
 export const toolLibrarySchema = z.strictObject({schema_version:z.literal(1),revision,tools:z.array(libraryToolSchema).max(1000)})
   .refine(l => new Set(l.tools.map(t => t.id)).size === l.tools.length);
 export type CuttingPreset = z.infer<typeof cuttingPresetSchema>;
+export type KnifeCuttingPreset = z.infer<typeof knifeCuttingPresetSchema>;
 export type LibraryTool = z.infer<typeof libraryToolSchema>;
 export type ToolLibrary = z.infer<typeof toolLibrarySchema>;
 export interface LibraryConnection {instanceId:string;engineVersion:string}
@@ -32,7 +46,10 @@ export type LibraryChange =
   | {kind:'duplicate_tool';tool_id:string;new_id:string;name:string}
   | {kind:'add_preset'|'replace_preset';tool_id:string;preset:CuttingPreset}
   | {kind:'remove_preset';tool_id:string;preset_id:string}
-  | {kind:'duplicate_preset';tool_id:string;preset_id:string;new_id:string;name:string};
+  | {kind:'duplicate_preset';tool_id:string;preset_id:string;new_id:string;name:string}
+  | {kind:'add_knife_preset'|'replace_knife_preset';tool_id:string;preset:KnifeCuttingPreset}
+  | {kind:'remove_knife_preset';tool_id:string;preset_id:string}
+  | {kind:'duplicate_knife_preset';tool_id:string;preset_id:string;new_id:string;name:string};
 const frame = {apiVersion:z.literal(apiVersion),engineVersion:z.string(),instanceId:z.string().regex(/^[a-f0-9]{32}$/),requestId:z.string()};
 export const librarySnapshotSchema = z.strictObject({...frame,data:z.discriminatedUnion('state',[
   z.strictObject({state:z.literal('missing'),library:z.null()}),

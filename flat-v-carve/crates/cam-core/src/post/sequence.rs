@@ -383,7 +383,13 @@ fn resolve_process(
     };
     Ok(PreparedProcess {
         spindle,
-        coolant: profile.coolant,
+        coolant: match stage.role {
+            // Knife stages always run coolant off and exact path (plan
+            // sections 12.5 and 14.4): no machine-profile coolant or blend
+            // tolerance may leak into swivel geometry.
+            StageRole::Knife => Coolant::Off,
+            _ => profile.coolant,
+        },
         path_control: match stage.role {
             // Knife stages always run exact path; blending could change
             // swivel geometry (plan section 12.5).
@@ -541,7 +547,7 @@ impl PreparedExecution {
             "M5".into(),
             "M9".into(),
         ];
-        lines.extend(modal_lines(profile));
+        lines.extend(modal_lines(&profile.work_offset, profile.path_control));
         let mut previous_stage_end = profile.program_start_position_mm;
         // Per-stage count of machine-owned bridge blocks written after the
         // M6/modal group; the readback skips exactly these positioning moves
@@ -558,9 +564,15 @@ impl PreparedExecution {
             lines.push("M5".into());
             lines.push("M9".into());
             lines.push(format!("T{} M6", prepared.tool_number));
+            // Explicit spindle-off and coolant-off state after the tool
+            // change (plan section 14.4), then this stage's path-control
+            // mode — exact path for knife stages even under a blend profile.
             lines.push("M5".into());
             lines.push("M9".into());
-            lines.extend(modal_lines(profile));
+            lines.extend(modal_lines(
+                &profile.work_offset,
+                prepared.process.path_control,
+            ));
             if profile.length_compensation == LengthCompensation::ToolTable {
                 lines.push(format!(
                     "G43 H{}",
@@ -712,11 +724,13 @@ fn readback(
     let mut motions: Vec<ReadbackMotion> = vec![];
     let mut tool_changes: Vec<u32> = vec![];
     let mut spindle_on = false;
+    let mut coolant_on = false;
     let mut tool: Option<u32> = None;
     let mut feed: Option<f64> = None;
-    // Spindle state sampled right before each motion, per stage slot.
+    // Spindle/coolant state sampled right before each motion, per stage slot.
     let mut stage_of_motion: Vec<usize> = vec![];
     let mut spindle_on_at_motion: Vec<bool> = vec![];
+    let mut coolant_on_at_motion: Vec<bool> = vec![];
     for (number, raw) in gcode.lines().enumerate() {
         let line = raw.trim();
         if line.is_empty() || (line.starts_with('(') && line.ends_with(')')) {
@@ -738,12 +752,19 @@ fn readback(
                 tool_changes.push(t);
                 tool = Some(t);
                 spindle_on = false;
+                coolant_on = false;
             }
             if token == "M3" || token == "M4" {
                 spindle_on = true;
             }
             if token == "M5" {
                 spindle_on = false;
+            }
+            if token == "M7" || token == "M8" {
+                coolant_on = true;
+            }
+            if token == "M9" {
+                coolant_on = false;
             }
         }
         if !(line.starts_with("G0 ")
@@ -828,6 +849,7 @@ fn readback(
         }
         stage_of_motion.push(slot);
         spindle_on_at_motion.push(spindle_on);
+        coolant_on_at_motion.push(coolant_on);
         let _ = places;
     }
     // Tool changes must match the stages in order, one per stage.
@@ -840,8 +862,8 @@ fn readback(
             ),
         ));
     }
-    // Spindle state per stage: On stages cut with the spindle running, Off
-    // stages never do.
+    // Spindle/coolant state per stage: On stages cut with the spindle running
+    // and the prepared coolant, Off stages (knife) run with both off.
     for (index, _) in motions.iter().enumerate() {
         let slot = stage_of_motion[index];
         let Some(stage) = prepared.stages.get(slot) else {
@@ -857,6 +879,21 @@ fn readback(
                 format!(
                     "spindle {} while cutting stage '{}'",
                     if spindle_on_at_motion[index] {
+                        "runs"
+                    } else {
+                        "is off"
+                    },
+                    stage.stage.stage_id
+                ),
+            ));
+        }
+        let should_cool = matches!(stage.process.coolant, Coolant::Flood | Coolant::Mist);
+        if should_cool != coolant_on_at_motion[index] {
+            return Err(error(
+                "PROCESS_COOLANT_STATE",
+                format!(
+                    "coolant {} during stage '{}'",
+                    if coolant_on_at_motion[index] {
                         "runs"
                     } else {
                         "is off"
@@ -957,8 +994,8 @@ fn role_name(role: StageRole) -> &'static str {
     }
 }
 
-fn modal_lines(profile: &SequenceProfile) -> Vec<String> {
-    let path_mode = match profile.path_control {
+fn modal_lines(work_offset: &str, path_control: PathControl) -> Vec<String> {
+    let path_mode = match path_control {
         PathControl::ExactPath => "G61".to_string(),
         PathControl::Blend {
             tolerance_mm,
@@ -970,7 +1007,7 @@ fn modal_lines(profile: &SequenceProfile) -> Vec<String> {
     };
     vec![
         format!("G21 G17 G90 G94 G40 G80 {path_mode}"),
-        profile.work_offset.clone(),
+        work_offset.to_string(),
         "G92.1".into(),
     ]
 }

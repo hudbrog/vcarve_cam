@@ -73,6 +73,11 @@ export const plannedMotionSchema = z.strictObject({
   start: z.strictObject({ x: z.number(), y: z.number(), z: z.number() }),
   end: z.strictObject({ x: z.number(), y: z.number(), z: z.number() }),
   feedMmMin: z.number().positive().nullable().optional(),
+  // Knife stages only: the modeled blade heading (degrees CCW from +X, the
+  // direction the blade points from the holder pivot toward the tip) at the
+  // motion's start and end. Knife XY is the pivot; the tip shown to the user
+  // derives from this heading and the tool's blade offset.
+  bladeHeadingDeg: z.tuple([z.number(), z.number()]).optional(),
 });
 export type PlannedMotion = z.infer<typeof plannedMotionSchema>;
 
@@ -156,8 +161,12 @@ export const contourInfoSchema = z.strictObject({
     minXmm: z.number(), minYmm: z.number(), maxXmm: z.number(), maxYmm: z.number(),
   }),
 });
+// Open centerline chains (knife import): same entry shape, role 'open',
+// suggestedSide 'on' (the knife rides the centerline itself). Their vertices
+// stay in source order with source direction.
 export const contourCatalogueResultSchema = z.strictObject({
   contours: z.array(contourInfoSchema),
+  openChains: z.array(contourInfoSchema),
 });
 export type ContourInfo = z.infer<typeof contourInfoSchema>;
 export type ContourCatalogueResult = z.infer<typeof contourCatalogueResultSchema>;

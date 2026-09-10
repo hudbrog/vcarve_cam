@@ -1,9 +1,13 @@
-import { cuttingPresetSchema, libraryToolSchema, onlyToolChanged, slotIndex, type CuttingPreset, type LibraryTool, type ToolSlot, type LibraryConnection, type LibrarySnapshot } from '../contracts/library';
+import { cuttingPresetSchema, libraryToolSchema, onlyToolChanged, slotIndex, type CuttingPreset, type KnifeCuttingPreset, type LibraryTool, type ToolSlot, type LibraryConnection, type LibrarySnapshot } from '../contracts/library';
 import { toolSchema, type Job } from '../contracts/job';
 import { fieldText, parseNumeric, readPath, toolFields, type Draft } from './draft';
 
 export type LibraryFields = Record<string,string>;
 export interface LibraryField {path:string;label:string;kind?:'number'|'boolean';required?:boolean}
+/** Library geometry kinds: the two legacy milling slots plus the drag knife
+ * (knife tools are listed and editable as geometry, but never apply to a
+ * legacy job slot). */
+export type LibraryGeometryKind = ToolSlot | 'drag_knife';
 export const presetFields:LibraryField[] = [
   {path:'id',label:'Preset ID',required:true},{path:'name',label:'Preset name',required:true},
   {path:'material',label:'Material context'},{path:'machine',label:'Machine context'},
@@ -13,17 +17,29 @@ export const presetFields:LibraryField[] = [
   {path:'max_stepdown_mm',label:'Maximum stepdown (mm)',kind:'number'},
   {path:'stepover_mm',label:'Stepover (mm)',kind:'number'},
 ];
-export function libraryToolFields(kind:ToolSlot):LibraryField[] {
+export const knifePresetFields:LibraryField[] = [
+  {path:'id',label:'Preset ID',required:true},{path:'name',label:'Preset name',required:true},
+  {path:'material',label:'Material context'},{path:'machine',label:'Machine context'},
+  {path:'cutting_feed_mm_min',label:'Cutting feed (mm/min)',kind:'number'},
+  {path:'plunge_feed_mm_min',label:'Plunge feed (mm/min)',kind:'number'},
+  {path:'swivel_feed_mm_min',label:'Swivel feed (mm/min)',kind:'number'},
+  {path:'max_stepdown_mm',label:'Maximum stepdown (mm)',kind:'number'},
+];
+export function libraryToolFields(kind:LibraryGeometryKind):LibraryField[] {
   const dimensions:LibraryField[] = kind === 'endmill' ? [
     {path:'diameter_mm',label:'Diameter (mm)'},{path:'cutting_length_mm',label:'Usable cutting length (mm)'},
     {path:'plunge_capable',label:'Geometry supports plunge',kind:'boolean'},
-  ] : [
+  ] : kind === 'vbit' ? [
     {path:'included_angle_deg',label:'Included angle (°)'},{path:'tip_diameter_mm',label:'Actual flat-tip diameter (mm)'},
     {path:'max_cutting_diameter_mm',label:'Maximum cutting diameter (mm)'},{path:'cutting_height_mm',label:'Usable cutting height (mm)'},
+  ] : [
+    {path:'blade_offset_mm',label:'Blade offset, pivot to tip (mm)'},{path:'max_cut_depth_mm',label:'Maximum cut depth (mm)'},
   ];
+  const capabilities:LibraryField[] = kind === 'drag_knife' ? [] : [
+    {path:'plunge_capable',label:'Plunge capability',kind:'boolean'},{path:'ramp_capable',label:'Ramp capability',kind:'boolean'}];
   return [{path:'id',label:'Tool ID',required:true},{path:'name',label:'Tool name',required:true},
     ...dimensions.map(f => ({...f,path:`geometry.dimensions.${f.path}`,kind:f.kind ?? 'number' as const,required:true})),
-    {path:'plunge_capable',label:'Plunge capability',kind:'boolean'},{path:'ramp_capable',label:'Ramp capability',kind:'boolean'}];
+    ...capabilities];
 }
 export function libraryText(record:unknown,fields:LibraryField[]):LibraryFields {
   return Object.fromEntries(fields.map(f => {const v=readPath(record,f.path);return [f.path,v === null || v === undefined ? '' : String(v)];}));
@@ -39,9 +55,11 @@ function values(text:LibraryFields,fields:LibraryField[]) {
   }
   return result;
 }
-export function parseLibraryTool(text:LibraryFields,kind:ToolSlot,presets:CuttingPreset[] = []):LibraryTool|null {
+export function parseLibraryTool(text:LibraryFields,kind:LibraryGeometryKind,presets:CuttingPreset[] = [],knifePresets:KnifeCuttingPreset[] = []):LibraryTool|null {
   const record=values(text,libraryToolFields(kind));
-  const parsed=libraryToolSchema.safeParse({...record,geometry:{...(record.geometry as object),kind},cutting_presets:presets});
+  const parsed=libraryToolSchema.safeParse({...record,geometry:{...(record.geometry as object),kind},
+    cutting_presets:kind === 'drag_knife' ? [] : presets,
+    knife_cutting_presets:kind === 'drag_knife' ? knifePresets : []});
   return parsed.success ? parsed.data : null;
 }
 export function parseLibraryPreset(text:LibraryFields):CuttingPreset|null {
@@ -81,7 +99,7 @@ export function applyLibraryToolToDraft(draft:Draft,slot:ToolSlot,settings:Job['
   const base=structuredClone(draft.base); base.tools[index]=checked;
   return {...draft,base,text:Object.fromEntries(Object.entries(draft.text).filter(([path]) => !path.startsWith(`tools.${index}.`)))};
 }
-const labels:Record<string,string> = Object.fromEntries([...presetFields,...libraryToolFields('endmill'),...libraryToolFields('vbit')].map(f => [f.path,f.label]));
+const labels:Record<string,string> = Object.fromEntries([...presetFields,...knifePresetFields,...libraryToolFields('endmill'),...libraryToolFields('vbit'),...libraryToolFields('drag_knife')].map(f => [f.path,f.label]));
 labels['geometry.kind']='Cutter type';
 function leaves(value:unknown,prefix=''):string[] {
   if (value !== null && typeof value === 'object') return Object.entries(value).flatMap(([k,v]) => leaves(v,prefix ? `${prefix}.${k}` : k));

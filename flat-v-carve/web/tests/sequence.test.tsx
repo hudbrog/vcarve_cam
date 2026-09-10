@@ -80,6 +80,12 @@ function contoursData() {
       sourceFingerprint: 'fp-1',
       bounds: { minXmm: 5, minYmm: 5, maxXmm: 35, maxYmm: 25 },
     }],
+    openChains: [{
+      id: 'cut-0-chain-0', componentId: 'cut-0', closed: false, role: 'open',
+      parentContourId: null, perimeterMm: 40, suggestedSide: 'on',
+      sourceFingerprint: 'fp-chain-1',
+      bounds: { minXmm: 5, minYmm: 5, maxXmm: 35, maxYmm: 5 },
+    }],
   };
 }
 const timelineMotions = Array.from({ length: 5 }, (_, index) => ({

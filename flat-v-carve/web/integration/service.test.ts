@@ -347,7 +347,7 @@ describe('live Rust/UI contract and CLI parity', () => {
     await expect(service.openJob!(JSON.stringify(opened.job), 7)).rejects.toThrow(/JOB_PARAMETER/);
   });
   it('normalizes changed artwork placement and roundtrips the browser adapter snapshot through Rust', async () => {
-    const options = { geometry_tolerance_mm: 0.001, ticks_per_mm: null, placement: { origin_mm: { x: 2, y: 3 }, scale: 1.4, rotation_deg: 27 } };
+    const options = { geometry_tolerance_mm: 0.001, ticks_per_mm: null, placement: { origin_mm: { x: 2, y: 3 }, scale: 1.4, rotation_deg: 27 }, mode: 'fill' as const };
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="30mm" height="20mm" viewBox="0 0 30 20"><rect id="plate" x="5" y="5" width="15" height="10"/></svg>';
     const imported = await service.importArtwork!('integration-plate.svg', svg, options, 8);
     expect(await service.displayFor(imported.job)).toEqual(imported.display);

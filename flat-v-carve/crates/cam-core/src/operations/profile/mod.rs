@@ -561,6 +561,7 @@ fn emit_loop_layers(
             start,
             end,
             feed_mm_min: feed,
+            blade_heading_deg: None,
         });
         *next_id += 1;
     };

@@ -26,11 +26,22 @@ export const MAX_OPERATIONS = 65_535;
  * than freezing the tab with a synchronous sweep. */
 export const MAX_DISPLAY_MOTIONS = 200_000;
 
+/** Knife tool display data (plan sections 12.1 and 15.3): knife motions
+ * program the holder pivot, and the visible tip derives from the blade
+ * offset and the modeled heading carried on each motion. Knife tools never
+ * enter the milling field. */
+export interface KnifeToolInfo {
+  id: string;
+  bladeOffsetMm: number;
+  maxCutDepthMm: number;
+}
+
 export interface SequenceTools {
   ids: string[];
   specs: ToolSpec[];
   /** Radius used for ownership scans (conservative for V-bits). */
   scanRadiusMm: number[];
+  knifeTools: KnifeToolInfo[];
   toolIndexOf: (toolId: string) => number | undefined;
 }
 
@@ -41,12 +52,14 @@ interface RawJobTool {
 
 /** Milling tools of a raw schema-4 job, in document order. Knife tools have
  * no milling effect and never enter the field (their motions map to
- * non-cutting kinds; a cutting motion referencing one is an error). */
+ * non-cutting kinds; a cutting motion referencing one is an error); their
+ * geometry is exposed separately for pivot/tip trace display. */
 export function sequenceTools(job: unknown): SequenceTools {
   const tools = (job as { tools?: RawJobTool[] } | null)?.tools ?? [];
   const ids: string[] = [];
   const specs: ToolSpec[] = [];
   const scanRadiusMm: number[] = [];
+  const knifeTools: KnifeToolInfo[] = [];
   for (const tool of tools) {
     const geometry = tool.geometry;
     if (!geometry) continue;
@@ -63,6 +76,13 @@ export function sequenceTools(job: unknown): SequenceTools {
         cuttingHeightMm: dimensions.cutting_height_mm,
       });
       scanRadiusMm.push((dimensions.max_cutting_diameter_mm ?? 0) / 2);
+    } else if (geometry.kind === 'drag_knife') {
+      knifeTools.push({
+        id: tool.id,
+        bladeOffsetMm: dimensions.blade_offset_mm,
+        maxCutDepthMm: dimensions.max_cut_depth_mm,
+      });
+      continue;
     } else {
       continue;
     }
@@ -74,7 +94,7 @@ export function sequenceTools(job: unknown): SequenceTools {
     const index = ids.indexOf(toolId);
     return index === -1 ? undefined : index;
   };
-  return { ids, specs, scanRadiusMm, toolIndexOf };
+  return { ids, specs, scanRadiusMm, knifeTools, toolIndexOf };
 }
 
 /** Compact structure-of-arrays store of the ordered sequence stream. */

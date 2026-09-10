@@ -308,11 +308,21 @@ fn update_settings_replaces_operation_settings_through_strict_parsing() {
 fn capabilities_advertise_only_implemented_features() {
     let capabilities = execute(SequenceCommand::Capabilities).unwrap();
     assert_eq!(capabilities["apiVersion"], json!(SEQUENCE_API_VERSION));
+    // The drag-knife planner is not implemented: knife data/import exist but
+    // the operation kind stays unadvertised (F1 acceptance).
     assert_eq!(
         capabilities["operationKinds"],
         json!(["flat_vcarve", "face", "profile"])
     );
-    assert_eq!(capabilities["features"]["openContours"], json!(false));
+    assert!(
+        !capabilities["operationKinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|kind| kind == "drag_knife")
+    );
+    assert_eq!(capabilities["features"]["openContours"], json!(true));
+    assert_eq!(capabilities["features"]["knifeToolLibrary"], json!(true));
     assert_eq!(capabilities["features"]["knifeReplay"], json!(false));
     assert_eq!(capabilities["features"]["legacyJobMigration"], json!(true));
     assert_eq!(capabilities["features"]["profileEntries"], json!(true));
@@ -812,4 +822,108 @@ fn mixed_fixture_job() -> Value {
         legacy_machine_profile: None,
     };
     serde_json::to_value(job).unwrap()
+}
+
+#[test]
+fn open_chains_project_and_the_knife_planner_stays_unadvertised() {
+    use cam_core::job::{PlanningTolerances, SourceSnapshot};
+    use cam_core::project::*;
+    use cam_core::svg::{ImportMode, ImportOptions};
+
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><path id="cut" fill="none" stroke="#000" stroke-width="0.4" d="M5 5 L25 5"/></svg>"##;
+    let job = CamJob {
+        schema_version: 4,
+        name: "knife-ui8".into(),
+        source: Some(SourceSnapshot {
+            filename: "cut.svg".into(),
+            svg: svg.into(),
+        }),
+        import: ImportOptions {
+            mode: ImportMode::Centerline,
+            ..Default::default()
+        },
+        setup: SetupSettings {
+            stock: StockSetup {
+                thickness_mm: Some(3.),
+                xy: Some(RectXY {
+                    min_x_mm: 0.,
+                    min_y_mm: 0.,
+                    width_mm: 40.,
+                    length_mm: 30.,
+                }),
+            },
+            work_zero: Default::default(),
+            clearance_above_stock_mm: Some(5.),
+            start_xy_mm: None,
+        },
+        tools: vec![JobTool {
+            id: "blade".into(),
+            name: "drag knife".into(),
+            geometry: Some(ToolGeometry::DragKnife(DragKnifeSpec {
+                blade_offset_mm: 1.,
+                max_cut_depth_mm: 2.,
+            })),
+            capabilities: Default::default(),
+        }],
+        operations: vec![Operation {
+            id: "knife-1".into(),
+            name: "knife-1".into(),
+            enabled: true,
+            settings: OperationSettings::DragKnife(DragKnifeSettings {
+                chains: vec!["cut-chain-0".into()],
+                assignment: KnifeAssignment {
+                    tool_id: "blade".into(),
+                    cutting_feed_mm_min: Some(150.),
+                    plunge_feed_mm_min: Some(60.),
+                    swivel_feed_mm_min: Some(50.),
+                    max_stepdown_mm: Some(1.),
+                },
+                top: HeightRef {
+                    reference: Default::default(),
+                    offset_mm: 0.,
+                },
+                bottom: HeightRef {
+                    reference: HeightReference::OperationTop,
+                    offset_mm: -1.,
+                },
+                stepdown_mm: Some(1.),
+                swivel_depth_mm: Some(0.2),
+                corner_threshold_deg: Some(30.),
+                through_cut_allowance_mm: None,
+                start: Default::default(),
+                closure_overlap_mm: None,
+                alignment: KnifeAlignment::default(),
+            }),
+        }],
+        tolerances: PlanningTolerances::default(),
+        legacy_machine_profile: None,
+    };
+    let document = execute(SequenceCommand::Open {
+        json: serde_json::to_string(&job).unwrap(),
+    })
+    .unwrap();
+    assert_eq!(document["operations"][0]["kind"], json!("drag_knife"));
+
+    // The catalogue command projects the open chains beside the contours.
+    let catalogue = execute(SequenceCommand::Contours {
+        job: job_of(&document),
+    })
+    .unwrap();
+    assert_eq!(catalogue["contours"], json!([]));
+    let chains = catalogue["openChains"].as_array().unwrap();
+    assert_eq!(chains.len(), 1, "one stroke is one centerline, not two");
+    assert_eq!(chains[0]["id"], json!("cut-chain-0"));
+    assert_eq!(chains[0]["role"], json!("open"));
+    assert_eq!(chains[0]["closed"], json!(false));
+    assert_eq!(chains[0]["suggestedSide"], json!("on"));
+    assert_eq!(chains[0]["bounds"]["maxXmm"], json!(25.));
+
+    // No unsupported knife planner is advertised: planning the enabled knife
+    // operation is a located rejection, never a silent partial plan.
+    let error = execute(SequenceCommand::Plan {
+        job: job_of(&document),
+        scope: PlanScope::AllEnabled,
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "OPERATION_PLANNER_UNAVAILABLE");
 }

@@ -1,5 +1,5 @@
 use cam_core::{
-    job::{Job, ToolGeometry},
+    job::Job,
     pocket::{EndmillPlan, plan_endmill},
     tool_library::{
         CuttingPreset, LibraryChange, LibraryTool, MAX_LIBRARY_BYTES, MAX_LIBRARY_REVISION,
@@ -67,7 +67,7 @@ fn strict_schema_rejects_unknown_duplicate_missing_and_future_fields() {
 #[test]
 fn cutter_validation_is_shared_with_jobs_and_nonfinite_values_never_serialize_as_null() {
     let mut library = library();
-    if let ToolGeometry::Vbit(spec) = &mut library.tools[1].geometry {
+    if let cam_core::tool_library::LibraryGeometry::Vbit(spec) = &mut library.tools[1].geometry {
         spec.cutting_height_mm = 100.;
     }
     assert_eq!(library.validate().unwrap_err().code, "INCONSISTENT_VBIT");
@@ -329,7 +329,7 @@ fn apply_rejects_wrong_kind_missing_preset_and_insufficient_cutting_length_witho
             .code,
         "LIBRARY_NOT_FOUND"
     );
-    if let ToolGeometry::Endmill(spec) = &mut library.tools[0].geometry {
+    if let cam_core::tool_library::LibraryGeometry::Endmill(spec) = &mut library.tools[0].geometry {
         spec.cutting_length_mm = 1.;
     }
     library.validate().unwrap();
@@ -420,5 +420,336 @@ fn applying_a_changed_preset_invalidates_existing_plan_identity() {
             .unwrap_err()
             .code,
         "STALE_PLAN"
+    );
+}
+
+// --- F1: knife tools and typed knife presets (plan section 5.3) ---
+
+use cam_core::project::{
+    CamJob, DragKnifeSettings, DragKnifeSpec, HeightRef, JobTool as JobToolSnapshot,
+    KnifeAlignment, KnifeAssignment, Operation, OperationSettings, ToolGeometry as JobToolGeometry,
+};
+use cam_core::tool_library::{KnifeCuttingPreset, LibraryGeometry};
+
+fn knife_tool() -> LibraryTool {
+    LibraryTool {
+        id: "blade".into(),
+        name: "Drag knife".into(),
+        geometry: LibraryGeometry::DragKnife(DragKnifeSpec {
+            blade_offset_mm: 1.2,
+            max_cut_depth_mm: 3.,
+        }),
+        ramp_capable: None,
+        plunge_capable: None,
+        cutting_presets: vec![],
+        knife_cutting_presets: vec![KnifeCuttingPreset {
+            id: "cardboard".into(),
+            name: "Cardboard".into(),
+            material: Some("cardboard".into()),
+            machine: None,
+            cutting_feed_mm_min: Some(150.),
+            plunge_feed_mm_min: Some(60.),
+            swivel_feed_mm_min: Some(50.),
+            max_stepdown_mm: Some(1.),
+        }],
+    }
+}
+
+fn knife_job() -> CamJob {
+    let assignment = |tool: &str| KnifeAssignment {
+        tool_id: tool.into(),
+        cutting_feed_mm_min: None,
+        plunge_feed_mm_min: None,
+        swivel_feed_mm_min: None,
+        max_stepdown_mm: None,
+    };
+    let settings = |tool: &str| {
+        OperationSettings::DragKnife(DragKnifeSettings {
+            chains: vec![],
+            assignment: assignment(tool),
+            top: HeightRef {
+                reference: Default::default(),
+                offset_mm: 0.,
+            },
+            bottom: HeightRef {
+                reference: cam_core::project::HeightReference::OperationTop,
+                offset_mm: -1.,
+            },
+            stepdown_mm: None,
+            swivel_depth_mm: None,
+            corner_threshold_deg: None,
+            through_cut_allowance_mm: None,
+            start: Default::default(),
+            closure_overlap_mm: None,
+            alignment: KnifeAlignment::default(),
+        })
+    };
+    let job = CamJob {
+        schema_version: 4,
+        name: "knife-library".into(),
+        source: None,
+        import: Default::default(),
+        setup: Default::default(),
+        tools: vec![JobToolSnapshot {
+            id: "blade".into(),
+            name: "old geometry".into(),
+            geometry: Some(JobToolGeometry::DragKnife(DragKnifeSpec {
+                blade_offset_mm: 0.8,
+                max_cut_depth_mm: 2.,
+            })),
+            capabilities: Default::default(),
+        }],
+        operations: vec![
+            Operation {
+                id: "knife-a".into(),
+                name: "knife-a".into(),
+                enabled: true,
+                settings: settings("blade"),
+            },
+            Operation {
+                id: "knife-b".into(),
+                name: "knife-b".into(),
+                enabled: true,
+                settings: settings("blade"),
+            },
+        ],
+        tolerances: Default::default(),
+        legacy_machine_profile: None,
+    };
+    job.validate().unwrap();
+    job
+}
+
+#[test]
+fn knife_tools_and_presets_validate_and_round_trip_strictly() {
+    let library = ToolLibrary {
+        tools: vec![knife_tool()],
+        ..ToolLibrary::default()
+    };
+    let saved = library.to_json().unwrap();
+    assert_eq!(
+        ToolLibrary::from_json(&saved).unwrap().to_json().unwrap(),
+        saved
+    );
+    // Knife presets carry no spindle speed or stepover: strict parsing
+    // rejects them rather than guessing a meaning.
+    for invalid in [
+        saved.replacen(
+            "\"swivel_feed_mm_min\"",
+            "\"spindle_rpm\": 1000.0, \"swivel_feed_mm_min\"",
+            1,
+        ),
+        saved.replacen(
+            "\"swivel_feed_mm_min\"",
+            "\"stepover_mm\": 1.0, \"swivel_feed_mm_min\"",
+            1,
+        ),
+    ] {
+        assert!(
+            ToolLibrary::from_json(&invalid).is_err(),
+            "accepted: {invalid}"
+        );
+    }
+    // A milling preset on a knife tool, a knife preset on a milling tool and
+    // milling entry capabilities on a knife are all kind errors.
+    let mut wrong_preset = knife_tool();
+    wrong_preset
+        .cutting_presets
+        .push(CuttingPreset::from_settings("m".into(), "Milling".into(), &job().tools[0]).unwrap());
+    assert_eq!(
+        wrong_preset.validate().unwrap_err().code,
+        "LIBRARY_TOOL_KIND"
+    );
+    let mut wrong_tool = tool(0);
+    wrong_tool.knife_cutting_presets = knife_tool().knife_cutting_presets;
+    assert_eq!(wrong_tool.validate().unwrap_err().code, "LIBRARY_TOOL_KIND");
+    let mut capabilities = knife_tool();
+    capabilities.plunge_capable = Some(true);
+    assert_eq!(
+        capabilities.validate().unwrap_err().code,
+        "LIBRARY_TOOL_KIND"
+    );
+    // Preset values stay finite and nonnegative.
+    let mut negative = knife_tool();
+    negative.knife_cutting_presets[0].swivel_feed_mm_min = Some(-1.);
+    assert_eq!(negative.validate().unwrap_err().code, "JOB_PARAMETER");
+}
+
+#[test]
+fn knife_preset_crud_is_an_immutable_transaction() {
+    // The library holds a milling tool beside the knife so kind mismatches
+    // are distinguishable from unknown IDs.
+    let library = ToolLibrary {
+        tools: vec![tool(0), knife_tool()],
+        ..ToolLibrary::default()
+    };
+    let mut preset = KnifeCuttingPreset {
+        id: "felt".into(),
+        name: "Felt".into(),
+        material: None,
+        machine: None,
+        cutting_feed_mm_min: Some(200.),
+        plunge_feed_mm_min: Some(80.),
+        swivel_feed_mm_min: Some(60.),
+        max_stepdown_mm: None,
+    };
+    let added = library
+        .changed(
+            0,
+            LibraryChange::AddKnifePreset {
+                tool_id: "blade".into(),
+                preset: preset.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        library.tools[1].knife_cutting_presets.len(),
+        1,
+        "original untouched"
+    );
+    assert_eq!(added.tools[1].knife_cutting_presets.len(), 2);
+    preset.cutting_feed_mm_min = Some(220.);
+    let replaced = added
+        .changed(
+            1,
+            LibraryChange::ReplaceKnifePreset {
+                tool_id: "blade".into(),
+                preset,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        replaced.tools[1].knife_cutting_presets[1].cutting_feed_mm_min,
+        Some(220.)
+    );
+    let duplicated = replaced
+        .changed(
+            2,
+            LibraryChange::DuplicateKnifePreset {
+                tool_id: "blade".into(),
+                preset_id: "felt".into(),
+                new_id: "felt-copy".into(),
+                name: "Felt copy".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(duplicated.tools[1].knife_cutting_presets.len(), 3);
+    let removed = duplicated
+        .changed(
+            3,
+            LibraryChange::RemoveKnifePreset {
+                tool_id: "blade".into(),
+                preset_id: "felt-copy".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(removed.tools[1].knife_cutting_presets.len(), 2);
+    // A knife preset edit on a milling tool is rejected; so is an unknown ID.
+    assert_eq!(
+        removed
+            .changed(
+                4,
+                LibraryChange::AddKnifePreset {
+                    tool_id: "saved-0".into(),
+                    preset: KnifeCuttingPreset {
+                        id: "x".into(),
+                        name: "x".into(),
+                        material: None,
+                        machine: None,
+                        cutting_feed_mm_min: None,
+                        plunge_feed_mm_min: None,
+                        swivel_feed_mm_min: None,
+                        max_stepdown_mm: None,
+                    },
+                },
+            )
+            .unwrap_err()
+            .code,
+        "LIBRARY_TOOL_KIND"
+    );
+    assert_eq!(
+        removed
+            .changed(
+                4,
+                LibraryChange::RemoveKnifePreset {
+                    tool_id: "blade".into(),
+                    preset_id: "absent".into()
+                }
+            )
+            .unwrap_err()
+            .code,
+        "LIBRARY_NOT_FOUND"
+    );
+}
+
+#[test]
+fn knife_presets_apply_to_exactly_one_canonical_operation() {
+    let library = ToolLibrary {
+        tools: vec![tool(0), knife_tool()],
+        ..ToolLibrary::default()
+    };
+    let original = knife_job();
+    let applied = library
+        .apply_knife_to_job(&original, "knife-a", "blade", Some("cardboard"))
+        .unwrap();
+    // The job tool snapshot gains the library geometry under the tool ID.
+    let snapshot = applied.tools.iter().find(|t| t.id == "blade").unwrap();
+    assert_eq!(
+        snapshot.geometry,
+        Some(JobToolGeometry::DragKnife(DragKnifeSpec {
+            blade_offset_mm: 1.2,
+            max_cut_depth_mm: 3.,
+        }))
+    );
+    // Exactly the selected operation's assignment receives the preset; the
+    // sibling operation using the same tool keeps its values (plan 16.3).
+    let assignment = |job: &CamJob, id: &str| match &job
+        .operations
+        .iter()
+        .find(|o| o.id == id)
+        .unwrap()
+        .settings
+    {
+        OperationSettings::DragKnife(s) => s.assignment.clone(),
+        _ => unreachable!(),
+    };
+    let a = assignment(&applied, "knife-a");
+    assert_eq!(a.tool_id, "blade");
+    assert_eq!(a.cutting_feed_mm_min, Some(150.));
+    assert_eq!(a.swivel_feed_mm_min, Some(50.));
+    assert_eq!(a.max_stepdown_mm, Some(1.));
+    let b = assignment(&applied, "knife-b");
+    assert_eq!(
+        b.cutting_feed_mm_min, None,
+        "the sibling operation is untouched"
+    );
+    // The source job is unchanged.
+    assert_eq!(assignment(&original, "knife-a").cutting_feed_mm_min, None);
+    // A milling tool or a non-knife operation is a kind error, and without a
+    // preset only the tool binding is applied.
+    assert_eq!(
+        library
+            .apply_knife_to_job(&original, "knife-a", "saved-0", None)
+            .unwrap_err()
+            .code,
+        "LIBRARY_TOOL_KIND"
+    );
+    let bound_only = library
+        .apply_knife_to_job(&original, "knife-b", "blade", None)
+        .unwrap();
+    assert_eq!(assignment(&bound_only, "knife-b").cutting_feed_mm_min, None);
+    assert_eq!(assignment(&bound_only, "knife-b").tool_id, "blade");
+    // Knife tools never enter a legacy job slot.
+    assert_eq!(
+        library
+            .apply_to_job(
+                &Job::from_json(include_str!("../../../fixtures/m3/no-access.json")).unwrap(),
+                ToolSlot::Endmill,
+                "blade",
+                None
+            )
+            .unwrap_err()
+            .code,
+        "LIBRARY_TOOL_KIND"
     );
 }

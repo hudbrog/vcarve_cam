@@ -3,6 +3,11 @@
 //! source-parameterized anchors. Flat V-carve resolves component selections
 //! into filled unions; profile and knife resolve contour IDs through this
 //! catalogue and never union selected boundaries first.
+//!
+//! Open centerline chains (knife import, plan section 7.3) are kept exactly
+//! as drawn: open subpaths stay open, vertex order and direction are the
+//! source's, and their identity is placement-independent like everything
+//! else here.
 
 use crate::geometry::{Diagnostic, Point, Region, Result};
 use crate::project::{CamJob, ContourAnchor, ContourSide};
@@ -13,11 +18,23 @@ use crate::svg::Placement;
 /// any meaningful artwork edit changes it.
 const FINGERPRINT_STEP_MM: f64 = 0.01;
 
+/// Interior vertices may be merged only within this fraction of the import
+/// tolerance, and never when they carry a real corner turn (plan 7.3: no
+/// deleting corners needed for knife orientation). Import flattening already
+/// bounds curve error by a quarter tolerance; this spends at most another
+/// quarter, leaving half the budget for planning.
+const CHAIN_SIMPLIFY_BUDGET_FRACTION: f64 = 4.;
+/// Turns sharper than this are corners and always survive simplification.
+const CHAIN_CORNER_TURN_DEG: f64 = 30.;
+
 /// Contour IDs use the document's identifier alphabet. The importer's
 /// component IDs (`source::index`) are normalized into it deterministically
 /// (runs of foreign characters collapse to one dash); a build-time collision
 /// check keeps identity unambiguous.
 fn contour_id(component_id: &str, suffix: &str) -> String {
+    format!("{}-{suffix}", normalize_id(component_id))
+}
+fn normalize_id(component_id: &str) -> String {
     let mut normalized = String::with_capacity(component_id.len());
     let mut dash = false;
     for c in component_id.chars() {
@@ -29,15 +46,16 @@ fn contour_id(component_id: &str, suffix: &str) -> String {
             dash = true;
         }
     }
-    format!("{normalized}-{suffix}")
+    normalized
 }
 
 fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("contours")
 }
 
-/// A contour's role within its filled component. `Open` centerlines arrive
-/// with the knife import milestone and are not produced yet.
+/// A contour's role within its filled component. `Open` marks imported
+/// centerline chains (knife import): `closed` on the chain then records
+/// whether the source subpath closed itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContourRole {
     Outer,
@@ -46,6 +64,8 @@ pub enum ContourRole {
 }
 
 /// One closed boundary chain with stable identity and canonical geometry.
+/// Open-chain entries keep the source vertex order and direction instead of
+/// the canonical ring form (plan section 7.3).
 #[derive(Clone, Debug)]
 pub struct Contour {
     pub id: String,
@@ -55,25 +75,28 @@ pub struct Contour {
     pub role: ContourRole,
     /// The enclosing outer contour of a hole, when applicable.
     pub parent_contour_id: Option<String>,
-    /// Canonical setup-space vertices: counter-clockwise, started at the
-    /// lexicographically smallest vertex. Traversal direction for cutting is
-    /// chosen by the planner and never inferred from this winding.
+    /// Canonical setup-space vertices for closed contours (counter-clockwise,
+    /// started at the lexicographically smallest vertex); source-order setup
+    /// vertices for open chains. Traversal direction for cutting is chosen by
+    /// the planner and never inferred from this winding.
     pub vertices: Vec<Point>,
     pub perimeter_mm: f64,
     /// The same ring in placement-independent page space, rotated to its
-    /// deterministic canonical start. Anchor fractions address this ring, so
-    /// the same fraction always means the same source location whatever the
-    /// artwork placement.
+    /// deterministic canonical start (closed contours) or in source order
+    /// (open chains). Anchor fractions address this geometry, so the same
+    /// fraction always means the same source location whatever the artwork
+    /// placement.
     pub(crate) page_vertices: Vec<Point>,
     /// Placement-independent fingerprint of the source geometry (page-space
-    /// canonical ring quantized at `FINGERPRINT_STEP_MM`).
+    /// quantized at `FINGERPRINT_STEP_MM`).
     pub source_fingerprint: String,
 }
 
 impl Contour {
     /// The polygon enclosed by this contour, independent of its role: the
     /// substrate every explicit side is compensated against. `Inside` erodes
-    /// it, `Outside` dilates it, `On` follows it.
+    /// it, `Outside` dilates it, `On` follows it. Open chains have no enclosed
+    /// region and no compensation side; the knife follows them directly.
     pub fn enclosed_region(&self, grid: crate::geometry::Grid) -> Result<Region> {
         Region::from_rings(grid, std::slice::from_ref(&self.vertices))
     }
@@ -81,10 +104,12 @@ impl Contour {
     /// The side that keeps the cutter in the void when cutting this contour
     /// free: outside for outer boundaries, inside for holes (plan 7.1). The
     /// stored side stays explicit per contour; this is only a suggestion.
+    /// Chains suggest `On`: the knife rides the centerline itself.
     pub fn suggested_side(&self) -> ContourSide {
         match self.role {
             ContourRole::Hole => ContourSide::Inside,
-            ContourRole::Outer | ContourRole::Open => ContourSide::Outside,
+            ContourRole::Outer => ContourSide::Outside,
+            ContourRole::Open => ContourSide::On,
         }
     }
 }
@@ -101,6 +126,10 @@ pub struct ResolvedAnchor {
 #[derive(Clone, Debug)]
 pub struct ContourCatalogue {
     pub contours: Vec<Contour>,
+    /// Imported centerline chains (centerline import mode only): open or
+    /// closed per the source subpath, in document and subpath order. Knife
+    /// operations select these by ID; they never union.
+    pub open_chains: Vec<Contour>,
     /// The artwork placement the setup-space vertices were produced with;
     /// anchors resolve through it into current setup coordinates.
     placement: Placement,
@@ -192,14 +221,58 @@ impl ContourCatalogue {
                 "source component IDs normalize to colliding contour IDs; rename them in the SVG",
             ));
         }
+        // Centerline chains: place each chain with the artwork transform,
+        // then merge only within the declared near-zero budget. Source order,
+        // direction and endpoints survive exactly as drawn.
+        let budget = job.import.geometry_tolerance_mm / CHAIN_SIMPLIFY_BUDGET_FRACTION;
+        let mut open_chains = vec![];
+        for chain in &geometry.chains {
+            let forward = forward_space(&placement);
+            let placed: Vec<Point> = chain.points.iter().map(|p| forward(*p)).collect();
+            let vertices = simplify_chain(&placed, budget, chain.closed);
+            if vertices.len() < if chain.closed { 3 } else { 2 } {
+                return Err(error(
+                    "CONTOUR_COMPONENT_TOPOLOGY",
+                    format!("chain '{}' degenerates after placement", chain.id),
+                ));
+            }
+            let page = page_space(&placement);
+            let page_vertices: Vec<Point> = vertices.iter().map(|p| page(*p)).collect();
+            open_chains.push(Contour {
+                id: normalize_id(&chain.id),
+                source_id: chain.source_id.clone(),
+                component_id: chain.source_id.clone(),
+                closed: chain.closed,
+                role: ContourRole::Open,
+                parent_contour_id: None,
+                perimeter_mm: perimeter_of(&vertices, chain.closed),
+                source_fingerprint: fingerprint(&page_vertices),
+                vertices,
+                page_vertices,
+            });
+        }
+        let chain_ids: std::collections::BTreeSet<&str> =
+            open_chains.iter().map(|c| c.id.as_str()).collect();
+        if chain_ids.len() != open_chains.len() || chain_ids.intersection(&unique).next().is_some()
+        {
+            return Err(error(
+                "CONTOUR_ID_COLLISION",
+                "source chain IDs normalize to colliding contour IDs; rename them in the SVG",
+            ));
+        }
         Ok(Self {
             contours,
+            open_chains,
             placement,
         })
     }
 
     pub fn contour(&self, id: &str) -> Option<&Contour> {
         self.contours.iter().find(|c| c.id == id)
+    }
+
+    pub fn chain(&self, id: &str) -> Option<&Contour> {
+        self.open_chains.iter().find(|c| c.id == id)
     }
 
     /// Resolve explicit contour references. Exactly the requested contours
@@ -220,16 +293,37 @@ impl ContourCatalogue {
         Ok(selected)
     }
 
+    /// Resolve explicit open-chain references (knife selections) in document
+    /// and subpath order. Exactly the requested chains are returned.
+    pub fn select_chains(&self, ids: &[String]) -> Result<Vec<&Contour>> {
+        let mut selected = vec![];
+        for id in ids {
+            let chain = self.chain(id).ok_or_else(|| {
+                error(
+                    "CONTOUR_REFERENCE",
+                    format!("unknown chain '{id}'; inspect the contour catalogue"),
+                )
+                .source(id)
+            })?;
+            selected.push(chain);
+        }
+        Ok(selected)
+    }
+
     /// Resolve an anchor against the current catalogue. Placement changes
     /// move the resolved point; a changed source fingerprint leaves the
-    /// anchor unresolved — there is no nearest-contour guessing.
+    /// anchor unresolved — there is no nearest-contour guessing. Anchors may
+    /// address closed contours or imported open chains.
     pub fn resolve_anchor(&self, anchor: &ContourAnchor) -> Result<ResolvedAnchor> {
-        let contour = self.contour(&anchor.contour_id).ok_or_else(|| {
-            error(
-                "CONTOUR_REFERENCE",
-                format!("anchor references unknown contour '{}'", anchor.contour_id),
-            )
-        })?;
+        let contour = self
+            .contour(&anchor.contour_id)
+            .or_else(|| self.chain(&anchor.contour_id))
+            .ok_or_else(|| {
+                error(
+                    "CONTOUR_REFERENCE",
+                    format!("anchor references unknown contour '{}'", anchor.contour_id),
+                )
+            })?;
         if contour.source_fingerprint != anchor.source_geometry_fingerprint {
             return Err(error(
                 "CONTOUR_ANCHOR_UNRESOLVED",
@@ -239,8 +333,11 @@ impl ContourCatalogue {
                 ),
             ));
         }
-        let (page_point, page_tangent) =
-            point_at(&contour.page_vertices, anchor.fraction_along_source_contour)?;
+        let (page_point, page_tangent) = point_at(
+            &contour.page_vertices,
+            anchor.fraction_along_source_contour,
+            contour.closed,
+        )?;
         // Forward placement transform (plan section 6.1): rotate about the
         // origin, scale, translate. Tangents rotate without translation.
         let placement = &self.placement;
@@ -304,18 +401,37 @@ fn perimeter(points: &[Point]) -> f64 {
     segments(points).map(|(a, b)| a.distance(b)).sum()
 }
 
+/// Edge pairs of a chain: the drawn segments only — an open chain never
+/// gains a closing edge.
+fn chain_segments(points: &[Point], closed: bool) -> Box<dyn Iterator<Item = (Point, Point)> + '_> {
+    if closed {
+        Box::new(segments(points))
+    } else if points.len() < 2 {
+        Box::new(std::iter::empty())
+    } else {
+        Box::new(points.windows(2).map(|w| (w[0], w[1])))
+    }
+}
+
+fn perimeter_of(points: &[Point], closed: bool) -> f64 {
+    chain_segments(points, closed)
+        .map(|(a, b)| a.distance(b))
+        .sum()
+}
+
 /// Position and unit tangent at a fraction of the perimeter, walked along the
-/// canonical direction. The parameterization is proportional to length, so
-/// the same fraction always addresses the same source location regardless of
-/// artwork scale.
-fn point_at(vertices: &[Point], fraction: f64) -> Result<(Point, Point)> {
+/// stored direction (canonical for closed contours, source direction for
+/// chains). The parameterization is proportional to length, so the same
+/// fraction always addresses the same source location regardless of artwork
+/// scale.
+fn point_at(vertices: &[Point], fraction: f64, closed: bool) -> Result<(Point, Point)> {
     if vertices.len() < 2 || !fraction.is_finite() || !(0. ..1.).contains(&fraction) {
         return Err(error(
             "CONTOUR_ANCHOR_UNRESOLVED",
             format!("anchor fraction {fraction} is not a position along the contour"),
         ));
     }
-    let total = perimeter(vertices);
+    let total = perimeter_of(vertices, closed);
     if total <= 0. {
         return Err(error(
             "CONTOUR_ANCHOR_UNRESOLVED",
@@ -324,7 +440,7 @@ fn point_at(vertices: &[Point], fraction: f64) -> Result<(Point, Point)> {
     }
     let target = fraction * total;
     let mut walked = 0.;
-    for (a, b) in segments(vertices) {
+    for (a, b) in chain_segments(vertices, closed) {
         let length = a.distance(b);
         if length == 0. {
             continue;
@@ -338,7 +454,7 @@ fn point_at(vertices: &[Point], fraction: f64) -> Result<(Point, Point)> {
         walked += length;
     }
     // Floating-point accumulation ended just short of the target: clamp to
-    // the canonical start with its forward tangent.
+    // the stored start with its forward tangent.
     let last = vertices[0];
     let toward = vertices[1.min(vertices.len() - 1)];
     let length = last.distance(toward);
@@ -403,6 +519,73 @@ fn page_space(placement: &Placement) -> impl Fn(Point) -> Point + '_ {
         let y = p.y / k;
         Point::new(c * x + s * y + origin.x, -s * x + c * y + origin.y)
     }
+}
+
+/// The setup-space counterpart of a page point:
+/// `setup = scale * rotate(page - origin)` (plan section 6.1).
+fn forward_space(placement: &Placement) -> impl Fn(Point) -> Point + '_ {
+    let (s, c) = placement.rotation_deg.to_radians().sin_cos();
+    let k = placement.scale;
+    let origin = placement.origin_mm;
+    move |p: Point| {
+        let dx = p.x - origin.x;
+        let dy = p.y - origin.y;
+        Point::new(k * (c * dx - s * dy), k * (s * dx + c * dy))
+    }
+}
+
+/// Merge interior chain vertices only within the declared near-zero budget
+/// (plan section 7.3): a vertex disappears only when it lies within
+/// `budget` of the segment joining its neighbours AND the turn it carries is
+/// below the corner threshold, so corners needed for knife orientation —
+/// including near-reversals with tiny deviation — always survive. Endpoints
+/// are never removed, and a chain never simplifies below its minimum vertex
+/// count.
+fn simplify_chain(points: &[Point], budget_mm: f64, closed: bool) -> Vec<Point> {
+    let minimum = if closed { 3 } else { 2 };
+    if budget_mm <= 0. || points.len() <= minimum {
+        return points.to_vec();
+    }
+    let turn_deg = |a: Point, p: Point, b: Point| -> f64 {
+        let u = Point::new(p.x - a.x, p.y - a.y);
+        let v = Point::new(b.x - p.x, b.y - p.y);
+        let (un, vn) = (u.x.hypot(u.y), v.x.hypot(v.y));
+        if un < 1e-12 || vn < 1e-12 {
+            return 0.;
+        }
+        let cosine = ((u.x * v.x + u.y * v.y) / (un * vn)).clamp(-1., 1.);
+        cosine.acos().to_degrees()
+    };
+    let deviation = |p: Point, a: Point, b: Point| -> f64 {
+        let d = Point::new(b.x - a.x, b.y - a.y);
+        let length = d.x.hypot(d.y);
+        if length < 1e-12 {
+            return p.distance(a);
+        }
+        ((d.x * (p.y - a.y) - d.y * (p.x - a.x)) / length).abs()
+    };
+    let mut kept: Vec<Point> = vec![points[0]];
+    let last = points.len() - 1;
+    for index in 1..points.len() {
+        let is_endpoint = !closed && index == last;
+        let candidate = points[index];
+        let previous = kept.last().expect("start kept");
+        let next = if index == last {
+            points[0]
+        } else {
+            points[index + 1]
+        };
+        let mergeable = !is_endpoint
+            && deviation(candidate, *previous, next) <= budget_mm
+            && turn_deg(*previous, candidate, next) < CHAIN_CORNER_TURN_DEG;
+        if !mergeable {
+            kept.push(candidate);
+        }
+    }
+    if kept.len() < minimum {
+        return points.to_vec();
+    }
+    kept
 }
 
 /// Quantized page-space fingerprint of a canonical ring.

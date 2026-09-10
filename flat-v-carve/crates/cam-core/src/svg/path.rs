@@ -45,12 +45,23 @@ impl Matrix {
     }
 }
 
+/// One subpath kept as drawn: open subpaths stay open, closed subpaths keep
+/// their closure flag, and the vertex order is the source order (plan 7.3).
+pub(super) struct ChainPoints {
+    pub closed: bool,
+    pub points: Vec<Point>,
+}
+
 pub(super) struct Flattener {
     pub matrix: Matrix,
     pub tolerance: f64,
     pub points: Vec<Point>,
     pub rings: Vec<Vec<Point>>,
+    /// Filled only in centerline mode; `rings` stays empty there.
+    pub chains: Vec<ChainPoints>,
     pub total: usize,
+    /// Centerline mode: never require closure and never close implicitly.
+    open_chains: bool,
 }
 impl Flattener {
     pub fn new(matrix: Matrix, tolerance: f64) -> Self {
@@ -59,7 +70,15 @@ impl Flattener {
             tolerance,
             points: vec![],
             rings: vec![],
+            chains: vec![],
             total: 0,
+            open_chains: false,
+        }
+    }
+    pub fn new_open(matrix: Matrix, tolerance: f64) -> Self {
+        Self {
+            open_chains: true,
+            ..Self::new(matrix, tolerance)
         }
     }
     pub fn push(&mut self, p: Point) -> Result<()> {
@@ -87,6 +106,30 @@ impl Flattener {
             return Ok(());
         }
         let closed = self.points.first() == self.points.last();
+        if self.open_chains {
+            // A subpath is closed only by an explicit Z (or coincident
+            // endpoints, which close it geometrically); nothing is closed or
+            // opened implicitly (plan section 7.3).
+            let closed = explicit || closed;
+            if closed && self.points.first() == self.points.last() && self.points.len() > 1 {
+                self.points.pop();
+            }
+            let minimum = if closed { 3 } else { 2 };
+            if self.points.len() < minimum {
+                return Err(error(
+                    "SVG_DEGENERATE_PATH",
+                    format!(
+                        "a {} chain subpath needs {minimum} distinct vertices",
+                        if closed { "closed" } else { "open" }
+                    ),
+                ));
+            }
+            self.chains.push(ChainPoints {
+                closed,
+                points: std::mem::take(&mut self.points),
+            });
+            return Ok(());
+        }
         if !explicit && !closed {
             return Err(error(
                 "SVG_OPEN_PATH",
@@ -243,7 +286,26 @@ impl Flattener {
         }
         Ok(())
     }
-    pub fn path(mut self, data: &str) -> Result<Vec<Vec<Point>>> {
+    pub fn path(self, data: &str) -> Result<Vec<Vec<Point>>> {
+        let parsed = self.path_impl(data)?;
+        if parsed.rings.is_empty() {
+            return Err(error(
+                "SVG_EMPTY_PATH",
+                "path has no closed filled contours",
+            ));
+        }
+        Ok(parsed.rings)
+    }
+    /// Parse a `d` attribute in centerline mode: every subpath is kept as
+    /// drawn, open or closed, in source order.
+    pub fn chain_path(self, data: &str) -> Result<Vec<ChainPoints>> {
+        let parsed = self.path_impl(data)?;
+        if parsed.chains.is_empty() {
+            return Err(error("SVG_EMPTY_PATH", "path has no chain subpaths"));
+        }
+        Ok(parsed.chains)
+    }
+    fn path_impl(mut self, data: &str) -> Result<Self> {
         let mut current = Point::new(0., 0.);
         let mut start = current;
         let mut cubic_control = None;
@@ -371,12 +433,6 @@ impl Flattener {
             quadratic_control = next_quad;
         }
         self.finish(false)?;
-        if self.rings.is_empty() {
-            return Err(error(
-                "SVG_EMPTY_PATH",
-                "path has no closed filled contours",
-            ));
-        }
-        Ok(self.rings)
+        Ok(self)
     }
 }
