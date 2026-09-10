@@ -310,7 +310,7 @@ fn capabilities_advertise_only_implemented_features() {
     assert_eq!(capabilities["apiVersion"], json!(SEQUENCE_API_VERSION));
     assert_eq!(
         capabilities["operationKinds"],
-        json!(["flat_vcarve", "face"])
+        json!(["flat_vcarve", "face", "profile"])
     );
     assert_eq!(capabilities["features"]["openContours"], json!(false));
     assert_eq!(capabilities["features"]["knifeReplay"], json!(false));

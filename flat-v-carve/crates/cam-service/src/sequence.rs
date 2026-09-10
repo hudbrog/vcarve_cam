@@ -483,7 +483,7 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
             "apiVersion": SEQUENCE_API_VERSION,
             "engineVersion": ENGINE_VERSION,
             // Advertise only implemented features (plan section 16.2).
-            "operationKinds": ["flat_vcarve", "face"],
+            "operationKinds": ["flat_vcarve", "face", "profile"],
             "planScopes": ["all_enabled", "through_operation"],
             "features": {
                 "openContours": false,

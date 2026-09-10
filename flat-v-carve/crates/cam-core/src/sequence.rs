@@ -343,7 +343,9 @@ impl OperationPlan {
         if let Some(op) = enabled.iter().find(|op| {
             !matches!(
                 op.settings,
-                OperationSettings::FlatVcarve(_) | OperationSettings::Face(_)
+                OperationSettings::FlatVcarve(_)
+                    | OperationSettings::Face(_)
+                    | OperationSettings::Profile(_)
             )
         }) {
             return Err(error(

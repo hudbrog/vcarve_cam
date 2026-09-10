@@ -9,6 +9,7 @@ use crate::{
 
 pub mod face;
 pub mod flat_vcarve;
+pub mod profile;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,8 +61,16 @@ pub(crate) fn plan_operation(
         crate::project::OperationSettings::Face(settings) => {
             face::plan(job, &operation.id, settings)
         }
-        crate::project::OperationSettings::Profile(_)
-        | crate::project::OperationSettings::DragKnife(_) => Err(Diagnostic::new(
+        crate::project::OperationSettings::Profile(settings) => profile::plan(
+            job,
+            &operation.id,
+            settings,
+            &published_faces
+                .iter()
+                .map(|(id, face)| (id.clone(), face.z_mm))
+                .collect(),
+        ),
+        crate::project::OperationSettings::DragKnife(_) => Err(Diagnostic::new(
             "OPERATION_PLANNER_UNAVAILABLE",
             "operation planner ships in a later slice",
         )

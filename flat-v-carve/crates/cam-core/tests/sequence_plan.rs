@@ -383,22 +383,32 @@ fn missing_machining_fields_yield_incomplete_result_not_silent_skip() {
 #[test]
 fn unsupported_enabled_operations_are_rejected_with_a_specific_diagnostic() {
     let mut cam = migrate_legacy_json(M4_CONTACT_LINE).unwrap();
-    // Profile planning ships in a later slice; an enabled profile must be
-    // rejected specifically, never silently skipped. (Face is planned since C1.)
+    // Knife planning ships in a later slice; an enabled knife operation must
+    // be rejected specifically, never silently skipped. (Face is planned
+    // since C1; profile since D2.)
+    cam.tools.push(cam_core::project::JobTool {
+        id: "knife".into(),
+        name: "Drag knife".into(),
+        geometry: Some(cam_core::project::ToolGeometry::DragKnife(
+            cam_core::project::DragKnifeSpec {
+                blade_offset_mm: 1.5,
+                max_cut_depth_mm: 2.,
+            },
+        )),
+        capabilities: Default::default(),
+    });
     cam.operations.push(cam_core::project::Operation {
-        id: "profile-1".into(),
-        name: "Cutout".into(),
+        id: "knife-1".into(),
+        name: "Score".into(),
         enabled: true,
-        settings: OperationSettings::Profile(cam_core::project::ProfileSettings {
-            contours: vec![],
-            assignment: cam_core::project::MillingAssignment {
-                tool_id: "endmill".into(),
-                spindle_rpm: None,
-                spindle_direction: None,
+        settings: OperationSettings::DragKnife(cam_core::project::DragKnifeSettings {
+            chains: vec![],
+            assignment: cam_core::project::KnifeAssignment {
+                tool_id: "knife".into(),
                 cutting_feed_mm_min: None,
                 plunge_feed_mm_min: None,
+                swivel_feed_mm_min: None,
                 max_stepdown_mm: None,
-                stepover_mm: None,
             },
             top: cam_core::project::HeightRef {
                 reference: cam_core::project::HeightReference::StockTop,
@@ -409,21 +419,18 @@ fn unsupported_enabled_operations_are_rejected_with_a_specific_diagnostic() {
                 offset_mm: -1.,
             },
             stepdown_mm: None,
+            swivel_depth_mm: None,
+            corner_threshold_deg: None,
             through_cut_allowance_mm: None,
-            direction: None,
-            order: Default::default(),
             start: Default::default(),
-            finish: Default::default(),
-            entry: Default::default(),
-            lead_in: Default::default(),
-            lead_out: Default::default(),
-            tabs: None,
+            closure_overlap_mm: None,
+            alignment: Default::default(),
         }),
     });
     let err = OperationPlan::plan_job(&cam, &PlanLimits::default()).unwrap_err();
     assert_eq!(err.code, "OPERATION_PLANNER_UNAVAILABLE");
-    assert!(err.message.contains("profile-1"), "{}", err.message);
-    assert!(err.message.contains("profile"), "{}", err.message);
+    assert!(err.message.contains("knife-1"), "{}", err.message);
+    assert!(err.message.contains("drag_knife"), "{}", err.message);
 
     // Disabled unsupported operations are excluded from planning readiness.
     cam.operations[1].enabled = false;
