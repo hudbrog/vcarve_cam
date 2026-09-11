@@ -1,5 +1,5 @@
 {
-  "nativeExecutableBytes": 16672256,
+  "nativeExecutableBytes": 17455104,
   "inputs": [
     {
       "path": "real_data/flower_box-svg.job-real.json",
@@ -35,35 +35,35 @@
   "samples": [
     {
       "export": false,
-      "elapsedMs": 5.0974
+      "elapsedMs": 12.1142
     },
     {
       "export": false,
-      "elapsedMs": 4.1698
+      "elapsedMs": 12.3513
     },
     {
       "export": false,
-      "elapsedMs": 3.5136
+      "elapsedMs": 13.217400000000001
     },
     {
       "export": false,
-      "elapsedMs": 3.7731000000000003
+      "elapsedMs": 11.7728
     },
     {
       "export": false,
-      "elapsedMs": 3.5349
+      "elapsedMs": 12.5212
     },
     {
       "export": true,
-      "elapsedMs": 5.2604
+      "elapsedMs": 13.3025
     }
   ],
   "cancellationKillToExitMs": [
-    2.3600000000001273,
-    2.2291000000000167,
-    2.235700000000179,
-    2.204099999999926,
-    2.4302000000006956
+    2.565099999999802,
+    3.6797999999998865,
+    2.9341999999996915,
+    2.4708999999998014,
+    2.6035000000001673
   ],
   "note": "CPU process kill-to-exit probe; UI input-to-visible, actual simulator, GPU/JS/WASM peak memory and sustained M budget are not qualified."
 }

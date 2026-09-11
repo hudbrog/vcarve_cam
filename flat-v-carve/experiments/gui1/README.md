@@ -1,9 +1,10 @@
 # GUI1 candidate experiment
 
 **Current direction: continue egui/eframe evaluation.** The user removed browser
-screen-reader access as a requirement on 2026-09-11. The observed browser
-accessibility-tree limitation is accepted; keyboard/focus/input behavior and
-native accessibility remain required. Final GUI1 qualification is still pending.
+screen-reader access, then native screen-reader support, as requirements on
+2026-09-11. Screen readers are outside scope on both targets. Keyboard/focus/IME
+behavior and named controls for framework tests remain required. Final GUI1
+qualification is still pending.
 See the [framework decision](../../../docs/flat-v-carve/ui-framework-decision.md).
 This is a runnable, deliberately incomplete risk experiment, not GUI2 or a new preferred application.
 
@@ -15,7 +16,9 @@ From PowerShell in this directory:
 ```
 
 The web command serves [egui](http://127.0.0.1:5181/web/index.html) and the
-[two-field DOM comparison](http://127.0.0.1:5181/web/dom-probe.html) on localhost.
+[two-field DOM comparison](http://127.0.0.1:5181/web/dom-probe.html) on localhost,
+plus the [browser input probe](http://127.0.0.1:5181/web/input-probe.html) and
+[platform qualification](http://127.0.0.1:5181/web/platform-probe.html) pages.
 Run one server. Close the native test window before rebuilding its executable.
 Prerequisites: Rust 1.95/MSVC, wasm32-unknown-unknown target, wasm-pack 0.15.0
 (verify your local version), Node 24 or later. Dependency versions/features are
@@ -31,28 +34,46 @@ WebGPU is required; WebGL2, Firefox, Linux, and Safari are not qualified.
 1. Choose **Flower reference**. The exact embedded job is planned by Rust in a
    disposable process/Worker. Expect 7,048 roughing and 15,835 finishing motions.
    Cyan is endmill, amber is V-bit; both use actual recorded motion endpoints.
+   The status line reports the plan time, motion count, page count, metadata and
+   payload bytes. The scene arrives as one binary payload, not a JSON document.
 2. Switch Top/Isometric, drag to rotate, zoom, choose Endmill/V-bit paths, and
-   move **Stock checkpoint** backward. Stock removal and the physical stock box
-   are displayed at bounded, exact motion prefixes. The UI labels the preview
-   cell size and finer reference cell size. Uncheck **Stock preview** for the
-   original motion-line timeline. Path filtering preserves cumulative stock.
-3. Type `-`, `1.`, or invalid text into Maximum depth. Reverse artwork order;
+   scrub **Stock motion** or jump with **Transported checkpoint**. Stock removal
+   and the physical stock box are displayed at exact motion prefixes: a
+   checkpoint is instant, anything between two checkpoints replays only the
+   suffix and reports its seek time. The UI labels the preview cell size, the
+   finer reference cell size and the checkpoint count. Uncheck **Stock preview**
+   for the original motion-line timeline. Path filtering preserves cumulative
+   stock. On the L workload the status line says that arbitrary seeks are
+   unavailable and keeps checkpoint jumps.
+3. Click in the viewport to pick a motion: the status reports the motion index,
+   its distance in physical pixels and the current DPI scale, a translucent
+   ribbon marks the pick and a tool marker (endmill disc or V-bit cone with its
+   declared radius) sits at the playhead. The **Pick tolerance (px)** slider is
+   in physical pixels, so the same setting stays the same physical target at any
+   display scale. The status line also reports resident/omitted pages, copied
+   tiles and the picking index build time.
+4. Type `-`, `1.`, or invalid text into Maximum depth. Reverse artwork order;
    select operation 2 and return to 1. Text belongs to stable source/operation/field
    IDs. Inspector fields are explicitly input probes, not machining edits.
-4. Start **Busy worker**, continue typing, then **Cancel**. Prior display remains.
+5. Start **Busy worker**, continue typing, then **Cancel**. Prior display remains.
    Native reports kill/reap time after supervisor observation. Browser reports
    Worker.terminate call time only; actual stopped CPU latency is unknown.
-5. **Risk probes** offers S/M/L line loads, a compute-child crash, a renderer
-   visibility failure/resume, and denied-write injection. Renderer injection is
-   not actual device-loss recovery. It retains the document and reports failure.
-6. Save/recover raw draft JSON, or wait for **Recovery saved** after editing.
+6. **Risk probes** offers S/M/L workloads (paged motion streams, replayable
+   checkpoints, tiled stock and measured transport), a compute-child crash, a
+   renderer visibility failure/resume, a **GPU recovery drill** that rebuilds
+   pipelines and buffers and re-copies pages from retained CPU data, an
+   **Inject GPU validation error** probe that submits a real invalid request and
+   shows wgpu's reported error, GPU page-budget choices (16/64/256 MiB) and
+   denied-write injection. The injected renderer failure is a visibility control,
+   not device loss; driver device loss remains unverified.
+7. Save/recover raw draft JSON, or wait for **Recovery saved** after editing.
    Restart/reload and choose **Restore session** to recover invalid text and the
    exact job, with derived results recalculated. Native uses `gui1-recovery/`
    beside the executable; browser uses IndexedDB and an offline asset cache.
    Enable denied-write injection, attempt Save, disable it, then use **Retry
    previous save** to retry the retained bytes. Ctrl/Cmd+O opens a job, Ctrl/Cmd+S
    saves the raw draft, and Ctrl/Cmd+F searches settings.
-7. **Prepare checked small reference** exercises retained core plan/output checks.
+8. **Prepare checked small reference** exercises retained core plan/output checks.
    The unchanged contact-line fixture fails `M5_FLOOR_RIDGE`; expect **failed**,
    zero checked programs, and disabled Save checked bytes. No settings are relaxed
    to produce G-code. Save reference job preserves exact input bytes independently
@@ -61,10 +82,14 @@ WebGPU is required; WebGL2, Firefox, Linux, and Safari are not qualified.
    Download requested. **Prepare checked flower** uses
    the unchanged real job and `real_data/machine-profile.json`; native M6 checks
    passed and retained `combined.ngc` with 22,883 motions and two tool changes.
-8. Compare the DOM page: two labelled controls, reorder, type partial text while
+9. Compare the DOM page: two labelled controls, reorder, type partial text while
    the same Rust worker runs, and cancel. Browser accessibility exposes these
    controls; the egui canvas does not. This earlier comparison is optional and no
-   longer a framework gate. Native screen-reader and both-target IME tours remain pending.
+   longer a framework gate. Then open `/web/input-probe.html`: it
+   starts the application, drops a real `File` through a real `DataTransfer`,
+   sends `Ctrl+F` and IME composition events, and asserts the published state
+   snapshot. A real OS IME tour and a real OS drag gesture remain manual; native
+   and browser screen-reader tours are excluded.
 
 ## Checks and evidence capture
 
@@ -72,11 +97,13 @@ WebGPU is required; WebGL2, Firefox, Linux, and Safari are not qualified.
 cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
+cargo test --locked --test paging
 cargo test --locked --test interaction dense_layout -- --ignored
 node web/capture.mjs
-node web/compare-simulation.mjs
-node web/compare-wasm-simulation.mjs
 node web/capture-build.mjs
+node web/compare-simulation.mjs --preview-only
+node web/compare-wasm-simulation.mjs
+target\release\cam-gui1-desktop.exe --measure docs\flat-v-carve\gui1-evidence\perf-measure.json flower
 ```
 
 The ignored image tests are opt-in GPU tests, separately executed locally at
@@ -89,6 +116,17 @@ one flower run, input hashes and five native process cancellation samples.
 Use `--capture <directory> flower export` on the executable to investigate the
 flower output contract separately; its native report is captured in the evidence.
 This establishes software checks, not a new physical machining trial.
+
+`--measure <path> [flower]` writes the S/M/L/flower measurement report used by
+the paging evidence: transport sizes, JSON-equivalent estimates, per-page
+fingerprint and copy costs, page-budget admission, picking latency against a
+brute-force oracle, checkpoint-bounded and cold scrub times, dirty-tile counts
+and whole-Rust-heap counters. `--dump-scene <folder> [flower]` writes the exact
+worker frame so `compare-wasm-simulation.mjs` can compare the native and browser
+transports byte for byte. That comparison records a real finding: the f64
+planner output is not bit-identical across targets (41 of 22,883 flower motions
+differ by one ULP), while rendered vertices, section tables, tile versions,
+every packed cell and the final field checksum agree.
 
 Open `/web/platform-probe.html` for real IndexedDB conflict/abort tests and
 explicitly injected browser save-handle tests. See the
@@ -108,19 +146,26 @@ after a new offline worker activates to use its current asset cache.
   [simulation evidence](../../../docs/flat-v-carve/gui1-simulation-evidence.md).
   The 512-cell preview preset is explicitly coarser (flower 0.3609375 mm versus
   0.025 mm reference), has at most 18 checkpoints and a 20 MiB retained-cell cap.
-  Arbitrary stock seeks, picking, blade glyph, checkpoint paging, incremental
-  tile transport and complete S/M/L memory qualification remain unfinished.
-- JSON transport and a whole retained GPU batch are intentionally unoptimized.
-  No O(N) mesh construction runs in layout, but draft serialization on save and
-  browser JSON decode/transfer still require replacement/budget measurements.
+  Arbitrary stock seeks, display picking, the blade glyph and marker, page
+  residency and incremental tile transport now exist with the measurements in
+  the [paging/viewport evidence](../../../docs/flat-v-carve/gui1-paging-viewport-evidence.md).
+  What remains: a sustained two-minute M frame-time run, real GPU transfer
+  timing, GPU memory, the JS heap and a browser tab total.
+- Scene transport is paged and binary (metadata plus one sectioned payload).
+  Draft serialization on save and the browser's own JSON/recovery paths are
+  unchanged and still need their own budgets; the payload copy into WASM memory
+  and the worker's transferable buffer are counted but not benchmarked as a
+  network transfer.
 - Source/operation lists are synthetic identity probes, not an artwork collection.
   No machine settings, schema fields, or output eligibility are invented by them.
 - Session recovery and file-drop adapters are implemented and tested within the
   bounds documented above. OS drag gestures, physical browser quota/eviction,
-  real browser destination outcomes, shared-library conflicts, OS IME and native
-  screen-reader behavior remain unverified. Local recovery is best effort and
+  real browser destination outcomes, shared-library conflicts and OS IME remain
+  unverified, although the browser probe now injects a real `DataTransfer` drop
+  and real composition events and the platform probe records the browser's own
+  storage estimate plus a bounded real quota attempt. Local recovery is best effort and
   can lose edits closed before its debounced write completes.
-- Browser screen-reader access is outside the required scope. Other unfinished
+- Native and browser screen-reader support is outside the required scope. Other unfinished
   probes still gate qualification. Next work continues the egui prototype and
   simulator comparison described in the decision.
 

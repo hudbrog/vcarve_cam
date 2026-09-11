@@ -208,6 +208,9 @@ impl Field {
         self.tiles.iter().filter(|t| t.is_some()).count() * TILE * TILE * 3
             + self.versions.len() * 4
     }
+    pub fn tile_allocated(&self, tile: usize) -> bool {
+        self.tiles.get(tile).is_some_and(|t| t.is_some())
+    }
     pub fn cell_at(&self, col: usize, row: usize) -> (u16, u8) {
         if col >= self.cols || row >= self.rows {
             return (0, 0);
@@ -216,6 +219,100 @@ impl Field {
         self.tiles[(row >> 8) * self.tiles_x + (col >> 8)]
             .as_ref()
             .map_or((0, 0), |t| (t.depth[index], t.owner[index]))
+    }
+    /// Tile-major packed grid for incremental tile upload: every 256×256 tile
+    /// is one contiguous 256 KiB block, so a dirty tile is a single copy.
+    pub fn packed_tile_bytes(&self) -> Vec<u8> {
+        let mut bytes = vec![0u8; self.tiles.len() * TILE * TILE * 4];
+        for (tile, data) in self.tiles.iter().enumerate() {
+            let Some(data) = data else {
+                continue;
+            };
+            let base = Self::tile_byte_offset(tile);
+            for local in 0..TILE * TILE {
+                let packed = data.depth[local] as u32 | ((data.owner[local] as u32) << 16);
+                bytes[base + local * 4..base + local * 4 + 4]
+                    .copy_from_slice(&packed.to_le_bytes());
+            }
+        }
+        bytes
+    }
+    /// Byte offset of a tile inside [`Field::packed_tile_bytes`].
+    pub fn tile_byte_offset(tile: usize) -> usize {
+        tile * TILE * TILE * 4
+    }
+    /// Rebuild a field from a transported packed grid (`u32` per cell: low 16
+    /// bits depth, next 8 bits cutting role) and its per-tile versions. Used by
+    /// the display process so a checkpoint arrives as bytes, not as a JSON
+    /// array, and can be extended into an interactive scrub range.
+    pub fn from_packed(
+        stock: Stock,
+        tools: &[ToolSpec],
+        cell: f64,
+        packed: &[u8],
+        versions: &[u32],
+        allocated: &[u32],
+        stats: Stats,
+    ) -> Result<Self, String> {
+        let mut field = Self::new(stock, tools, cell)?;
+        if packed.len() != field.tiles.len() * TILE * TILE * 4 {
+            return Err("Packed stock grid length does not match the tile grid".into());
+        }
+        if versions.len() != field.versions.len() {
+            return Err("Packed stock versions do not match the tile grid".into());
+        }
+        // Tiles that exist but hold no cut are not visible in the packed cells;
+        // the transported mask keeps allocation, versions and checksums equal.
+        for tile in allocated {
+            let index = *tile as usize;
+            if index >= field.tiles.len() {
+                return Err("Packed stock allocation mask is out of range".into());
+            }
+            field.tiles[index].get_or_insert_with(|| {
+                Arc::new(Tile {
+                    depth: vec![0; TILE * TILE],
+                    owner: vec![0; TILE * TILE],
+                })
+            });
+        }
+        let tiles_y = field.versions.len() / field.tiles_x.max(1);
+        for tile in 0..field.tiles.len() {
+            let base = Self::tile_byte_offset(tile);
+            let tiles_y = tiles_y.max(1);
+            let _ = tiles_y;
+            let rows = field
+                .rows
+                .saturating_sub((tile / field.tiles_x.max(1)) * TILE)
+                .min(TILE);
+            let cols = field
+                .cols
+                .saturating_sub((tile % field.tiles_x.max(1)) * TILE)
+                .min(TILE);
+            for local_row in 0..rows {
+                for local_col in 0..cols {
+                    let at = base + (local_row * TILE + local_col) * 4;
+                    let value = u32::from_le_bytes(packed[at..at + 4].try_into().unwrap());
+                    let depth = (value & 0xffff) as u16;
+                    let owner = ((value >> 16) & 0xff) as u8;
+                    if depth == 0 && owner == 0 {
+                        continue;
+                    }
+                    let data = field.tiles[tile].get_or_insert_with(|| {
+                        Arc::new(Tile {
+                            depth: vec![0; TILE * TILE],
+                            owner: vec![0; TILE * TILE],
+                        })
+                    });
+                    let data = Arc::make_mut(data);
+                    let local = local_row * TILE + local_col;
+                    data.depth[local] = depth;
+                    data.owner[local] = owner;
+                }
+            }
+        }
+        field.versions = versions.to_vec();
+        field.stats = stats;
+        Ok(field)
     }
     pub fn checksum(&self) -> String {
         let mut hash = 2166136261u32;
@@ -470,8 +567,12 @@ pub struct Playback {
     pub field: Field,
     pristine: Field,
     pub position: usize,
-    checkpoints: Vec<(usize, Field)>,
+    /// `(prefix, field, pinned)`. Transported seed frames are pinned so a
+    /// bounded replay window survives interactive seeking instead of being
+    /// churned away by the user's own positions.
+    checkpoints: Vec<(usize, Field, bool)>,
     budget: usize,
+    limit: usize,
 }
 impl Playback {
     pub fn new(field: Field, checkpoint_budget: usize) -> Self {
@@ -481,12 +582,43 @@ impl Playback {
             position: 0,
             checkpoints: Vec::new(),
             budget: checkpoint_budget,
+            limit: 4,
         }
+    }
+    /// Adopt checkpoint fields transported from the disposable compute process.
+    /// The seed frames bound replay work for interactive scrubbing; the limit
+    /// keeps them until the user's own seeks replace them.
+    pub fn seed(
+        field: Field,
+        pristine: Field,
+        points: Vec<(usize, Field)>,
+        checkpoint_budget: usize,
+    ) -> Self {
+        let limit = points.len().max(4);
+        let position = points.last().map_or(0, |(prefix, _)| *prefix);
+        Self {
+            pristine,
+            field,
+            position,
+            checkpoints: points
+                .into_iter()
+                .map(|(prefix, field)| (prefix, field, true))
+                .collect(),
+            budget: checkpoint_budget,
+            limit,
+        }
+    }
+    /// Prefixes that bound the current replay window.
+    pub fn checkpoint_prefixes(&self) -> Vec<usize> {
+        self.checkpoints
+            .iter()
+            .map(|(prefix, _, _)| *prefix)
+            .collect()
     }
     pub fn checkpoint_bytes(&self) -> usize {
         self.checkpoints
             .iter()
-            .map(|(_, f)| f.allocated_bytes())
+            .map(|(_, f, _)| f.allocated_bytes())
             .sum()
     }
     pub fn seek(&mut self, motions: &[Motion], target: usize) -> Result<(), String> {
@@ -497,9 +629,9 @@ impl Playback {
             let saved = self
                 .checkpoints
                 .iter()
-                .filter(|(p, _)| *p <= target)
-                .max_by_key(|(p, _)| *p);
-            let (p, f) = saved.map_or((0, &self.pristine), |(p, f)| (*p, f));
+                .filter(|(p, _, _)| *p <= target)
+                .max_by_key(|(p, _, _)| *p);
+            let (p, f) = saved.map_or((0, &self.pristine), |(p, f, _)| (*p, f));
             self.field = f.clone();
             self.position = p;
         }
@@ -508,16 +640,100 @@ impl Playback {
             self.position += 1;
         }
         let bytes = self.field.allocated_bytes();
-        if bytes <= self.budget && !self.checkpoints.iter().any(|(p, _)| *p == target) {
+        if bytes <= self.budget && !self.checkpoints.iter().any(|(p, _, _)| *p == target) {
+            // Keep room for a few user positions on top of the transported
+            // seeds; those seeds are what bound the replay distance.
+            let capacity = self.limit + 4;
             while !self.checkpoints.is_empty()
-                && (self.checkpoints.len() >= 4 || self.checkpoint_bytes() + bytes > self.budget)
+                && (self.checkpoints.len() >= capacity
+                    || self.checkpoint_bytes() + bytes > self.budget)
             {
-                self.checkpoints.remove(0);
+                let Some(victim) = self.checkpoints.iter().position(|(_, _, pinned)| !pinned)
+                else {
+                    // Only transported seeds are left: never evict them for a
+                    // transient position unless the budget itself demands it.
+                    break;
+                };
+                self.checkpoints.remove(victim);
             }
-            self.checkpoints.push((target, self.field.clone()));
+            if self.checkpoints.len() < capacity && self.checkpoint_bytes() + bytes <= self.budget {
+                self.checkpoints.push((target, self.field.clone(), false));
+            }
         }
         Ok(())
     }
+}
+
+/// Binary motion stream. `Motion` is field tuples and a tool index, so the
+/// display process can rebuild the exact replay input without parsing a JSON
+/// array of positions.
+/// kind u8 | pad 3 | tool u32 | six f64 coordinates.
+pub const MOTION_BYTES: usize = 56;
+
+pub fn kind_code(kind: &str) -> u8 {
+    match kind {
+        "cut" => 0,
+        "plunge" => 1,
+        "ramp" => 2,
+        _ => 3,
+    }
+}
+
+pub fn code_kind(code: u8) -> &'static str {
+    match code {
+        0 => "cut",
+        1 => "plunge",
+        2 => "ramp",
+        _ => "rapid",
+    }
+}
+
+pub fn encode_motions(motions: &[Motion]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(motions.len() * MOTION_BYTES);
+    for motion in motions {
+        out.push(kind_code(&motion.kind));
+        out.extend_from_slice(&[0u8; 3]);
+        out.extend_from_slice(&(motion.tool as u32).to_le_bytes());
+        for value in [
+            motion.x0, motion.y0, motion.z0, motion.x1, motion.y1, motion.z1,
+        ] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    out
+}
+
+pub fn decode_motions(bytes: &[u8], tools: usize) -> Result<Vec<Motion>, String> {
+    if !bytes.len().is_multiple_of(MOTION_BYTES) {
+        return Err("Motion stream is not a whole number of records".into());
+    }
+    let mut motions = Vec::with_capacity(bytes.len() / MOTION_BYTES);
+    for record in bytes.chunks_exact(MOTION_BYTES) {
+        let kind = code_kind(record[0]).to_string();
+        let tool = u32::from_le_bytes(record[4..8].try_into().unwrap()) as usize;
+        let mut values = [0_f64; 6];
+        for (i, value) in values.iter_mut().enumerate() {
+            let at = 8 + i * 8;
+            *value = f64::from_le_bytes(record[at..at + 8].try_into().unwrap());
+        }
+        if tool >= tools.max(1) {
+            return Err("Motion stream references an unknown tool".into());
+        }
+        if !values.iter().all(|v| v.is_finite()) {
+            return Err("Motion stream contains non-finite coordinates".into());
+        }
+        motions.push(Motion {
+            kind,
+            tool,
+            x0: values[0],
+            y0: values[1],
+            z0: values[2],
+            x1: values[3],
+            y1: values[4],
+            z1: values[5],
+        });
+    }
+    Ok(motions)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -528,4 +744,106 @@ pub struct Input {
     pub resolution: Resolution,
     pub motions: Vec<Motion>,
     pub prefixes: Vec<usize>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn motion(kind: &str, tool: usize, x: f64) -> Motion {
+        Motion {
+            kind: kind.into(),
+            tool,
+            x0: x,
+            y0: x + 1.,
+            z0: -x,
+            x1: x + 2.,
+            y1: x + 3.,
+            z1: -(x + 4.),
+        }
+    }
+
+    #[test]
+    fn motion_stream_round_trips_every_field() {
+        let motions = vec![
+            motion("cut", 0, 0.5),
+            motion("plunge", 1, 1.25),
+            motion("ramp", 1, 2.),
+            motion("rapid_x_y", 0, 3.5),
+        ];
+        let bytes = encode_motions(&motions);
+        assert_eq!(bytes.len(), motions.len() * MOTION_BYTES);
+        let decoded = decode_motions(&bytes, 2).unwrap();
+        assert_eq!(decoded.len(), motions.len());
+        for (decoded, original) in decoded.iter().zip(&motions) {
+            assert_eq!(decoded.tool, original.tool);
+            // Non-cutting kinds collapse to "rapid"; the simulator treats every
+            // other kind identically.
+            assert_eq!(
+                matches!(decoded.kind.as_str(), "cut" | "plunge" | "ramp"),
+                matches!(original.kind.as_str(), "cut" | "plunge" | "ramp")
+            );
+            for (a, b) in [
+                (decoded.x0, original.x0),
+                (decoded.y0, original.y0),
+                (decoded.z0, original.z0),
+                (decoded.x1, original.x1),
+                (decoded.y1, original.y1),
+                (decoded.z1, original.z1),
+            ] {
+                assert_eq!(a.to_bits(), b.to_bits());
+            }
+        }
+        assert!(decode_motions(&bytes[..MOTION_BYTES - 1], 2).is_err());
+        assert!(decode_motions(&bytes, 1).is_err());
+    }
+
+    #[test]
+    fn packed_tile_round_trip_preserves_tiles_and_versions() {
+        let stock = Stock {
+            x0: -3.,
+            y0: -3.,
+            x1: 3.,
+            y1: 3.,
+            thickness_mm: 4.,
+        };
+        let tools = [ToolSpec::Endmill { diameter: 1.5 }];
+        let mut field = Field::new(stock, &tools, 0.05).unwrap();
+        for i in 0..40 {
+            let x = -2.5 + i as f64 * 0.12;
+            field
+                .apply(
+                    &Motion {
+                        kind: "cut".into(),
+                        tool: 0,
+                        x0: x,
+                        y0: -2.5,
+                        z0: -0.5,
+                        x1: x + 0.05,
+                        y1: 2.5,
+                        z1: -0.5,
+                    },
+                    0.,
+                    1.,
+                )
+                .unwrap();
+        }
+        let allocated: Vec<u32> = (0..field.versions.len())
+            .filter(|tile| field.tile_allocated(*tile))
+            .map(|tile| tile as u32)
+            .collect();
+        let rebuilt = Field::from_packed(
+            stock,
+            &tools,
+            0.05,
+            &field.packed_tile_bytes(),
+            &field.versions,
+            &allocated,
+            field.stats.clone(),
+        )
+        .unwrap();
+        assert_eq!(rebuilt.checksum(), field.checksum());
+        assert_eq!(rebuilt.cell_bytes(), field.cell_bytes());
+        assert_eq!(rebuilt.allocated_bytes(), field.allocated_bytes());
+    }
 }

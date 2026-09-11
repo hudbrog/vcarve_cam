@@ -38,7 +38,7 @@ fn main() -> eframe::Result {
         let result =
             cam_gui1::compute::run(cam_gui1::compute::Request::Reference { flower, export });
         let mut report = match result {
-            Ok(scene) => scene.report,
+            Ok((meta, _)) => meta.report,
             Err(error) => serde_json::json!({"error":error}),
         };
         report["elapsedMs"] = serde_json::json!(begin.elapsed().as_secs_f64() * 1000.);
@@ -56,6 +56,45 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    if args.get(1).is_some_and(|a| a == "--measure") {
+        let output =
+            std::path::PathBuf::from(args.get(2).expect("--measure requires an output path"));
+        let flower = args.get(3).is_some_and(|v| v == "flower");
+        if let Err(error) = cam_gui1::perf::run(&output, flower) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if args.get(1).is_some_and(|a| a == "--dump-scene") {
+        // Write exactly the frames the worker would return, so the browser
+        // package can be compared against the native transport byte for byte.
+        let folder = std::path::PathBuf::from(args.get(2).expect("--dump-scene needs a folder"));
+        std::fs::create_dir_all(&folder).expect("create dump folder");
+        let flower = args.get(3).is_some_and(|v| v == "flower");
+        let name = if flower {
+            "native-flower"
+        } else {
+            "native-small"
+        };
+        match cam_gui1::compute::run(cam_gui1::compute::Request::Reference {
+            flower,
+            export: false,
+        }) {
+            Ok((meta, payload)) => {
+                let metadata = serde_json::to_vec(&meta).expect("metadata serializes");
+                std::fs::write(folder.join(format!("{name}.frame")), {
+                    cam_gui1::pages::frame_message(&metadata, &payload)
+                })
+                .expect("write scene frame");
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     if args.get(1).is_some_and(|a| a == "--worker") {
         let result = (|| -> Result<(), String> {
             let input =
@@ -65,12 +104,24 @@ fn main() -> eframe::Result {
             if matches!(request, cam_gui1::compute::Request::Crash) {
                 std::process::exit(9);
             }
-            let reply = cam_gui1::compute::run(request);
+            // One message: `u32 metadata length | metadata JSON | binary payload`.
+            let (metadata, payload) = match cam_gui1::compute::run(request) {
+                Ok((meta, payload)) => (
+                    serde_json::to_vec(&meta).map_err(|e| e.to_string())?,
+                    payload,
+                ),
+                Err(error) => (
+                    serde_json::to_vec(&Err::<(), String>(error)).map_err(|e| e.to_string())?,
+                    Vec::new(),
+                ),
+            };
             let file = std::fs::File::create(args.get(3).ok_or("Missing output")?)
                 .map_err(|e| e.to_string())?;
             use std::io::Write;
             let mut writer = std::io::BufWriter::new(file);
-            serde_json::to_writer(&mut writer, &reply).map_err(|e| e.to_string())?;
+            writer
+                .write_all(&cam_gui1::pages::frame_message(&metadata, &payload))
+                .map_err(|e| e.to_string())?;
             writer.flush().map_err(|e| e.to_string())
         })();
         if result.is_err() {

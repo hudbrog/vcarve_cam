@@ -13,9 +13,9 @@ const sources=document.getElementById('sources'), result=document.getElementById
 let worker;
 document.getElementById('reverse').onclick=()=>{const focused=document.activeElement;sources.append(sources.firstElementChild);focused?.focus();};
 function run(request){worker?.terminate();worker=new Worker('./worker.js',{type:'module'});cancel.disabled=false;result.textContent='Calculating; inputs remain editable';
-worker.onmessage=({data})=>{const value=JSON.parse(data.reply);result.textContent=value.Err??JSON.stringify(value.Ok.report.summary,null,2);worker.terminate();worker=undefined;cancel.disabled=true;};
+worker.onmessage=({data})=>{const value=JSON.parse(data.meta);result.textContent=value.Err??JSON.stringify(value.Ok.report.summary,null,2);worker.terminate();worker=undefined;cancel.disabled=true;};
 worker.onerror=e=>{result.textContent=e.message;worker?.terminate();worker=undefined;cancel.disabled=true;};
-worker.postMessage({protocol:'gui1-spike-3',request:JSON.stringify(request)});}
+worker.postMessage({protocol:'gui1-spike-4',request:JSON.stringify(request)});}
 document.getElementById('calculate').onclick=()=>run({Reference:{flower:false,export:false}});
 document.getElementById('busy').onclick=()=>run('Busy');
 cancel.onclick=()=>{worker?.terminate();worker=undefined;cancel.disabled=true;result.textContent='Cancellation requested through Worker.terminate; stopped CPU time is not exposed by the browser.';};

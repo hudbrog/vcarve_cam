@@ -2,8 +2,10 @@
 
 This continuation stays inside the isolated egui experiment. It adds executable
 file/recovery paths and input checks; it does **not** complete GUI1, select a
-production persistence schema, or qualify native screen readers. Browser
-screen-reader access remains the user's accepted exclusion.
+production persistence schema, or qualify screen readers. The user subsequently
+extended the browser exclusion to native screen readers on 2026-09-11; neither
+target requires screen-reader qualification. Historical observations below remain
+evidence, not claims of screen-reader support.
 
 ## Implemented behavior
 
@@ -99,7 +101,7 @@ injection, attempt Save, disable injection and use **Retry previous save**.
 
 ## Remaining qualification
 
-Actual OS IME commit/cancel tours on both targets and native screen-reader tours;
+Actual OS IME commit/cancel tours on both targets;
 browser keyboard-only picker cancellation and real direct-save/fallback disk
 outcomes; physical quota/eviction behavior; OS file drag gestures; shared-library
 revision conflicts (the current revision test covers session recovery only).
@@ -107,6 +109,14 @@ Browser serialization/validation remains on the UI thread and needs memory and
 latency measurements. Native replacement does not promise directory-fsync/power-
 loss durability. Alternate platforms and packaging remain unqualified.
 
-Other GUI1 gates remain in the framework decision: viewport overlays/picking/DPI,
-renderer resource recovery, bounded motion/tile transport and sustained S/M/L
+Later updates: the [paging/viewport continuation](gui1-paging-viewport-evidence.md)
+adds `web/input-probe.html` (real browser drop and composition events asserted
+through the published state snapshot) and real storage-estimate plus quota-abort
+checks in `web/platform-probe.html`, and replaces the JSON scene message with a
+paged binary payload. A real OS drag gesture, a real OS IME tour and real file
+dialog confirm/cancel remain manual checks.
+
+Other GUI1 gates remain in the framework decision: sustained S/M/L frame-time
 budgets, support-matrix qualification, and final user review/framework decision.
+Viewport overlays/picking/DPI, renderer resource recovery and bounded
+motion/tile transport now have measured evidence in the continuation above.

@@ -109,9 +109,18 @@ regenerated for changed timeline text, visually inspected and compared again
 with update mode off. Native/WASM release builds, formatting and warning-free
 clippy pass. Shell goldens do not validate custom GPU stock geometry.
 
-Remaining GUI1 work: keyboard/dialog focus/IME/native screen-reader checks; real
+Remaining at this capture: keyboard/dialog focus/IME checks; real
 drop/recovery/save failure and retry; actual device loss; required platform rows
 and distribution checks. Picking, translucent selection, blade glyph, paged
 motion/tile transport, arbitrary stock seeks, sustained S/M/L performance and
 whole-process memory accounting remain unqualified. Final framework outcome
 and prototype user acceptance are still pending.
+
+Later updates: see the [files/input continuation](gui1-files-input-evidence.md)
+for completed recovery and focus checks, and the [current decision](ui-framework-decision.md)
+for the remaining work. The user excluded both native and browser screen-reader
+support on 2026-09-11; screen-reader qualification is no longer a GUI1 gate.
+The [paging/viewport continuation](gui1-paging-viewport-evidence.md) then
+replaced the JSON scene result with a paged binary payload, re-ran this preview
+comparison with zero cell/owner/version differences, and added a native-versus-
+browser transport parity capture.

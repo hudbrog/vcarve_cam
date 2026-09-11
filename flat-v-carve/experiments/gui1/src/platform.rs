@@ -1,6 +1,6 @@
 use crate::recovery::{Snapshot, Stored};
 use crate::{
-    compute::{Request, Scene},
+    compute::{Request, SceneMeta},
     state::Draft,
 };
 use serde::{Deserialize, Serialize};
@@ -13,13 +13,17 @@ pub enum IoValue {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the computed variant carries the scene metadata; boxing it would churn every consumer"
+)]
 pub enum Event {
     Notice(String),
     OfflineStatus(String),
     Computed {
         id: u64,
         elapsed_ms: f64,
-        result: Result<Scene, String>,
+        result: Result<(SceneMeta, Vec<u8>), String>,
     },
     Cancelled {
         id: u64,
@@ -95,7 +99,7 @@ mod native {
                     std::env::temp_dir().join(format!("cam-gui1-{}-{id}.json", std::process::id()));
                 let output = path.with_extension("result.json");
                 let mut cancelled = None;
-                let result = (|| -> Result<Scene, String> {
+                let result = (|| -> Result<(SceneMeta, Vec<u8>), String> {
                     std::fs::write(
                         &path,
                         serde_json::to_vec(&request).map_err(|e| e.to_string())?,
@@ -126,16 +130,18 @@ mod native {
                                         "Compute process exited {status}; result retained"
                                     ));
                                 }
-                                let file =
-                                    std::fs::File::open(&output).map_err(|e| e.to_string())?;
-                                if file.metadata().map_err(|e| e.to_string())?.len() > 256_000_000 {
+                                let bytes = std::fs::read(&output).map_err(|e| e.to_string())?;
+                                if bytes.len() > 512_000_000 {
                                     return Err(
-                                        "Worker result exceeded 256 MB transport admission limit"
+                                        "Worker result exceeded 512 MB transport admission limit"
                                             .into(),
                                     );
                                 }
-                                return serde_json::from_reader(std::io::BufReader::new(file))
-                                    .map_err(|e| e.to_string())?;
+                                // `u32 metadata length | metadata JSON | binary payload`
+                                let (metadata, payload) = crate::pages::parse_message(bytes)?;
+                                let meta: Result<SceneMeta, String> =
+                                    serde_json::from_slice(&metadata).map_err(|e| e.to_string())?;
+                                return Ok((meta?, payload));
                             }
                             Ok(None) => std::thread::sleep(Duration::from_millis(5)),
                             Err(e) => {
@@ -263,6 +269,7 @@ mod browser {
     thread_local! {
         static EVENTS: RefCell<std::collections::VecDeque<Event>> = const { RefCell::new(std::collections::VecDeque::new()) };
         static CONTEXT: RefCell<Option<egui::Context>> = const { RefCell::new(None) };
+        static PAYLOAD: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
     }
     #[wasm_bindgen(module = "/web/ports.js")]
     extern "C" {
@@ -273,16 +280,48 @@ mod browser {
         fn loadRecovery();
         fn saveRecovery(edit: f64, expected: &str, snapshot: &str);
     }
+    /// Binary scene payload for the next computed event. The worker transfers
+    /// an `ArrayBuffer`, so the heavy part never becomes a JSON string.
+    #[wasm_bindgen]
+    pub fn receive_payload(bytes: &[u8]) {
+        PAYLOAD.with(|payload| *payload.borrow_mut() = Some(bytes.to_vec()));
+    }
+
     #[wasm_bindgen]
     pub fn receive_event(text: &str) {
-        let event = serde_json::from_str(text)
-            .unwrap_or_else(|e| Event::RecoveryLoaded(Err(format!("Invalid platform event: {e}"))));
+        let event = match binary_event(text) {
+            Some(event) => event,
+            None => serde_json::from_str(text).unwrap_or_else(|e| {
+                Event::RecoveryLoaded(Err(format!("Invalid platform event: {e}")))
+            }),
+        };
         EVENTS.with(|q| q.borrow_mut().push_back(event));
         CONTEXT.with(|c| {
             if let Some(ctx) = c.borrow().as_ref() {
                 ctx.request_repaint();
             }
         });
+    }
+
+    /// `{"ComputedBinary":{id,elapsed_ms,meta:<metadata JSON>}}` plus a payload
+    /// already handed over through `receive_payload`.
+    fn binary_event(text: &str) -> Option<Event> {
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        let computed = value.get("ComputedBinary")?;
+        let id = computed.get("id")?.as_f64()? as u64;
+        let elapsed_ms = computed.get("elapsed_ms")?.as_f64()?;
+        let meta = computed.get("meta")?.clone();
+        let payload = PAYLOAD.with(|payload| payload.borrow_mut().take());
+        let result = match (serde_json::from_value::<SceneMeta>(meta), payload) {
+            (Ok(meta), Some(payload)) => Ok((meta, payload)),
+            (Ok(_), None) => Err("Worker payload was not transferred".into()),
+            (Err(error), _) => Err(format!("Worker metadata was invalid: {error}")),
+        };
+        Some(Event::Computed {
+            id,
+            elapsed_ms,
+            result,
+        })
     }
     #[derive(Default)]
     pub struct Port;

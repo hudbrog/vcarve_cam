@@ -171,7 +171,7 @@
       }
     }
   },
-  "elapsedMs": 5.2604,
+  "elapsedMs": 13.3025,
   "export": {
     "artifact_kind": "linuxcnc_export_report",
     "diagnostics": [],
@@ -1634,10 +1634,38 @@
   "operations": 1,
   "paths": 1,
   "profileSha256": "9f6a43a4bf338b4e7d62999888726cbc35c0d08f1313942befc262abe22556ea",
-  "protocol": "gui1-spike-1",
+  "protocol": "gui1-spike-4",
   "roughingMotions": 0,
-  "simulation": "Not yet ported: these are actual motion lines, not a heightfield simulation",
+  "simulation": "Display-only Rust heightfield preview; explicit coarser grid, discrete checkpoints and bounded replay",
   "sourceSha256": "7539d62f3163d128a131a30e8726c9ae002e35304ddf699392e77482fa7928bd",
+  "stockPreview": {
+    "cellMm": 0.1,
+    "cols": 248,
+    "finalChecksum": "225638a5",
+    "prefixes": [
+      0,
+      2,
+      4,
+      6,
+      9,
+      11,
+      13,
+      16,
+      18,
+      20,
+      23,
+      25,
+      27,
+      30,
+      32,
+      34,
+      37
+    ],
+    "referenceCellMm": 0.1,
+    "retainedCellBytes": 4456448,
+    "rows": 167,
+    "tiles": 1
+  },
   "stockThicknessMm": 8.0,
   "summary": {
     "cuttingMotionCount": 20,
@@ -1665,6 +1693,16 @@
     "status": "complete"
   },
   "tools": 2,
+  "transport": {
+    "contourBytes": 224,
+    "metadataBytes": 0,
+    "motionPages": 1,
+    "payloadBytes": 4461328,
+    "simBytes": 2072,
+    "stockBytes": 4456448,
+    "stockCheckpoints": 17,
+    "vertexBytes": 2072
+  },
   "vertexBytes": 2296,
   "vertices": 82
 }

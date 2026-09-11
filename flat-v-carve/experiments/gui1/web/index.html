@@ -9,7 +9,7 @@ const begin = performance.now();
 try {
   if (!navigator.gpu) throw new Error('This spike requires WebGPU. No WebGL2 fallback is qualified.');
   await init();
-  if (gui.protocol() !== 'gui1-spike-3') throw new Error('UI/worker protocol mismatch; reload matching assets.');
+  if (gui.protocol() !== 'gui1-spike-4') throw new Error('UI/worker protocol mismatch; reload matching assets.');
   globalThis.GUI1 = gui;
   // Admit the whole drop before eframe asynchronously reads each File. Without
   // this guard a multi-file drop can arrive as separate one-file Rust frames.

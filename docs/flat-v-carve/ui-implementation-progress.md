@@ -13,8 +13,9 @@ Manual recipe to qualify: open the flower reference; compare roughing/finishing;
 type `-`, `1.` and invalid text; reorder duplicate-named sources and return to the
 same operation; resize, change DPI/camera, scrub backward; start/cancel a busy
 worker; recover raw text after a failed write; retry saving; test keyboard, IME
-on both targets, plus a real screen reader on native targets. Browser screen-reader
-access was removed from the required scope by the user on 2026-09-11.
+on both targets. The user removed browser screen-reader access, then native
+screen-reader support, from the required scope on 2026-09-11. Keyboard, focus,
+IME and named controls for framework tests remain required.
 
 Implementation checklist:
 
@@ -40,7 +41,9 @@ the same Rust WASM calculation. The earlier Reconsider-the-stack outcome is
 superseded by the user's explicit removal of browser screen-reader access as a
 requirement (2026-09-11). Retain that observed limitation and comparison evidence;
 no DOM switch or accessibility bridge is required for it. Final GUI1 qualification
-remains pending, with keyboard/focus/input behavior and native accessibility in scope.
+remains pending, with keyboard/focus/input behavior and named controls for tests
+in scope. The user subsequently extended the screen-reader exclusion to native
+targets as well; neither native nor browser screen-reader tours are required.
 
 GUI1a: input hashes, unchanged flower/small references, schema-4 service migration,
 actual motion stages and native checked-output reports captured. Flower output
@@ -60,8 +63,8 @@ real native cancellation/typing smoke and five process-stop samples. Automatic
 session recovery, revision conflicts, native atomic save/retry, browser direct-save
 and download adapters, and file-drop paths now have bounded
 [files/input evidence](gui1-files-input-evidence.md). Native real dialog cancellation
-restores field focus; browser offline reload restores raw text. Browser
-screen-reader access is an accepted exclusion; OS IME/native assistive technology,
+restores field focus; browser offline reload restores raw text. Native and browser
+screen-reader support is an accepted exclusion; OS IME,
 Firefox, renderer recovery, real browser quota/destination outcomes,
 arbitrary interactive stock seeks and sustained S/M/L tests remain open.
 Full-reference native stock and native/WASM preview
@@ -72,15 +75,40 @@ per-target evidence matrix and conditional GUI2a service/workflow checklist reta
 Continue the egui simulation/input/runtime qualification within GUI1 before
 promoting the shell into production.
 
+GUI1e (this continuation): paged transport replaces the single JSON scene
+document. The worker now returns a small metadata document plus one sectioned
+binary payload (`u32 metadata length | metadata JSON | payload`), the browser
+hands the payload over as a transferred `ArrayBuffer`, motion geometry is
+resident page by page with fingerprint-based skipping and budget-limited
+admission, and stock checkpoints upload only the tiles whose version changed.
+The display gained translucent selection fill, an endmill/V-bit marker and
+DPI-aware picking (index plus exact projected distance, cross-checked against a
+brute-force oracle), a bounded replay that makes arbitrary stock seeks possible
+between transported checkpoints, a real resource-recreation drill, a captured
+wgpu validation error, a counting global allocator and an S/M/L/flower
+measurement mode. `web/input-probe.html` drives real browser drop and
+composition events into the running application and asserts the published state
+snapshot; `web/platform-probe.html` adds real storage-estimate and quota-abort
+checks. `web/compare-wasm-simulation.mjs` now compares a native worker frame
+with the browser package byte for byte and records the cross-target planner
+float finding (41 flower motions differ by one ULP; rendered geometry, tile
+versions, every packed cell and the final checksum agree). Full evidence and the
+remaining manual checks are in
+[paging/viewport evidence](gui1-paging-viewport-evidence.md) and
+[perf-measure.json](gui1-evidence/perf-measure.json). Still open: the real OS
+IME tour, real OS drag gesture, real file-dialog cancel/confirm, real device
+loss, a sustained two-minute M frame-time run and the non-Chromium browser rows.
+
 Technical checks: native and WASM release builds, fmt, warning-free clippy,
-17 passing state/behavior/file/simulation tests and two separately executed layout golden
+45 passing state/behavior/file/simulation/transport/picking tests and two separately executed layout golden
 comparisons at 1280×800 and 1440×900. Precise commands and limits are in the
 [experiment README](../../flat-v-carve/experiments/gui1/README.md).
 
 Review readiness: **Windows/Vulkan and Chromium/WebGPU experimental prototype
 only**. Complete GUI1 technical qualification: **not achieved**. User review:
-**pending** for prototype acceptance; the browser screen-reader scope exclusion
+**pending** for prototype acceptance; the native/browser screen-reader scope exclusion
 is explicit user feedback and is applied above. The initial experiment was committed
-and pushed as `81a9fed`; the simulation continuation was pushed as `11bce97`.
-The files/input continuation is subsequent workspace work.
+and pushed as `81a9fed`; the simulation continuation was pushed as `11bce97`;
+the files/input continuation was pushed as `b527f7a`; the paging/viewport
+continuation is on branch `codex/gui1-viewport-perf` (not yet pushed).
 No backend H status was changed.

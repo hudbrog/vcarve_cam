@@ -111,6 +111,57 @@ fn backwards_seek_restores_exact_cells_versions_and_stats_with_bounded_checkpoin
         }
     }
 }
+
+#[test]
+fn transported_checkpoints_survive_interactive_seeking() {
+    let f = Field::new(stock(), &[ToolSpec::Endmill { diameter: 2. }], 0.25).unwrap();
+    let motions: Vec<_> = (1..=64).map(|i| plunge(0, -(i as f64) / 8.)).collect();
+    let points = vec![
+        (0_usize, f.clone()),
+        (16, {
+            let mut field = f.clone();
+            for motion in &motions[..16] {
+                field.apply(motion, 0., 1.).unwrap();
+            }
+            field
+        }),
+        (64, {
+            let mut field = f.clone();
+            for motion in &motions {
+                field.apply(motion, 0., 1.).unwrap();
+            }
+            field
+        }),
+    ];
+    let seed_prefixes: Vec<usize> = points.iter().map(|(prefix, _)| *prefix).collect();
+    let latest = points.last().unwrap().1.clone();
+    let mut playback = Playback::seed(latest, f.clone(), points, 20 * 1024 * 1024);
+    let mut worst = 0;
+    for target in [7, 33, 61, 3, 48, 12, 64, 20, 55, 1] {
+        playback.seek(&motions, target).unwrap();
+        // Replay work is bounded by the pinned seed spacing even after many
+        // seeks have added their own checkpoints.
+        let nearest = playback
+            .checkpoint_prefixes()
+            .into_iter()
+            .filter(|prefix| *prefix <= target)
+            .max()
+            .unwrap_or(0);
+        worst = worst.max(target - nearest);
+        for prefix in &seed_prefixes {
+            assert!(
+                playback.checkpoint_prefixes().contains(prefix),
+                "seed checkpoint {prefix} was evicted"
+            );
+        }
+        let mut direct = f.clone();
+        for motion in &motions[..target] {
+            direct.apply(motion, 0., 1.).unwrap();
+        }
+        assert_eq!(playback.field.cell_bytes(), direct.cell_bytes());
+    }
+    assert!(worst <= 32, "replay window grew to {worst} motions");
+}
 #[test]
 fn admission_rejects_nonfinite_and_overbudget_without_large_allocations() {
     assert!(
@@ -144,14 +195,20 @@ fn preview_checkpoints_include_both_stages_and_obey_the_retained_budget() {
         prefixes: vec![],
     };
     let preview = cam_gui1::stock_preview::build(&input, 7).unwrap();
-    assert!(preview.cell_mm > preview.reference_cell_mm);
-    assert!(preview.retained_bytes <= cam_gui1::stock_preview::MAX_PREVIEW_BYTES);
-    assert!(preview.frames.iter().any(|f| f.prefix == 7));
-    assert_eq!(preview.frames.first().unwrap().prefix, 0);
-    assert_eq!(preview.frames.last().unwrap().prefix, 20);
-    let mut field = Field::new(input.stock, &input.tools, preview.cell_mm).unwrap();
+    assert!(preview.meta.cell_mm > preview.meta.reference_cell_mm);
+    assert!(preview.meta.retained_bytes <= cam_gui1::stock_preview::MAX_PREVIEW_BYTES);
+    assert!(preview.meta.frames.iter().any(|f| f.prefix == 7));
+    assert_eq!(preview.meta.frames.first().unwrap().prefix, 0);
+    assert_eq!(preview.meta.frames.last().unwrap().prefix, 20);
+    let mut field = Field::new(input.stock, &input.tools, preview.meta.cell_mm).unwrap();
     for motion in &input.motions {
         field.apply(motion, 0., 1.).unwrap();
     }
-    assert_eq!(preview.frames.last().unwrap().cells, field.packed_cells());
+    // The transported checkpoint is the tile-major packed grid of the same field.
+    assert_eq!(preview.cells.last().unwrap(), &field.packed_tile_bytes());
+    assert_eq!(
+        preview.meta.frames.last().unwrap().checksum,
+        field.checksum()
+    );
+    assert_eq!(preview.meta.frames.last().unwrap().versions, field.versions);
 }
