@@ -14,7 +14,7 @@ these documents. No CAM crate, fixture, incumbent UI or backend checklist change
 
 | Area | Before | Now |
 | --- | --- | --- |
-| Transport | The whole scene (vertices and stock cells) was serialized as JSON in the worker result file / postMessage string | One small metadata document plus one sectioned binary payload: `u32 metadata length \| metadata JSON \| payload`, sections aligned to 16 bytes |
+| Transport | The whole scene (vertices and stock cells) was serialized as JSON in the worker result file / postMessage string | One small metadata document plus one sectioned binary payload: `u32 metadata length \| metadata \| payload`, sections aligned to 16 bytes. The metadata is exactly `Result<SceneMeta, String>` (`{"Ok":…}` / `{"Err":…}`), produced by one shared function so the worker and the parent cannot drift apart |
 | Browser channel | Worker parsed and reserialized the result string on the UI thread | Worker posts metadata as JSON and the payload as a transferred `ArrayBuffer`; the UI calls `receive_payload` then publishes a `ComputedBinary` event |
 | Motion rendering | One retained vertex batch uploaded whenever the scene revision changed | Page table (`8,192` motions = 458,752 bytes per page); pages are fingerprinted, admitted nearest the playhead first, copied only when their fingerprint or identity changed, and evicted when the resident budget is exceeded |
 | Stock display | Whole packed field copied per checkpoint | Tile-major packed grid (one contiguous 256 KiB tile); only tiles whose version changed since the last upload are copied |
@@ -204,6 +204,16 @@ reload behaviour, transported checkpoint rebuild equality, tile-dirty seeks,
 DPI-aware picking against a brute-force oracle, motion-stream and tile-major
 round trips, overlay geometry, and the earlier draft/recovery/file/simulation
 suites.
+
+Two tests pin the worker boundary specifically: one round-trips the shared
+message builder and the parent decoder (including the failure document and a
+rejection case for a bare metadata document), and one runs the real
+`cam-gui1-desktop --worker` process end to end and decodes its output with the
+same function the native supervisor uses. The first revision of this
+continuation wrote a bare `SceneMeta` document on success while the parent
+decoded `Result<SceneMeta, String>`, so every native reference load failed with
+`unknown variant \`protocol\`, expected \`Ok\` or \`Err\``; the wire shape is now
+defined in one place and covered on both sides.
 
 ## Still unverified
 

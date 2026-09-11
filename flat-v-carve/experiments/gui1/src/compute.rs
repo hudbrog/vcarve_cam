@@ -170,6 +170,42 @@ pub fn run(request: Request) -> Result<(SceneMeta, Vec<u8>), String> {
     }
 }
 
+/// Run a request and keep the failure message next to the payload, so callers
+/// can build the worker message without losing either half.
+pub fn run_framed(request: Request) -> (Result<SceneMeta, String>, Vec<u8>) {
+    match run(request) {
+        Ok((meta, payload)) => (Ok(meta), payload),
+        Err(error) => (Err(error), Vec::new()),
+    }
+}
+
+/// Metadata document carried inside a worker message. The parent deserializes
+/// exactly this shape (`{"Ok":…}` or `{"Err":…}`), so the two sides cannot drift
+/// apart: both the native worker and the browser worker use this function.
+pub fn metadata_document(result: &Result<SceneMeta, String>) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(result).map_err(|e| e.to_string())
+}
+
+/// The complete worker message: `u32 metadata length | metadata | payload`.
+pub fn worker_message(request: Request) -> Result<Vec<u8>, String> {
+    let (result, payload) = run_framed(request);
+    Ok(crate::pages::frame_message(
+        &metadata_document(&result)?,
+        &payload,
+    ))
+}
+
+/// Parent-side decoder for a worker message. This is the single place a worker
+/// result becomes a scene, used by the native supervisor.
+pub fn parse_worker_message(
+    bytes: Vec<u8>,
+) -> Result<(Result<SceneMeta, String>, Vec<u8>), String> {
+    let (metadata, payload) = crate::pages::parse_message(bytes)?;
+    let result: Result<SceneMeta, String> =
+        serde_json::from_slice(&metadata).map_err(|e| e.to_string())?;
+    Ok((result, payload))
+}
+
 struct Package {
     name: String,
     job: String,

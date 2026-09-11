@@ -171,7 +171,7 @@
       }
     }
   },
-  "elapsedMs": 13.3025,
+  "elapsedMs": 12.8347,
   "export": {
     "artifact_kind": "linuxcnc_export_report",
     "diagnostics": [],

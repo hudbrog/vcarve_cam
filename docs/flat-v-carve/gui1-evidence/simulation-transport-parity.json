@@ -1,12 +1,12 @@
 {
   "node": "v24.19.0",
-  "nativeSha256": "7086e4019b88c8c19a8f79046e3b1bc1d083da710a17d3953fc8c8a52f797125",
+  "nativeSha256": "d753ff5473a9a41e1a2063587c938285e06e3cec8b9ef3e2c611ec7d741f68d8",
   "wasmSha256": "b45fbeaad6c16131886abb04de14b26258d4a71d14564162791a34be81c198be",
   "note": "Native worker frame versus the browser package for the same request; the TypeScript heightfield comparison is a separate capture.",
   "records": [
     {
       "name": "small",
-      "elapsedMs": 72.4377,
+      "elapsedMs": 77.23429999999996,
       "payloadSha256Native": "bea713c66ae85cc28fc632a7a1e67f0ff776f3dafba4e80b09bd19999b55aaa2",
       "payloadSha256Browser": "bea713c66ae85cc28fc632a7a1e67f0ff776f3dafba4e80b09bd19999b55aaa2",
       "payloadsIdentical": true,
@@ -26,7 +26,7 @@
     },
     {
       "name": "flower",
-      "elapsedMs": 16208.5999,
+      "elapsedMs": 18357.7713,
       "payloadSha256Native": "61194c951a5f9772a223cdfe984fcdbcacc7aa66b02d1d4cbf26139c94c61412",
       "payloadSha256Browser": "c5cb3c4c9722086ff547096c6d175143db487ed10fa477d1a2bf24435a3826a2",
       "payloadsIdentical": false,

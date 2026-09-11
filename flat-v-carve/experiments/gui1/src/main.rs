@@ -82,7 +82,10 @@ fn main() -> eframe::Result {
             export: false,
         }) {
             Ok((meta, payload)) => {
-                let metadata = serde_json::to_vec(&meta).expect("metadata serializes");
+                // Same metadata shape the worker returns, so the comparison
+                // exercises the real wire format.
+                let metadata =
+                    cam_gui1::compute::metadata_document(&Ok(meta)).expect("metadata serializes");
                 std::fs::write(folder.join(format!("{name}.frame")), {
                     cam_gui1::pages::frame_message(&metadata, &payload)
                 })
@@ -104,24 +107,14 @@ fn main() -> eframe::Result {
             if matches!(request, cam_gui1::compute::Request::Crash) {
                 std::process::exit(9);
             }
-            // One message: `u32 metadata length | metadata JSON | binary payload`.
-            let (metadata, payload) = match cam_gui1::compute::run(request) {
-                Ok((meta, payload)) => (
-                    serde_json::to_vec(&meta).map_err(|e| e.to_string())?,
-                    payload,
-                ),
-                Err(error) => (
-                    serde_json::to_vec(&Err::<(), String>(error)).map_err(|e| e.to_string())?,
-                    Vec::new(),
-                ),
-            };
+            // One message: `u32 metadata length | metadata | binary payload`,
+            // where the metadata is exactly `Result<SceneMeta, String>`.
+            let message = cam_gui1::compute::worker_message(request)?;
             let file = std::fs::File::create(args.get(3).ok_or("Missing output")?)
                 .map_err(|e| e.to_string())?;
             use std::io::Write;
             let mut writer = std::io::BufWriter::new(file);
-            writer
-                .write_all(&cam_gui1::pages::frame_message(&metadata, &payload))
-                .map_err(|e| e.to_string())?;
+            writer.write_all(&message).map_err(|e| e.to_string())?;
             writer.flush().map_err(|e| e.to_string())
         })();
         if result.is_err() {

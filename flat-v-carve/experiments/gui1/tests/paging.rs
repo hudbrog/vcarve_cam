@@ -15,6 +15,105 @@ fn scene(segments: usize) -> (compute::Scene, pages::PageTable) {
     )
 }
 
+/// The worker message is the boundary between the disposable compute process and
+/// the display. Both halves live in the library so this can be tested without
+/// spawning a process: an earlier revision wrote a bare metadata document and
+/// the parent decoded it as `Result<SceneMeta, String>`.
+#[test]
+fn worker_message_round_trips_for_success_and_failure() {
+    let message = compute::worker_message(compute::Request::Reference {
+        flower: false,
+        export: false,
+    })
+    .unwrap();
+    let (result, payload) = compute::parse_worker_message(message).unwrap();
+    let meta = result.unwrap();
+    assert_eq!(meta.motions, 37);
+    assert_eq!(payload.len(), meta.payload_bytes);
+    assert_eq!(meta.protocol, compute::PROTOCOL);
+    // The scene the display builds from that payload addresses the same pages.
+    let scene = compute::Scene {
+        meta,
+        payload: std::sync::Arc::new(payload),
+    };
+    let table = pages::PageTable::new(
+        scene.meta.motion_offset,
+        scene.meta.motion_len,
+        scene.meta.motions,
+    )
+    .unwrap();
+    assert_eq!(table.page_count(), 1);
+    assert_eq!(scene.motion_bytes().len(), 37 * 2 * 28);
+
+    // A failed request still produces a decodable message, and the failure
+    // message survives the round trip instead of turning into a parse error.
+    let failed = compute::worker_message(compute::Request::Crash).unwrap();
+    let (result, payload) = compute::parse_worker_message(failed).unwrap();
+    let error = result.unwrap_err();
+    assert!(error.contains("Injected compute failure"), "{error}");
+    assert!(payload.is_empty());
+
+    // Truncated or mislabelled messages are reported, not silently accepted.
+    assert!(compute::parse_worker_message(vec![0, 0, 0, 0]).is_err());
+    assert!(
+        compute::parse_worker_message(cam_gui1_frame(b"{\"protocol\":\"gui1-spike-4\"}")).is_err(),
+        "a bare metadata document must not be accepted as a worker result"
+    );
+}
+
+fn cam_gui1_frame(metadata: &[u8]) -> Vec<u8> {
+    pages::frame_message(metadata, &[])
+}
+
+/// End-to-end check of the actual disposable worker process and the exact
+/// decoder the native supervisor uses.
+#[test]
+fn native_worker_process_returns_a_decodable_scene() {
+    let exe = env!("CARGO_BIN_EXE_cam-gui1-desktop");
+    let directory = std::env::temp_dir().join(format!("cam-gui1-worker-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let request = directory.join("request.json");
+    let output = directory.join("result.bin");
+    std::fs::write(
+        &request,
+        serde_json::to_vec(&compute::Request::Reference {
+            flower: false,
+            export: false,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let status = std::process::Command::new(exe)
+        .arg("--worker")
+        .arg(&request)
+        .arg(&output)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let (result, payload) = compute::parse_worker_message(std::fs::read(&output).unwrap()).unwrap();
+    let meta = result.unwrap();
+    assert_eq!(meta.motions, 37);
+    assert_eq!(payload.len(), meta.payload_bytes);
+
+    // The same process reports a failed request as a decodable error rather
+    // than an unreadable file the parent has to guess about.
+    let crash_request = directory.join("crash.json");
+    let crash_output = directory.join("crash.bin");
+    std::fs::write(
+        &crash_request,
+        serde_json::to_vec(&compute::Request::Crash).unwrap(),
+    )
+    .unwrap();
+    let status = std::process::Command::new(exe)
+        .arg("--worker")
+        .arg(&crash_request)
+        .arg(&crash_output)
+        .status()
+        .unwrap();
+    assert!(!status.success());
+    std::fs::remove_dir_all(&directory).ok();
+}
+
 #[test]
 fn heavy_scene_data_never_travels_as_json() {
     let (scene, table) = scene(20_000);

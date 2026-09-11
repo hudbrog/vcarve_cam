@@ -20,7 +20,10 @@ assert.equal(gui.protocol(),'gui1-spike-4');
 
 const parseFrame=buffer=>{
   const metaLength=buffer.readUInt32LE(0);
-  const metadata=JSON.parse(buffer.subarray(4,4+metaLength).toString('utf8'));
+  // Metadata is `Result<SceneMeta, String>`, exactly as the parent decodes it.
+  const document=JSON.parse(buffer.subarray(4,4+metaLength).toString('utf8'));
+  assert.ok(document.Ok,`worker frame carried an error: ${document.Err}`);
+  const metadata=document.Ok;
   const payload=buffer.subarray(4+metaLength);
   const sections=[];
   assert.equal(payload.subarray(0,8).toString('latin1'),'GUI1FRM1','payload magic');

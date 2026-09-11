@@ -137,10 +137,8 @@ mod native {
                                             .into(),
                                     );
                                 }
-                                // `u32 metadata length | metadata JSON | binary payload`
-                                let (metadata, payload) = crate::pages::parse_message(bytes)?;
-                                let meta: Result<SceneMeta, String> =
-                                    serde_json::from_slice(&metadata).map_err(|e| e.to_string())?;
+                                // `u32 metadata length | metadata | payload`
+                                let (meta, payload) = crate::compute::parse_worker_message(bytes)?;
                                 return Ok((meta?, payload));
                             }
                             Ok(None) => std::thread::sleep(Duration::from_millis(5)),
@@ -312,10 +310,15 @@ mod browser {
         let elapsed_ms = computed.get("elapsed_ms")?.as_f64()?;
         let meta = computed.get("meta")?.clone();
         let payload = PAYLOAD.with(|payload| payload.borrow_mut().take());
-        let result = match (serde_json::from_value::<SceneMeta>(meta), payload) {
-            (Ok(meta), Some(payload)) => Ok((meta, payload)),
-            (Ok(_), None) => Err("Worker payload was not transferred".into()),
-            (Err(error), _) => Err(format!("Worker metadata was invalid: {error}")),
+        // The browser worker returns the same `Result<SceneMeta, String>`
+        // metadata document as the native worker.
+        let result = match serde_json::from_value::<Result<SceneMeta, String>>(meta) {
+            Ok(Ok(meta)) => match payload {
+                Some(payload) => Ok((meta, payload)),
+                None => Err("Worker payload was not transferred".into()),
+            },
+            Ok(Err(error)) => Err(error),
+            Err(error) => Err(format!("Worker metadata was invalid: {error}")),
         };
         Some(Event::Computed {
             id,
