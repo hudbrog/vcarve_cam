@@ -64,8 +64,13 @@ fn dropped_native_file_uses_bounded_background_read_and_shared_planning() {
                 panic!("Unexpected drop event: {event:?}")
             };
             assert_eq!(json, cam_gui1::compute::SMALL);
-            let scene = cam_gui1::compute::run(cam_gui1::compute::Request::Open { json }).unwrap();
-            assert_eq!((scene.vertices.len() - scene.contour_vertices) / 2, 37);
+            let (meta, payload) =
+                cam_gui1::compute::run(cam_gui1::compute::Request::Open { json }).unwrap();
+            let scene = cam_gui1::compute::Scene {
+                meta,
+                payload: std::sync::Arc::new(payload),
+            };
+            assert_eq!(scene.motion_count(), 37);
             break;
         }
         assert!(std::time::Instant::now() < deadline, "Drop read timed out");
@@ -118,8 +123,8 @@ fn atomic_save_retries_identical_checked_flower_bytes_after_real_destination_fai
         export: true,
     })
     .unwrap();
-    assert_eq!(scene.programs.len(), 1);
-    let bytes = scene.programs[0].gcode.as_bytes();
+    assert_eq!(scene.0.programs.len(), 1);
+    let bytes = scene.0.programs[0].gcode.as_bytes();
     let hash = cam_gui1::compute::hash(bytes);
     assert_eq!(
         hash,

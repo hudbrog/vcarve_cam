@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GUI1 browser input probe</title><link rel="icon" href="data:,">
+<style>
+html,body{margin:0;height:100%;background:#151d26;color:#e9eef4;font:15px system-ui}
+#wrap{position:relative;height:100%}
+canvas{width:100%;height:100%;display:block}
+#panel{position:absolute;right:8px;bottom:8px;width:460px;max-height:46%;overflow:auto;background:#0e151c;border:1px solid #2c3b4a;padding:8px;font:12px/1.4 ui-monospace,monospace}
+button{padding:6px 10px;margin:0 4px 4px 0}
+li{margin:2px 0}
+</style></head>
+<body><div id="wrap">
+<canvas id="cam" aria-label="Experimental CAM workspace" tabindex="0"></canvas>
+<div id="panel">
+  <div><button id="run">Run browser input probe</button><button id="copy">Copy JSON</button></div>
+  <ol id="checks"></ol><pre id="status">Ready. The probe drives real browser events into the running Rust application.</pre>
+</div>
+</div>
+<script type="module">
+import init, * as gui from '../pkg/cam_gui1.js';
+import {loadRecord} from './recovery-store.js';
+const panel = document.querySelector('#status');
+const checks = document.querySelector('#checks');
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const waitFor = async (test, label, timeout = 20_000) => {
+  const begin = performance.now();
+  for (;;) {
+    const state = JSON.parse(gui.probe_state() || '{}');
+    if (test(state)) return state;
+    if (performance.now() - begin > timeout) throw new Error(`Timed out waiting for ${label}`);
+    await wait(100);
+  }
+};
+
+try {
+  if (!navigator.gpu) throw new Error('This probe requires WebGPU; no WebGL2 fallback is qualified.');
+  await init();
+  if (gui.protocol() !== 'gui1-spike-4') throw new Error('UI/worker protocol mismatch; reload matching assets.');
+  globalThis.GUI1 = gui;
+  await gui.start('cam');
+  document.querySelector('#status').textContent = 'Application started.';
+} catch (error) {
+  panel.textContent = `FAILED to start: ${error}`;
+}
+
+const evidence = [];
+const pass = message => {
+  evidence.push(message);
+  const li = document.createElement('li');
+  li.textContent = `PASS: ${message}`;
+  checks.append(li);
+};
+
+document.querySelector('#copy').onclick = () => {
+  const text = JSON.stringify(globalThis.GUI1_INPUT_EVIDENCE ?? {status: 'not run'}, null, 2);
+  navigator.clipboard?.writeText(text);
+  panel.textContent = text;
+};
+
+document.querySelector('#run').onclick = async () => {
+  checks.replaceChildren();
+  evidence.length = 0;
+  const canvas = document.querySelector('#cam');
+  try {
+    const startup = await waitFor(s => s.motions !== undefined, 'the first published frame');
+    pass(`Running application published its first snapshot (DPI ${startup.dpi})`);
+
+    // 1. Real drop event with a real DataTransfer containing one JSON job.
+    // Served by web/serve.mjs from the unchanged repository fixtures.
+    const job = await (await fetch('/fixtures/m4/contact-line.json')).text();
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([job], 'contact-line.json', {type: 'application/json'}));
+    const rect = canvas.getBoundingClientRect();
+    const at = {bubbles: true, cancelable: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2};
+    for (const type of ['dragenter', 'dragover', 'drop']) {
+      canvas.dispatchEvent(new DragEvent(type, {...at, dataTransfer: transfer}));
+    }
+    const dropped = await waitFor(s => s.motions === 37, 'the dropped job to load');
+    pass(`Injected browser drop event loaded the dropped JSON job (${dropped.motions} motions, ${dropped.pages} pages)`);
+    globalThis.GUI1_INPUT_EVIDENCE = {drop: dropped.motions, dpi: dropped.dpi};
+
+    // 2. Canvas keyboard focus, the Ctrl+F shortcut, then the browser IME path.
+    //    egui ignores key events until the canvas reports focus, and eframe
+    //    listens for composition events on its hidden text-agent input rather
+    //    than on the canvas. A real OS IME tour is still a separate manual check.
+    canvas.focus();
+    await wait(300);
+    const withFocus = JSON.parse(gui.probe_state());
+    if (!withFocus.canvasFocused) {
+      throw new Error('the canvas did not take keyboard focus; is it missing tabindex?');
+    }
+    const key = (type, extra = {}) =>
+      canvas.dispatchEvent(new KeyboardEvent(type, {bubbles: true, cancelable: true, key: 'f', code: 'KeyF', ...extra}));
+    key('keydown', {ctrlKey: true});
+    key('keyup', {ctrlKey: true});
+    await wait(500);
+    const focused = JSON.parse(gui.probe_state());
+    if (!focused.focused) throw new Error('Ctrl+F did not focus an editable control');
+    const agent = document.body.querySelector('input');
+    if (!agent) throw new Error('eframe text agent input was not found');
+    const composition = (type, data) =>
+      agent.dispatchEvent(new CompositionEvent(type, {bubbles: true, data}));
+    composition('compositionstart', '');
+    composition('compositionupdate', '工具');
+    await wait(400);
+    const preedit = JSON.parse(gui.probe_state());
+    composition('compositionend', '工具');
+    await wait(500);
+    const committed = JSON.parse(gui.probe_state());
+    pass(`Canvas takes keyboard focus (${withFocus.canvasFocused}); Ctrl+F focused a control (focused=${focused.focused}); composition events reached the application (preedit active=${preedit.imeActive}, committed text=${JSON.stringify(committed.search)}, ime active after commit=${committed.imeActive})`);
+    if (committed.search !== '工具') {
+      throw new Error(`Committed IME text did not reach the focused field: ${JSON.stringify(committed.search)}`);
+    }
+    globalThis.GUI1_INPUT_EVIDENCE.ime = {
+      preeditActive: preedit.imeActive,
+      committed: committed.search,
+      activeAfterCommit: committed.imeActive,
+    };
+
+    // 3. Offline recovery store is readable from the same origin.
+    const stored = await loadRecord();
+    pass(`IndexedDB recovery store readable (${stored === null ? 'no record yet' : 'record present'})`);
+
+    globalThis.GUI1_INPUT_EVIDENCE = {
+      ...globalThis.GUI1_INPUT_EVIDENCE,
+      status: 'passed',
+      userAgent: navigator.userAgent,
+      dpi: devicePixelRatio,
+      webgpu: !!navigator.gpu,
+      checks: evidence,
+    };
+    panel.textContent = JSON.stringify(globalThis.GUI1_INPUT_EVIDENCE, null, 2);
+  } catch (error) {
+    panel.textContent = `FAILED: ${error.stack ?? error}`;
+    globalThis.GUI1_INPUT_EVIDENCE = {status: 'failed', error: String(error), checks: evidence};
+  }
+};
+</script></body></html>

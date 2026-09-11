@@ -1,0 +1,441 @@
+{
+  "protocol": "gui1-spike-4",
+  "workloads": [
+    {
+      "name": "S · 20,000",
+      "segments": 20000,
+      "motions": 20000,
+      "sources": 2,
+      "operations": 10,
+      "planMs": 91.8141,
+      "metadataBytes": 3261,
+      "payloadBytes": 7483088,
+      "motionPages": 3,
+      "stockCheckpoints": 5,
+      "stockTiles": 4,
+      "simStreamBytes": 1120000,
+      "jsonEstimate": {
+        "sampledVertices": 4096,
+        "jsonBytesPerVertex": 79.093994140625,
+        "estimatedVertexBytes": 3163759,
+        "sampledCells": 16384,
+        "jsonBytesPerCell": 2.00006103515625,
+        "estimatedCellBytes": 2621520,
+        "estimatedTotalBytes": 5785279,
+        "payloadRatio": 0.7731138535321247
+      },
+      "fingerprintMs": 0.8819,
+      "uploadFull": {
+        "pages": 3,
+        "bytes": 1120000,
+        "stagingCopyMs": 0.12000000000000001,
+        "omittedPages": 0
+      },
+      "uploadReload": {
+        "pages": 0,
+        "bytes": 0,
+        "stagingCopyMs": 0.0,
+        "omittedPages": 0
+      },
+      "uploadBudget16mib": {
+        "pages": 3,
+        "bytes": 1120000,
+        "stagingCopyMs": 0.1821,
+        "omittedPages": 0
+      },
+      "pickBuildMs": 1.2426,
+      "pickIndexBytes": 825308,
+      "pickQuery": {
+        "count": 240,
+        "p50Ms": 0.0029000000000000002,
+        "p95Ms": 0.0045000000000000005,
+        "maxMs": 0.0178
+      },
+      "pickHitRate": 1.0,
+      "pickBruteForceChecked": 40,
+      "pickBruteForceMismatches": 0,
+      "replayable": true,
+      "stockFieldBytes": 786448,
+      "seekWarm": {
+        "count": 74,
+        "p50Ms": 4.8316,
+        "p95Ms": 20.617900000000002,
+        "maxMs": 25.9426
+      },
+      "seekBackward": {
+        "count": 34,
+        "p50Ms": 3.8319,
+        "p95Ms": 10.989799999999999,
+        "maxMs": 13.7857
+      },
+      "seekForward": {
+        "count": 40,
+        "p50Ms": 5.904000000000001,
+        "p95Ms": 24.8677,
+        "maxMs": 25.9426
+      },
+      "seekScrub": {
+        "count": 240,
+        "p50Ms": 0.0015,
+        "p95Ms": 5.4885,
+        "maxMs": 12.952200000000001
+      },
+      "seekCold": {
+        "count": 40,
+        "p50Ms": 27.4796,
+        "p95Ms": 64.3628,
+        "maxMs": 75.8683
+      },
+      "seekTiles": {
+        "count": 40,
+        "p50Ms": 4.0,
+        "p95Ms": 4.0,
+        "maxMs": 4.0
+      },
+      "seekTileKib": {
+        "count": 40,
+        "p50Ms": 1024.0,
+        "p95Ms": 1024.0,
+        "maxMs": 1024.0
+      },
+      "overlayUs": {
+        "count": 60,
+        "p50Ms": 1.4,
+        "p95Ms": 3.1,
+        "maxMs": 17.8
+      },
+      "heapBeforeBytes": 423,
+      "heapPeakBytes": 33403606,
+      "heapAfterBytes": 16378054
+    },
+    {
+      "name": "M · 200,000",
+      "segments": 200000,
+      "motions": 200000,
+      "sources": 20,
+      "operations": 100,
+      "planMs": 1004.4064,
+      "metadataBytes": 4511,
+      "payloadBytes": 31837488,
+      "motionPages": 25,
+      "stockCheckpoints": 9,
+      "stockTiles": 4,
+      "simStreamBytes": 11200000,
+      "jsonEstimate": {
+        "sampledVertices": 4096,
+        "jsonBytesPerVertex": 79.093994140625,
+        "estimatedVertexBytes": 31637597,
+        "sampledCells": 16384,
+        "jsonBytesPerCell": 2.00006103515625,
+        "estimatedCellBytes": 4718736,
+        "estimatedTotalBytes": 36356333,
+        "payloadRatio": 1.1419347217343279
+      },
+      "fingerprintMs": 14.864199999999999,
+      "uploadFull": {
+        "pages": 25,
+        "bytes": 11200000,
+        "stagingCopyMs": 1.6952,
+        "omittedPages": 0
+      },
+      "uploadReload": {
+        "pages": 0,
+        "bytes": 0,
+        "stagingCopyMs": 0.00009999999999999999,
+        "omittedPages": 0
+      },
+      "uploadBudget16mib": {
+        "pages": 25,
+        "bytes": 11200000,
+        "stagingCopyMs": 1.7679,
+        "omittedPages": 0
+      },
+      "pickBuildMs": 11.545,
+      "pickIndexBytes": 7353900,
+      "pickQuery": {
+        "count": 240,
+        "p50Ms": 0.0583,
+        "p95Ms": 0.1164,
+        "maxMs": 0.26170000000000004
+      },
+      "pickHitRate": 1.0,
+      "pickBruteForceChecked": 40,
+      "pickBruteForceMismatches": 0,
+      "replayable": true,
+      "stockFieldBytes": 786448,
+      "seekWarm": {
+        "count": 76,
+        "p50Ms": 35.3929,
+        "p95Ms": 126.0161,
+        "maxMs": 174.8407
+      },
+      "seekBackward": {
+        "count": 36,
+        "p50Ms": 21.724,
+        "p95Ms": 61.9514,
+        "maxMs": 87.427
+      },
+      "seekForward": {
+        "count": 40,
+        "p50Ms": 43.789500000000004,
+        "p95Ms": 163.1763,
+        "maxMs": 174.8407
+      },
+      "seekScrub": {
+        "count": 240,
+        "p50Ms": 0.011899999999999999,
+        "p95Ms": 42.8635,
+        "maxMs": 98.7757
+      },
+      "seekCold": {
+        "count": 40,
+        "p50Ms": 345.646,
+        "p95Ms": 873.1286,
+        "maxMs": 1287.9819000000002
+      },
+      "seekTiles": {
+        "count": 40,
+        "p50Ms": 4.0,
+        "p95Ms": 4.0,
+        "maxMs": 4.0
+      },
+      "seekTileKib": {
+        "count": 40,
+        "p50Ms": 1024.0,
+        "p95Ms": 1024.0,
+        "maxMs": 1024.0
+      },
+      "overlayUs": {
+        "count": 60,
+        "p50Ms": 2.1,
+        "p95Ms": 3.3,
+        "maxMs": 21.4
+      },
+      "heapBeforeBytes": 3026,
+      "heapPeakBytes": 149357414,
+      "heapAfterBytes": 77455074
+    },
+    {
+      "name": "L · 1,000,000",
+      "segments": 1000000,
+      "motions": 1000000,
+      "sources": 100,
+      "operations": 1000,
+      "planMs": 1135.0340999999999,
+      "metadataBytes": 2908,
+      "payloadBytes": 61243072,
+      "motionPages": 123,
+      "stockCheckpoints": 5,
+      "stockTiles": 4,
+      "simStreamBytes": 0,
+      "jsonEstimate": {
+        "sampledVertices": 4096,
+        "jsonBytesPerVertex": 79.093994140625,
+        "estimatedVertexBytes": 158187988,
+        "sampledCells": 16384,
+        "jsonBytesPerCell": 2.00006103515625,
+        "estimatedCellBytes": 2621520,
+        "estimatedTotalBytes": 160809508,
+        "payloadRatio": 2.6257583551654626
+      },
+      "fingerprintMs": 74.574,
+      "uploadFull": {
+        "pages": 123,
+        "bytes": 56000000,
+        "stagingCopyMs": 8.9033,
+        "omittedPages": 0
+      },
+      "uploadReload": {
+        "pages": 0,
+        "bytes": 0,
+        "stagingCopyMs": 0.00009999999999999999,
+        "omittedPages": 0
+      },
+      "uploadBudget16mib": {
+        "pages": 37,
+        "bytes": 16547328,
+        "stagingCopyMs": 2.6594,
+        "omittedPages": 86
+      },
+      "pickBuildMs": 63.122499999999995,
+      "pickIndexBytes": 36372924,
+      "pickQuery": {
+        "count": 240,
+        "p50Ms": 0.2928,
+        "p95Ms": 0.4814,
+        "maxMs": 0.6924
+      },
+      "pickHitRate": 1.0,
+      "pickBruteForceChecked": 40,
+      "pickBruteForceMismatches": 0,
+      "replayable": false,
+      "stockFieldBytes": 0,
+      "seekWarm": {
+        "count": 0,
+        "p50Ms": 0.0,
+        "p95Ms": 0.0,
+        "maxMs": 0.0
+      },
+      "seekBackward": {
+        "count": 0,
+        "p50Ms": 0.0,
+        "p95Ms": 0.0,
+        "maxMs": 0.0
+      },
+      "seekForward": {
+        "count": 0,
+        "p50Ms": 0.0,
+        "p95Ms": 0.0,
+        "maxMs": 0.0
+      },
+      "seekScrub": {
+        "count": 0,
+        "p50Ms": 0.0,
+        "p95Ms": 0.0,
+        "maxMs": 0.0
+      },
+      "seekCold": {
+        "count": 0,
+        "p50Ms": 0.0,
+        "p95Ms": 0.0,
+        "maxMs": 0.0
+      },
+      "seekTiles": {
+        "count": 0,
+        "p50Ms": 0.0,
+        "p95Ms": 0.0,
+        "maxMs": 0.0
+      },
+      "seekTileKib": {
+        "count": 0,
+        "p50Ms": 0.0,
+        "p95Ms": 0.0,
+        "maxMs": 0.0
+      },
+      "overlayUs": {
+        "count": 60,
+        "p50Ms": 2.3,
+        "p95Ms": 2.8,
+        "maxMs": 34.3
+      },
+      "heapBeforeBytes": 3038,
+      "heapPeakBytes": 257428746,
+      "heapAfterBytes": 187291176
+    },
+    {
+      "name": "flower reference",
+      "segments": 22883,
+      "motions": 22883,
+      "sources": 1,
+      "operations": 1,
+      "planMs": 4938.2693,
+      "metadataBytes": 69182,
+      "payloadBytes": 21994560,
+      "motionPages": 3,
+      "stockCheckpoints": 18,
+      "stockTiles": 4,
+      "simStreamBytes": 1281448,
+      "jsonEstimate": {
+        "sampledVertices": 4096,
+        "jsonBytesPerVertex": 80.9091796875,
+        "estimatedVertexBytes": 5311687,
+        "sampledCells": 16384,
+        "jsonBytesPerCell": 2.00006103515625,
+        "estimatedCellBytes": 9437472,
+        "estimatedTotalBytes": 14749159,
+        "payloadRatio": 0.6705821348551642
+      },
+      "fingerprintMs": 0.0,
+      "uploadFull": {
+        "pages": 3,
+        "bytes": 1281448,
+        "stagingCopyMs": 0.1633,
+        "omittedPages": 0
+      },
+      "uploadReload": {
+        "pages": 0,
+        "bytes": 0,
+        "stagingCopyMs": 0.0,
+        "omittedPages": 0
+      },
+      "uploadBudget16mib": {
+        "pages": 3,
+        "bytes": 1281448,
+        "stagingCopyMs": 0.16349999999999998,
+        "omittedPages": 0
+      },
+      "pickBuildMs": 0.6671999999999999,
+      "pickIndexBytes": 712144,
+      "pickQuery": {
+        "count": 240,
+        "p50Ms": 0.0051,
+        "p95Ms": 0.0097,
+        "maxMs": 0.0204
+      },
+      "pickHitRate": 0.9708333333333333,
+      "pickBruteForceChecked": 40,
+      "pickBruteForceMismatches": 0,
+      "replayable": true,
+      "stockFieldBytes": 393232,
+      "seekWarm": {
+        "count": 80,
+        "p50Ms": 2.2166,
+        "p95Ms": 14.798499999999999,
+        "maxMs": 16.2137
+      },
+      "seekBackward": {
+        "count": 40,
+        "p50Ms": 1.8665,
+        "p95Ms": 7.5347,
+        "maxMs": 8.3689
+      },
+      "seekForward": {
+        "count": 40,
+        "p50Ms": 4.4821,
+        "p95Ms": 15.023200000000001,
+        "maxMs": 16.2137
+      },
+      "seekScrub": {
+        "count": 240,
+        "p50Ms": 0.0664,
+        "p95Ms": 5.4977,
+        "maxMs": 10.4759
+      },
+      "seekCold": {
+        "count": 40,
+        "p50Ms": 30.3472,
+        "p95Ms": 155.8027,
+        "maxMs": 209.5093
+      },
+      "seekTiles": {
+        "count": 40,
+        "p50Ms": 2.0,
+        "p95Ms": 2.0,
+        "maxMs": 2.0
+      },
+      "seekTileKib": {
+        "count": 40,
+        "p50Ms": 512.0,
+        "p95Ms": 512.0,
+        "maxMs": 512.0
+      },
+      "overlayUs": {
+        "count": 60,
+        "p50Ms": 1.3,
+        "p95Ms": 2.2,
+        "maxMs": 11.600000000000001
+      },
+      "heapBeforeBytes": 3052,
+      "heapPeakBytes": 122800742,
+      "heapAfterBytes": 44116835
+    }
+  ],
+  "notes": [
+    "JSON sizes are measured on a bounded sample and extrapolated; they are not a serialized copy of the whole scene.",
+    "staging copy is the CPU memcpy of exactly the byte ranges the GPU page copy would stage; real device transfer time needs a GPU run.",
+    "scrub targets are drawn from a fixed 0x5eed sequence: backward seeks replay out of a transported checkpoint, forward seeks cross one whole checkpoint interval, scrub steps move +/-0.5% of the stream, cold replays from the initial prefix every time.",
+    "picking disagreements are only counted when the projected distance differs; an exact tie between two coincident projections may resolve to either motion.",
+    "heap counters wrap the Rust global allocator only; the JS heap, GPU memory and operating-system overhead are not included."
+  ],
+  "heapPeakAllBytes": 122800742
+}

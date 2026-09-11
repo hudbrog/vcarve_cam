@@ -1,12 +1,78 @@
 use crate::{
-    compute::{Request, Scene, Vertex},
+    compute::{Request, Scene, SceneMeta, Vertex},
+    overlay, pages,
+    pick::{self, Camera, Picker},
     platform::{Event, IoValue, Port},
     recovery::{Snapshot, Tracker},
-    render,
+    render, sim,
     state::{Draft, FIELDS},
+    stock_preview::PreviewMeta,
+    stock_render,
 };
 use egui::{Color32, RichText};
 use std::sync::Arc;
+
+/// Replay checkpoints retained by the display process. The transported frames
+/// seed this budget, so an interactive seek replays a bounded suffix.
+const STOCK_CHECKPOINT_BUDGET: usize = 20 * 1024 * 1024;
+/// Pages fingerprinted per frame while a new scene settles.
+const HASH_PAGES_PER_FRAME: usize = 4;
+/// Everything the overlay geometry depends on; a change rebuilds it.
+type OverlaySignature = (u64, Option<u32>, usize, usize, i32, i32, i32);
+
+/// Read-only state snapshot for the browser integration probe. The probe page
+/// cannot read the egui canvas, so the running application publishes the few
+/// values an automated browser check needs. Nothing in the application reads it.
+pub mod probe {
+    #[cfg(target_arch = "wasm32")]
+    use std::cell::RefCell;
+    #[cfg(target_arch = "wasm32")]
+    thread_local! {
+        static SNAPSHOT: RefCell<String> = const { RefCell::new(String::new()) };
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn publish(text: String) {
+        SNAPSHOT.with(|snapshot| *snapshot.borrow_mut() = text);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn publish(_: String) {}
+    #[cfg(target_arch = "wasm32")]
+    pub fn snapshot() -> String {
+        SNAPSHOT.with(|snapshot| snapshot.borrow().clone())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn snapshot() -> String {
+        String::new()
+    }
+}
+
+struct StockView {
+    meta: PreviewMeta,
+    identity: u64,
+    ranges: Vec<std::ops::Range<usize>>,
+    versions: Vec<Arc<Vec<u32>>>,
+    playback: Option<(sim::Playback, Vec<sim::Motion>)>,
+    /// Current displayed cells: either a transported checkpoint range in the
+    /// payload or a locally re-integrated field for a seek between checkpoints.
+    range: std::ops::Range<usize>,
+    local: Option<Arc<Vec<u8>>>,
+    cell_versions: Arc<Vec<u32>>,
+    stats: sim::Stats,
+    prefix: usize,
+}
+
+impl StockView {
+    fn checkpoint_for(&self, prefix: usize) -> usize {
+        self.meta
+            .frames
+            .iter()
+            .enumerate()
+            .filter(|(_, frame)| frame.prefix <= prefix)
+            .map(|(index, _)| index)
+            .next_back()
+            .unwrap_or(0)
+    }
+}
 
 pub struct App {
     pub draft: Draft,
@@ -16,19 +82,37 @@ pub struct App {
     active: Option<u64>,
     pub status: String,
     scene: Option<Scene>,
-    vertices: Arc<Vec<Vertex>>,
-    stock_cells: Vec<Arc<Vec<u32>>>,
-    show_stock: bool,
-    stock_step: usize,
-    last_stock_tick: f64,
-    scene_revision: u64,
+    // Viewport and selection
     iso: bool,
     zoom: f32,
     yaw: f32,
     playhead: usize,
     playing: bool,
     stage: usize,
-    failed_renderer: bool,
+    picker: Option<Picker>,
+    picker_build_ms: f64,
+    pub selection: Option<pick::Pick>,
+    pub pick_tolerance_px: f32,
+    overlay_lines: Arc<Vec<Vertex>>,
+    overlay_triangles: Arc<Vec<Vertex>>,
+    overlay_revision: u64,
+    overlay_signature: Option<OverlaySignature>,
+    // Paged transport and residency
+    page_hashes: Arc<Vec<Option<u64>>>,
+    hash_cursor: usize,
+    page_budget: u64,
+    required_pages: Vec<usize>,
+    pub hash_ms: f64,
+    // Stock display
+    stock: Option<StockView>,
+    stock_prefix: usize,
+    stock_step: usize,
+    seek_ms: f64,
+    show_stock: bool,
+    // Risk probes
+    gpu_unavailable: bool,
+    drill: render::Drill,
+    error_probe_baseline: u64,
     deny_save: bool,
     gpu: bool,
     pub operation_count: usize,
@@ -46,7 +130,12 @@ pub struct App {
     focus_field: Option<usize>,
     ime_active: bool,
     offline_status: String,
+    pub render_stats: render::SharedStats,
+    pub stock_stats: stock_render::SharedStats,
+    pub heap: crate::alloc_probe::Counters,
+    scene_revision: u64,
 }
+
 impl Default for App {
     fn default() -> Self {
         Self {
@@ -57,19 +146,33 @@ impl Default for App {
             active: None,
             status: "Experimental GUI1. Choose a reference to calculate.".into(),
             scene: None,
-            vertices: Arc::new(Vec::new()),
-            stock_cells: Vec::new(),
-            show_stock: false,
-            stock_step: 0,
-            last_stock_tick: 0.,
-            scene_revision: 0,
             iso: false,
             zoom: 1.,
             yaw: 0.,
             playhead: 0,
             playing: false,
             stage: 0,
-            failed_renderer: false,
+            picker: None,
+            picker_build_ms: 0.,
+            selection: None,
+            pick_tolerance_px: 8.,
+            overlay_lines: Arc::new(Vec::new()),
+            overlay_triangles: Arc::new(Vec::new()),
+            overlay_revision: 0,
+            overlay_signature: None,
+            page_hashes: Arc::new(Vec::new()),
+            hash_cursor: 0,
+            page_budget: render::DEFAULT_PAGE_BUDGET,
+            required_pages: Vec::new(),
+            hash_ms: 0.,
+            stock: None,
+            stock_prefix: 0,
+            stock_step: 0,
+            seek_ms: 0.,
+            show_stock: false,
+            gpu_unavailable: false,
+            drill: render::Drill::None,
+            error_probe_baseline: 0,
             deny_save: false,
             gpu: false,
             operation_count: 10,
@@ -87,62 +190,133 @@ impl Default for App {
             focus_field: None,
             ime_active: false,
             offline_status: String::new(),
+            render_stats: Arc::new(std::sync::Mutex::new(render::Stats::default())),
+            stock_stats: Arc::new(std::sync::Mutex::new(stock_render::Stats::default())),
+            heap: crate::alloc_probe::Counters::default(),
+            scene_revision: 0,
         }
     }
 }
+
 impl App {
-    pub fn set_scene(&mut self, mut scene: Scene) {
-        let job = if scene.job.is_empty() {
+    /// Adopt a compute result: metadata plus its binary payload.
+    pub fn load_scene(&mut self, result: Result<(SceneMeta, Vec<u8>), String>) {
+        match result {
+            Ok((meta, payload)) => self.set_scene(Scene {
+                meta,
+                payload: Arc::new(payload),
+            }),
+            Err(error) => self.status = error,
+        }
+    }
+
+    pub fn set_scene(&mut self, scene: Scene) {
+        let job = if scene.meta.job.is_empty() {
             None
         } else {
-            Some(scene.job.clone())
+            Some(scene.meta.job.clone())
         };
         if self.recovery_job != job {
             self.recovery_job = job;
             self.recovery.changed(self.last_frame.unwrap_or(0.));
         }
-        self.vertices = Arc::new(std::mem::take(&mut scene.vertices));
-        self.stock_cells = scene
-            .stock_preview
-            .as_mut()
-            .map(|p| {
-                p.frames
-                    .iter_mut()
-                    .map(|f| Arc::new(std::mem::take(&mut f.cells)))
-                    .collect()
-            })
-            .unwrap_or_default();
-        self.stock_step = self.stock_cells.len().saturating_sub(1);
-        self.show_stock = !self.stock_cells.is_empty();
+        self.playhead = scene.motion_count();
+        self.stock_prefix = scene.motion_count();
+        self.selection = None;
+        self.picker = None;
+        self.overlay_signature = None;
+        let stock = self.build_stock(&scene);
+        self.stock = stock;
+        self.page_hashes = Arc::new(vec![None; page_table(&scene).page_count()]);
+        self.hash_cursor = 0;
+        let required = self.compute_required(&scene);
+        self.required_pages = required;
+        self.stock_step = self
+            .stock
+            .as_ref()
+            .map_or(0, |stock| stock.meta.frames.len().saturating_sub(1));
+        self.show_stock = self.stock.is_some();
         self.playing = false;
-        self.playhead = (self.vertices.len() - scene.contour_vertices) / 2;
         self.scene_revision += 1;
         self.scene = Some(scene);
     }
-    fn motion_count(&self) -> usize {
-        self.vertices
-            .len()
-            .saturating_sub(self.scene.as_ref().map_or(0, |s| s.contour_vertices))
-            / 2
+
+    fn build_stock(&mut self, scene: &Scene) -> Option<StockView> {
+        let meta = scene.meta.stock.clone()?;
+        let identity = scene.identity();
+        let ranges: Vec<_> = scene
+            .stock_sections()
+            .map(|section| section.offset..section.offset + section.len)
+            .collect();
+        if ranges.len() != meta.frames.len() {
+            self.status = "Stock checkpoint sections do not match the metadata".into();
+            return None;
+        }
+        let versions: Vec<Arc<Vec<u32>>> = meta
+            .frames
+            .iter()
+            .map(|frame| Arc::new(frame.versions.clone()))
+            .collect();
+        let mut playback = None;
+        let mut cells = ranges.last()?.clone();
+        let mut stats = meta.frames.last()?.stats.clone();
+        let mut prefix = meta.frames.last()?.prefix;
+        if let Ok(Some(input)) = scene.sim_input() {
+            let mut seed = Vec::with_capacity(meta.frames.len());
+            for (index, frame) in meta.frames.iter().enumerate() {
+                let field = sim::Field::from_packed(
+                    meta.stock,
+                    &input.tools,
+                    meta.cell_mm,
+                    &scene.payload[ranges[index].clone()],
+                    &frame.versions,
+                    &frame.allocated,
+                    frame.stats.clone(),
+                )
+                .ok()?;
+                seed.push((frame.prefix, field));
+            }
+            let pristine = seed[0].1.clone();
+            let field = seed.last()?.1.clone();
+            let checkpointed = sim::Playback::seed(field, pristine, seed, STOCK_CHECKPOINT_BUDGET);
+            playback = Some((checkpointed, input.motions));
+            cells = ranges[ranges.len() - 1].clone();
+            stats = meta.frames[ranges.len() - 1].stats.clone();
+            prefix = meta.frames[ranges.len() - 1].prefix;
+        }
+        Some(StockView {
+            cell_versions: versions[versions.len() - 1].clone(),
+            versions,
+            meta,
+            identity,
+            ranges,
+            playback,
+            range: cells,
+            local: None,
+            stats,
+            prefix,
+        })
     }
+
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         let mut app = Self::default();
         if let Some(state) = &cc.wgpu_render_state {
-            state
-                .renderer
-                .write()
+            let mut renderer = state.renderer.write();
+            renderer.callback_resources.insert(render::Resources::new(
+                &state.device,
+                state.target_format,
+                app.render_stats.clone(),
+            ));
+            renderer
                 .callback_resources
-                .insert(render::Resources::new(&state.device, state.target_format));
-            app.gpu = true;
-            state
-                .renderer
-                .write()
-                .callback_resources
-                .insert(crate::stock_render::Resources::new(
+                .insert(stock_render::Resources::new(
                     &state.device,
                     state.target_format,
+                    app.stock_stats.clone(),
                 ));
+            drop(renderer);
+            app.gpu = true;
             app.status = format!("Experimental GUI1 · {:?}", state.adapter.get_info());
         }
         app.recovery.enabled = true;
@@ -150,11 +324,43 @@ impl App {
         app.port.load_recovery(cc.egui_ctx.clone());
         app
     }
+
+    pub fn motion_count(&self) -> usize {
+        self.scene.as_ref().map_or(0, Scene::motion_count)
+    }
+
+    /// Pages the display needs, nearest the playhead first. The renderer admits
+    /// this order until the resident budget is reached.
+    fn compute_required(&self, scene: &Scene) -> Vec<usize> {
+        let table = page_table(scene);
+        if table.motions == 0 {
+            return Vec::new();
+        }
+        let rough = scene.meta.rough_vertices / 2;
+        let playhead = self.playhead.min(table.motions);
+        let (mut start, mut end) = (0, playhead.max(1));
+        match self.stage {
+            1 => end = end.min(rough.max(1)),
+            2 => start = rough.min(table.motions),
+            _ => {}
+        }
+        if end <= start {
+            return Vec::new();
+        }
+        let anchor = table.page_of(playhead.saturating_sub(1));
+        let first = table.page_of(start);
+        let last = table.page_of(end - 1);
+        let mut pages: Vec<usize> = (first..=last).collect();
+        pages.sort_by_key(|page| (page.abs_diff(anchor), *page));
+        pages
+    }
+
     fn begin_io(&mut self, focus: Option<egui::Id>) -> u64 {
         self.io_id += 1;
         self.io_pending = Some((focus, self.recovery.edit));
         self.io_id
     }
+
     fn open_dialog(&mut self, recovery: bool, focus: Option<egui::Id>, ctx: &egui::Context) {
         if self.io_pending.is_some() {
             return;
@@ -162,6 +368,7 @@ impl App {
         let id = self.begin_io(focus);
         self.port.open(id, recovery, ctx.clone());
     }
+
     fn save_bytes(
         &mut self,
         name: String,
@@ -175,6 +382,7 @@ impl App {
         self.retained_save = Some((name, bytes));
         self.retry_retained(focus, ctx);
     }
+
     fn retry_retained(&mut self, focus: Option<egui::Id>, ctx: &egui::Context) {
         if self.io_pending.is_some() {
             return;
@@ -185,6 +393,7 @@ impl App {
             self.port.save(id, name, bytes, self.deny_save, ctx.clone());
         }
     }
+
     fn restore_context_focus(&mut self) {
         self.focus_field = self
             .field_focus
@@ -194,6 +403,7 @@ impl App {
             self.search.clear();
         }
     }
+
     fn restore_session(&mut self, snapshot: Snapshot, now: f64, ctx: &egui::Context) {
         // Restoring an empty session must also retire a scene/request opened
         // while the recovery offer was visible. No derived authority survives.
@@ -201,8 +411,9 @@ impl App {
         self.active = None;
         self.port.cancel();
         self.scene = None;
-        self.vertices = Arc::new(Vec::new());
-        self.stock_cells.clear();
+        self.stock = None;
+        self.picker = None;
+        self.selection = None;
         self.show_stock = false;
         self.playing = false;
         self.playhead = 0;
@@ -218,6 +429,7 @@ impl App {
             self.start(Request::Open { json }, ctx);
         }
     }
+
     fn finish_io(&mut self, id: u64, result: Result<IoValue, String>, ctx: &egui::Context) {
         if id != self.io_id {
             return;
@@ -251,6 +463,7 @@ impl App {
         // only once egui has retired it, otherwise the field is still disabled.
         self.focus_after_modal = focus;
     }
+
     fn start(&mut self, request: Request, ctx: &egui::Context) {
         self.generation += 1;
         self.active = Some(self.generation);
@@ -259,6 +472,7 @@ impl App {
                 .into();
         self.port.start(self.generation, request, ctx.clone());
     }
+
     fn poll(&mut self, ctx: &egui::Context) {
         // Bounded event draining. Identity gates prevent a late result replacing a newer request.
         for _ in 0..4 {
@@ -275,28 +489,31 @@ impl App {
                 } if self.active == Some(id) => {
                     self.active = None;
                     match result {
-                        Ok(scene) => {
+                        Ok((meta, payload)) => {
+                            let transport = &meta.transport;
                             self.status = format!(
-                                "Calculation finished in {elapsed_ms:.1} ms · {} vertices · engine status {} · output programs {}",
-                                scene.vertices.len(),
-                                scene
-                                    .report
+                                "Calculation finished in {elapsed_ms:.1} ms · {} motions · {} pages · metadata {} B + payload {} B · engine status {} · output programs {}",
+                                meta.motions,
+                                transport.motion_pages,
+                                transport.metadata_bytes,
+                                transport.payload_bytes,
+                                meta.report
                                     .pointer("/summary/status")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("synthetic"),
-                                scene.programs.len()
+                                meta.programs.len()
                             );
-                            if let Some(check) = scene
+                            if let Some(check) = meta
                                 .report
                                 .pointer("/export/status")
                                 .and_then(|v| v.as_str())
                             {
                                 self.status = format!(
                                     "Output check: {check}; {} checked programs. Reference settings were not changed.",
-                                    scene.programs.len()
+                                    meta.programs.len()
                                 );
                             }
-                            if let Some(error) = scene
+                            if let Some(error) = meta
                                 .report
                                 .get("stockPreviewError")
                                 .and_then(|v| v.as_str())
@@ -304,7 +521,7 @@ impl App {
                                 self.status
                                     .push_str(&format!(" · Stock preview unavailable: {error}"));
                             }
-                            self.set_scene(scene);
+                            self.load_scene(Ok((meta, payload)));
                         }
                         Err(e) => self.status = e,
                     }
@@ -347,8 +564,217 @@ impl App {
             }
         }
     }
+
+    /// Move the stock display to an arbitrary motion prefix. A transported
+    /// checkpoint is instant; between checkpoints the bounded replay restores
+    /// the nearest checkpoint and re-integrates only the suffix.
+    fn stock_seek(&mut self, target: usize) {
+        let motions = self.motion_count();
+        let Some(stock) = self.stock.as_mut() else {
+            return;
+        };
+        let target = target.min(motions);
+        if stock.prefix == target {
+            return;
+        }
+        let mut note = None;
+        let mut failed = false;
+        let timer = crate::clock::Timer::start();
+        let checkpoint = stock.checkpoint_for(target);
+        let exact = stock.meta.frames[checkpoint].prefix == target;
+        if exact {
+            stock.range = stock.ranges[checkpoint].clone();
+            stock.cell_versions = stock.versions[checkpoint].clone();
+            stock.stats = stock.meta.frames[checkpoint].stats.clone();
+            stock.local = None;
+        } else if let Some((playback, motions)) = stock.playback.as_mut() {
+            match playback.seek(motions, target) {
+                Ok(()) => {
+                    let cells = playback.field.packed_tile_bytes();
+                    stock.cell_versions = Arc::new(playback.field.versions.clone());
+                    stock.stats = playback.field.stats.clone();
+                    stock.local = Some(Arc::new(cells));
+                }
+                Err(error) => {
+                    note = Some(format!(
+                        "Stock seek refused: {error}. Previous cells retained."
+                    ));
+                    failed = true;
+                }
+            }
+        } else {
+            // No replay stream was transported: snap to the nearest checkpoint.
+            stock.range = stock.ranges[checkpoint].clone();
+            stock.cell_versions = stock.versions[checkpoint].clone();
+            stock.stats = stock.meta.frames[checkpoint].stats.clone();
+            stock.local = None;
+        }
+        if !failed {
+            stock.prefix = target;
+            self.stock_step = stock.checkpoint_for(target);
+            self.seek_ms = timer.elapsed_ms();
+            self.playhead = target;
+        }
+        if let Some(note) = note {
+            self.status = note;
+        }
+    }
+
+    /// Display picking entry point. Exposed so the interaction harness can
+    /// drive a pick at a chosen scale factor without pointer simulation.
+    pub fn pick_at(&mut self, cursor: egui::Pos2, rect: egui::Rect, pixels_per_point: f32) {
+        let Some(scene) = &self.scene else {
+            return;
+        };
+        if scene.motion_count() == 0 {
+            return;
+        }
+        if self.picker.is_none() {
+            let timer = crate::clock::Timer::start();
+            match Picker::from_vertex_bytes(scene.motion_bytes()) {
+                Ok(picker) => {
+                    self.picker = Some(picker);
+                    self.picker_build_ms = timer.elapsed_ms();
+                }
+                Err(error) => {
+                    self.status = format!("Picking index unavailable: {error}");
+                    return;
+                }
+            }
+        }
+        let camera = self.camera(rect);
+        let rect_points = [rect.width(), rect.height()];
+        let local = [cursor.x - rect.center().x, cursor.y - rect.center().y];
+        let ppp = pixels_per_point.max(1e-3);
+        let picker = self.picker.as_ref().unwrap();
+        self.selection = picker.pick(&camera, rect_points, local, self.pick_tolerance_px, ppp);
+        self.overlay_signature = None;
+        self.status = match self.selection {
+            Some(pick) => format!(
+                "Picked motion {} at {:.2} physical px ({:.0} px tolerance, {:.2}× DPI)",
+                pick.motion, pick.distance_pixels, self.pick_tolerance_px, ppp
+            ),
+            None => format!(
+                "No motion within {:.0} physical px at {:.2}× DPI",
+                self.pick_tolerance_px, ppp
+            ),
+        };
+    }
+
+    fn camera(&self, rect: egui::Rect) -> Camera {
+        Camera {
+            iso: self.iso,
+            aspect: (rect.width() / rect.height().max(1.)).max(0.2),
+            zoom: self.zoom,
+            yaw: self.yaw,
+        }
+    }
+
+    /// Selection fill and blade marker in the same normalized scene space as
+    /// the motion vertices. Nothing here is CAM geometry.
+    fn build_overlay(&mut self, rect: egui::Rect, ppp: f32) {
+        let signature = (
+            self.scene_revision,
+            self.selection.map(|pick| pick.motion),
+            self.playhead,
+            self.stage,
+            (self.zoom * 100.) as i32,
+            rect.width() as i32,
+            rect.height() as i32,
+        );
+        if self.overlay_signature == Some(signature) {
+            return;
+        }
+        self.overlay_signature = Some(signature);
+        self.overlay_revision += 1;
+        let Some(scene) = &self.scene else {
+            return;
+        };
+        let size = (scene.meta.bounds[2] - scene.meta.bounds[0])
+            .max(scene.meta.bounds[3] - scene.meta.bounds[1])
+            .max(0.001);
+        let scale = 1.6 / size;
+        // Points per scene unit, matching the viewport projection.
+        let per_unit = self.zoom * rect.height().max(1.) / 2.;
+        let selection = self.selection.and_then(|pick| {
+            self.picker.as_ref().and_then(|picker| {
+                picker
+                    .endpoints(pick.motion)
+                    .map(|points| (points[0], points[1]))
+            })
+        });
+        let marker = scene
+            .meta
+            .sim
+            .as_ref()
+            .filter(|_| self.playhead > 0)
+            .and_then(|sim| {
+                let picker = self.picker.as_ref()?;
+                let index = (self.playhead - 1).min(picker.motion_count().saturating_sub(1));
+                let points = picker.endpoints(index as u32)?;
+                let motion_tool = scene
+                    .meta
+                    .report
+                    .get("roughingMotions")
+                    .and_then(|v| v.as_u64())
+                    .map_or(0, |rough| if index < rough as usize { 0 } else { 1 });
+                let tool = sim.tools.get(motion_tool).copied()?;
+                let tip = [points[1][0], points[1][1], points[1][2]];
+                Some(match tool {
+                    sim::ToolSpec::Endmill { diameter } => overlay::Marker {
+                        glyph: overlay::Glyph::Endmill {
+                            radius: (diameter / 2.) as f32 * scale as f32,
+                        },
+                        tip,
+                        top: 0.,
+                    },
+                    sim::ToolSpec::Vbit {
+                        angle,
+                        tip: tip_diameter,
+                        diameter,
+                        ..
+                    } => overlay::Marker {
+                        glyph: overlay::Glyph::Vbit {
+                            radius: (diameter.max(tip_diameter) / 2.) as f32 * scale as f32,
+                            tip_radius: (tip_diameter / 2.) as f32 * scale as f32,
+                            slope: ((angle / 2.) as f32 * std::f32::consts::PI / 180.).tan(),
+                        },
+                        tip,
+                        top: 0.,
+                    },
+                })
+            });
+        let half = self.pick_tolerance_px * 0.5 / ppp.max(1e-3) / per_unit.max(1e-6);
+        let built = overlay::build(selection, half, marker.as_slice());
+        self.overlay_lines = Arc::new(built.lines);
+        self.overlay_triangles = Arc::new(built.triangles);
+    }
+
+    fn fingerprint_pages(&mut self) {
+        let Some(scene) = self.scene.as_ref() else {
+            return;
+        };
+        let table = page_table(scene);
+        if self.hash_cursor >= table.page_count() || self.page_hashes.len() != table.page_count() {
+            return;
+        }
+        let timer = crate::clock::Timer::start();
+        let hashes = Arc::make_mut(&mut self.page_hashes);
+        for _ in 0..HASH_PAGES_PER_FRAME {
+            if self.hash_cursor >= table.page_count() {
+                break;
+            }
+            let page = self.hash_cursor;
+            hashes[page] = Some(pages::page_hash(&scene.payload[table.bytes_of(page)]));
+            self.hash_cursor += 1;
+        }
+        self.hash_ms += timer.elapsed_ms();
+    }
+
     pub fn ui(&mut self, ctx: &egui::Context) {
         self.poll(ctx);
+        self.heap = crate::alloc_probe::snapshot();
+        self.fingerprint_pages();
         if let Some(id) = self.focus_after_modal {
             if ctx.memory(|m| m.top_modal_layer().is_none()) {
                 ctx.memory_mut(|m| m.request_focus(id));
@@ -448,13 +874,35 @@ impl App {
                         ui.close();
                     }
                     if ui.button("Inject renderer failure").clicked() {
-                        self.failed_renderer = true;
+                        self.gpu_unavailable = true;
                         ui.close();
                     }
                     if ui.button("Resume injected renderer").clicked() {
-                        self.failed_renderer = false;
+                        self.gpu_unavailable = false;
                         self.scene_revision += 1;
+                        self.overlay_signature = None;
                         ui.close();
+                    }
+                    if ui.button("GPU recovery drill").clicked() {
+                        self.drill = render::Drill::Recover;
+                        ui.close();
+                    }
+                    if ui.button("Inject GPU validation error").clicked() {
+                        self.drill = render::Drill::InjectError;
+                        self.error_probe_baseline =
+                            self.render_stats.lock().unwrap().injected_errors;
+                        ui.close();
+                    }
+                    ui.separator();
+                    for (label, bytes) in [
+                        ("GPU page budget 16 MiB", 16 * 1024 * 1024),
+                        ("GPU page budget 64 MiB", 64 * 1024 * 1024),
+                        ("GPU page budget 256 MiB", 256 * 1024 * 1024),
+                    ] {
+                        if ui.button(label).clicked() {
+                            self.page_budget = bytes;
+                            ui.close();
+                        }
                     }
                     ui.checkbox(&mut self.deny_save, "Deny next save (injected)");
                 });
@@ -528,39 +976,138 @@ impl App {
                 });
             }
         });
-        egui::TopBottomPanel::bottom("timeline").resizable(true).default_height(115.).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button(if self.playing { "Pause" } else { "Play" }).clicked() { self.playing = !self.playing; }
-                ui.selectable_value(&mut self.stage, 0, "All stages");
-                ui.selectable_value(&mut self.stage, 1, "Endmill");
-                ui.selectable_value(&mut self.stage, 2, "V-bit");
-                if self.show_stock {
-                    ui.add(egui::Slider::new(&mut self.stock_step,0..=self.stock_cells.len().saturating_sub(1)).text("Stock checkpoint"));
-                    if let Some(p)=self.scene.as_ref().and_then(|s|s.stock_preview.as_ref()) {self.playhead=p.frames[self.stock_step].prefix;}
+        egui::TopBottomPanel::bottom("timeline")
+            .resizable(true)
+            .default_height(140.)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(if self.playing { "Pause" } else { "Play" })
+                        .clicked()
+                    {
+                        self.playing = !self.playing;
+                    }
+                    ui.selectable_value(&mut self.stage, 0, "All stages");
+                    ui.selectable_value(&mut self.stage, 1, "Endmill");
+                    ui.selectable_value(&mut self.stage, 2, "V-bit");
+                    if self.show_stock {
+                        let mut checkpoint = self.stock_step;
+                        let frames = self
+                            .stock
+                            .as_ref()
+                            .map_or(0, |stock| stock.meta.frames.len());
+                        let checkpoint_widget = egui::Slider::new(
+                            &mut checkpoint,
+                            0..=frames.saturating_sub(1),
+                        )
+                        .text("Transported checkpoint");
+                        if ui.add(checkpoint_widget).changed() {
+                            let prefix = self
+                                .stock
+                                .as_ref()
+                                .map(|stock| stock.meta.frames[checkpoint].prefix)
+                                .unwrap_or(0);
+                            self.stock_prefix = prefix;
+                            self.stock_seek(prefix);
+                        }
+                        let mut prefix = self.stock_prefix;
+                        let motions = self.motion_count();
+                        let replayable = self
+                            .stock
+                            .as_ref()
+                            .is_some_and(|stock| stock.playback.is_some());
+                        let slider_widget =
+                            egui::Slider::new(&mut prefix, 0..=motions).text("Stock motion");
+                        let slider = ui.add_enabled(replayable, slider_widget);
+                        if slider.changed() {
+                            self.stock_prefix = prefix;
+                            self.stock_seek(prefix);
+                        }
+                        if !replayable {
+                            ui.label(
+                                RichText::new(
+                                    "Seek beyond checkpoints is unavailable for this workload",
+                                )
+                                .small()
+                                .color(Color32::from_rgb(235, 169, 79)),
+                            );
+                        }
+                    } else {
+                        let motions = self.motion_count();
+                        ui.add(egui::Slider::new(&mut self.playhead, 0..=motions).text("Motion playhead"));
+                    }
+                });
+                ui.label(RichText::new(&self.status).color(Color32::from_rgb(210, 183, 131)));
+                if let Some(stock) = &self.stock
+                    && self.show_stock
+                {
+                    ui.label(format!(
+                        "Stock preview · {:.4} mm cells (reference {:.4}) · motion {} · {:.2} mm³ removed · {} transported checkpoints · seek {:.2} ms",
+                        stock.meta.cell_mm,
+                        stock.meta.reference_cell_mm,
+                        stock.prefix,
+                        stock.stats.removed_volume_mm3,
+                        stock.meta.frames.len(),
+                        self.seek_ms
+                    ));
                 } else {
-                    let motion_count = self.motion_count();
-                    ui.add(egui::Slider::new(&mut self.playhead, 0..=motion_count).text("Motion playhead"));
+                    ui.label("Motion display only. Stock preview uses discrete checkpoints; playback does not establish export eligibility.");
                 }
+                ui.horizontal(|ui| {
+                    if ui.button("Prepare checked small reference").clicked() {
+                        self.start(
+                            Request::Reference {
+                                flower: false,
+                                export: true,
+                            },
+                            ctx,
+                        );
+                    }
+                    if ui.button("Prepare checked flower").clicked() {
+                        self.start(
+                            Request::Reference {
+                                flower: true,
+                                export: true,
+                            },
+                            ctx,
+                        );
+                    }
+                    let checked = ui.add_enabled(
+                        self.io_pending.is_none()
+                            && self.active.is_none()
+                            && self
+                                .scene
+                                .as_ref()
+                                .is_some_and(|scene| !scene.meta.programs.is_empty()),
+                        egui::Button::new("Save checked bytes"),
+                    );
+                    if checked.clicked() {
+                        let program = &self.scene.as_ref().unwrap().meta.programs[0];
+                        self.save_bytes(
+                            program.filename.clone(),
+                            program.gcode.as_bytes().to_vec(),
+                            Some(checked.id),
+                            ctx,
+                        );
+                    }
+                    let job = ui.add_enabled(
+                        self.io_pending.is_none()
+                            && self
+                                .scene
+                                .as_ref()
+                                .is_some_and(|scene| !scene.meta.job.is_empty()),
+                        egui::Button::new("Save reference job"),
+                    );
+                    if job.clicked() {
+                        self.save_bytes(
+                            "gui1-reference.job.json".into(),
+                            self.scene.as_ref().unwrap().meta.job.as_bytes().to_vec(),
+                            Some(job.id),
+                            ctx,
+                        );
+                    }
+                });
             });
-            ui.label(RichText::new(&self.status).color(Color32::from_rgb(210,183,131)));
-            if self.show_stock {
-                let p=self.scene.as_ref().unwrap().stock_preview.as_ref().unwrap();
-                ui.label(format!("Stock preview · {:.4} mm cells (reference {:.4}) · motion {} · {:.2} mm³ removed · {} checkpoints",p.cell_mm,p.reference_cell_mm,self.playhead,p.frames[self.stock_step].stats.removed_volume_mm3,p.frames.len()));
-            } else {ui.label("Motion display only. Stock preview uses discrete checkpoints; playback does not establish export eligibility.");}
-            ui.horizontal(|ui| {
-                if ui.button("Prepare checked small reference").clicked() { self.start(Request::Reference { flower: false, export: true },ctx); }
-                if ui.button("Prepare checked flower").clicked() { self.start(Request::Reference { flower: true, export: true },ctx); }
-                let checked=ui.add_enabled(self.io_pending.is_none() && self.active.is_none() && self.scene.as_ref().is_some_and(|s| !s.programs.is_empty()), egui::Button::new("Save checked bytes"));
-                if checked.clicked() {
-                    let program = &self.scene.as_ref().unwrap().programs[0];
-                    self.save_bytes(program.filename.clone(), program.gcode.as_bytes().to_vec(),Some(checked.id),ctx);
-                }
-                let job=ui.add_enabled(self.io_pending.is_none() && self.scene.as_ref().is_some_and(|s| !s.job.is_empty()), egui::Button::new("Save reference job"));
-                if job.clicked() {
-                    self.save_bytes("gui1-reference.job.json".into(), self.scene.as_ref().unwrap().job.as_bytes().to_vec(),Some(job.id),ctx);
-                }
-            });
-        });
         egui::SidePanel::left("navigator")
             .resizable(true)
             .default_width(220.)
@@ -735,45 +1282,159 @@ impl App {
             });
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.iso, false, "Top"); ui.selectable_value(&mut self.iso, true, "Isometric");
-                if ui.button("Fit").clicked() { self.zoom = 1.; self.yaw = 0.; }
-                ui.add(egui::Slider::new(&mut self.zoom, 0.5..=3.).text("Zoom"));
-                if !self.stock_cells.is_empty() {ui.checkbox(&mut self.show_stock,"Stock preview");}
-            });
-            ui.label(self.scene.as_ref().map(|s| s.name.as_str()).unwrap_or("Load a combined carving reference"));
-            let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-            ui.painter().rect_filled(rect, 0., Color32::from_rgb(21,29,38));
-            if response.dragged() { self.yaw += response.drag_delta().x*0.005; }
-            if self.failed_renderer {
-                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Injected renderer failure\nDraft and prior result retained", egui::FontId::proportional(18.), Color32::LIGHT_RED);
-            } else if self.gpu && !self.vertices.is_empty() {
-                let scene = self.scene.as_ref().unwrap();
-                let contour = scene.contour_vertices as u32;
-                let split = contour + scene.rough_vertices as u32;
-                let end = (contour + (self.playhead*2) as u32).min(self.vertices.len() as u32);
-                let mut ranges = Vec::with_capacity(3);
-                ranges.push(0..contour);
-                if self.stage != 2 { ranges.push(contour..end.min(split).max(contour)); }
-                if self.stage != 1 { ranges.push(split..end.max(split)); }
-                if self.show_stock {
-                    let p=scene.stock_preview.as_ref().unwrap();
-                    let b=scene.bounds;let size=(b[2]-b[0]).max(b[3]-b[1]).max(0.001);let scale=1.6/size;
-                    ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect,crate::stock_render::Callback {
-                        cells:self.stock_cells[self.stock_step].clone(),revision:(self.scene_revision,self.stock_step),
-                        camera:[if self.iso {1.} else {0.},rect.width()/rect.height().max(1.),self.zoom,self.yaw],
-                        grid:[((p.stock.x0-(b[0]+b[2])/2.)*scale) as f32,((p.stock.y0-(b[1]+b[3])/2.)*scale) as f32,
-                            (p.cell_mm*scale) as f32,(p.stock.thickness_mm*scale) as f32,p.cols as f32,p.rows as f32,
-                            ((p.stock.x1-p.stock.x0)*scale) as f32,((p.stock.y1-p.stock.y0)*scale) as f32],
-                    }));
+                ui.selectable_value(&mut self.iso, false, "Top");
+                ui.selectable_value(&mut self.iso, true, "Isometric");
+                if ui.button("Fit").clicked() {
+                    self.zoom = 1.;
+                    self.yaw = 0.;
                 }
-                ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, render::Callback {
-                    vertices: self.vertices.clone(), revision: self.scene_revision, ranges,
-                    camera: [if self.iso {1.} else {0.}, rect.width()/rect.height().max(1.), self.zoom, self.yaw],
-                }));
+                ui.add(egui::Slider::new(&mut self.zoom, 0.5..=3.).text("Zoom"));
+                if self.stock.is_some() {
+                    ui.checkbox(&mut self.show_stock, "Stock preview");
+                }
+                ui.add(
+                    egui::Slider::new(&mut self.pick_tolerance_px, 2.0..=24.0)
+                        .text("Pick tolerance (px)"),
+                );
+            });
+            ui.label(
+                self.scene
+                    .as_ref()
+                    .map(|scene| scene.meta.name.as_str())
+                    .unwrap_or("Load a combined carving reference"),
+            );
+            let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+            ui.painter().rect_filled(rect, 0., Color32::from_rgb(21, 29, 38));
+            if response.dragged() {
+                self.yaw += response.drag_delta().x * 0.005;
             }
-            ui.painter().text(rect.left_bottom()+egui::vec2(12.,-12.), egui::Align2::LEFT_BOTTOM,
-                format!("{} vertices · {} visible list rows · {:.2}× DPI\nDrag to rotate · cyan endmill / amber V-bit", self.vertices.len(), self.laid_out_rows,ctx.pixels_per_point()),
-                egui::FontId::monospace(11.), Color32::GRAY);
+            if response.clicked()
+                && let Some(position) = response.interact_pointer_pos()
+            {
+                self.pick_at(position, rect, ctx.pixels_per_point());
+            }
+            self.build_overlay(rect, ctx.pixels_per_point());
+            if self.gpu_unavailable {
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Injected renderer failure\nDraft and prior result retained",
+                    egui::FontId::proportional(18.),
+                    Color32::LIGHT_RED,
+                );
+            } else if self.gpu
+                && let Some(scene) = &self.scene
+            {
+                if self.show_stock
+                    && let Some(stock) = &self.stock
+                {
+                    let bounds = scene.meta.bounds;
+                    let size = (bounds[2] - bounds[0]).max(bounds[3] - bounds[1]).max(0.001);
+                    let scale = 1.6 / size;
+                    ui.painter()
+                        .add(eframe::egui_wgpu::Callback::new_paint_callback(
+                            rect,
+                            stock_render::Callback {
+                                payload: match stock.local {
+                                    None => Some(scene.payload.clone()),
+                                    Some(_) => None,
+                                },
+                                cells: stock.range.clone(),
+                                local: stock.local.clone(),
+                                cols: stock.meta.cols,
+                                rows: stock.meta.rows,
+                                tiles_x: stock.meta.tiles_x,
+                                tiles_y: stock.meta.tiles_y,
+                                versions: stock.cell_versions.clone(),
+                                identity: stock.identity,
+                                revision: self.scene_revision * 4096 + stock.prefix as u64,
+                                camera: [
+                                    if self.iso { 1. } else { 0. },
+                                    rect.width() / rect.height().max(1.),
+                                    self.zoom,
+                                    self.yaw,
+                                ],
+                                grid: [
+                                    ((stock.meta.stock.x0 - (bounds[0] + bounds[2]) / 2.) * scale)
+                                        as f32,
+                                    ((stock.meta.stock.y0 - (bounds[1] + bounds[3]) / 2.) * scale)
+                                        as f32,
+                                    (stock.meta.cell_mm * scale) as f32,
+                                    (stock.meta.stock.thickness_mm * scale) as f32,
+                                    stock.meta.cols as f32,
+                                    stock.meta.rows as f32,
+                                    ((stock.meta.stock.x1 - stock.meta.stock.x0) * scale) as f32,
+                                    ((stock.meta.stock.y1 - stock.meta.stock.y0) * scale) as f32,
+                                    stock.meta.tiles_x as f32,
+                                    0.,
+                                ],
+                                drill: stock_drill(self.drill),
+                            },
+                        ));
+                }
+                ui.painter()
+                    .add(eframe::egui_wgpu::Callback::new_paint_callback(
+                        rect,
+                        render::Callback {
+                            payload: scene.payload.clone(),
+                            identity: scene.identity(),
+                            table: page_table(scene),
+                            hashes: self.page_hashes.clone(),
+                            required: self.required_pages.clone(),
+                            budget_bytes: self.page_budget,
+                            contour_vertices: scene.meta.contour_vertices,
+                            revision: self.overlay_revision,
+                            camera: [
+                                if self.iso { 1. } else { 0. },
+                                rect.width() / rect.height().max(1.),
+                                self.zoom,
+                                self.yaw,
+                            ],
+                            lines: self.overlay_lines.clone(),
+                            triangles: self.overlay_triangles.clone(),
+                            drill: self.drill,
+                        },
+                    ));
+            }
+            let pick = self
+                .selection
+                .map(|pick| format!(" · picked motion {} at {:.1} px", pick.motion, pick.distance_pixels))
+                .unwrap_or_default();
+            let pages = self
+                .scene
+                .as_ref()
+                .map_or(0, |scene| page_table(scene).page_count());
+            // Read the shared counters once: two live guards on one mutex in a
+            // single expression would deadlock.
+            let (resident, omitted) = {
+                let stats = self.render_stats.lock().unwrap();
+                (stats.resident_pages, stats.budget_omitted)
+            };
+            let tiles_copied = self.stock_stats.lock().unwrap().tile_uploads;
+            ui.painter().text(
+                rect.left_bottom() + egui::vec2(12., -12.),
+                egui::Align2::LEFT_BOTTOM,
+                format!(
+                    "{} motions · {} visible list rows · {:.2}× DPI · {} of {} pages resident ({} omitted by budget, {} tiles copied) · pick index {:.1} ms + fingerprint {:.1} ms{}{}",
+                    self.motion_count(),
+                    self.laid_out_rows,
+                    ctx.pixels_per_point(),
+                    resident,
+                    pages,
+                    omitted,
+                    tiles_copied,
+                    self.picker_build_ms,
+                    self.hash_ms,
+                    pick,
+                    if self.heap.peak_bytes > 0 {
+                        format!(" · heap {:.0} MiB peak", self.heap.peak_bytes as f64 / 1048576.)
+                    } else {
+                        String::new()
+                    }
+                ),
+                egui::FontId::monospace(11.),
+                Color32::GRAY,
+            );
         });
         let now = ctx.input(|i| i.time);
         if self.playing {
@@ -784,9 +1445,14 @@ impl App {
                 }
             }
             if self.show_stock {
-                if now - self.last_stock_tick >= 0.25 {
-                    self.stock_step = (self.stock_step + 1) % self.stock_cells.len();
-                    self.last_stock_tick = now;
+                let step = (self.motion_count() / 90).max(1);
+                self.stock_seek(
+                    self.stock_prefix
+                        .saturating_add(step)
+                        .min(self.motion_count()),
+                );
+                if self.stock_prefix >= self.motion_count() {
+                    self.stock_seek(0);
                 }
             } else {
                 self.playhead = (self.playhead + 200).min(self.motion_count());
@@ -836,8 +1502,86 @@ impl App {
                 ui.spinner();
             });
         }
+        // One-shot probes apply to exactly one painted frame.
+        self.drill = render::Drill::None;
+        let injected = self.render_stats.lock().unwrap().injected_errors;
+        if injected > self.error_probe_baseline {
+            let error = self
+                .render_stats
+                .lock()
+                .unwrap()
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "unknown".into());
+            self.status = format!(
+                "Renderer reported a real wgpu error: {error}. Document and prior result retained."
+            );
+            self.error_probe_baseline = injected;
+        }
+        let render_stats = self.render_stats.lock().unwrap().clone();
+        let stock_stats = self.stock_stats.lock().unwrap().clone();
+        let frames = self.frame_ms.len();
+        probe::publish(
+            serde_json::json!({
+                "status": self.status,
+                "motions": self.motion_count(),
+                "pages": self
+                    .scene
+                    .as_ref()
+                    .map_or(0, |scene| page_table(scene).page_count()),
+                "residentPages": render_stats.resident_pages,
+                "omittedPages": render_stats.budget_omitted,
+                "uploadBytes": render_stats.upload_bytes,
+                "tilesCopied": stock_stats.tile_uploads,
+                "tileBytes": stock_stats.tile_bytes,
+                "selection": self.selection.map(|pick| pick.motion),
+                "probeText": self
+                    .draft
+                    .raw
+                    .get(&self.draft.key(39))
+                    .cloned()
+                    .unwrap_or_default(),
+                "imeActive": self.ime_active,
+                "search": self.search,
+                "focused": ctx.memory(|memory| memory.focused().is_some()),
+                "canvasFocused": ctx.input(|input| input.raw.focused),
+                "dpi": ctx.pixels_per_point(),
+                "stockPrefix": self
+                    .stock
+                    .as_ref()
+                    .map_or(0, |stock| stock.prefix),
+                "seekMs": self.seek_ms,
+                "recovery": self.recovery.status,
+                "offline": self.offline_status,
+                "frames": frames,
+                "heapPeakBytes": self.heap.peak_bytes,
+            })
+            .to_string(),
+        );
     }
 }
+
+fn stock_drill(drill: render::Drill) -> stock_render::Drill {
+    match drill {
+        render::Drill::Recover => stock_render::Drill::Recover,
+        _ => stock_render::Drill::None,
+    }
+}
+
+fn page_table(scene: &Scene) -> pages::PageTable {
+    pages::PageTable::new(
+        scene.meta.motion_offset,
+        scene.meta.motion_len,
+        scene.meta.motions,
+    )
+    .unwrap_or(pages::PageTable {
+        motions: 0,
+        page_motions: pages::PAGE_MOTIONS,
+        motion_offset: 0,
+        motion_len: 0,
+    })
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.ui(ctx);
@@ -881,8 +1625,7 @@ mod input_tests {
         assert!(h.state().status.contains("newer edits"));
         h.state_mut().retained_save =
             Some(("checked.ngc".into(), b"exact retained output".to_vec()));
-        h.state_mut()
-            .set_scene(crate::compute::synthetic(20_000).unwrap());
+        h.state_mut().load_scene(crate::compute::synthetic(20_000));
         assert_eq!(
             h.state().retained_save.as_ref().unwrap().1,
             b"exact retained output"
@@ -892,7 +1635,7 @@ mod input_tests {
             .restore_session(Snapshot::new(Draft::default(), None), 2., &ctx);
         assert!(h.state().active.is_none());
         assert!(h.state().scene.is_none());
-        assert!(h.state().vertices.is_empty());
+        assert!(h.state().stock.is_none());
     }
     #[test]
     fn ime_preedit_does_not_trigger_shortcuts_and_commit_keeps_unicode() {

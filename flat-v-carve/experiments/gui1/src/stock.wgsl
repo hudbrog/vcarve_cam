@@ -1,5 +1,5 @@
 struct Camera { iso: f32, aspect: f32, zoom: f32, yaw: f32 }
-struct Grid { origin: vec2<f32>, cell: f32, thickness: f32, cols: f32, rows: f32, width: f32, height: f32 }
+struct Grid { origin: vec2<f32>, cell: f32, thickness: f32, cols: f32, rows: f32, width: f32, height: f32, tiles_x: f32, _pad: f32 }
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<uniform> grid: Grid;
 @group(0) @binding(2) var<storage, read> cells: array<u32>;
@@ -12,7 +12,12 @@ struct Output { @builtin(position) position: vec4<f32>, @location(0) color: vec4
         let index = id/6u;
         let corners = array<vec2<f32>,6>(vec2(0.,0.),vec2(1.,0.),vec2(0.,1.),vec2(0.,1.),vec2(1.,0.),vec2(1.,1.));
         let xy = (vec2(f32(index%u32(grid.cols)),f32(index/u32(grid.cols)))+corners[id%6u])*grid.cell;
-        let packed = cells[index];
+        // Cells are stored tile-major: one contiguous 256x256 block per tile, so
+        // the display process can refresh a dirty tile with a single copy.
+        let col = index%u32(grid.cols);
+        let row = index/u32(grid.cols);
+        let tile = (row/256u)*u32(grid.tiles_x)+(col/256u);
+        let packed = cells[tile*65536u+(row%256u)*256u+(col%256u)];
         let depth = f32(packed&65535u)/65535.;
         let role = (packed>>16u)&255u;
         p = vec3(grid.origin+min(xy,vec2(grid.width,grid.height)), -depth*grid.thickness);

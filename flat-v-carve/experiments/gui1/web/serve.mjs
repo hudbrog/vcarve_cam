@@ -4,12 +4,17 @@ import {readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 const root=path.resolve(fileURLToPath(new URL('..',import.meta.url)));
+// The browser probe pages load the unchanged repository fixtures, which live
+// beside the experiment directory rather than inside it.
+const fixtures=path.resolve(root,'../../fixtures');
 http.createServer(async(req,res)=>{
   try{
     const url=new URL(req.url,'http://127.0.0.1');
     const relative=decodeURIComponent(url.pathname==='/'?'/web/index.html':url.pathname);
-    const file=path.resolve(root,`.${relative}`);
-    if(!file.startsWith(root+path.sep)) {res.writeHead(403);res.end();return;}
+    const fixturesRequest=relative.startsWith('/fixtures/');
+    const base=fixturesRequest?fixtures:root;
+    const file=path.resolve(base,fixturesRequest?`.${relative.slice('/fixtures'.length)}`:`.${relative}`);
+    if(!file.startsWith(base+path.sep)) {res.writeHead(403);res.end();return;}
     const bytes=await readFile(file);
     res.setHeader('Content-Type',file.endsWith('.wasm')?'application/wasm':file.endsWith('.js')||file.endsWith('.mjs')?'text/javascript':file.endsWith('.html')?'text/html':'application/octet-stream');
     res.setHeader('Cache-Control','no-cache');res.end(bytes);

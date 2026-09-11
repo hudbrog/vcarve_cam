@@ -1,0 +1,48 @@
+{
+  "node": "v24.19.0",
+  "nativeSha256": "38adc6b84fbf3cc0eca55fcb045d07838e281492f8b8f458046ce624f6d1eb82",
+  "wasmSha256": "9a561fa6a4827ac0764a7b598efba6819acf4f32eca2499f65f7b2ea61fdf018",
+  "note": "Native worker frame versus the browser package for the same request; the TypeScript heightfield comparison is a separate capture.",
+  "records": [
+    {
+      "name": "small",
+      "elapsedMs": 80.7941,
+      "payloadSha256Native": "bea713c66ae85cc28fc632a7a1e67f0ff776f3dafba4e80b09bd19999b55aaa2",
+      "payloadSha256Browser": "bea713c66ae85cc28fc632a7a1e67f0ff776f3dafba4e80b09bd19999b55aaa2",
+      "payloadsIdentical": true,
+      "metadataBytes": 13252,
+      "payloadBytes": 4461328,
+      "motionPages": 1,
+      "stockCheckpoints": 17,
+      "cellsCompared": 1114112,
+      "payloadSha256": "bea713c66ae85cc28fc632a7a1e67f0ff776f3dafba4e80b09bd19999b55aaa2",
+      "displayMotionBytesIdentical": true,
+      "motionFingerprintNative": "da4b56b365400e5228d5512de6f8ab0cc1926ffc3c59428c85e94d03d201a078",
+      "motionFingerprintBrowser": "da4b56b365400e5228d5512de6f8ab0cc1926ffc3c59428c85e94d03d201a078",
+      "replayRecordsCompared": 37,
+      "replayRecordsDiffering": 0,
+      "maxReplayCoordinateDeltaMm": 0,
+      "differences": 0
+    },
+    {
+      "name": "flower",
+      "elapsedMs": 16983.9127,
+      "payloadSha256Native": "61194c951a5f9772a223cdfe984fcdbcacc7aa66b02d1d4cbf26139c94c61412",
+      "payloadSha256Browser": "c5cb3c4c9722086ff547096c6d175143db487ed10fa477d1a2bf24435a3826a2",
+      "payloadsIdentical": false,
+      "metadataBytes": 69182,
+      "payloadBytes": 21994560,
+      "motionPages": 3,
+      "stockCheckpoints": 18,
+      "cellsCompared": 4718592,
+      "payloadSha256": "c5cb3c4c9722086ff547096c6d175143db487ed10fa477d1a2bf24435a3826a2",
+      "displayMotionBytesIdentical": true,
+      "motionFingerprintNative": "3705eb017cea0155c31ff96ae31a16a5588ad8cc3d23254e3e7d41c84939cb81",
+      "motionFingerprintBrowser": "a3671773f83a455d87666b4a82678348df300000a169cb7ec4a7e0bce8cb88d5",
+      "replayRecordsCompared": 22883,
+      "replayRecordsDiffering": 41,
+      "maxReplayCoordinateDeltaMm": 1.1102230246251565e-16,
+      "differences": 0
+    }
+  ]
+}

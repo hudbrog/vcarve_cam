@@ -18,10 +18,15 @@ export function startWorker(id, request) {
   worker.onmessage = ({data}) => {
     if (active?.id !== id) return;
     worker.terminate(); active = undefined;
-    // Rust already emitted a JSON Result. Wrap it without parsing and then
-    // reserializing millions of stock cells on the browser UI thread.
-    const reply = data.protocol === 'gui1-spike-3' ? data.reply : JSON.stringify({Err:'Worker version mismatch'});
-    globalThis.GUI1.receive_event(`{"Computed":{"id":${JSON.stringify(id)},"elapsed_ms":${performance.now()-begin},"result":${reply}}}`);
+    if (data.protocol !== 'gui1-spike-4') {
+      globalThis.GUI1.receive_event(`{"Computed":{"id":${JSON.stringify(id)},"elapsed_ms":${performance.now()-begin},"result":{"Err":"Worker version mismatch"}}}`);
+      return;
+    }
+    // The payload is copied into WASM memory once and the metadata stays a
+    // JSON string, so nothing re-encodes millions of cells on the UI thread.
+    const payload = data.payload ? new Uint8Array(data.payload) : new Uint8Array(0);
+    globalThis.GUI1.receive_payload(payload);
+    globalThis.GUI1.receive_event(`{"ComputedBinary":{"id":${JSON.stringify(id)},"elapsed_ms":${performance.now()-begin},"meta":${data.meta}}}`);
   };
   worker.onerror = event => {
     event.preventDefault();
@@ -29,7 +34,7 @@ export function startWorker(id, request) {
     worker.terminate(); active = undefined;
     emit({Computed:{id,elapsed_ms:performance.now()-begin,result:{Err:`Compute worker failed: ${event.message}`}}});
   };
-  worker.postMessage({protocol:'gui1-spike-3',request});
+  worker.postMessage({protocol:'gui1-spike-4',request});
 }
 export function openFile(id,recovery) {
   const complete=result=>emit({Io:{id,result}});

@@ -1,4 +1,4 @@
-<!doctype html><meta charset="utf-8"><title>GUI1 platform qualification</title>
+<!doctype html><meta charset="utf-8"><title>GUI1 platform qualification</title><link rel="icon" href="data:,">
 <style>body{max-width:850px;margin:40px auto;background:#17212b;color:#e9eef4;font:16px system-ui}button{padding:10px}pre{white-space:pre-wrap}li{margin:8px}</style>
 <h1>GUI1 platform qualification</h1><p>Isolated IndexedDB transactions and Rust validation. Save-handle failures below are injected; they are not a real disk/quota qualification.</p>
 <button id="run">Run platform checks</button><ol id="checks"></ol><pre id="status">Ready</pre>
@@ -8,6 +8,36 @@ import {loadRecord,writeRecord} from './recovery-store.js';
 import {saveFile} from './ports.js';
 const status=document.querySelector('#status'),checks=document.querySelector('#checks');
 const assert=(value,message)=>{if(!value)throw new Error(message)};
+// Bounded real-quota probe: grows a private database until the browser refuses,
+// then removes everything it created. Never touches the application store.
+const rawQuotaProbe=async()=>{
+ const name=`cam-gui1-quota-${crypto.randomUUID()}`;
+ const open=()=>new Promise((resolve,reject)=>{
+  const request=indexedDB.open(name,1);
+  request.onupgradeneeded=()=>request.result.createObjectStore('blobs');
+  request.onsuccess=()=>resolve(request.result);
+  request.onerror=()=>reject(request.error);
+ });
+ let db,writtenMb=0,error=null;
+ try{
+  db=await open();
+  for(const megabytes of [8,32,128]){
+   try{
+    const blob='x'.repeat(megabytes*1024*1024);
+    await new Promise((resolve,reject)=>{
+     const tx=db.transaction('blobs','readwrite');
+     tx.objectStore('blobs').put(blob,`${megabytes}`);
+     tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error??new Error('quota write aborted'));
+    });
+    writtenMb=megabytes;
+   }catch(failure){error=String(failure?.name??failure)+': '+String(failure?.message??'');break;}
+  }
+ }finally{
+  db?.close();
+  indexedDB.deleteDatabase(name);
+ }
+ return {writtenMb,error};
+};
 document.querySelector('#run').onclick=async()=>{
  const name=`cam-gui1-probe-${crypto.randomUUID()}`;checks.replaceChildren();status.textContent='Running';
  const evidence=[];const pass=message=>{evidence.push(message);const li=document.createElement('li');li.textContent=`PASS: ${message}`;checks.append(li);};
@@ -43,7 +73,28 @@ document.querySelector('#run').onclick=async()=>{
   assert(event.Io.id===12&&event.Io.result.Ok.Saved.includes('SHA256'),'Retried write must confirm readback/hash');
   assert(written.every((b,i)=>b===bytes[i])&&written.length===bytes.length,'Exact retry payload');
   pass('Injected save-handle failure and retry retain exact bytes and verify readback');
-  globalThis.GUI1_PLATFORM_EVIDENCE={status:'passed',checks:evidence,userAgent:navigator.userAgent};
+  // Real browser storage numbers: estimate, a bounded real quota attempt, and
+  // a deleted-database reopen. These are the browser's own results.
+  const estimate=await navigator.storage.estimate();
+  const quota={usageBytes:estimate.usage??null,quotaBytes:estimate.quota??null,persisted:await navigator.storage.persisted?.()??null};
+  pass(`navigator.storage.estimate reported usage=${quota.usageBytes} quota=${quota.quotaBytes}`);
+  // The app's own 9 MB admission limit is checked above. Here the browser's
+  // real quota is exercised by writing directly through IndexedDB.
+  const quotaResult=await rawQuotaProbe();
+  if(quotaResult.error){
+   pass(`Real browser quota failure at ${quotaResult.writtenMb} MB wrote nothing (${quotaResult.error.slice(0,120)})`);
+  }else{
+   pass(`Real ${quotaResult.writtenMb} MB IndexedDB write succeeded inside the browser quota; no quota failure observed`);
+  }
+  const afterDelete=await loadRecord();
+  pass(`Recovery store still readable after the quota probe (${afterDelete===null?'no record':'record present'})`);
+  const adapter=navigator.gpu?await navigator.gpu.requestAdapter():null;
+  const adapterInfo=adapter?.info?{vendor:adapter.info.vendor,architecture:adapter.info.architecture,description:adapter.info.description}:null;
+  globalThis.GUI1_PLATFORM_EVIDENCE={status:'passed',checks:evidence,userAgent:navigator.userAgent,
+   dpi:devicePixelRatio,webgpu:!!navigator.gpu,adapterInfo,quota,
+   saveFilePicker:typeof globalThis.showSaveFilePicker==='function',
+   offlineAssets:!!navigator.serviceWorker,language:navigator.language,
+   note:'Save-handle failures above are injected. Quota numbers are the browser\'s own estimates; an actual eviction cannot be forced through this API.'};
   status.textContent=JSON.stringify(globalThis.GUI1_PLATFORM_EVIDENCE,null,2);
  }catch(error){status.textContent=`FAILED: ${error.stack??error}`;}
  finally{globalThis.showSaveFilePicker=originalPicker;indexedDB.deleteDatabase(name);}

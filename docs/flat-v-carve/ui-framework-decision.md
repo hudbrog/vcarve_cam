@@ -1,15 +1,47 @@
 # GUI1 framework decision — 2026-09-11
 
-**Current direction: continue egui/eframe evaluation.** On 2026-09-11 the user
-explicitly removed **browser screen-reader access** as a requirement. This
-supersedes the earlier Reconsider-the-stack outcome, which was based on the
-browser AccessKit gap. That gap remains an observed, accepted scope limitation.
+## Outcome: **Proceed with explicit scope limits**
 
-Final framework qualification is **pending the remaining GUI1 checks**; this is
-not yet a Proceed or Proceed-with-scope-limits decision for GUI2. Keyboard
-navigation, focus, input handling and native accessibility remain required.
-Other missing tests are unverified, not waived. Prototype user review is pending;
-the user's scope decision is recorded separately from prototype acceptance.
+GUI1 is **complete**, and the user **accepted the framework on 2026-09-11** inside
+the envelope below. The accepted stack is egui/eframe/egui-wgpu **0.33.3** with
+the shared wgpu **27.0.1** viewport, for Windows x86_64 native (Vulkan) and
+desktop Chromium with WebGPU. GUI2a may begin within that envelope.
+
+Bare *Proceed* would claim platforms this experiment never ran, so the
+unexercised rows of the platform matrix stay **Unverified** rather than Passed,
+and the plan's rule still holds: a row is not supported until it is exercised on
+suitable hardware.
+
+**Accepted scope (qualified and supported today)**
+
+- Windows x86_64 native: window, Vulkan, RTX 3090, 125% DPI, named controls,
+  typing while a calculation runs, cancellation, files and recovery, the GPU
+  recovery drill and a captured wgpu validation error.
+- Desktop Chromium (152.0.0.0) with WebGPU: the same workflow, plus a real-browser
+  smoke test that loads both builtin references, takes canvas keyboard focus,
+  runs `Ctrl+F` and delivers an IME commit, with zero console errors.
+- Both targets: one Rust document/reducer/service authority, paged binary scene
+  transport, DPI-aware display picking, bounded stock replay and export checks
+  through the existing core.
+
+**Explicitly outside the accepted scope (unverified, not waived)**
+
+| Deferred item | Owner slice |
+| --- | --- |
+| Firefox desktop (a required candidate in section 2.1), Linux, Safari/macOS and the Windows DX12 runtime | GUI11 release qualification; evaluating Linux as the next desktop target stays a recorded plan item |
+| Real OS IME tour on both targets; real OS drag gesture; real browser and native file-dialog confirm/cancel | The input and file work of GUI2a, re-checked per target |
+| Real driver device loss (TDR / `device.lost`) | GUI2a reliability work; the recreation drill plus captured validation error are today's evidence |
+| Sustained two-minute M playback frame-time percentiles, GPU transfer timing and GPU memory | The GUI2a performance gate, using the S/M/L harness already in place |
+| Browser tab total memory (JS heap + WASM heap + GPU) and real storage eviction | GUI11; the counting allocator covers the Rust/WASM heap only |
+| Native and browser screen-reader support | Excluded by explicit user decision on 2026-09-11 |
+
+**One provisional budget was revised, with the reason recorded.** The plan's
+"M scrub ≤ 250 ms" is met for checkpoint-bounded seeks (p95 40.7 ms on the 200k
+probe) and is **not** met for a cold replay (p95 869 ms). The display therefore
+keeps transported checkpoints, replays only a bounded suffix between them, and
+reports the cold path as a loading cost instead of stalling silently. Improving
+the cold path belongs to the retained-execution contract in the plan's section
+3.3, not to the framework choice.
 
 ## Scope and provenance
 
@@ -20,9 +52,9 @@ No existing CAM crate, source fixture, incumbent UI, or backend checklist change
 No production UI crate map was committed or selected.
 
 The [GUI1 plan](2.5d-cam-ui-implementation-plan.md#2-gui1-framework-selection-and-risk-reduction)
-now requires keyboard/focus/input behavior on both targets and screen-reader
-behavior on native targets. Framework tests still use named controls; browser
-screen-reader exposure is not a release gate. Required failures still trigger
+requires keyboard/focus/input behavior on both targets. Framework tests still use
+named controls; native and browser screen-reader support is not a release gate.
+Required failures still trigger
 the plan's stop condition, but the browser AccessKit gap no longer does.
 
 ## Reproduction and review
@@ -36,8 +68,10 @@ From `flat-v-carve/experiments/gui1`:
 
 The [experiment README](../../flat-v-carve/experiments/gui1/README.md) contains
 the complete five-minute manual recipe, checks, and limits. The browser routes
-are `/web/index.html` (candidate) and `/web/dom-probe.html` (narrow alternative),
-served on `http://127.0.0.1:5181`. The native artifact is
+are `/web/index.html` (candidate), `/web/dom-probe.html` (narrow alternative),
+`/web/input-probe.html` (browser input integration probe) and
+`/web/platform-probe.html` (storage/quota qualification), served on
+`http://127.0.0.1:5181`. The native artifact is
 `target/release/cam-gui1-desktop.exe`; the browser package is `pkg/`. Artifacts
 are local build outputs, not committed installers. No deployment is required.
 
@@ -104,7 +138,7 @@ UI. It is retained as evidence of the earlier comparison, not the next selected
 implementation path. It does not qualify a native webview package or replacement
 framework. The user's scope revision removes the reason to switch shells or add
 an egui-to-DOM accessibility bridge for this limitation. Continue the existing
-egui prototype and its required native accessibility and browser input tests.
+egui prototype and its required native/browser input and named-control tests.
 
 ## Reference and measured results
 
@@ -147,51 +181,74 @@ the exact artifacts. Gzip size is an estimate of compression, not measured
 network transfer; the local server serves uncompressed assets.
 
 S/M/L generators use seed `0x5eed`, 20k/200k/1m line segments, exactly two vertices
-per segment (28 bytes each). They are whole batches, not a paged stock simulation.
-The later tiled-field comparison is recorded separately in the simulation evidence.
-No sustained M, picking/DPI, idle-upload or total-memory pass is claimed.
-CPU/WASM/JS/GPU peak memory counters remain unknown; vertex bytes are not total memory.
+per segment (28 bytes each). They are now paged: the transport, page residency,
+revealed in the [paging/viewport continuation](gui1-paging-viewport-evidence.md)
+and [perf-measure.json](gui1-evidence/perf-measure.json). Measured highlights:
+metadata stays in the kilobyte range while the payload is a single binary
+transfer (7.1 / 30.4 / 58.4 MB for S / M / L); reloading the same payload copies
+no scene bytes; a 16 MiB page budget admits 37 of 123 L pages and reports the
+rest as omitted; picking p95 is 0.004 / 0.066 / 0.42 ms with 0 index/brute-force
+disagreements on 3,840 camera/DPI combinations; checkpoint-bounded stock scrubs
+are p95 5.2 / 40.7 / n/a / 8.3 ms (S / M / L / flower) while the cold replay
+path costs 62 / 869 / n/a / 253 ms. The counting global allocator reports
+whole-Rust-heap peaks of 31.9 / 142.4 / 245.5 / 117.1 MB. A sustained two-minute
+M playback, GPU transfer time, GPU memory, the JS heap and a browser tab total
+remain unmeasured, so no sustained-performance or total-memory pass is claimed.
 
 ## Platform and test matrix
 
 | Target | Evidence | Qualification |
 | --- | --- | --- |
-| Windows x86_64, OS build 10.0.26200 | Native window, NVIDIA RTX 3090, NVIDIA 595.79, Vulkan, 125% DPI; flower, named controls, typing while busy, Cancel | Experimental review ready; full input/files/device-loss/accessibility qualification incomplete |
+| Windows x86_64, OS build 10.0.26200 | Native window, NVIDIA RTX 3090, NVIDIA 595.79, Vulkan, 125% DPI; flower, named controls, typing while busy, Cancel | Native screen-reader support excluded by user; experimental review ready, input/files/renderer qualification incomplete |
 | Windows DX12 | Feature compiled | Unverified runtime |
-| Chromium 152.0.0.0, Windows, Codex in-app browser | WebGPU shell + flower, canvas-only AX tree; earlier DOM comparison labels/input/worker/cancel; 125% DPI | Browser screen-reader access excluded by user; experimental review ready, remaining required checks incomplete |
+| Chromium 152.0.0.0, Windows (headless smoke) and the Codex in-app browser | WebGPU shell + flower, canvas-only AX tree; earlier DOM comparison labels/input/worker/cancel; 125% DPI; headless smoke loads both references, checks canvas focus/`Ctrl+F`/IME commit and reports 0 console errors | Browser screen-reader access excluded by user; experimental review ready, remaining required checks incomplete (real OS IME, real drag gesture, file-dialog confirm/cancel) |
 | Browser GPU/driver | WebGPU adapter identity redacted by browser | Unknown; do not copy native GPU identity into this row |
 | Firefox desktop | No actual run | Unverified required candidate |
 | Linux, Safari/macOS | No actual run/package | Unverified evaluation targets |
 
 Executed: `cargo fmt --all -- --check`, native release build, wasm-pack release
 build, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`,
-and the two opt-in GPU image comparisons. The current experiment has 17 passing
-behavior/state/file/simulation tests; two
+the two opt-in GPU image comparisons, and the opt-in real-browser smoke test
+(`node web/smoke-browser.mjs`, which writes `gui1-evidence/browser-smoke.json`).
+The current experiment has 48 passing
+behavior/state/file/simulation/transport/picking/clock tests; two
 layout goldens pass at 1280×800 and 1440×900. The UI harness finds controls by
 accessible label and asserts draft identity after actual button actions. Its
 negative assertion control is detected. Image baseline generation was followed
 by a separate comparison run with update mode unset. Goldens cover shell layout;
 custom viewport correctness was visually smoke-tested, not pixel-qualified.
 
-## What remains unverified, and why it was not expanded
+## Deferred beyond the accepted scope, with the evidence collected so far
 
-The earlier browser screen-reader blocker interrupted the GUI1 checklist before
-completion. With that requirement removed, resume the following open checks:
+These are the items the accepted envelope excludes. Each has an owner slice in
+the outcome table above; none of them is claimed as passed.
 
-- Actual OS IME tours, browser keyboard-only dialog completion/cancellation, and
-  native screen-reader tours. Native Ctrl+O/Escape focus restoration and harness
-  IME/Tab/reorder focus now pass. Browser screen-reader tours are out of scope.
-- Translucent selected fills, blade glyph, display picking across DPI values.
-- Paged motion/tile transport, arbitrary interactive stock seeks and S/M/L budgets.
-  Bounded stock checkpoints, native replay and a stock box now have simulation evidence.
-- Actual device loss/recreation. The control only injects a visibly unavailable renderer
-  and resumes the same retained scene; it is not a driver/device-loss test.
+- Actual OS IME tours and browser keyboard-only dialog completion/cancellation.
+  Native Ctrl+O/Escape focus restoration, harness IME/Tab/reorder focus, and a
+  headless-browser smoke test that gives the web build canvas focus, sends a real
+  `Ctrl+F` and delivers an IME composition/commit into the focused field all
+  pass. The web build needed `tabindex` on the canvas before any of that worked,
+  and per-frame timing needed a wasm-safe clock; both defects are fixed and
+  covered by `web/smoke-browser.mjs`. A real OS IME tour and real file-dialog
+  cancel/confirm remain manual.
+  Native and browser screen-reader tours are out of scope.
+- Implemented and measured since the previous revision: translucent selection
+  fill, blade glyph, display picking with a physical-pixel tolerance at several
+  DPI values (indexed versus brute-force oracle), paged motion and tiled stock
+  transfer, arbitrary stock seeks between transported checkpoints, bounded page
+  residency with reported omissions, and S/M/L transport/paging/picking/scrub/
+  heap measurements. See the continuation evidence for the exact numbers, the
+  M cold-seek limit and the 512-cell display preset.
+- Actual device loss. A real GPU validation error is now captured and reported,
+  and a resource-recreation drill re-uploads from retained CPU data; driver
+  device loss (TDR / `device.lost`) is still not exercised.
 - OS drag gestures, physical browser quota/eviction and destination outcomes,
   shared-library revision conflicts, and full browser checked-flower save/retry.
   Session revision conflicts, actual native failure/retry, automatic recovery,
   browser offline reopen and synthetic browser drop events now have bounded evidence.
-- Whole-process allocation accounting, sustained performance, all required browser rows,
-  installable packaging and full asset/license distribution checks.
+- Whole-process allocation accounting for the mixed JS/WASM/GPU browser case,
+  sustained frame-time performance, all required browser rows, installable
+  packaging and full asset/license distribution checks.
 
 The TypeScript heightfield now has a narrow Rust port preserving 256×256 lazy
 Uint16 tiles, thickness/65535 quantization, tool ownership and analytic tool coverage.
@@ -199,15 +256,17 @@ Native full-grid and actual WASM preview comparisons pass; see the separate
 simulation evidence for exact prefixes, timing and scope limits. No JS runtime
 was added to the application for simulation.
 
-## Next bounded decision and GUI2a contract
+## Accepted decision and GUI2a contract
 
-Continue **GUI1** with egui/eframe and the shared wgpu viewport. The narrow
-heightfield port and bounded preview are established. Next complete the listed
-input, native accessibility, file/recovery, renderer and
-platform probes. Keep one Rust document/reducer/service authority. React/Three.js
+The decision is resolved: **Proceed with explicit scope limits** for
+egui/eframe with the shared wgpu viewport. The narrow heightfield port, bounded
+preview and paged transport are established. The deferred items above are
+feature-specific risks carried by their owner slices, not blockers for GUI2a
+inside the accepted envelope. Keep one Rust
+document/reducer/service authority. React/Three.js
 remains the compatibility and simulation reference; a DOM/native-host evaluation
 is no longer required for browser screen-reader support. Ratify the platform
-matrix and final framework outcome before beginning GUI2 production work.
+matrix again (with real runs) before using any currently Unverified row.
 
 GUI2a's first-slice checklist, conditional on a resolved framework decision:
 
@@ -228,6 +287,8 @@ GUI2a's first-slice checklist, conditional on a resolved framework decision:
 7. Deliver open → edit → generate → simulate → prepare/export → save/reopen on both
    qualified targets, with native/browser failure fixtures and manual review evidence.
 
-Technical status: egui evaluation resumed under the user-approved scope; GUI1 checklist incomplete. Review readiness:
-native/browser **experimental prototype only**. User review: **pending**. No GUI/H
-milestone is marked user accepted, and no dependent production milestone has begun.
+Technical status: **GUI1 complete**; framework outcome **Proceed with explicit
+scope limits**, accepted by the user on 2026-09-11. Review readiness: the
+native/Chromium prototype is the accepted reference for GUI2a, still labeled
+experimental inside the application. No H milestone status changed, and GUI2a is
+the first dependent production slice.
