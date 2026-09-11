@@ -144,7 +144,12 @@ fn job() -> CamJob {
             },
         ],
         operations: vec![face("face-1"), knife_operation(), face("face-2")],
-        tolerances: PlanningTolerances::default(),
+        // A generated knife plan always carries the motion tolerance (the
+        // planner requires it); the emitted replay gates on it (F3b).
+        tolerances: PlanningTolerances {
+            motion_tolerance_mm: Some(0.01),
+            verification_tolerance_mm: None,
+        },
         legacy_machine_profile: None,
     };
     job.validate().unwrap();
@@ -188,9 +193,13 @@ fn motion(
 }
 
 /// The face → knife → face plan of plan section 19.1: a recurring endmill
-/// around one knife stage, assembled to the exact sequence contract.
+/// around one knife stage, assembled to the exact sequence contract. The
+/// swivel is a subdivided chord arc — exactly what the knife planner emits
+/// for a 90-degree corner within the motion tolerance — because a single
+/// chord genuinely violates the no-slip tip budget the emitted replay
+/// enforces (F3b).
 fn plan() -> OperationPlan {
-    let motions = vec![
+    let mut motions = vec![
         // face-1 (T1): plunge, cut, retract.
         motion(
             0,
@@ -273,86 +282,106 @@ fn plan() -> OperationPlan {
             Some(150.),
             Some((180., 180.)),
         ),
-        motion(
-            6,
-            "knife-1",
-            "knife-1-knife",
-            KNIFE,
-            MotionPurpose::KnifeSwivel,
-            MotionEffect::KnifeTrace,
-            Interpolation::LinearFeed,
-            pos(21., 0., -1.),
-            pos(20., 1., -1.),
-            Some(50.),
-            Some((180., 270.)),
-        ),
-        motion(
-            7,
-            "knife-1",
-            "knife-1-knife",
-            KNIFE,
-            MotionPurpose::KnifeCut,
-            MotionEffect::KnifeTrace,
-            Interpolation::LinearFeed,
-            pos(20., 1., -1.),
-            pos(20., 11., -1.),
-            Some(150.),
-            Some((270., 270.)),
-        ),
-        motion(
-            8,
-            "knife-1",
-            "knife-1-knife",
-            KNIFE,
-            MotionPurpose::Clearance,
-            MotionEffect::None,
-            Interpolation::Rapid,
-            pos(20., 11., -1.),
-            pos(20., 11., 5.),
-            None,
-            Some((270., 270.)),
-        ),
-        // face-2 (T1 again): the recurring tool is re-selected.
-        motion(
-            9,
-            "face-2",
-            "face-2-face",
-            ENDMILL,
-            MotionPurpose::Entry,
-            MotionEffect::MillingSweep,
-            Interpolation::LinearFeed,
-            pos(30., 0., 0.),
-            pos(30., 0., -0.5),
-            Some(100.),
-            None,
-        ),
-        motion(
-            10,
-            "face-2",
-            "face-2-face",
-            ENDMILL,
-            MotionPurpose::Rough,
-            MotionEffect::MillingSweep,
-            Interpolation::LinearFeed,
-            pos(30., 0., -0.5),
-            pos(35., 0., -0.5),
-            Some(300.),
-            None,
-        ),
-        motion(
-            11,
-            "face-2",
-            "face-2-face",
-            ENDMILL,
-            MotionPurpose::Clearance,
-            MotionEffect::None,
-            Interpolation::Rapid,
-            pos(35., 0., -0.5),
-            pos(35., 0., 5.),
-            None,
-            None,
-        ),
     ];
+    // Swivel chords around the planted tip (20, 0): the planner's quarter
+    // arc of radius 1 from pivot (21, 0) to (20, 1), subdivided within a
+    // tolerance share (0.01/4 mm) so each chord replays inside the budget.
+    {
+        let center = Point::new(20., 0.);
+        let chords = 23;
+        let mut previous = pos(21., 0., -1.);
+        for chord in 1..=chords {
+            let psi = std::f64::consts::FRAC_PI_2 * chord as f64 / chords as f64;
+            let next = pos(20. + psi.cos(), psi.sin(), -1.);
+            let fraction = (chord as f64 - 1.) / chords as f64;
+            let heading = |angle: f64| (angle + std::f64::consts::PI).to_degrees().rem_euclid(360.);
+            let start_angle = std::f64::consts::FRAC_PI_2 * fraction;
+            let _ = center;
+            motions.push(motion(
+                5 + chord,
+                "knife-1",
+                "knife-1-knife",
+                KNIFE,
+                MotionPurpose::KnifeSwivel,
+                MotionEffect::KnifeTrace,
+                Interpolation::LinearFeed,
+                previous,
+                next,
+                Some(50.),
+                Some((heading(start_angle), heading(psi))),
+            ));
+            previous = next;
+        }
+    }
+    let after_swivel = motions.len();
+    motions.push(motion(
+        after_swivel,
+        "knife-1",
+        "knife-1-knife",
+        KNIFE,
+        MotionPurpose::KnifeCut,
+        MotionEffect::KnifeTrace,
+        Interpolation::LinearFeed,
+        pos(20., 1., -1.),
+        pos(20., 11., -1.),
+        Some(150.),
+        Some((270., 270.)),
+    ));
+    motions.push(motion(
+        after_swivel + 1,
+        "knife-1",
+        "knife-1-knife",
+        KNIFE,
+        MotionPurpose::Clearance,
+        MotionEffect::None,
+        Interpolation::Rapid,
+        pos(20., 11., -1.),
+        pos(20., 11., 5.),
+        None,
+        Some((270., 270.)),
+    ));
+    let knife_end = motions.len();
+    // face-2 (T1 again): the recurring tool is re-selected.
+    motions.push(motion(
+        knife_end,
+        "face-2",
+        "face-2-face",
+        ENDMILL,
+        MotionPurpose::Entry,
+        MotionEffect::MillingSweep,
+        Interpolation::LinearFeed,
+        pos(30., 0., 0.),
+        pos(30., 0., -0.5),
+        Some(100.),
+        None,
+    ));
+    motions.push(motion(
+        knife_end + 1,
+        "face-2",
+        "face-2-face",
+        ENDMILL,
+        MotionPurpose::Rough,
+        MotionEffect::MillingSweep,
+        Interpolation::LinearFeed,
+        pos(30., 0., -0.5),
+        pos(35., 0., -0.5),
+        Some(300.),
+        None,
+    ));
+    motions.push(motion(
+        knife_end + 2,
+        "face-2",
+        "face-2-face",
+        ENDMILL,
+        MotionPurpose::Clearance,
+        MotionEffect::None,
+        Interpolation::Rapid,
+        pos(35., 0., -0.5),
+        pos(35., 0., 5.),
+        None,
+        None,
+    ));
+    let face2_end = motions.len();
     let stages = vec![
         ExecutionStage {
             stage_id: "face-1-face".into(),
@@ -368,7 +397,7 @@ fn plan() -> OperationPlan {
             operation_id: "knife-1".into(),
             tool_id: KNIFE.into(),
             role: StageRole::Knife,
-            motion_range: (3, 9),
+            motion_range: (3, knife_end),
             entry_position: pos(5., 0., 5.),
             exit_position: pos(20., 11., 5.),
         },
@@ -377,7 +406,7 @@ fn plan() -> OperationPlan {
             operation_id: "face-2".into(),
             tool_id: ENDMILL.into(),
             role: StageRole::Face,
-            motion_range: (9, 12),
+            motion_range: (knife_end, face2_end),
             entry_position: pos(30., 0., 0.),
             exit_position: pos(35., 0., 5.),
         },

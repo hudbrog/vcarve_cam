@@ -11,11 +11,13 @@
 //! modeled blade heading (pivot toward tip, degrees CCW from +X) therefore
 //! trails travel by 180 degrees and is carried — not reset — across lifts
 //! and disconnected chains (plan section 12.3).
+pub mod evidence;
 pub mod replay;
 
 use crate::{
     contours::{ContourCatalogue, ResolvedAnchor},
     geometry::{Diagnostic, Point, Result},
+    model::VBit,
     motion::Position,
     operations::LocatedDiagnostic,
     project::{CamJob, DragKnifeSettings, StartSelection, ToolGeometry},
@@ -441,6 +443,229 @@ fn point_in_stock(job: &CamJob, p: Point) -> bool {
     }
 }
 
+/// One prior milling sweep this knife path must still find material
+/// beneath (plan section 22.10 F3c). The floor is the sweep's deepest
+/// commanded Z; the corridor radius is exact for flat endmills and the
+/// V-bit's full cutting radius otherwise (conservative: a V-carved surface
+/// is treated as removed out to the cone's widest reach until an exact
+/// prefix proof exists).
+struct PriorSweep {
+    operation_id: String,
+    a: Point,
+    b: Point,
+    radius_mm: f64,
+    floor_z: f64,
+}
+
+fn prior_sweeps(job: &CamJob, prior_motions: &[PlannedMotion]) -> Result<Vec<PriorSweep>> {
+    let mut sweeps = vec![];
+    for motion in prior_motions
+        .iter()
+        .filter(|motion| motion.effect == MotionEffect::MillingSweep)
+    {
+        let tool = job
+            .tools
+            .iter()
+            .find(|t| t.id == motion.tool_id)
+            .ok_or_else(|| {
+                error(
+                    "STOCK_HISTORY_TOOL",
+                    format!("prior stage uses unknown tool '{}'", motion.tool_id),
+                )
+            })?;
+        let radius = match &tool.geometry {
+            Some(ToolGeometry::Endmill(spec)) => spec.diameter_mm / 2.,
+            Some(ToolGeometry::Vbit(spec)) => {
+                VBit::try_from(spec.clone())?.max_cutting_radius().mm()
+            }
+            _ => {
+                return Err(error(
+                    "STOCK_HISTORY_TOOL",
+                    format!(
+                        "prior milling stage '{}' uses a tool without milling geometry",
+                        motion.stage_id
+                    ),
+                ));
+            }
+        };
+        sweeps.push(PriorSweep {
+            operation_id: motion.operation_id.clone(),
+            a: motion.start.xy(),
+            b: motion.end.xy(),
+            radius_mm: radius,
+            floor_z: motion.start.z.min(motion.end.z),
+        });
+    }
+    Ok(sweeps)
+}
+
+fn point_segment_distance(p: Point, a: Point, b: Point) -> f64 {
+    let ab = Point::new(b.x - a.x, b.y - a.y);
+    let len_sq = ab.x * ab.x + ab.y * ab.y;
+    if len_sq <= 1e-24 {
+        return p.distance(a);
+    }
+    let t = (((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / len_sq).clamp(0., 1.);
+    p.distance(Point::new(a.x + ab.x * t, a.y + ab.y * t))
+}
+
+/// Distance between two closed segments (0 when they touch or cross).
+fn segment_segment_distance(a1: Point, a2: Point, b1: Point, b2: Point) -> f64 {
+    let cross =
+        |o: Point, p: Point, q: Point| (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
+    let sign = |o: Point, p: Point, q: Point| {
+        let value = cross(o, p, q);
+        if value > 1e-15 {
+            1
+        } else if value < -1e-15 {
+            -1
+        } else {
+            0
+        }
+    };
+    let touching = sign(a1, a2, b1) != sign(a1, a2, b2) && sign(b1, b2, a1) != sign(b1, b2, a2);
+    let collinear_overlap = sign(a1, a2, b1) == 0
+        && sign(a1, a2, b2) == 0
+        && (point_segment_distance(a1, b1, b2) <= 1e-12
+            || point_segment_distance(a2, b1, b2) <= 1e-12
+            || point_segment_distance(b1, a1, a2) <= 1e-12
+            || point_segment_distance(b2, a1, a2) <= 1e-12);
+    if touching || collinear_overlap {
+        return 0.;
+    }
+    point_segment_distance(a1, b1, b2)
+        .min(point_segment_distance(a2, b1, b2))
+        .min(point_segment_distance(b1, a1, a2))
+        .min(point_segment_distance(b2, a1, a2))
+}
+
+/// Whether a required knife contact corridor still has material. A corridor
+/// point/segment at contact depth `z` is lost when a prior sweep passed
+/// within its cutter radius of it and removed material below `z`.
+fn contact_lost(
+    sweeps: &[PriorSweep],
+    a: Point,
+    b: Point,
+    required_z: f64,
+    margin_mm: f64,
+) -> Option<(&PriorSweep, Point)> {
+    let mut nearest: Option<(&PriorSweep, f64)> = None;
+    for sweep in sweeps {
+        if sweep.floor_z >= required_z - RESERVE_MM {
+            // The sweep never reached this contact depth; material at z
+            // beneath its corridor is intact.
+            continue;
+        }
+        let distance = segment_segment_distance(a, b, sweep.a, sweep.b);
+        if distance <= sweep.radius_mm + margin_mm
+            && nearest.is_none_or(|(_, best)| distance < best)
+        {
+            nearest = Some((sweep, distance));
+        }
+    }
+    nearest.map(|(sweep, _)| {
+        let middle = Point::new((a.x + b.x) / 2., (a.y + b.y) / 2.);
+        (sweep, middle)
+    })
+}
+
+/// Resolved knife geometry/engagement values the prefix-contact gate needs.
+struct ContactParams {
+    swivel_configured: f64,
+    corner_threshold: f64,
+    linearization_error: f64,
+    /// Blade offset (pivot-to-tip distance).
+    d: f64,
+}
+
+/// The prefix-contact gate (plan section 22.10 F3c): every required
+/// contact, alignment and swivel region of every chain must still contain
+/// material at its resolved contact depth in the preceding stock prefix.
+/// This conservative corridor test is the supported proof; a knife path
+/// whose corridor intersects prior milling removal is rejected with
+/// `KNIFE_CONTACT_UNSUPPORTED` instead of cutting a planted swivel in
+/// cleared air. Knife traces never count as removal (F2 semantics kept).
+fn check_prefix_contact(
+    paths: &[KnifePath],
+    sweeps: &[PriorSweep],
+    layers: &[f64],
+    heights: &crate::setup::ResolvedHeights,
+    params: &ContactParams,
+) -> Option<(String, String, Point)> {
+    let ContactParams {
+        swivel_configured,
+        corner_threshold,
+        linearization_error,
+        d,
+    } = *params;
+    if sweeps.is_empty() || layers.is_empty() {
+        return None;
+    }
+    // The shallowest layer binds: its cut is the highest contact depth the
+    // blade must find material at, and its swivel is the shallowest
+    // engagement. Deeper layers only require material further down, which
+    // the shallowest requirement implies at the same location.
+    let cut_z = layers[0];
+    let pass_depth = heights.top_z - cut_z;
+    let swivel_z = heights.top_z - swivel_configured.min(pass_depth);
+    for path in paths {
+        for element in &path.elements {
+            match *element {
+                PathElement::Line { from, to, .. } => {
+                    if let Some((sweep, at)) = contact_lost(sweeps, from, to, cut_z, RESERVE_MM) {
+                        return Some((path.chain_id.clone(), sweep.operation_id.clone(), at));
+                    }
+                }
+                PathElement::Arc {
+                    center,
+                    psi_start,
+                    sweep_rad,
+                } => {
+                    if sweep_rad.to_degrees().abs() >= corner_threshold {
+                        // Explicit corner swivel: the tip stays planted at
+                        // the corner through the swivel depth.
+                        if let Some((sweep, _)) =
+                            contact_lost(sweeps, center, center, swivel_z, RESERVE_MM)
+                        {
+                            return Some((
+                                path.chain_id.clone(),
+                                sweep.operation_id.clone(),
+                                center,
+                            ));
+                        }
+                    } else {
+                        // A small turn is cut continuously at pass depth;
+                        // check its emitted chords with the linearization
+                        // margin so the arc bulge cannot hide a crossing.
+                        let sweep = normalize_angle(sweep_rad);
+                        let chords = arc_chords(sweep, d, linearization_error);
+                        let mut previous = Point::new(
+                            center.x + d * psi_start.cos(),
+                            center.y + d * psi_start.sin(),
+                        );
+                        for chord in 1..=chords {
+                            let psi = psi_start + sweep * chord as f64 / chords as f64;
+                            let next =
+                                Point::new(center.x + d * psi.cos(), center.y + d * psi.sin());
+                            if let Some((crossing, at)) =
+                                contact_lost(sweeps, previous, next, cut_z, linearization_error)
+                            {
+                                return Some((
+                                    path.chain_id.clone(),
+                                    crossing.operation_id.clone(),
+                                    at,
+                                ));
+                            }
+                            previous = next;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Chord count for linearizing a swivel arc of radius `d` within the error
 /// share `e` (plan section 8.4: bound the subdivision angle by
 /// `2*acos(1-e/r)`).
@@ -568,12 +793,14 @@ fn emit_swivel_chords(
     }
 }
 
-/// Plan one drag-knife operation.
+/// Plan one drag-knife operation against the stock prefix the preceding
+/// operations actually left behind (plan section 22.10 F3c).
 pub(crate) fn plan(
     job: &CamJob,
     operation_id: &str,
     settings: &DragKnifeSettings,
     published_faces: &BTreeMap<String, crate::operations::PublishedFace>,
+    prior_motions: &[PlannedMotion],
 ) -> Result<PlannedOperation> {
     let missing = missing_fields(job, operation_id, settings);
     if !missing.is_empty() {
@@ -762,6 +989,44 @@ pub(crate) fn plan(
                     operation_id,
                 )]));
             }
+        }
+    }
+
+    // Prefix contact (plan section 22.10 F3c): required cutting and swivel
+    // regions must still hold material after the preceding milling. With no
+    // prior milling sweeps the intact stock trivially satisfies this and a
+    // knife-only job stays usable.
+    if !prior_motions.is_empty() {
+        let sweeps = match prior_sweeps(job, prior_motions) {
+            Ok(sweeps) => sweeps,
+            Err(diag) => {
+                return Ok(incomplete(vec![issue(
+                    &diag.code,
+                    diag.message,
+                    operation_id,
+                )]));
+            }
+        };
+        if let Some((chain_id, prior_operation, at)) = check_prefix_contact(
+            &paths,
+            &sweeps,
+            &layers,
+            &heights,
+            &ContactParams {
+                swivel_configured,
+                corner_threshold,
+                linearization_error,
+                d,
+            },
+        ) {
+            return Ok(incomplete(vec![issue(
+                "KNIFE_CONTACT_UNSUPPORTED",
+                format!(
+                    "chain '{chain_id}': required knife contact near ({:.3}, {:.3}) intersects material already removed by operation '{prior_operation}'; knife contact over prior milling is not supported in this release",
+                    at.x, at.y
+                ),
+                operation_id,
+            )]));
         }
     }
 

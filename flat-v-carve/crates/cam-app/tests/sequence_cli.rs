@@ -184,3 +184,133 @@ fn migrated_vcarve_opens_plans_and_exports_through_the_sequence_cli() {
     // Stock-bottom datum: clearance 5 over 8 mm exports as machine Z 13.000.
     assert!(gcode.contains("Z13.000"));
 }
+
+#[test]
+fn knife_job_adds_exports_and_publishes_evidence_through_the_cli() {
+    let s = Scratch::new("knife");
+    let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40mm\" height=\"30mm\" viewBox=\"0 0 40 30\"><path id=\"cut\" fill=\"none\" stroke=\"#000\" stroke-width=\"0.4\" d=\"M5 5 L25 5\"/></svg>";
+    let job = serde_json::json!({
+        "schema_version": 4,
+        "name": "knife-cli",
+        "source": {"filename": "cut.svg", "svg": svg},
+        "import": {"mode": "centerline", "geometry_tolerance_mm": 0.001,
+            "placement": {"origin_mm": {"x": 0.0, "y": 0.0}, "rotation_deg": 0.0, "scale": 1.0}},
+        "setup": {
+            "stock": {"thickness_mm": 3.0, "xy": {"min_x_mm": 0.0, "min_y_mm": 0.0, "width_mm": 40.0, "length_mm": 30.0}},
+            "work_zero": {"xy": {"kind": "setup_origin"}, "z": "stock_top"},
+            "clearance_above_stock_mm": 5.0,
+        },
+        "tools": [{"id": "blade", "name": "drag knife", "capabilities": {},
+            "geometry": {"kind": "drag_knife", "dimensions": {"blade_offset_mm": 1.0, "max_cut_depth_mm": 2.0}}}],
+        "operations": [{
+            "id": "knife-1", "name": "knife-1", "enabled": true,
+            "settings": {"kind": "drag_knife", "settings": {
+                "chains": ["cut-chain-0"],
+                "assignment": {"tool_id": "blade", "cutting_feed_mm_min": 150.0,
+                    "plunge_feed_mm_min": 60.0, "swivel_feed_mm_min": 50.0, "max_stepdown_mm": 1.0},
+                "top": {"reference": {"kind": "stock_top"}, "offset_mm": 0.0},
+                "bottom": {"reference": {"kind": "operation_top"}, "offset_mm": -1.0},
+                "stepdown_mm": 1.0, "swivel_depth_mm": 0.2, "corner_threshold_deg": 30.0,
+                "start": {"kind": "automatic"}, "alignment": {"initial_heading_deg": 90.0},
+            }},
+        }],
+        "tolerances": {"motion_tolerance_mm": 0.01},
+    });
+    let job_path = s.0.join("knife-job.json");
+    fs::write(&job_path, serde_json::to_string_pretty(&job).unwrap()).unwrap();
+
+    let legacy: Value = serde_json::from_str(
+        &fs::read_to_string(fixture("../real_data/machine-profile.json")).unwrap(),
+    )
+    .unwrap();
+    let profile = serde_json::json!({
+        "schema_version": 2,
+        "id": "knife-cli-profile",
+        "work_offset": "G54",
+        "clearance_z_mm": 5.0,
+        "decimal_places": 3,
+        "program_start_position_mm": null,
+        "length_compensation": "macro_managed",
+        "path_control": {"kind": "blend", "tolerance_mm": 0.01, "naive_cam_tolerance_mm": null},
+        "tools": [{"tool_id": "blade", "tool_number": 3, "length_offset_number": null}],
+        "spindle_spinup_seconds": 0.5,
+        "coolant": "off",
+        "m6": legacy["m6"],
+    });
+    let profile_path = s.0.join("knife-profile.json");
+    fs::write(
+        &profile_path,
+        serde_json::to_string_pretty(&profile).unwrap(),
+    )
+    .unwrap();
+
+    // Export: knife stages run spindle-off under exact path between nothing
+    // else; the emitted bytes carry G61 and the knife tool change.
+    let export_dir = s.0.join("export");
+    let stderr = run_ok(
+        cam()
+            .args(["sequence", "export"])
+            .arg(&job_path)
+            .arg("--profile")
+            .arg(&profile_path)
+            .arg("--output")
+            .arg(&export_dir),
+    );
+    assert!(stderr.contains("motions:"), "{stderr}");
+    let gcode = fs::read_to_string(export_dir.join("sequence.ngc")).unwrap();
+    assert!(gcode.contains("T3 M6"));
+    assert!(gcode.contains("G61"));
+    assert!(!gcode.contains("M3"));
+    let report = json(&export_dir.join("sequence-export-report.json"));
+    assert_eq!(
+        report["knifeReplay"]["status"],
+        Value::String("within".into())
+    );
+
+    // Knife evidence: the decoded bytes replay independently and the
+    // bounded report binds to the exact program hash.
+    let evidence_dir = s.0.join("evidence");
+    let stderr = run_ok(
+        cam()
+            .args(["sequence", "knife-evidence"])
+            .arg(&job_path)
+            .arg("--profile")
+            .arg(&profile_path)
+            .arg("--samples")
+            .arg("16")
+            .arg("--output")
+            .arg(&evidence_dir),
+    );
+    assert!(stderr.contains("knife evidence: within"), "{stderr}");
+    let evidence = json(&evidence_dir.join("knife-evidence.json"));
+    assert_eq!(evidence["status"], Value::String("within".into()));
+    assert_eq!(evidence["initialHeadingDeg"], Value::from(90.0));
+    assert!(evidence["samples"].as_array().unwrap().len() <= 16);
+
+    // Typed creation: a second knife operation appears fully unconfigured.
+    let grown = s.0.join("grown.json");
+    run_ok(
+        cam()
+            .args(["sequence", "add-operation"])
+            .arg(&job_path)
+            .arg("--kind")
+            .arg("drag_knife")
+            .arg("--id")
+            .arg("knife-2")
+            .arg("--tool")
+            .arg("blade")
+            .arg("--output")
+            .arg(&grown),
+    );
+    let grown_document = json(&grown);
+    assert_eq!(grown_document["operations"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        grown_document["operations"][1]["settings"]["kind"],
+        Value::String("drag_knife".into())
+    );
+    assert_eq!(
+        grown_document["operations"][1]["settings"]["settings"]["alignment"],
+        serde_json::json!({}),
+        "the never-defaulted initial heading stays unset"
+    );
+}

@@ -66,6 +66,26 @@ pub enum SequenceCommand {
     Contours { job: Value },
     /// Export the plan with a schema-2 sequence profile.
     Export { job: Value, profile: Value },
+    /// Apply a drag-knife tool (and optionally one typed preset) from a
+    /// supplied library document to exactly one knife operation's
+    /// assignment (F3d): sibling assignments and copied fields elsewhere
+    /// are preserved, and the job gains an independent tool snapshot.
+    ApplyKnifeTool {
+        job: Value,
+        library: Value,
+        operation_id: String,
+        tool_id: String,
+        preset_id: Option<String>,
+    },
+    /// Bounded emitted-output knife evidence (F3b/F3d): plan, prepare,
+    /// export, decode the actual bytes and replay them independently. The
+    /// report binds to the exact program SHA-256; detail samples honor an
+    /// explicit bounded page size.
+    KnifeEvidence {
+        job: Value,
+        profile: Value,
+        sample_limit: Option<usize>,
+    },
     /// Advertised operation kinds and optional features.
     Capabilities,
 }
@@ -129,6 +149,7 @@ pub enum OperationEdit {
 pub enum AddOperationKind {
     Face,
     Profile,
+    DragKnife,
 }
 
 /// Document receipt for canonical jobs, deliberately distinct from planner
@@ -382,15 +403,6 @@ fn apply_edits(mut job: CamJob, edits: &[OperationEdit]) -> Result<CamJob> {
                         format!("operation ID '{id}' is already in use"),
                     ));
                 }
-                let assignment = cam_core::project::MillingAssignment {
-                    tool_id: tool_id.clone(),
-                    spindle_rpm: None,
-                    spindle_direction: None,
-                    cutting_feed_mm_min: None,
-                    plunge_feed_mm_min: None,
-                    max_stepdown_mm: None,
-                    stepover_mm: None,
-                };
                 // Defaults leave every machining value unset (heights rest at
                 // their zero-offset references until the editor supplies
                 // them); the tool reference is the only supplied binding.
@@ -411,13 +423,29 @@ fn apply_edits(mut job: CamJob, edits: &[OperationEdit]) -> Result<CamJob> {
                             stepover_mm: None,
                             pass_angle_deg: None,
                             pattern: Default::default(),
-                            assignment,
+                            assignment: cam_core::project::MillingAssignment {
+                                tool_id: tool_id.clone(),
+                                spindle_rpm: None,
+                                spindle_direction: None,
+                                cutting_feed_mm_min: None,
+                                plunge_feed_mm_min: None,
+                                max_stepdown_mm: None,
+                                stepover_mm: None,
+                            },
                         })
                     }
                     AddOperationKind::Profile => {
                         OperationSettings::Profile(cam_core::project::ProfileSettings {
                             contours: vec![],
-                            assignment,
+                            assignment: cam_core::project::MillingAssignment {
+                                tool_id: tool_id.clone(),
+                                spindle_rpm: None,
+                                spindle_direction: None,
+                                cutting_feed_mm_min: None,
+                                plunge_feed_mm_min: None,
+                                max_stepdown_mm: None,
+                                stepover_mm: None,
+                            },
                             top: zero_top,
                             bottom: cam_core::project::HeightRef {
                                 reference: cam_core::project::HeightReference::OperationTop,
@@ -433,6 +461,36 @@ fn apply_edits(mut job: CamJob, edits: &[OperationEdit]) -> Result<CamJob> {
                             lead_in: Default::default(),
                             lead_out: Default::default(),
                             tabs: None,
+                        })
+                    }
+                    // F3d: typed knife creation — chains, depths, feeds and
+                    // the never-defaulted initial heading all stay unset
+                    // until edited; nothing is invented here either.
+                    AddOperationKind::DragKnife => {
+                        OperationSettings::DragKnife(cam_core::project::DragKnifeSettings {
+                            chains: vec![],
+                            assignment: cam_core::project::KnifeAssignment {
+                                tool_id: tool_id.clone(),
+                                cutting_feed_mm_min: None,
+                                plunge_feed_mm_min: None,
+                                swivel_feed_mm_min: None,
+                                max_stepdown_mm: None,
+                            },
+                            top: cam_core::project::HeightRef {
+                                reference: Default::default(),
+                                offset_mm: 0.,
+                            },
+                            bottom: cam_core::project::HeightRef {
+                                reference: cam_core::project::HeightReference::OperationTop,
+                                offset_mm: 0.,
+                            },
+                            stepdown_mm: None,
+                            swivel_depth_mm: None,
+                            corner_threshold_deg: None,
+                            through_cut_allowance_mm: None,
+                            start: Default::default(),
+                            closure_overlap_mm: None,
+                            alignment: Default::default(),
                         })
                     }
                 };
@@ -671,6 +729,71 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
                 "documentFingerprint": fingerprint(&job),
             }))
         }
+        SequenceCommand::ApplyKnifeTool {
+            job,
+            library,
+            operation_id,
+            tool_id,
+            preset_id,
+        } => {
+            let job = parse_job(&job)?;
+            let raw = library.to_string();
+            if raw.len() > cam_core::tool_library::MAX_LIBRARY_BYTES {
+                return Err(error("LIBRARY_RESOURCE_LIMIT", "tool library exceeds 8 MB"));
+            }
+            let library = cam_core::tool_library::ToolLibrary::from_json(&raw)?;
+            let applied =
+                library.apply_knife_to_job(&job, &operation_id, &tool_id, preset_id.as_deref())?;
+            document_projection(&applied, false)
+        }
+        SequenceCommand::KnifeEvidence {
+            job,
+            profile,
+            sample_limit,
+        } => {
+            use cam_core::operations::drag_knife::evidence::{
+                KNIFE_EVIDENCE_MAX_SAMPLES, build_evidence,
+            };
+            let job = parse_job(&job)?;
+            let profile = parse_profile(&profile)?;
+            let plan = OperationPlan::plan_job(&job, &PlanLimits::default())?;
+            let trusted = TrustedPlan::from_generated(plan);
+            let prepared = PreparedExecution::prepare(&trusted, &profile)?;
+            let export = prepared.export(&trusted, &profile)?;
+            if export.program.gcode.len() > crate::export::PROGRAM_BYTES {
+                return Err(error(
+                    "SEQUENCE_PROGRAM_LIMIT",
+                    "exported program exceeds the 8 MB service limit",
+                ));
+            }
+            let decoded = prepared.decode_program(
+                trusted.plan(),
+                prepared.output_decimal_places,
+                &export.program.gcode,
+            )?;
+            let sample_limit = sample_limit
+                .unwrap_or(2_048)
+                .clamp(1, KNIFE_EVIDENCE_MAX_SAMPLES);
+            let report = build_evidence(
+                trusted.plan(),
+                &prepared,
+                &decoded,
+                &export.report.program_sha256,
+                sample_limit,
+            )?;
+            Ok(json!({
+                "report": report,
+                // Physical stock without requiring any milling tool: a
+                // knife-only job still describes its stock and traces.
+                "stock": {
+                    "thicknessMm": job.setup.stock.thickness_mm,
+                    "xy": job.setup.stock.xy,
+                    "hasKnifeStages": trusted.plan().stages.iter()
+                        .any(|stage| stage.role == cam_core::sequence::StageRole::Knife),
+                },
+                "summary": plan_summary(trusted.plan(), &export.report.basic_checks),
+            }))
+        }
         SequenceCommand::Capabilities => Ok(json!({
             "apiVersion": SEQUENCE_API_VERSION,
             "engineVersion": ENGINE_VERSION,
@@ -686,6 +809,10 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
                 "profileEntries": true,
                 "knifeReplay": true,
                 "knifeToolLibrary": true,
+                // F3: emitted-byte decoding, actual-output replay evidence
+                // and prefix-contact checks ship with the knife integration.
+                "knifeEmittedEvidence": true,
+                "knifeContactChecks": true,
                 "legacyJobMigration": true,
                 "contourCatalogue": true,
                 "motionPaging": true,

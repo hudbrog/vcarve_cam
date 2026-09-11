@@ -66,7 +66,7 @@ pub(crate) fn plan_operation(
             profile::plan(job, &operation.id, settings, published_faces)
         }
         crate::project::OperationSettings::DragKnife(settings) => {
-            drag_knife::plan(job, &operation.id, settings, published_faces)
+            drag_knife::plan(job, &operation.id, settings, published_faces, prior_motions)
         }
     }
 }

@@ -293,3 +293,142 @@ fn sequence_commands_round_trip_through_the_worker_envelope() {
     assert!(!catalogue.is_empty());
     assert!(catalogue[0]["id"].as_str().unwrap().ends_with("-outer"));
 }
+
+#[test]
+fn knife_commands_round_trip_through_the_worker_envelope() {
+    // F3d: typed knife creation, targeted preset application and bounded
+    // emitted-output evidence flow through the WASM boundary with the same
+    // semantics as the HTTP route.
+    let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40mm\" height=\"30mm\" viewBox=\"0 0 40 30\"><path id=\"cut\" fill=\"none\" stroke=\"#000\" stroke-width=\"0.4\" d=\"M5 5 L25 5\"/></svg>";
+    let job = json!({
+        "schema_version": 4,
+        "name": "knife-wasm",
+        "source": {"filename": "cut.svg", "svg": svg},
+        "import": {"mode": "centerline", "geometry_tolerance_mm": 0.001,
+            "placement": {"origin_mm": {"x": 0.0, "y": 0.0}, "rotation_deg": 0.0, "scale": 1.0}},
+        "setup": {
+            "stock": {"thickness_mm": 3.0, "xy": {"min_x_mm": 0.0, "min_y_mm": 0.0, "width_mm": 40.0, "length_mm": 30.0}},
+            "work_zero": {"xy": {"kind": "setup_origin"}, "z": "stock_top"},
+            "clearance_above_stock_mm": 5.0,
+        },
+        "tools": [{"id": "blade", "name": "drag knife", "capabilities": {},
+            "geometry": {"kind": "drag_knife", "dimensions": {"blade_offset_mm": 1.0, "max_cut_depth_mm": 2.0}}}],
+        "operations": [{
+            "id": "knife-1", "name": "knife-1", "enabled": true,
+            "settings": {"kind": "drag_knife", "settings": {
+                "chains": ["cut-chain-0"],
+                "assignment": {"tool_id": "blade", "cutting_feed_mm_min": 150.0,
+                    "plunge_feed_mm_min": 60.0, "swivel_feed_mm_min": 50.0, "max_stepdown_mm": 1.0},
+                "top": {"reference": {"kind": "stock_top"}, "offset_mm": 0.0},
+                "bottom": {"reference": {"kind": "operation_top"}, "offset_mm": -1.0},
+                "stepdown_mm": 1.0, "swivel_depth_mm": 0.2, "corner_threshold_deg": 30.0,
+                "start": {"kind": "automatic"}, "alignment": {"initial_heading_deg": 90.0},
+            }},
+        }],
+        "tolerances": {"motion_tolerance_mm": 0.01},
+    });
+    let open = json!({
+        "apiVersion": "ui-8", "requestId": "knife-1", "revision": 1,
+        "command": {"operation": "open", "json": job.to_string()}
+    });
+    let reply = parse(&super::sequence(&open.to_string(), &instance()));
+    let document = reply["ok"]["data"].clone();
+    assert!(
+        document["operations"].is_array(),
+        "open failed: {}",
+        reply["ok"]["diagnostic"]
+    );
+    assert_eq!(document["operations"][0]["kind"], json!("drag_knife"));
+
+    // Typed knife creation through the edit command.
+    let add = json!({
+        "apiVersion": "ui-8", "requestId": "knife-2", "revision": 2,
+        "command": {"operation": "edit", "job": document["job"],
+            "edits": [{"edit": "add", "id": "knife-2", "name": "Second",
+                "kind": "drag_knife", "toolId": "blade"}]}
+    });
+    let reply = parse(&super::sequence(&add.to_string(), &instance()));
+    let data = reply["ok"]["data"].clone();
+    assert_eq!(data["operations"].as_array().unwrap().len(), 2);
+    assert_eq!(data["operations"][1]["kind"], json!("drag_knife"));
+
+    // Targeted preset application: the sibling assignment is untouched.
+    let library = json!({
+        "schema_version": 1, "revision": 1,
+        "tools": [{"id": "blade", "name": "Drag knife",
+            "geometry": {"kind": "drag_knife", "dimensions": {"blade_offset_mm": 1.5, "max_cut_depth_mm": 3.0}},
+            "ramp_capable": null, "plunge_capable": null, "cutting_presets": [],
+            "knife_cutting_presets": [{"id": "cardboard", "name": "Cardboard",
+                "material": "cardboard", "machine": null,
+                "cutting_feed_mm_min": 120.0, "plunge_feed_mm_min": 40.0,
+                "swivel_feed_mm_min": 30.0, "max_stepdown_mm": 0.8}]}],
+    });
+    let apply = json!({
+        "apiVersion": "ui-8", "requestId": "knife-3", "revision": 3,
+        "command": {"operation": "applyKnifeTool", "job": data["job"],
+            "library": library, "operation_id": "knife-2",
+            "tool_id": "blade", "preset_id": "cardboard"}
+    });
+    let reply = parse(&super::sequence(&apply.to_string(), &instance()));
+    assert!(
+        reply["ok"]["data"]["job"].is_object(),
+        "applyKnifeTool failed: {}",
+        reply
+    );
+    let applied = reply["ok"]["data"]["job"].clone();
+    assert_eq!(
+        applied["operations"][1]["settings"]["settings"]["assignment"]["cutting_feed_mm_min"],
+        json!(120.0)
+    );
+    assert_eq!(
+        applied["operations"][0]["settings"]["settings"]["assignment"]["cutting_feed_mm_min"],
+        json!(150.0)
+    );
+
+    // Bounded emitted-output evidence: the worker replays the actual bytes
+    // and reports the traces with the same status the native route returns.
+    let legacy =
+        serde_json::from_str::<Value>(include_str!("../../../../real_data/machine-profile.json"))
+            .unwrap();
+    let profile = json!({
+        "schema_version": 2,
+        "id": "wasm-knife",
+        "work_offset": "G54",
+        "clearance_z_mm": 5.0,
+        "decimal_places": 3,
+        "program_start_position_mm": null,
+        "length_compensation": "macro_managed",
+        "path_control": {"kind": "exact_path"},
+        "tools": [{"tool_id": "blade", "tool_number": 3, "length_offset_number": null}],
+        "spindle_spinup_seconds": 0.5,
+        "coolant": "off",
+        "m6": legacy["m6"].clone()
+    });
+    let evidence = json!({
+        "apiVersion": "ui-8", "requestId": "knife-4", "revision": 4,
+        "command": {"operation": "knifeEvidence", "job": document["job"],
+            "profile": profile, "sample_limit": 16}
+    });
+    let reply = parse(&super::sequence(&evidence.to_string(), &instance()));
+    assert!(
+        reply["ok"]["data"]["report"].is_object(),
+        "knifeEvidence failed: {}",
+        reply
+    );
+    let report = &reply["ok"]["data"]["report"];
+    assert_eq!(report["status"], json!("within"));
+    assert_eq!(report["initialHeadingDeg"], json!(90.0));
+    assert!(report["samples"].as_array().unwrap().len() <= 16);
+    assert_eq!(reply["ok"]["data"]["stock"]["hasKnifeStages"], json!(true));
+
+    // The advertised capabilities include the emitted evidence feature.
+    let capabilities = json!({
+        "apiVersion": "ui-8", "requestId": "knife-5", "revision": 5,
+        "command": {"operation": "capabilities"}
+    });
+    let reply = parse(&super::sequence(&capabilities.to_string(), &instance()));
+    assert_eq!(
+        reply["ok"]["data"]["features"]["knifeEmittedEvidence"],
+        json!(true)
+    );
+}

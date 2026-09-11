@@ -7,7 +7,8 @@
 //! stays optional and is never run here.
 use crate::{
     checks::{BasicCheckReport, check_plan, require_pass},
-    geometry::Result,
+    geometry::{Diagnostic, Result},
+    operations::drag_knife::replay::ReplayStatus,
     project::{
         CamJob, MillingAssignment, OperationSettings, SpindleDirection as JobSpindleDirection,
     },
@@ -87,6 +88,10 @@ pub struct PreparedStage {
     pub process: PreparedProcess,
     /// The exact emitted tool number for this stage's tool.
     pub tool_number: u32,
+    /// The exact emitted H number when length compensation is tool-table
+    /// managed (F3a: the decoder requires `G43 H…` per stage to match it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_offset_number: Option<u32>,
 }
 
 /// An immutable plan bound to a profile and fully resolved process state.
@@ -100,6 +105,17 @@ pub struct PreparedExecution {
     /// Z shift applied before output formatting for the selected work-zero
     /// datum; the inverse shift is applied after numeric readback.
     pub machine_offset_mm: [f64; 3],
+    /// The controller work frame every motion must run under (F3a: decoded
+    /// work-offset words are compared against this, not assumed).
+    #[serde(default)]
+    pub work_offset: String,
+    /// The machine-contract start position bridges depart from, when the
+    /// profile declares one.
+    #[serde(default)]
+    pub program_start_position_mm: Option<crate::motion::Position>,
+    /// Whether each stage must re-establish `G43 H…` (tool table) or must
+    /// never emit it (macro managed).
+    pub length_compensation: LengthCompensation,
     pub stages: Vec<PreparedStage>,
     pub basic_checks: BasicCheckReport,
 }
@@ -110,6 +126,28 @@ pub struct PreparedExecution {
 pub struct SequenceProgram {
     pub filename: String,
     pub gcode: String,
+}
+
+/// Aggregate outcome of the independent replay of the emitted (rounded)
+/// knife motions, published with every export that contains knife stages
+/// (F3b). Bound evidence with per-sample traces is the separate
+/// `drag_knife::evidence` report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnifeReplayStatus {
+    Within,
+    Exceeded,
+    BudgetExhausted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+pub struct KnifeReplaySummary {
+    pub status: KnifeReplayStatus,
+    pub max_tip_deviation_mm: f64,
+    pub max_heading_error_deg: f64,
+    pub tip_budget_mm: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -127,6 +165,8 @@ pub struct SequenceExportReport {
     pub basic_checks: BasicCheckReport,
     pub program_sha256: String,
     pub motion_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knife_replay: Option<KnifeReplaySummary>,
     pub diagnostics: Vec<String>,
 }
 
@@ -449,6 +489,15 @@ impl PreparedExecution {
                     .tool(&stage.tool_id)
                     .expect("validated mapping")
                     .tool_number,
+                length_offset_number: if profile.length_compensation
+                    == LengthCompensation::ToolTable
+                {
+                    profile
+                        .tool(&stage.tool_id)
+                        .and_then(|t| t.length_offset_number)
+                } else {
+                    None
+                },
             });
         }
         let plan_fingerprint = plan.execution_fingerprint.clone();
@@ -462,6 +511,9 @@ impl PreparedExecution {
             process_fingerprint,
             output_decimal_places: profile.decimal_places,
             machine_offset_mm: [machine_offset.0, machine_offset.1, machine_offset.2],
+            work_offset: profile.work_offset.clone(),
+            program_start_position_mm: profile.program_start_position_mm,
+            length_compensation: profile.length_compensation,
             stages,
             basic_checks,
         })
@@ -489,46 +541,96 @@ impl PreparedExecution {
             }
         }
         // Raise precision through nine places until formatting preserves
-        // every motion segment; never delete a required move.
-        let mut places = profile.decimal_places;
-        while places < 9 && !motions_preserved(plan, places) {
-            places += 1;
-        }
-        let (gcode, _bridge_blocks) = self.emit(plan, profile, places)?;
-        let stage_entries: Vec<crate::motion::Position> = self
+        // every motion segment and the independent replay of the emitted,
+        // rounded knife motions stays within its tip budget (F3b); never
+        // delete a required move.
+        let has_knife = plan
             .stages
             .iter()
-            .map(|stage| {
-                machine_position(
-                    plan.motions[stage.stage.motion_range.0].start,
-                    self.machine_offset_mm,
-                    places,
-                )
-            })
-            .collect();
-        let motions = readback(&gcode, self, places, &stage_entries)?;
-        compare_with_plan(self, plan, &gcode, &motions)?;
-        let report = SequenceExportReport {
-            artifact_kind: "sequence_export_report".into(),
-            schema_version: 1,
-            engine_version: env!("CARGO_PKG_VERSION").into(),
-            plan_fingerprint: self.plan_fingerprint.clone(),
-            profile_fingerprint: self.profile_fingerprint.clone(),
-            process_fingerprint: self.process_fingerprint.clone(),
-            output_decimal_places: places,
-            machine_offset_mm: self.machine_offset_mm,
-            basic_checks: self.basic_checks.clone(),
-            program_sha256: format!("{:x}", Sha256::digest(gcode.as_bytes())),
-            motion_count: motions.len(),
-            diagnostics: vec![],
-        };
-        Ok(SequenceExport {
-            program: SequenceProgram {
-                filename: "sequence.ngc".into(),
-                gcode,
-            },
-            report,
-        })
+            .any(|stage| stage.role == StageRole::Knife);
+        let mut places = profile.decimal_places;
+        loop {
+            let preserved = motions_preserved(plan, places);
+            let (gcode, _bridge_blocks) = self.emit(plan, profile, places)?;
+            let decoded = self.decode_program(plan, places, &gcode)?;
+            compare_with_plan(self, plan, &gcode, &decoded)?;
+            let replay = if has_knife {
+                Some(crate::operations::drag_knife::evidence::replay_emitted(
+                    plan,
+                    self,
+                    &decoded,
+                    crate::operations::drag_knife::evidence::EMITTED_REPLAY_STEP_BUDGET,
+                )?)
+            } else {
+                None
+            };
+            let replay_ok = replay
+                .as_ref()
+                .is_none_or(|replay| replay.outcome.status == ReplayStatus::Within);
+            if preserved && replay_ok {
+                let motion_count = decoded.motions.len();
+                let program_sha256 = format!("{:x}", Sha256::digest(gcode.as_bytes()));
+                return Ok(SequenceExport {
+                    program: SequenceProgram {
+                        filename: "sequence.ngc".into(),
+                        gcode,
+                    },
+                    report: SequenceExportReport {
+                        artifact_kind: "sequence_export_report".into(),
+                        schema_version: 1,
+                        engine_version: env!("CARGO_PKG_VERSION").into(),
+                        plan_fingerprint: self.plan_fingerprint.clone(),
+                        profile_fingerprint: self.profile_fingerprint.clone(),
+                        process_fingerprint: self.process_fingerprint.clone(),
+                        output_decimal_places: places,
+                        machine_offset_mm: self.machine_offset_mm,
+                        basic_checks: self.basic_checks.clone(),
+                        program_sha256,
+                        motion_count,
+                        knife_replay: replay.map(|replay| KnifeReplaySummary {
+                            status: match replay.outcome.status {
+                                ReplayStatus::Within => KnifeReplayStatus::Within,
+                                ReplayStatus::Exceeded => KnifeReplayStatus::Exceeded,
+                                ReplayStatus::BudgetExhausted => KnifeReplayStatus::BudgetExhausted,
+                            },
+                            max_tip_deviation_mm: replay.outcome.max_tip_deviation_mm,
+                            max_heading_error_deg: replay.outcome.max_heading_error_deg,
+                            tip_budget_mm: replay.tip_budget_mm,
+                        }),
+                        diagnostics: vec![],
+                    },
+                });
+            }
+            if places >= 9 {
+                return Err(if !preserved {
+                    error(
+                        "POST_PRECISION",
+                        "nine decimal places cannot represent every required motion; \
+                         refusing to delete or collapse a required move",
+                    )
+                } else {
+                    match replay.expect("replay present when !replay_ok") {
+                        replay if replay.outcome.status == ReplayStatus::BudgetExhausted => error(
+                            "KNIFE_REPLAY_BUDGET",
+                            "the independent replay of the emitted knife program exhausted \
+                             its integration budget; the result is inconclusive, not truncated",
+                        ),
+                        replay => error(
+                            "KNIFE_TIP_ERROR",
+                            format!(
+                                "the replayed blade tip of the emitted program deviates {:.4} mm \
+                                 from the intended tip path (budget {:.4} mm, heading error {:.3} deg); \
+                                 the output precision cannot represent this program",
+                                replay.outcome.max_tip_deviation_mm,
+                                replay.tip_budget_mm,
+                                replay.outcome.max_heading_error_deg
+                            ),
+                        ),
+                    }
+                });
+            }
+            places += 1;
+        }
     }
 
     fn emit(
@@ -550,10 +652,10 @@ impl PreparedExecution {
         lines.extend(modal_lines(&profile.work_offset, profile.path_control));
         let mut previous_stage_end = profile.program_start_position_mm;
         // Per-stage count of machine-owned bridge blocks written after the
-        // M6/modal group; the readback skips exactly these positioning moves
+        // M6/modal group; the decoder skips exactly these positioning moves
         // (like the legacy contract positioning blocks, they are not planned
         // motions and never authorize anything).
-        let mut bridge_blocks: Vec<usize> = vec![];
+        let mut bridge_counts: Vec<usize> = vec![];
         for prepared in &self.stages {
             let stage = &prepared.stage;
             lines.push(format!(
@@ -605,24 +707,22 @@ impl PreparedExecution {
                 .into(),
             );
             // The M6 bridge is machine-owned; never fabricate a continuous
-            // XYZ line through the macro (plan section 8.3).
-            let mut bridges = 0usize;
-            if let Some(current) = previous_stage_end {
-                let start = machine_position(
-                    first_motion(plan, stage).start,
-                    self.machine_offset_mm,
-                    places,
-                );
-                if current.z != start.z {
-                    lines.push(format!("G0 Z{:.p$}", start.z, p = places));
-                    bridges += 1;
-                }
-                if current.xy() != start.xy() {
-                    lines.push(format!("G0 {}", xyz(start, places)));
-                    bridges += 1;
+            // XYZ line through the macro (plan section 8.3). Emission and
+            // the decoder's expected bridges share one helper, so only these
+            // blocks can ever be classified as bridges.
+            let entry = machine_position(
+                first_motion(plan, stage).start,
+                self.machine_offset_mm,
+                places,
+            );
+            let stage_bridges = bridge_blocks(previous_stage_end, entry);
+            for bridge in &stage_bridges {
+                match *bridge {
+                    BridgeBlock::ZOnly(z) => lines.push(format!("G0 Z{:.p$}", z, p = places)),
+                    BridgeBlock::Full(p) => lines.push(format!("G0 {}", xyz(p, places))),
                 }
             }
-            bridge_blocks.push(bridges);
+            bridge_counts.push(stage_bridges.len());
             let motions = &plan.motions[stage.motion_range.0..stage.motion_range.1];
             for motion in motions {
                 let end = machine_position(motion.end, self.machine_offset_mm, places);
@@ -651,37 +751,22 @@ impl PreparedExecution {
                 "an emitted block exceeds the 240-character limit",
             ));
         }
-        Ok((lines.join("\n") + "\n", bridge_blocks))
+        Ok((lines.join("\n") + "\n", bridge_counts))
     }
 }
 
 /// Verify supplied output bytes against the prepared execution and plan:
-/// altered motion order, coordinates, feeds, tools or process state are
-/// rejected with `POST_SEQUENCE_MISMATCH`.
+/// altered motion order, coordinates, feeds, tools, modal state or process
+/// words are rejected with `POST_SEQUENCE_MISMATCH` (and the specific
+/// modal/process codes) — never silently ignored.
 pub fn verify_program(
     prepared: &PreparedExecution,
     plan: &TrustedPlan,
     program: &SequenceProgram,
 ) -> Result<SequenceExportReport> {
     let plan = plan.plan();
-    let stage_entries: Vec<crate::motion::Position> = prepared
-        .stages
-        .iter()
-        .map(|stage| {
-            machine_position(
-                plan.motions[stage.stage.motion_range.0].start,
-                prepared.machine_offset_mm,
-                prepared.output_decimal_places,
-            )
-        })
-        .collect();
-    let motions = readback(
-        &program.gcode,
-        prepared,
-        prepared.output_decimal_places,
-        &stage_entries,
-    )?;
-    compare_with_plan(prepared, plan, &program.gcode, &motions)?;
+    let decoded = prepared.decode_program(plan, prepared.output_decimal_places, &program.gcode)?;
+    compare_with_plan(prepared, plan, &program.gcode, &decoded)?;
     Ok(SequenceExportReport {
         artifact_kind: "sequence_export_report".into(),
         schema_version: 1,
@@ -693,227 +778,775 @@ pub fn verify_program(
         machine_offset_mm: prepared.machine_offset_mm,
         basic_checks: prepared.basic_checks.clone(),
         program_sha256: format!("{:x}", Sha256::digest(program.gcode.as_bytes())),
-        motion_count: motions.len(),
+        motion_count: decoded.motions.len(),
+        knife_replay: None,
         diagnostics: vec![],
     })
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct ReadbackMotion {
-    interpolation: Interpolation,
-    end: crate::motion::Position,
-    feed: Option<f64>,
-    tool_number: u32,
+/// Path-control state reconstructed from actual program bytes (F3a). The
+/// G61/G61.1/G64 distinction matters: exact path, exact stop and blending
+/// are different machine behaviors, and a prepared-state assertion or the
+/// writer having emitted a word is not evidence that edited output still
+/// carries it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DecodedPathControl {
+    ExactPath,
+    ExactStop,
+    Blend {
+        tolerance_mm: Option<f64>,
+        naive_cam_tolerance_mm: Option<f64>,
+    },
+}
+impl DecodedPathControl {
+    fn matches(&self, expected: &PathControl) -> bool {
+        match (*self, *expected) {
+            (Self::ExactPath, PathControl::ExactPath) => true,
+            (
+                Self::Blend {
+                    tolerance_mm,
+                    naive_cam_tolerance_mm,
+                },
+                PathControl::Blend {
+                    tolerance_mm: p,
+                    naive_cam_tolerance_mm: q,
+                },
+            ) => tolerance_mm == Some(p) && naive_cam_tolerance_mm == q,
+            // Exact stop (G61.1) is never a prepared mode in this release.
+            _ => false,
+        }
+    }
 }
 
-/// Independent numeric readback. Re-derives every motion, the ordered tool
-/// changes and per-stage spindle state from the bytes alone; comments are
-/// skipped and never authorize anything.
-fn readback(
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DecodedSpindle {
+    Off,
+    On {
+        rpm: Option<f64>,
+        direction: SpindleDirection,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecodedCoolant {
+    Off,
+    Flood,
+    Mist,
+}
+
+/// One motion re-derived from the emitted bytes, with the modal/process
+/// state that was in force while it executed and the source line it came
+/// from (F3a: decoded motion start/end, feed, tool and state mapping).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedMotion {
+    pub interpolation: Interpolation,
+    /// None on the first block after a tool change when no bridge block
+    /// established a position: the M6 macro's internal motion is
+    /// machine-owned and outside this model (plan section 8.3).
+    pub start: Option<crate::motion::Position>,
+    pub end: crate::motion::Position,
+    pub feed: Option<f64>,
+    pub tool_number: u32,
+    pub spindle: DecodedSpindle,
+    pub coolant: DecodedCoolant,
+    pub path_control: DecodedPathControl,
+    pub work_offset: String,
+    pub line: usize,
+}
+
+/// A machine-owned positioning bridge read back from the bytes and checked
+/// against the blocks the writer would have produced (F3a: bridges are
+/// classified positioning that authorizes nothing, never planned motions).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedBridge {
+    /// `ZOnly(z)` rose to z at the current XY; `Full(p)` moved to p.
+    pub block: BridgeBlock,
+    pub line: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BridgeBlock {
+    ZOnly(f64),
+    Full(crate::motion::Position),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedProgram {
+    pub motions: Vec<DecodedMotion>,
+    pub bridges: Vec<DecodedBridge>,
+    /// One entry per tool change, in order, with its source line.
+    pub tool_changes: Vec<(u32, usize)>,
+}
+
+/// The machine-owned bridge blocks between one position and a stage entry
+/// (plan section 8.3): a Z-only block when the heights differ, then a full
+/// XYZ block when the XY differs. Emission and expected-bridge derivation
+/// share this so the decoder never classifies a block as a bridge that the
+/// writer would not have written.
+fn bridge_blocks(
+    current: Option<crate::motion::Position>,
+    entry: crate::motion::Position,
+) -> Vec<BridgeBlock> {
+    let Some(current) = current else {
+        return vec![];
+    };
+    let mut blocks = vec![];
+    if current.z != entry.z {
+        blocks.push(BridgeBlock::ZOnly(entry.z));
+    }
+    if current.xy() != entry.xy() {
+        blocks.push(BridgeBlock::Full(entry));
+    }
+    blocks
+}
+
+impl PreparedExecution {
+    /// Expected machine bridge blocks per stage: stage 0 departs from the
+    /// declared program start, later stages from the previous stage's last
+    /// motion end.
+    fn expected_bridges(&self, plan: &OperationPlan, places: usize) -> Vec<Vec<BridgeBlock>> {
+        let mut previous = self.program_start_position_mm;
+        let mut expected = vec![];
+        for stage in &self.stages {
+            let entry = machine_position(
+                plan.motions[stage.stage.motion_range.0].start,
+                self.machine_offset_mm,
+                places,
+            );
+            expected.push(bridge_blocks(previous, entry));
+            previous = Some(machine_position(
+                plan.motions[stage.stage.motion_range.1 - 1].end,
+                self.machine_offset_mm,
+                places,
+            ));
+        }
+        expected
+    }
+
+    /// Decode actual program bytes into motions, bridges, tool changes and
+    /// the modal/process state in force at every motion, rejecting every
+    /// unsupported or unexpected state change instead of ignoring it (F3a).
+    pub fn decode_program(
+        &self,
+        plan: &OperationPlan,
+        places: usize,
+        gcode: &str,
+    ) -> Result<DecodedProgram> {
+        decode_program(gcode, self, &self.expected_bridges(plan, places))
+    }
+}
+
+/// Independent numeric decode of LinuxCNC program bytes (F3a). Re-derives
+/// every motion, bridge, tool change, modal group and process word from the
+/// bytes alone; comments are skipped and never authorize anything. Any word
+/// the writer would not have emitted — or any recognized mode changed to an
+/// unsupported value — is rejected with a located error.
+fn decode_program(
     gcode: &str,
     prepared: &PreparedExecution,
-    places: usize,
-    stage_entries: &[crate::motion::Position],
-) -> Result<Vec<ReadbackMotion>> {
+    expected_bridges: &[Vec<BridgeBlock>],
+) -> Result<DecodedProgram> {
     if gcode.len() > 128_000_000 || !gcode.is_ascii() {
         return Err(error(
             "POST_GCODE_SUBSET",
             "program must be ASCII and at most 128 MB",
         ));
     }
-    let mut motions: Vec<ReadbackMotion> = vec![];
-    let mut tool_changes: Vec<u32> = vec![];
-    let mut spindle_on = false;
-    let mut coolant_on = false;
+    let mut motions: Vec<DecodedMotion> = vec![];
+    let mut bridges: Vec<DecodedBridge> = vec![];
+    let mut tool_changes: Vec<(u32, usize)> = vec![];
+    // Modal groups start unknown; a motion before its group is established
+    // is rejected rather than run under assumed defaults.
+    let mut units_mm: Option<bool> = None;
+    let mut plane_xy: Option<bool> = None;
+    let mut distance_absolute: Option<bool> = None;
+    let mut feed_per_minute: Option<bool> = None;
+    let mut cutter_comp_off: Option<bool> = None;
+    let mut cycles_off: Option<bool> = None;
+    let mut path_control: Option<DecodedPathControl> = None;
+    let mut work_offset: Option<String> = None;
+    let mut spindle = DecodedSpindle::Off;
+    let mut coolant = DecodedCoolant::Off;
     let mut tool: Option<u32> = None;
     let mut feed: Option<f64> = None;
-    // Spindle/coolant state sampled right before each motion, per stage slot.
-    let mut stage_of_motion: Vec<usize> = vec![];
-    let mut spindle_on_at_motion: Vec<bool> = vec![];
-    let mut coolant_on_at_motion: Vec<bool> = vec![];
-    for (number, raw) in gcode.lines().enumerate() {
+    let mut length_comp: Option<Option<u32>> = None;
+    let mut position: Option<crate::motion::Position> = None;
+    let mut program_ended = false;
+    // Bridge accounting per stage slot.
+    let mut bridges_expected = 0usize;
+    let mut bridges_seen = 0usize;
+    let mut stage_started = false;
+
+    let reject = |line: usize, code: &str, what: String| -> Diagnostic {
+        error(code, format!("line {line}: {what}"))
+    };
+
+    for (index, raw) in gcode.lines().enumerate() {
+        let line_number = index + 1;
         let line = raw.trim();
         if line.is_empty() || (line.starts_with('(') && line.ends_with(')')) {
             continue;
         }
         if line.len() > 240 {
-            return Err(error(
+            return Err(reject(
+                line_number,
                 "POST_GCODE_SUBSET",
-                format!("line {} exceeds 240 characters", number + 1),
+                "line exceeds 240 characters".to_string(),
             ));
         }
-        for token in line.split_ascii_whitespace() {
-            if token == "M6" {
-                let t = line
-                    .split_ascii_whitespace()
-                    .find(|w| w.starts_with('T'))
-                    .and_then(|w| w[1..].parse::<u32>().ok())
-                    .ok_or_else(|| error("POST_GCODE_SUBSET", "M6 without a T number"))?;
-                tool_changes.push(t);
-                tool = Some(t);
-                spindle_on = false;
-                coolant_on = false;
-            }
-            if token == "M3" || token == "M4" {
-                spindle_on = true;
-            }
-            if token == "M5" {
-                spindle_on = false;
-            }
-            if token == "M7" || token == "M8" {
-                coolant_on = true;
-            }
-            if token == "M9" {
-                coolant_on = false;
-            }
+        if program_ended {
+            return Err(reject(
+                line_number,
+                "POST_GCODE_SUBSET",
+                "block after the program end (M2)".into(),
+            ));
         }
-        if !(line.starts_with("G0 ")
-            || line.starts_with("G1 ")
-            || line.ends_with("G0")
-            || line.ends_with("G1"))
-        {
-            continue;
+        if line.contains('(') {
+            return Err(reject(
+                line_number,
+                "POST_GCODE_SUBSET",
+                "inline comments are not part of the supported subset".into(),
+            ));
         }
-        if !line.starts_with("G0") && !line.starts_with("G1") {
-            continue;
-        }
-        let interpolation = if line.starts_with("G0") {
-            Interpolation::Rapid
-        } else {
-            Interpolation::LinearFeed
-        };
-        let mut end: Option<crate::motion::Position> = None;
+        // Parse the block into words first; only a known vocabulary may
+        // continue into state tracking.
+        let mut motion: Option<Interpolation> = None;
+        let mut coordinates: Option<crate::motion::Position> = None;
         let mut words = 0u8;
-        for token in line.split_ascii_whitespace().skip(1) {
+        let mut block_feed: Option<f64> = None;
+        let mut tool_word: Option<u32> = None;
+        let mut change_tool = false;
+        let mut spindle_command: Option<(bool, Option<f64>)> = None; // (start, S)
+        for token in line.split_ascii_whitespace() {
             let letter = token.as_bytes()[0];
-            let Ok(value) = token[1..].parse::<f64>() else {
-                continue;
+            let value = &token[1..];
+            let numeric = || -> Option<f64> {
+                value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite() && *v >= -1_000_000. && *v <= 1_000_000.)
             };
-            words |= match letter {
-                b'X' => 1,
-                b'Y' => 2,
-                b'Z' => 4,
-                _ => 0,
-            };
-            let slot = end.get_or_insert(crate::motion::Position::new(
-                crate::geometry::Point::new(0., 0.),
-                0.,
-            ));
             match letter {
-                b'X' => slot.x = value,
-                b'Y' => slot.y = value,
-                b'Z' => slot.z = value,
-                b'F' => feed = Some(value),
-                _ => {}
+                b'G' => match value {
+                    "0" => motion = Some(Interpolation::Rapid),
+                    "1" => motion = Some(Interpolation::LinearFeed),
+                    "4" => {
+                        // Dwell: P must be present and finite; nothing else.
+                        let Some(rest) = line
+                            .split_ascii_whitespace()
+                            .find(|w| w.starts_with('P'))
+                            .and_then(|w| w[1..].parse::<f64>().ok())
+                            .filter(|p| p.is_finite() && *p >= 0.)
+                        else {
+                            return Err(reject(
+                                line_number,
+                                "POST_GCODE_SUBSET",
+                                "G4 requires a finite nonnegative P".into(),
+                            ));
+                        };
+                        let _ = rest;
+                    }
+                    "17" => plane_xy = Some(true),
+                    "18" | "19" => plane_xy = Some(false),
+                    "20" => units_mm = Some(false),
+                    "21" => units_mm = Some(true),
+                    "40" => cutter_comp_off = Some(true),
+                    "41" | "42" => cutter_comp_off = Some(false),
+                    "43" => {
+                        let h = line
+                            .split_ascii_whitespace()
+                            .find(|w| w.starts_with('H'))
+                            .and_then(|w| w[1..].parse::<u32>().ok());
+                        if length_comp.is_some() && length_comp != Some(h) {
+                            return Err(reject(
+                                line_number,
+                                "POST_MODAL_STATE",
+                                "length compensation changed within a stage".into(),
+                            ));
+                        }
+                        length_comp = Some(h);
+                    }
+                    "61" => path_control = Some(DecodedPathControl::ExactPath),
+                    "61.1" => path_control = Some(DecodedPathControl::ExactStop),
+                    "64" => {
+                        let tolerance = line
+                            .split_ascii_whitespace()
+                            .find(|w| w.starts_with('P'))
+                            .and_then(|w| w[1..].parse::<f64>().ok())
+                            .filter(|v| v.is_finite() && *v > 0.);
+                        let naive = line
+                            .split_ascii_whitespace()
+                            .find(|w| w.starts_with('Q'))
+                            .and_then(|w| w[1..].parse::<f64>().ok())
+                            .filter(|v| v.is_finite() && *v > 0.);
+                        path_control = Some(DecodedPathControl::Blend {
+                            tolerance_mm: tolerance,
+                            naive_cam_tolerance_mm: naive,
+                        });
+                    }
+                    "80" => cycles_off = Some(true),
+                    "90" => distance_absolute = Some(true),
+                    "91" => distance_absolute = Some(false),
+                    "92.1" => {} // clears leftover G92 offsets; the writer emits it
+                    "94" => feed_per_minute = Some(true),
+                    "93" => feed_per_minute = Some(false),
+                    "54" | "55" | "56" | "57" | "58" | "59" | "59.1" | "59.2" | "59.3" => {
+                        work_offset = Some(format!("G{value}"));
+                    }
+                    _ => {
+                        return Err(reject(
+                            line_number,
+                            "POST_MODAL_STATE",
+                            format!("unsupported G-code {token} changes an unsupported mode"),
+                        ));
+                    }
+                },
+                b'M' => match value {
+                    "2" => program_ended = true,
+                    "3" | "4" => {
+                        let rpm = line
+                            .split_ascii_whitespace()
+                            .find(|w| w.starts_with('S'))
+                            .and_then(|w| w[1..].parse::<f64>().ok())
+                            .filter(|v| v.is_finite() && *v > 0.);
+                        spindle_command = Some((true, rpm));
+                        if value == "3" {
+                            spindle = DecodedSpindle::On {
+                                rpm,
+                                direction: SpindleDirection::Clockwise,
+                            };
+                        } else {
+                            spindle = DecodedSpindle::On {
+                                rpm,
+                                direction: SpindleDirection::Counterclockwise,
+                            };
+                        }
+                    }
+                    "5" => spindle = DecodedSpindle::Off,
+                    "6" => change_tool = true,
+                    "7" => coolant = DecodedCoolant::Mist,
+                    "8" => coolant = DecodedCoolant::Flood,
+                    "9" => coolant = DecodedCoolant::Off,
+                    _ => {
+                        return Err(reject(
+                            line_number,
+                            "POST_GCODE_SUBSET",
+                            format!("unsupported M-code {token}"),
+                        ));
+                    }
+                },
+                b'T' => match value.parse::<u32>() {
+                    Ok(number) if (1..=99999).contains(&number) => tool_word = Some(number),
+                    _ => {
+                        return Err(reject(
+                            line_number,
+                            "POST_GCODE_SUBSET",
+                            format!("invalid tool number {token}"),
+                        ));
+                    }
+                },
+                b'S' => {
+                    // S is only meaningful on this release's M3/M4 blocks.
+                    if spindle_command.is_none() {
+                        return Err(reject(
+                            line_number,
+                            "POST_GCODE_SUBSET",
+                            "a lone S word is not part of the supported subset".into(),
+                        ));
+                    }
+                }
+                b'F' => match numeric() {
+                    Some(value) if value > 0. => block_feed = Some(value),
+                    _ => {
+                        return Err(reject(
+                            line_number,
+                            "POST_GCODE_SUBSET",
+                            format!("invalid feed {token}"),
+                        ));
+                    }
+                },
+                b'X' | b'Y' | b'Z' => {
+                    let Some(number) = numeric() else {
+                        return Err(reject(
+                            line_number,
+                            "POST_GCODE_SUBSET",
+                            format!("invalid coordinate {token}"),
+                        ));
+                    };
+                    if motion.is_none() {
+                        return Err(reject(
+                            line_number,
+                            "POST_GCODE_SUBSET",
+                            "coordinates outside a G0/G1 block".into(),
+                        ));
+                    }
+                    words |= match letter {
+                        b'X' => 1,
+                        b'Y' => 2,
+                        _ => 4,
+                    };
+                    let slot = coordinates.get_or_insert(crate::motion::Position::new(
+                        crate::geometry::Point::new(0., 0.),
+                        0.,
+                    ));
+                    match letter {
+                        b'X' => slot.x = number,
+                        b'Y' => slot.y = number,
+                        _ => slot.z = number,
+                    }
+                }
+                b'P' | b'Q' | b'H' => {} // consumed by their G words above
+                _ => {
+                    return Err(reject(
+                        line_number,
+                        "POST_GCODE_SUBSET",
+                        format!("unsupported word {token}"),
+                    ));
+                }
             }
         }
-        let Some(end) = end else {
-            return Err(error("POST_GCODE_SUBSET", "motion without coordinates"));
+        if let Some(value) = block_feed {
+            feed = Some(value);
+        }
+        if change_tool {
+            let number = tool_word.ok_or_else(|| {
+                reject(
+                    line_number,
+                    "POST_GCODE_SUBSET",
+                    "M6 without a T number".into(),
+                )
+            })?;
+            if stage_started && bridges_seen < bridges_expected {
+                return Err(reject(
+                    line_number,
+                    "POST_SEQUENCE_MISMATCH",
+                    format!(
+                        "stage {} wrote {} of {} machine bridge blocks",
+                        tool_changes.len(),
+                        bridges_seen,
+                        bridges_expected
+                    ),
+                ));
+            }
+            tool_changes.push((number, line_number));
+            tool = Some(number);
+            // The M6 bridge itself is machine-owned: modal position and
+            // process state survive it, and this model never fabricates a
+            // continuous line through the macro.
+            position = None;
+            length_comp = None;
+            stage_started = false;
+            bridges_seen = 0;
+            bridges_expected = expected_bridges
+                .get(tool_changes.len() - 1)
+                .map_or(0, Vec::len);
+        }
+        let Some(interpolation) = motion else {
+            if let Some((true, rpm)) = spindle_command
+                && rpm.is_none()
+            {
+                return Err(reject(
+                    line_number,
+                    "POST_MODAL_STATE",
+                    "spindle start without a spindle speed".into(),
+                ));
+            }
+            continue;
         };
-        let tool_number =
-            tool.ok_or_else(|| error("POST_SEQUENCE_MISMATCH", "motion before any tool change"))?;
-        // Machine-owned bridge moves follow the M6 group before the stage's
-        // first planned motion and end exactly at that motion's start (plan
-        // section 8.3); they are positioning, never planned motions. A Z-only
-        // bridge matches on Z alone, an XYZ bridge on the full point.
-        let current_stage = tool_changes.len().saturating_sub(1);
-        let stage_motions_started = stage_of_motion
-            .last()
-            .is_some_and(|slot| *slot + 1 == tool_changes.len());
-        if interpolation == Interpolation::Rapid
-            && !stage_motions_started
-            && let Some(entry) = stage_entries.get(current_stage)
-        {
-            let z_only = words == 4;
-            let full = words == 7;
-            if (z_only && entry.z == end.z) || (full && entry == &end) {
-                continue;
+        let Some(end) = coordinates else {
+            return Err(reject(
+                line_number,
+                "POST_GCODE_SUBSET",
+                "motion block without coordinates".into(),
+            ));
+        };
+        if words != 7 {
+            // Only the writer's Z-only bridge form may carry fewer than all
+            // three axes, and only where a bridge is expected.
+            let slot = tool_changes.len().checked_sub(1).ok_or_else(|| {
+                reject(
+                    line_number,
+                    "POST_SEQUENCE_MISMATCH",
+                    "motion before any tool change".into(),
+                )
+            })?;
+            let expected = expected_bridges.get(slot).map_or(&[][..], Vec::as_slice);
+            let is_z_bridge = words == 4
+                && !stage_started
+                && bridges_seen < expected.len()
+                && matches!(
+                    expected[bridges_seen],
+                    BridgeBlock::ZOnly(z) if end.z == z
+                );
+            if !is_z_bridge {
+                return Err(reject(
+                    line_number,
+                    "POST_GCODE_SUBSET",
+                    "partial-coordinate motion block".into(),
+                ));
             }
         }
-        motions.push(ReadbackMotion {
+        // Every modal group a motion depends on must already be established
+        // in a supported state (F3a: no assumed defaults from preparation).
+        let mut missing = vec![];
+        if units_mm != Some(true) {
+            missing.push("G21 mm units");
+        }
+        if plane_xy != Some(true) {
+            missing.push("G17 XY plane");
+        }
+        if distance_absolute != Some(true) {
+            missing.push("G90 absolute distance");
+        }
+        if feed_per_minute != Some(true) {
+            missing.push("G94 units-per-minute feed");
+        }
+        if cutter_comp_off != Some(true) {
+            missing.push("G40 cutter compensation off");
+        }
+        if cycles_off != Some(true) {
+            missing.push("G80 canned cycles off");
+        }
+        if path_control.is_none() {
+            missing.push("a path-control mode (G61/G64)");
+        }
+        let decoded_work = work_offset.clone().ok_or_else(|| {
+            reject(
+                line_number,
+                "POST_MODAL_STATE",
+                "motion before a work frame (G54..G59.3) is selected".into(),
+            )
+        })?;
+        if !missing.is_empty() {
+            return Err(reject(
+                line_number,
+                "POST_MODAL_STATE",
+                format!("motion before {} established", missing.join(", ")),
+            ));
+        }
+        // The path-control group is established here (the missing check
+        // above already rejected the unset case).
+        let decoded_path = path_control
+            .ok_or_else(|| reject(line_number, "POST_MODAL_STATE", "no path control".into()))?;
+        if decoded_work != prepared.work_offset {
+            return Err(reject(
+                line_number,
+                "POST_MODAL_STATE",
+                format!(
+                    "work frame {decoded_work} does not match the prepared {}",
+                    prepared.work_offset
+                ),
+            ));
+        }
+        let tool_number = tool.ok_or_else(|| {
+            reject(
+                line_number,
+                "POST_SEQUENCE_MISMATCH",
+                "motion before any tool change".into(),
+            )
+        })?;
+        // Machine-owned bridges: only immediately after the M6 group, only
+        // G0, only exactly the blocks the writer would have produced, in
+        // order, and only before this stage's first planned motion. A rapid
+        // that happens to end at a stage entry excuses nothing by itself.
+        if !stage_started && interpolation == Interpolation::Rapid {
+            let slot = tool_changes.len() - 1;
+            let expected = expected_bridges.get(slot).map_or(&[][..], Vec::as_slice);
+            if bridges_seen < expected.len() {
+                let matches = match expected[bridges_seen] {
+                    BridgeBlock::ZOnly(z) => words == 4 && end.z == z,
+                    BridgeBlock::Full(p) => words == 7 && end == p,
+                };
+                if matches {
+                    bridges.push(DecodedBridge {
+                        block: expected[bridges_seen],
+                        line: line_number,
+                    });
+                    bridges_seen += 1;
+                    let carried_xy = position.map_or((0., 0.), |p| (p.x, p.y));
+                    position = Some(match expected[bridges_seen - 1] {
+                        BridgeBlock::ZOnly(z) => crate::motion::Position {
+                            x: carried_xy.0,
+                            y: carried_xy.1,
+                            z,
+                        },
+                        BridgeBlock::Full(p) => p,
+                    });
+                    continue;
+                }
+            }
+        }
+        // Length compensation expectations for the stage this motion runs in.
+        let stage_slot = stage_slot_of(prepared, motions.len());
+        let stage = prepared.stages.get(stage_slot).ok_or_else(|| {
+            reject(
+                line_number,
+                "POST_SEQUENCE_MISMATCH",
+                "more motions than the stages account for".into(),
+            )
+        })?;
+        match prepared.length_compensation {
+            LengthCompensation::ToolTable => {
+                if length_comp != Some(stage.length_offset_number) {
+                    return Err(reject(
+                        line_number,
+                        "POST_MODAL_STATE",
+                        format!(
+                            "stage '{}' must run under its G43 H{} length compensation",
+                            stage.stage.stage_id,
+                            stage
+                                .length_offset_number
+                                .map_or_else(|| "?".into(), |h| h.to_string())
+                        ),
+                    ));
+                }
+            }
+            LengthCompensation::MacroManaged => {
+                if length_comp.is_some() {
+                    return Err(reject(
+                        line_number,
+                        "POST_MODAL_STATE",
+                        "the macro-managed length-compensation contract forbids G43 in the program"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        // Process state at the motion (F3a): decoded words against the
+        // prepared stage, never the other way around.
+        let expected_spindle = stage.process.spindle;
+        match (spindle, expected_spindle) {
+            (DecodedSpindle::Off, PreparedSpindle::Off) => {}
+            (
+                DecodedSpindle::On { rpm, direction },
+                PreparedSpindle::On {
+                    rpm: expected_rpm,
+                    direction: expected_direction,
+                },
+            ) => {
+                if rpm != Some(expected_rpm) || direction != expected_direction {
+                    return Err(reject(
+                        line_number,
+                        "PROCESS_SPINDLE_STATE",
+                        format!(
+                            "spindle runs {:?} at S{} while stage '{}' prepared {} rpm",
+                            direction,
+                            rpm.map_or_else(|| "?".into(), |v| v.to_string()),
+                            stage.stage.stage_id,
+                            expected_rpm,
+                        ),
+                    ));
+                }
+            }
+            (decoded, _) => {
+                return Err(reject(
+                    line_number,
+                    "PROCESS_SPINDLE_STATE",
+                    format!(
+                        "spindle {} while cutting stage '{}'",
+                        if matches!(decoded, DecodedSpindle::Off) {
+                            "is off"
+                        } else {
+                            "runs"
+                        },
+                        stage.stage.stage_id
+                    ),
+                ));
+            }
+        }
+        let coolant_ok = (coolant, stage.process.coolant) == (DecodedCoolant::Off, Coolant::Off)
+            || (coolant, stage.process.coolant) == (DecodedCoolant::Flood, Coolant::Flood)
+            || (coolant, stage.process.coolant) == (DecodedCoolant::Mist, Coolant::Mist);
+        if !coolant_ok {
+            return Err(reject(
+                line_number,
+                "PROCESS_COOLANT_STATE",
+                format!(
+                    "coolant {:?} during stage '{}'",
+                    coolant, stage.stage.stage_id
+                ),
+            ));
+        }
+        if !decoded_path.matches(&stage.process.path_control) {
+            return Err(reject(
+                line_number,
+                "POST_PATH_CONTROL_STATE",
+                format!(
+                    "path-control state {:?} at stage '{}' does not match the prepared mode",
+                    decoded_path, stage.stage.stage_id
+                ),
+            ));
+        }
+        motions.push(DecodedMotion {
             interpolation,
+            start: position,
             end,
             feed,
             tool_number,
+            spindle,
+            coolant,
+            path_control: decoded_path,
+            work_offset: decoded_work,
+            line: line_number,
         });
-        // Stage membership by cumulative motion counts; motions of one stage
-        // are contiguous in the emitted stream.
-        let mut consumed = 0usize;
-        let mut slot = prepared.stages.len();
-        for (index, stage) in prepared.stages.iter().enumerate() {
-            consumed += stage.stage.motion_range.1 - stage.stage.motion_range.0;
-            if motions.len() <= consumed {
-                slot = index;
-                break;
-            }
-        }
-        stage_of_motion.push(slot);
-        spindle_on_at_motion.push(spindle_on);
-        coolant_on_at_motion.push(coolant_on);
-        let _ = places;
+        position = Some(end);
+        stage_started = true;
     }
-    // Tool changes must match the stages in order, one per stage.
-    let expected_tools: Vec<u32> = prepared.stages.iter().map(|s| s.tool_number).collect();
-    if tool_changes != expected_tools {
+    if !program_ended {
+        return Err(error("POST_GCODE_SUBSET", "program does not end with M2"));
+    }
+    if stage_started && bridges_seen < bridges_expected {
         return Err(error(
             "POST_SEQUENCE_MISMATCH",
             format!(
-                "tool changes {tool_changes:?} do not match the ordered stage tools {expected_tools:?}"
+                "stage {} wrote {} of {} machine bridge blocks",
+                tool_changes.len() - 1,
+                bridges_seen,
+                bridges_expected
             ),
         ));
     }
-    // Spindle/coolant state per stage: On stages cut with the spindle running
-    // and the prepared coolant, Off stages (knife) run with both off.
-    for (index, _) in motions.iter().enumerate() {
-        let slot = stage_of_motion[index];
-        let Some(stage) = prepared.stages.get(slot) else {
-            return Err(error(
-                "POST_SEQUENCE_MISMATCH",
-                "more motions than the stages account for",
-            ));
-        };
-        let should_run = matches!(stage.process.spindle, PreparedSpindle::On { .. });
-        if should_run != spindle_on_at_motion[index] {
-            return Err(error(
-                "PROCESS_SPINDLE_STATE",
-                format!(
-                    "spindle {} while cutting stage '{}'",
-                    if spindle_on_at_motion[index] {
-                        "runs"
-                    } else {
-                        "is off"
-                    },
-                    stage.stage.stage_id
-                ),
-            ));
-        }
-        let should_cool = matches!(stage.process.coolant, Coolant::Flood | Coolant::Mist);
-        if should_cool != coolant_on_at_motion[index] {
-            return Err(error(
-                "PROCESS_COOLANT_STATE",
-                format!(
-                    "coolant {} during stage '{}'",
-                    if coolant_on_at_motion[index] {
-                        "runs"
-                    } else {
-                        "is off"
-                    },
-                    stage.stage.stage_id
-                ),
-            ));
-        }
+    // Tool changes must match the stages in order, one per stage.
+    let expected_tools: Vec<u32> = prepared.stages.iter().map(|s| s.tool_number).collect();
+    let decoded_tools: Vec<u32> = tool_changes.iter().map(|(t, _)| *t).collect();
+    if decoded_tools != expected_tools {
+        return Err(error(
+            "POST_SEQUENCE_MISMATCH",
+            format!(
+                "tool changes {decoded_tools:?} do not match the ordered stage tools {expected_tools:?}"
+            ),
+        ));
     }
-    Ok(motions)
+    Ok(DecodedProgram {
+        motions,
+        bridges,
+        tool_changes,
+    })
 }
 
-/// Compare readback motions with the plan's motions in order: positions at
+/// Which prepared stage a motion belongs to, by cumulative motion counts;
+/// motions of one stage are contiguous in the emitted stream.
+fn stage_slot_of(prepared: &PreparedExecution, motions_so_far: usize) -> usize {
+    let mut consumed = 0usize;
+    for (index, stage) in prepared.stages.iter().enumerate() {
+        consumed += stage.stage.motion_range.1 - stage.stage.motion_range.0;
+        if motions_so_far < consumed {
+            return index;
+        }
+    }
+    prepared.stages.len()
+}
+
+/// Compare decoded motions with the plan's motions in order: positions at
 /// output precision, interpolation, feed and per-stage tool ownership.
+/// Modal/process state was already verified per motion during decoding.
 fn compare_with_plan(
     prepared: &PreparedExecution,
     plan: &OperationPlan,
     gcode: &str,
-    motions: &[ReadbackMotion],
+    decoded: &DecodedProgram,
 ) -> Result<()> {
+    let motions = &decoded.motions;
     if motions.len() != plan.motions.len() {
         return Err(error(
             "POST_SEQUENCE_MISMATCH",

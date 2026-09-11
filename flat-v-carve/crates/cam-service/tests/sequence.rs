@@ -981,3 +981,303 @@ fn open_chains_project_and_knife_planning_round_trips() {
                 && motion["bladeHeadingDeg"].is_array())
     );
 }
+
+// --- F3d: typed knife commands through the shared service ---
+
+/// A configured knife-only job (the open-chains fixture of the F2 test,
+/// with the initial heading supplied) plus a second knife operation sharing
+/// the tool, so assignment targeting is observable.
+fn knife_service_job() -> Value {
+    use cam_core::job::{PlanningTolerances, SourceSnapshot};
+    use cam_core::project::*;
+    use cam_core::svg::{ImportMode, ImportOptions};
+
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><path id="cut" fill="none" stroke="#000" stroke-width="0.4" d="M5 5 L25 5"/></svg>"##;
+    let settings = DragKnifeSettings {
+        chains: vec!["cut-chain-0".into()],
+        assignment: KnifeAssignment {
+            tool_id: "blade".into(),
+            cutting_feed_mm_min: Some(150.),
+            plunge_feed_mm_min: Some(60.),
+            swivel_feed_mm_min: Some(50.),
+            max_stepdown_mm: Some(1.),
+        },
+        top: HeightRef {
+            reference: HeightReference::StockTop,
+            offset_mm: 0.,
+        },
+        bottom: HeightRef {
+            reference: HeightReference::OperationTop,
+            offset_mm: -1.,
+        },
+        stepdown_mm: Some(1.),
+        swivel_depth_mm: Some(0.2),
+        corner_threshold_deg: Some(30.),
+        through_cut_allowance_mm: None,
+        start: Default::default(),
+        closure_overlap_mm: None,
+        alignment: KnifeAlignment {
+            initial_heading_deg: Some(90.),
+        },
+    };
+    let job = CamJob {
+        schema_version: 4,
+        name: "knife-service".into(),
+        source: Some(SourceSnapshot {
+            filename: "cut.svg".into(),
+            svg: svg.into(),
+        }),
+        import: ImportOptions {
+            mode: ImportMode::Centerline,
+            ..Default::default()
+        },
+        setup: SetupSettings {
+            stock: StockSetup {
+                thickness_mm: Some(3.),
+                xy: Some(RectXY {
+                    min_x_mm: 0.,
+                    min_y_mm: 0.,
+                    width_mm: 40.,
+                    length_mm: 30.,
+                }),
+            },
+            work_zero: Default::default(),
+            clearance_above_stock_mm: Some(5.),
+            start_xy_mm: None,
+        },
+        tools: vec![JobTool {
+            id: "blade".into(),
+            name: "drag knife".into(),
+            geometry: Some(ToolGeometry::DragKnife(DragKnifeSpec {
+                blade_offset_mm: 1.,
+                max_cut_depth_mm: 2.,
+            })),
+            capabilities: Default::default(),
+        }],
+        operations: vec![
+            Operation {
+                id: "knife-1".into(),
+                name: "knife-1".into(),
+                enabled: true,
+                settings: OperationSettings::DragKnife(settings.clone()),
+            },
+            Operation {
+                id: "knife-2".into(),
+                name: "knife-2".into(),
+                enabled: true,
+                settings: OperationSettings::DragKnife({
+                    // A sibling sharing the same tool with different values:
+                    // applying a preset to knife-1 must never touch these.
+                    let mut sibling = settings.clone();
+                    sibling.assignment.cutting_feed_mm_min = Some(300.);
+                    sibling.assignment.max_stepdown_mm = Some(2.);
+                    sibling
+                }),
+            },
+        ],
+        tolerances: PlanningTolerances {
+            motion_tolerance_mm: Some(0.01),
+            verification_tolerance_mm: None,
+        },
+        legacy_machine_profile: None,
+    };
+    job.validate().unwrap();
+    serde_json::to_value(&job).unwrap()
+}
+
+fn knife_library() -> Value {
+    use cam_core::project::DragKnifeSpec;
+    use cam_core::tool_library::{KnifeCuttingPreset, LibraryGeometry, LibraryTool, ToolLibrary};
+    let library = ToolLibrary {
+        tools: vec![LibraryTool {
+            id: "blade".into(),
+            name: "Drag knife".into(),
+            geometry: LibraryGeometry::DragKnife(DragKnifeSpec {
+                blade_offset_mm: 1.5,
+                max_cut_depth_mm: 3.,
+            }),
+            ramp_capable: None,
+            plunge_capable: None,
+            cutting_presets: vec![],
+            knife_cutting_presets: vec![KnifeCuttingPreset {
+                id: "cardboard".into(),
+                name: "Cardboard".into(),
+                material: Some("cardboard".into()),
+                machine: None,
+                cutting_feed_mm_min: Some(150.),
+                plunge_feed_mm_min: Some(60.),
+                swivel_feed_mm_min: Some(50.),
+                max_stepdown_mm: Some(1.),
+            }],
+        }],
+        ..Default::default()
+    };
+    serde_json::to_value(&library).unwrap()
+}
+
+/// The knife-mapped variant of the shared sequence profile.
+fn knife_profile() -> Value {
+    let mut profile = sequence_profile();
+    profile["tools"] =
+        json!([{"tool_id": "blade", "tool_number": 3, "length_offset_number": null}]);
+    profile
+}
+
+#[test]
+fn add_operation_edits_create_incomplete_drag_knife_operations() {
+    let document = execute(SequenceCommand::Open {
+        json: knife_service_job().to_string(),
+    })
+    .unwrap();
+    let added = execute(SequenceCommand::Edit {
+        job: job_of(&document),
+        edits: vec![OperationEdit::Add {
+            id: "knife-3".into(),
+            name: "Third cut".into(),
+            kind: cam_service::sequence::AddOperationKind::DragKnife,
+            tool_id: "blade".into(),
+        }],
+    })
+    .unwrap();
+    assert_eq!(added["operations"].as_array().unwrap().len(), 3);
+    assert_eq!(added["operations"][2]["kind"], json!("drag_knife"));
+    assert_eq!(added["operations"][2]["toolIds"], json!(["blade"]));
+    // Nothing is invented: the never-defaulted initial heading and every
+    // feed value are reported as missing machining settings.
+    let missing = added["missingByOperation"]["knife-3"].as_array().unwrap();
+    assert!(missing.iter().any(|entry| {
+        entry["fieldPath"]
+            .as_str()
+            .unwrap()
+            .contains("alignment.initial_heading_deg")
+    }));
+    assert!(missing.iter().any(|entry| {
+        entry["fieldPath"]
+            .as_str()
+            .unwrap()
+            .contains("swivel_feed_mm_min")
+    }));
+}
+
+#[test]
+fn apply_knife_tool_targets_one_assignment_and_preserves_siblings() {
+    let job = knife_service_job();
+    let applied = execute(SequenceCommand::ApplyKnifeTool {
+        job: job.clone(),
+        library: knife_library(),
+        operation_id: "knife-1".into(),
+        tool_id: "blade".into(),
+        preset_id: Some("cardboard".into()),
+    })
+    .unwrap();
+    let applied_job = &applied["job"];
+    let assignment = |document: &Value, id: usize| {
+        document["operations"][id]["settings"]["settings"]["assignment"].clone()
+    };
+    // The target assignment received the typed preset values and the new
+    // geometry snapshot (offset 1.5, not the job's original 1.0). Its own
+    // values were 150/1 before, so equality alone proves nothing; the
+    // sibling's distinct values are what must survive untouched.
+    assert_eq!(
+        assignment(applied_job, 0)["cutting_feed_mm_min"],
+        json!(150.)
+    );
+    assert_eq!(assignment(applied_job, 0)["swivel_feed_mm_min"], json!(50.));
+    assert_eq!(
+        applied_job["tools"][0]["geometry"]["dimensions"]["blade_offset_mm"],
+        json!(1.5)
+    );
+    // The sibling knife operation shares the replaced tool snapshot but
+    // keeps its own assignment values: applying to one operation never
+    // updates another.
+    assert_eq!(
+        assignment(applied_job, 1)["cutting_feed_mm_min"],
+        json!(300.)
+    );
+    assert_eq!(assignment(applied_job, 1)["max_stepdown_mm"], json!(2.));
+
+    // Unknown operations and unknown library tools are located errors, and
+    // the submitted document is never partially rewritten on failure.
+    let error = execute(SequenceCommand::ApplyKnifeTool {
+        job: job.clone(),
+        library: knife_library(),
+        operation_id: "ghost".into(),
+        tool_id: "blade".into(),
+        preset_id: None,
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "LIBRARY_NOT_FOUND");
+
+    // A tool that does not exist in the library is a located error (a
+    // renamed library tool is a legitimate application: the snapshot is
+    // added under its own ID and the assignment rebinds).
+    let error = execute(SequenceCommand::ApplyKnifeTool {
+        job,
+        library: knife_library(),
+        operation_id: "knife-1".into(),
+        tool_id: "ghost".into(),
+        preset_id: None,
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "LIBRARY_NOT_FOUND");
+}
+
+#[test]
+fn knife_evidence_reports_bound_traces_stock_and_program_hash() {
+    // Knife-only: no milling tool exists anywhere in the job; the evidence
+    // command still describes the physical stock and the bounded traces.
+    let mut job = knife_service_job();
+    job["operations"].as_array_mut().unwrap().truncate(1);
+    let evidence = execute(SequenceCommand::KnifeEvidence {
+        job: job.clone(),
+        profile: knife_profile(),
+        sample_limit: Some(64),
+    })
+    .unwrap();
+    let report = &evidence["report"];
+    assert_eq!(report["artifactKind"], json!("knife_evidence"));
+    assert_eq!(report["status"], json!("within"));
+    assert_eq!(report["initialHeadingDeg"], json!(90.));
+    assert_eq!(report["bladeOffsetMm"], json!(1.));
+    let sha = report["programSha256"].as_str().unwrap();
+    assert_eq!(sha.len(), 64);
+    assert!(sha.bytes().all(|b| b.is_ascii_hexdigit()));
+    let samples = report["samples"].as_array().unwrap();
+    assert!(!samples.is_empty());
+    assert!(samples.len() <= 64);
+    for sample in samples {
+        assert!(sample["stageId"].is_string());
+        assert!(sample["motionIndex"].is_u64());
+        assert!(sample["pivotMm"]["x"].is_number());
+        assert!(sample["replayedTipMm"]["x"].is_number());
+    }
+    assert_eq!(evidence["stock"]["thicknessMm"], json!(3.));
+    assert!(evidence["stock"]["xy"]["width_mm"].is_number());
+    assert_eq!(evidence["stock"]["hasKnifeStages"], json!(true));
+    // The evidence summary flows through the same projection the UI uses,
+    // with basic checks passed for the complete knife plan.
+    assert_eq!(
+        evidence["summary"]["basicChecks"]["status"],
+        json!("passed")
+    );
+    assert_eq!(
+        evidence["summary"]["operations"][0]["generationStatus"],
+        json!("complete")
+    );
+
+    // The sample budget bounds detail without changing the outcome: asking
+    // for one sample reports truncation with the same maxima and status.
+    let small = execute(SequenceCommand::KnifeEvidence {
+        job,
+        profile: knife_profile(),
+        sample_limit: Some(1),
+    })
+    .unwrap();
+    assert_eq!(small["report"]["truncated"], json!(true));
+    assert_eq!(small["report"]["samples"].as_array().unwrap().len(), 1);
+    assert_eq!(small["report"]["status"], json!("within"));
+    assert_eq!(
+        small["report"]["maxTipDeviationMm"],
+        report["maxTipDeviationMm"]
+    );
+}

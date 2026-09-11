@@ -45,6 +45,59 @@ pub struct ReplayOutcome {
     pub max_heading_error_deg: f64,
 }
 
+/// One boundary sample of a replay: the holder pivot, the integrated tip and
+/// heading, and the deviation against the intended tip at that point. Lifted
+/// moves record the carried heading and no deviation. Sampled at motion
+/// boundaries and owned by the motion index they were taken at (F3b).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReplaySample {
+    pub motion: usize,
+    pub at_start: bool,
+    pub pivot: Point,
+    pub tip: Point,
+    pub heading_deg: Option<f64>,
+    pub deviation_mm: Option<f64>,
+}
+
+/// Bounded trace recording: at most `budget` samples are retained while
+/// `total` counts every boundary that occurred. Truncation limits display
+/// detail only — the outcome still reflects every sampled deviation.
+pub struct Recording {
+    pub samples: Vec<ReplaySample>,
+    pub total: usize,
+    pub budget: usize,
+}
+impl Recording {
+    fn new(budget: usize) -> Self {
+        Self {
+            samples: vec![],
+            total: 0,
+            budget,
+        }
+    }
+    fn push(
+        &mut self,
+        motion: usize,
+        at_start: bool,
+        pivot: Point,
+        tip: Point,
+        heading_deg: Option<f64>,
+        deviation_mm: Option<f64>,
+    ) {
+        self.total += 1;
+        if self.samples.len() < self.budget {
+            self.samples.push(ReplaySample {
+                motion,
+                at_start,
+                pivot,
+                tip,
+                heading_deg,
+                deviation_mm,
+            });
+        }
+    }
+}
+
 /// Local per-step heading tolerance of the adaptive integrator, radians.
 /// Far below any mm-scale tip budget, so integration error never competes
 /// with the geometry being checked.
@@ -95,25 +148,55 @@ struct ReplayRun {
     tip_budget_mm: f64,
     heading_tolerance_deg: f64,
     blade_offset_mm: f64,
+    recording: Option<Recording>,
 }
 
 impl ReplayRun {
-    fn sample(&mut self, pivot: Point, phi: f64, intended: IntendedTip) {
+    fn sample(
+        &mut self,
+        motion: usize,
+        at_start: bool,
+        pivot: Point,
+        phi: f64,
+        intended: IntendedTip,
+    ) {
         let tip = Point::new(
             pivot.x + self.blade_offset_mm * phi.cos(),
             pivot.y + self.blade_offset_mm * phi.sin(),
         );
-        match intended_distance(tip, intended) {
-            Some(deviation) => {
-                self.outcome.max_tip_deviation_mm =
-                    self.outcome.max_tip_deviation_mm.max(deviation);
-                if deviation > self.tip_budget_mm {
-                    self.outcome.status = ReplayStatus::Exceeded;
-                }
+        let deviation = intended_distance(tip, intended);
+        if let Some(deviation) = deviation {
+            self.outcome.max_tip_deviation_mm = self.outcome.max_tip_deviation_mm.max(deviation);
+            if deviation > self.tip_budget_mm {
+                self.outcome.status = ReplayStatus::Exceeded;
             }
+        } else if intended != IntendedTip::Lifted {
             // A contact motion with no intended tip is a construction bug;
             // the replay refuses to bless it.
-            None => self.outcome.status = ReplayStatus::Exceeded,
+            self.outcome.status = ReplayStatus::Exceeded;
+        }
+        if let Some(recording) = &mut self.recording {
+            recording.push(
+                motion,
+                at_start,
+                pivot,
+                tip,
+                Some(phi.to_degrees()),
+                deviation,
+            );
+        }
+    }
+
+    fn record_lifted(&mut self, motion: usize, pivot: Point, heading: Option<f64>) {
+        if let Some(recording) = &mut self.recording {
+            let tip = heading.map_or(pivot, |phi_deg| {
+                let phi = phi_deg.to_radians();
+                Point::new(
+                    pivot.x + self.blade_offset_mm * phi.cos(),
+                    pivot.y + self.blade_offset_mm * phi.sin(),
+                )
+            });
+            recording.push(motion, true, pivot, tip, heading, None);
         }
     }
 
@@ -138,6 +221,28 @@ pub fn replay(
     tip_budget_mm: f64,
     step_budget: usize,
 ) -> ReplayOutcome {
+    replay_traced(
+        motions,
+        blade_offset_mm,
+        intended,
+        tip_budget_mm,
+        step_budget,
+        0,
+    )
+    .0
+}
+
+/// Traced variant used for the bounded emitted-output evidence (F3b):
+/// records up to `sample_budget` boundary samples in addition to the
+/// aggregate outcome.
+pub fn replay_traced(
+    motions: &[PlannedMotion],
+    blade_offset_mm: f64,
+    intended: &[IntendedTip],
+    tip_budget_mm: f64,
+    step_budget: usize,
+    sample_budget: usize,
+) -> (ReplayOutcome, Recording) {
     let mut run = ReplayRun {
         outcome: ReplayOutcome {
             status: ReplayStatus::Within,
@@ -147,19 +252,21 @@ pub fn replay(
         tip_budget_mm,
         heading_tolerance_deg: ((2. * tip_budget_mm / blade_offset_mm).to_degrees()).max(0.01),
         blade_offset_mm,
+        recording: Some(Recording::new(sample_budget)),
     };
     let mut heading: Option<f64> = None;
     let mut steps = 0usize;
-    for (motion, intent) in motions.iter().zip(intended) {
+    for (index, (motion, intent)) in motions.iter().zip(intended).enumerate() {
         if motion.effect != MotionEffect::KnifeTrace {
             // Lifted: the holder moves, the heading is retained.
+            run.record_lifted(index, motion.start.xy(), heading);
             continue;
         }
         let (modeled_start, modeled_end) = motion.blade_heading_deg.unwrap_or((0., 0.));
         let phi = *heading.get_or_insert(modeled_start.to_radians());
         let a = motion.start.xy();
         let b = motion.end.xy();
-        run.sample(a, phi, *intent);
+        run.sample(index, true, a, phi, *intent);
         let length = a.distance(b);
         if length <= 1e-12 {
             // Vertical contact move: the tip stays planted; the modeled
@@ -185,7 +292,8 @@ pub fn replay(
             steps += 8;
             if steps > step_budget {
                 run.outcome.status = ReplayStatus::BudgetExhausted;
-                return run.outcome;
+                let recording = run.recording.unwrap();
+                return (run.outcome, recording);
             }
             let error = (half - full).abs();
             if error > LOCAL_TOLERANCE_RAD && h / 2. > MIN_STEP {
@@ -194,23 +302,33 @@ pub fn replay(
             }
             phi = half;
             s += h;
-            run.sample(
-                Point::new(
-                    a.x + (b.x - a.x) * s / length,
-                    a.y + (b.y - a.y) * s / length,
-                ),
-                phi,
-                *intent,
+            // Interior points refine the deviation maximum; they are not
+            // part of the boundary sample evidence.
+            let pivot = Point::new(
+                a.x + (b.x - a.x) * s / length,
+                a.y + (b.y - a.y) * s / length,
             );
+            let tip = Point::new(
+                pivot.x + run.blade_offset_mm * phi.cos(),
+                pivot.y + run.blade_offset_mm * phi.sin(),
+            );
+            if let Some(deviation) = intended_distance(tip, *intent) {
+                run.outcome.max_tip_deviation_mm = run.outcome.max_tip_deviation_mm.max(deviation);
+                if deviation > run.tip_budget_mm {
+                    run.outcome.status = ReplayStatus::Exceeded;
+                }
+            }
             if error < LOCAL_TOLERANCE_RAD / 64. {
                 h *= 2.;
             }
         }
         heading = Some(phi);
+        run.sample(index, false, b, phi, *intent);
         run.check_heading(phi.to_degrees(), modeled_end);
     }
-    if run.outcome.max_tip_deviation_mm > tip_budget_mm {
+    if run.outcome.max_tip_deviation_mm > run.tip_budget_mm {
         run.outcome.status = ReplayStatus::Exceeded;
     }
-    run.outcome
+    let recording = run.recording.unwrap();
+    (run.outcome, recording)
 }
