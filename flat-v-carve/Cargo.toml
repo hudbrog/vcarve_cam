@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/cam-core", "crates/cam-service", "crates/cam-wasm", "crates/cam-app", "crates/cam-server", "crates/cam-storage"]
+members = ["crates/cam-core", "crates/cam-gui", "crates/cam-service", "crates/cam-wasm", "crates/cam-app", "crates/cam-server", "crates/cam-storage"]
 resolver = "3"
 
 [workspace.package]

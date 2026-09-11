@@ -1,5 +1,9 @@
 # GUI1 candidate experiment
 
+Historical framework evidence. Product development has moved to
+[`crates/cam-gui`](../../crates/cam-gui/README.md), the production workspace
+crate with native and browser entry points. Do not build new GUI features here.
+
 **GUI1 is complete: the framework is accepted with explicit scope limits.** The
 user accepted it on 2026-09-11 for Windows x86_64 native and desktop
 Chromium/WebGPU; the unexercised platform rows and the deferred manual checks are

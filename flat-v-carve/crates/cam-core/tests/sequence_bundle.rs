@@ -261,6 +261,23 @@ fn mixed_plan() -> OperationPlan {
     OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap()
 }
 
+#[test]
+fn precision_escalation_uses_the_emitted_grid_for_independent_readback() {
+    let plan = TrustedPlan::from_generated(mixed_plan());
+    let mut profile = sequence_profile();
+    profile.decimal_places = 0;
+    let prepared = PreparedExecution::prepare(&plan, &profile).unwrap();
+    for layout in [OutputLayout::OneProgram, OutputLayout::SequentialFiles] {
+        let bundle = prepared.export_bundle(&plan, &profile, layout).unwrap();
+        assert!(bundle.report.output_decimal_places > profile.decimal_places);
+        assert_eq!(bundle.report.motion_count, plan.plan().motions.len());
+        assert_eq!(
+            bundle.report.output_decimal_places,
+            bundle.manifest.output_decimal_places
+        );
+    }
+}
+
 /// The recurring-tool fixture splits at contiguous tool stages: T1,T1 share
 /// a file, then T2, then T1 again — execution order preserved, nothing
 /// regrouped by tool. Every file is a complete standalone program whose own

@@ -74,6 +74,20 @@ jobs:
       - name: Check the WebAssembly engine build
         run: cargo check -p cam-wasm --target wasm32-unknown-unknown --locked
 
+      - name: Build new native GUI
+        run: ./scripts/build-gui.ps1
+
+      - name: Build new browser GUI
+        run: ./scripts/build-gui.ps1 -Target web
+
+      - name: Upload new GUI review builds
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: flat-v-carve-gui-windows-and-browser
+          path: flat-v-carve/artifacts/gui/
+          if-no-files-found: error
+          retention-days: 30
+
       # Build the frontend before any bundled-ui Cargo command so its asset
       # manifest is available. This also installs both sets of locked dependencies.
       - name: Build portable executable and embedded UI

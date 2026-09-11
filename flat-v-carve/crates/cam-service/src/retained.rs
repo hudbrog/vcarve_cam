@@ -178,6 +178,12 @@ pub struct Retained {
 }
 
 impl Retained {
+    /// Read the generated execution for an in-process display adapter. The
+    /// returned immutable plan has the same lifetime/admission checks as paging.
+    /// This is not a deserialization or trust-registration entry point.
+    pub fn generated_plan(&self, handle: &str) -> Result<Arc<RetainedPlan>> {
+        self.live_plan(handle)
+    }
     pub fn new() -> Self {
         Self::default()
     }

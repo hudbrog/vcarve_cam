@@ -1,5 +1,12 @@
 # New UI implementation progress
 
+## GUI2a — production vertical slice (in progress)
+
+Implementation now lives in the first-class `flat-v-carve/crates/cam-gui`
+workspace member. Native and browser builds start the new application directly.
+The [GUI2a report](gui2a-progress.md) records the workflow, current-format-only
+admission, test evidence and remaining review. GUI1 below is historical evidence.
+
 ## GUI1 — framework experiment (**complete**, framework accepted with explicit scope limits)
 
 Starting commit: `046a3340b0f10303514e2309d57c3ebe182c83d3`.

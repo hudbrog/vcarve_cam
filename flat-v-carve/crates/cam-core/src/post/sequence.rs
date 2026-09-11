@@ -679,7 +679,11 @@ impl PreparedExecution {
                 tool_changes: vec![],
             };
             for &(start, end) in &groups {
-                let subset = self.with_stages(start..end);
+                let mut subset = self.with_stages(start..end);
+                // Precision may increase to preserve short motions. Independent
+                // readback must compare against this emission attempt's grid,
+                // not the original profile's minimum precision.
+                subset.output_decimal_places = places;
                 let gcode = self.emit_file(plan, profile, places, start..end)?;
                 let decoded = subset.decode_program(plan, places, &gcode)?;
                 let span = subset_motion_span(&subset);

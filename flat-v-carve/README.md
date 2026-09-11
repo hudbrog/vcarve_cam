@@ -2,6 +2,16 @@
 
 An isolated Rust workspace for the combined endmill/V-bit planner described in the [project docs](../docs/flat-v-carve/architecture.md). M0–M5 implement geometry, SVG jobs, both planners, recorded-motion previews, and bounded continuous stock verification. M6 implements LinuxCNC output and numeric readback; actual controller validation remains pending. The M7 browser workflow is implemented: the local service and UI below cover import-to-export with background planning, verification, gated output, a tool library, and a 3D stock simulator, and the same UI runs statically through the in-browser WebAssembly engine.
 
+## New desktop and browser GUI
+
+[`crates/cam-gui`](crates/cam-gui/README.md) is the first-class replacement GUI,
+built in the main Cargo workspace with shared Rust state and wgpu rendering.
+Run `cargo run -p cam-gui --release --locked`, or use
+`./scripts/build-gui.ps1` and `./scripts/build-gui.ps1 -Target web` for review
+artifacts. GUI2a is under implementation and review. New GUI work belongs in
+this crate; `experiments/gui1` preserves the completed framework experiment.
+The existing CLI/service and browser UI below remain available until cutover.
+
 ## Portable Windows application
 
 GitHub Actions builds and tests the portable app on pushes to `main`, pull

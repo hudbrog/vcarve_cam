@@ -2,6 +2,12 @@
 
 A Rust project for combined endmill and V-bit carving toward a shared target: sloped walls, flat floors in broad regions, and shallower narrow details.
 
+The new shared desktop/browser GUI is a production workspace crate,
+[`cam-gui`](flat-v-carve/crates/cam-gui/README.md). From `flat-v-carve`, run
+`cargo run -p cam-gui --release --locked`, or build review artifacts with
+`./scripts/build-gui.ps1` (add `-Target web` for the browser build). GUI2a is
+under implementation and review; the incumbent UI remains available during replacement.
+
 The [portable Windows build](flat-v-carve/README.md#portable-windows-application)
 packages the CLI, local browser service, and web assets into one `cam.exe`.
 From `flat-v-carve`, run `./scripts/build-portable.ps1`, then
