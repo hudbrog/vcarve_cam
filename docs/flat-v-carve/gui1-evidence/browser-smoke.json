@@ -1,0 +1,101 @@
+{
+  "note": "Real-browser smoke test: the wasm build starts, loads both builtin references, takes keyboard focus, runs Ctrl+F and delivers an IME commit. A real OS IME tour and real OS drag gesture remain manual.",
+  "browser": "Chrome",
+  "url": "http://127.0.0.1:5181/web/index.html",
+  "started": {
+    "canvasFocused": true,
+    "dpi": 1,
+    "focused": false,
+    "frames": 0,
+    "heapPeakBytes": 2991841,
+    "imeActive": false,
+    "motions": 0,
+    "offline": "Offline shell cache ready",
+    "omittedPages": 0,
+    "pages": 0,
+    "probeText": "",
+    "recovery": "Local recovery ready",
+    "residentPages": 0,
+    "search": "",
+    "seekMs": 0,
+    "selection": null,
+    "status": "Experimental GUI1 · AdapterInfo { name: \"\", vendor: 0, device: 0, device_type: Other, driver: \"\", driver_info: \"\", backend: BrowserWebGpu }",
+    "stockPrefix": 0,
+    "tileBytes": 0,
+    "tilesCopied": 0,
+    "uploadBytes": 0
+  },
+  "checks": [
+    {
+      "label": "small reference loaded",
+      "state": {
+        "canvasFocused": true,
+        "dpi": 1,
+        "focused": false,
+        "frames": 0,
+        "heapPeakBytes": 10516751,
+        "imeActive": false,
+        "motions": 37,
+        "offline": "Offline shell cache ready",
+        "omittedPages": 0,
+        "pages": 1,
+        "probeText": "",
+        "recovery": "Recovery saved · revision 1",
+        "residentPages": 1,
+        "search": "",
+        "seekMs": 0,
+        "selection": null,
+        "status": "Calculation finished in 82.0 ms · 37 motions · 1 pages · metadata 13252 B + payload 4461328 B · engine status complete · output programs 0",
+        "stockPrefix": 37,
+        "tileBytes": 262144,
+        "tilesCopied": 1,
+        "uploadBytes": 2072
+      }
+    },
+    {
+      "label": "flower reference loaded",
+      "state": {
+        "canvasFocused": true,
+        "dpi": 1,
+        "focused": false,
+        "frames": 0,
+        "heapPeakBytes": 53048332,
+        "imeActive": false,
+        "motions": 22883,
+        "offline": "Offline shell cache ready",
+        "omittedPages": 0,
+        "pages": 3,
+        "probeText": "",
+        "recovery": "Recovery saved · revision 2",
+        "residentPages": 3,
+        "search": "",
+        "seekMs": 0,
+        "selection": null,
+        "status": "Calculation finished in 18659.9 ms · 22883 motions · 3 pages · metadata 69182 B + payload 21994560 B · engine status complete · output programs 0",
+        "stockPrefix": 22883,
+        "tileBytes": 1310720,
+        "tilesCopied": 5,
+        "uploadBytes": 1283520
+      }
+    },
+    {
+      "label": "canvas takes keyboard focus",
+      "state": {
+        "canvasFocused": true
+      }
+    },
+    {
+      "label": "Ctrl+F focuses a control",
+      "state": {
+        "focused": true
+      }
+    },
+    {
+      "label": "IME commit reaches the focused field",
+      "state": {
+        "search": "工具"
+      }
+    }
+  ],
+  "consoleErrors": []
+}

@@ -1,8 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Flat V-carve GUI1 experiment</title>
+<title>Flat V-carve GUI1 experiment</title><link rel="icon" href="data:,">
 <style>html,body{margin:0;width:100%;height:100%;background:#151d26;color:#eee;font:16px system-ui}canvas{width:100%;height:100%;display:block}#startup{position:absolute;top:20px;left:20px;white-space:pre-wrap}</style>
-</head><body><div id="startup" role="status">Loading experimental Rust workspace…</div><canvas id="cam" aria-label="Experimental CAM workspace"></canvas>
+</head><body><div id="startup" role="status">Loading experimental Rust workspace…</div>
+<!-- tabindex keeps the canvas focusable so egui receives keyboard and IME input. -->
+<canvas id="cam" tabindex="0" aria-label="Experimental CAM workspace"></canvas>
 <script type="module">
 import init, * as gui from '../pkg/cam_gui1.js';
 const begin = performance.now();

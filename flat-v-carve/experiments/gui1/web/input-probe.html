@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GUI1 browser input probe</title>
+<title>GUI1 browser input probe</title><link rel="icon" href="data:,">
 <style>
 html,body{margin:0;height:100%;background:#151d26;color:#e9eef4;font:15px system-ui}
 #wrap{position:relative;height:100%}
@@ -66,7 +66,8 @@ document.querySelector('#run').onclick = async () => {
     pass(`Running application published its first snapshot (DPI ${startup.dpi})`);
 
     // 1. Real drop event with a real DataTransfer containing one JSON job.
-    const job = await (await fetch('../../../fixtures/m4/contact-line.json')).text();
+    // Served by web/serve.mjs from the unchanged repository fixtures.
+    const job = await (await fetch('/fixtures/m4/contact-line.json')).text();
     const transfer = new DataTransfer();
     transfer.items.add(new File([job], 'contact-line.json', {type: 'application/json'}));
     const rect = canvas.getBoundingClientRect();
@@ -78,27 +79,38 @@ document.querySelector('#run').onclick = async () => {
     pass(`Injected browser drop event loaded the dropped JSON job (${dropped.motions} motions, ${dropped.pages} pages)`);
     globalThis.GUI1_INPUT_EVIDENCE = {drop: dropped.motions, dpi: dropped.dpi};
 
-    // 2. Keyboard shortcut, then IME composition into the focused search field.
-    //    The browser delivers composition events to the canvas; a real OS IME
-    //    tour is a separate manual check.
+    // 2. Canvas keyboard focus, the Ctrl+F shortcut, then the browser IME path.
+    //    egui ignores key events until the canvas reports focus, and eframe
+    //    listens for composition events on its hidden text-agent input rather
+    //    than on the canvas. A real OS IME tour is still a separate manual check.
     canvas.focus();
-    const key = (type, code, extra = {}) =>
-      canvas.dispatchEvent(new KeyboardEvent(type, {bubbles: true, code, key: code, ...extra}));
-    key('keydown', 'KeyF', {ctrlKey: true});
-    key('keyup', 'KeyF', {ctrlKey: true});
-    await wait(400);
+    await wait(300);
+    const withFocus = JSON.parse(gui.probe_state());
+    if (!withFocus.canvasFocused) {
+      throw new Error('the canvas did not take keyboard focus; is it missing tabindex?');
+    }
+    const key = (type, extra = {}) =>
+      canvas.dispatchEvent(new KeyboardEvent(type, {bubbles: true, cancelable: true, key: 'f', code: 'KeyF', ...extra}));
+    key('keydown', {ctrlKey: true});
+    key('keyup', {ctrlKey: true});
+    await wait(500);
     const focused = JSON.parse(gui.probe_state());
+    if (!focused.focused) throw new Error('Ctrl+F did not focus an editable control');
+    const agent = document.body.querySelector('input');
+    if (!agent) throw new Error('eframe text agent input was not found');
     const composition = (type, data) =>
-      canvas.dispatchEvent(new CompositionEvent(type, {bubbles: true, data}));
+      agent.dispatchEvent(new CompositionEvent(type, {bubbles: true, data}));
     composition('compositionstart', '');
     composition('compositionupdate', '工具');
-    await wait(300);
+    await wait(400);
     const preedit = JSON.parse(gui.probe_state());
     composition('compositionend', '工具');
-    await wait(400);
+    await wait(500);
     const committed = JSON.parse(gui.probe_state());
-    pass(`Ctrl+F focused a control (focused=${focused.focused}); composition reached the application (preedit active=${preedit.imeActive}, searched text=${JSON.stringify(committed.search)}, ime active after commit=${committed.imeActive})`);
-    if (committed.search !== '工具') throw new Error(`Committed IME text did not reach the focused field: ${JSON.stringify(committed.search)}`);
+    pass(`Canvas takes keyboard focus (${withFocus.canvasFocused}); Ctrl+F focused a control (focused=${focused.focused}); composition events reached the application (preedit active=${preedit.imeActive}, committed text=${JSON.stringify(committed.search)}, ime active after commit=${committed.imeActive})`);
+    if (committed.search !== '工具') {
+      throw new Error(`Committed IME text did not reach the focused field: ${JSON.stringify(committed.search)}`);
+    }
     globalThis.GUI1_INPUT_EVIDENCE.ime = {
       preeditActive: preedit.imeActive,
       committed: committed.search,

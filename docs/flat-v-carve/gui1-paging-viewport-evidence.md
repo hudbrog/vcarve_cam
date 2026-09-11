@@ -120,25 +120,51 @@ jumps. The 512-cell display preset is unchanged and still bounds the field.
 - Real driver device loss (TDR / `device.lost`) is still **unverified**; the
   drill proves the recovery path, not that the driver reports loss the same way.
 
-## Browser integration probe
+## Browser integration: two browser-only defects, then verified input
 
-`web/input-probe.html` starts the real application and drives browser events
-into it, reading the published state snapshot (`probe_state`):
+The native build passed every test while the browser build stopped at the first
+scene, because the whole UI thread trapped on wasm-only code. Two defects were
+found by driving a real browser, fixed, and are now covered by an opt-in
+real-browser smoke test (`web/smoke-browser.mjs`, evidence in
+[browser-smoke.json](gui1-evidence/browser-smoke.json)):
 
-1. A drop event with a real `DataTransfer` and a `File` loads the fixture job
-   (37 motions, 3 pages).
-2. `Ctrl+F` focuses a control; `compositionstart/update/end` events deliver IME
-   text to the focused field, and the preedit/commit state and committed text
-   are asserted.
-3. The IndexedDB recovery store is read from the same origin.
+1. **`std::time::Instant` does not exist on wasm32.** The per-frame page
+   fingerprinting timed itself with `Instant::now()`, which panics with
+   "time not implemented on this platform". The panic trapped the first frame
+   after a scene loaded, so the page became a static image with no error dialog.
+   `src/clock.rs` now provides one `Timer` that uses `Instant` behind a lazily
+   initialised baseline on native and the browser's `performance.now()` on wasm.
+2. **The canvas was not focusable.** `web/index.html` had no `tabindex` on the
+   canvas, so a click never gave the page keyboard focus and egui discarded every
+   key event: `Ctrl+O`, `Ctrl+S`, `Ctrl+F` and Tab navigation silently did
+   nothing in the browser. The canvas now carries `tabindex="0"`, and the
+   application publishes both widget focus and raw canvas focus so the state is
+   observable.
 
-`web/platform-probe.html` additionally records the browser's own storage
-estimate, a bounded real IndexedDB quota attempt, the deleted-database reopen,
-and the qualification facts (user agent, DPI, WebGPU presence, adapter info
-where the browser exposes it, save-picker availability).
+With those fixed, the headless-Chrome smoke test passes end to end and records:
 
-Both pages inject synthetic events. A real OS IME tour, a real OS drag gesture
-and a real file-dialog cancel/confirm remain manual checks.
+| Check | Measured result |
+| --- | --- |
+| Startup | WebGPU adapter reported, first frame published, startup ≈ 440 ms local |
+| Small reference | 37 motions, 1 page, plan 82–84 ms, metadata 13,252 B + payload 4,461,328 B |
+| Flower reference | 22,883 motions, 3 pages, 3 resident, 1,283,520 B uploaded, 5 tiles copied, 50.6 MiB WASM heap peak |
+| Canvas keyboard focus | true after a click (regression check for the missing `tabindex`) |
+| `Ctrl+F` | focuses an editable control using a real browser key event |
+| IME | composition preedit reaches the application, commit lands as `工具` in the focused field, IME state clears after commit |
+
+`web/input-probe.html` performs the same checks from the page itself plus a drop
+with a real `DataTransfer`, and reads the IndexedDB recovery store: its own
+evidence record is `passed` with `drop: 37`, `userAgent: …HeadlessChrome/152…`
+and the committed text. `web/platform-probe.html` records the browser's own
+storage estimate, a bounded real IndexedDB quota attempt, the deleted-database
+reopen and the qualification facts (user agent, DPI, WebGPU presence, adapter
+info where exposed, save-picker availability). `web/serve.mjs` also serves the
+unchanged repository fixtures at `/fixtures/…` so those pages can drop the real
+job instead of a copy.
+
+Still manual: a **real OS IME tour** (the probe injects composition events rather
+than typing with a physical IME), a **real OS drag gesture**, and real
+file-dialog confirm/cancel on both targets.
 
 ## Cross-target parity finding
 
@@ -196,6 +222,7 @@ node web/capture.mjs
 node web/capture-build.mjs
 node web/compare-simulation.mjs --preview-only
 node web/compare-wasm-simulation.mjs
+node web/smoke-browser.mjs          # needs Chrome and a running web/serve.mjs
 target\release\cam-gui1-desktop.exe --measure docs\flat-v-carve\gui1-evidence\perf-measure.json flower
 ```
 
@@ -204,6 +231,11 @@ reload behaviour, transported checkpoint rebuild equality, tile-dirty seeks,
 DPI-aware picking against a brute-force oracle, motion-stream and tile-major
 round trips, overlay geometry, and the earlier draft/recovery/file/simulation
 suites.
+
+The real-browser smoke test exists because no native test can observe a
+wasm-only trap: a single trapped frame leaves the page as a static image while
+every native test still passes. It is opt-in (browser plus WebGPU required), like
+the golden layout tests, and it writes `browser-smoke.json`.
 
 Two tests pin the worker boundary specifically: one round-trips the shared
 message builder and the parent decoder (including the failure document and a

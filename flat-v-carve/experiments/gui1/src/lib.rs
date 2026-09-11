@@ -1,5 +1,6 @@
 pub mod alloc_probe;
 pub mod app;
+pub mod clock;
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod file_io;

@@ -579,7 +579,7 @@ impl App {
         }
         let mut note = None;
         let mut failed = false;
-        let begin = std::time::Instant::now();
+        let timer = crate::clock::Timer::start();
         let checkpoint = stock.checkpoint_for(target);
         let exact = stock.meta.frames[checkpoint].prefix == target;
         if exact {
@@ -612,7 +612,7 @@ impl App {
         if !failed {
             stock.prefix = target;
             self.stock_step = stock.checkpoint_for(target);
-            self.seek_ms = begin.elapsed().as_secs_f64() * 1000.;
+            self.seek_ms = timer.elapsed_ms();
             self.playhead = target;
         }
         if let Some(note) = note {
@@ -630,11 +630,11 @@ impl App {
             return;
         }
         if self.picker.is_none() {
-            let begin = std::time::Instant::now();
+            let timer = crate::clock::Timer::start();
             match Picker::from_vertex_bytes(scene.motion_bytes()) {
                 Ok(picker) => {
                     self.picker = Some(picker);
-                    self.picker_build_ms = begin.elapsed().as_secs_f64() * 1000.;
+                    self.picker_build_ms = timer.elapsed_ms();
                 }
                 Err(error) => {
                     self.status = format!("Picking index unavailable: {error}");
@@ -758,7 +758,7 @@ impl App {
         if self.hash_cursor >= table.page_count() || self.page_hashes.len() != table.page_count() {
             return;
         }
-        let begin = std::time::Instant::now();
+        let timer = crate::clock::Timer::start();
         let hashes = Arc::make_mut(&mut self.page_hashes);
         for _ in 0..HASH_PAGES_PER_FRAME {
             if self.hash_cursor >= table.page_count() {
@@ -768,7 +768,7 @@ impl App {
             hashes[page] = Some(pages::page_hash(&scene.payload[table.bytes_of(page)]));
             self.hash_cursor += 1;
         }
-        self.hash_ms += begin.elapsed().as_secs_f64() * 1000.;
+        self.hash_ms += timer.elapsed_ms();
     }
 
     pub fn ui(&mut self, ctx: &egui::Context) {
@@ -1544,6 +1544,7 @@ impl App {
                 "imeActive": self.ime_active,
                 "search": self.search,
                 "focused": ctx.memory(|memory| memory.focused().is_some()),
+                "canvasFocused": ctx.input(|input| input.raw.focused),
                 "dpi": ctx.pixels_per_point(),
                 "stockPrefix": self
                     .stock

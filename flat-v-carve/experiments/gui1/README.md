@@ -66,6 +66,8 @@ WebGPU is required; WebGL2, Firefox, Linux, and Safari are not qualified.
    shows wgpu's reported error, GPU page-budget choices (16/64/256 MiB) and
    denied-write injection. The injected renderer failure is a visibility control,
    not device loss; driver device loss remains unverified.
+   In the browser, click the workspace once before trying keyboard shortcuts:
+   the canvas takes focus on click, and until it does egui discards key events.
 7. Save/recover raw draft JSON, or wait for **Recovery saved** after editing.
    Restart/reload and choose **Restore session** to recover invalid text and the
    exact job, with derived results recalculated. Native uses `gui1-recovery/`
@@ -103,6 +105,7 @@ node web/capture.mjs
 node web/capture-build.mjs
 node web/compare-simulation.mjs --preview-only
 node web/compare-wasm-simulation.mjs
+node web/smoke-browser.mjs      # real browser; start `node web/serve.mjs` first
 target\release\cam-gui1-desktop.exe --measure docs\flat-v-carve\gui1-evidence\perf-measure.json flower
 ```
 
@@ -128,7 +131,17 @@ planner output is not bit-identical across targets (41 of 22,883 flower motions
 differ by one ULP), while rendered vertices, section tables, tile versions,
 every packed cell and the final field checksum agree.
 
-Open `/web/platform-probe.html` for real IndexedDB conflict/abort tests and
+`smoke-browser.mjs` is the only check that runs the real browser build: it
+launches headless Chrome (or Edge with `--browser=edge`), loads both builtin
+references, clicks the viewport, sends a real `Ctrl+F`, delivers an IME commit
+to the focused field and fails on any console error or exception. It exists
+because a wasm-only panic leaves the page as a static image while every native
+test still passes; it needs `pkg/`, a running `web/serve.mjs` and a WebGPU-capable
+browser, so it is opt-in like the golden layout tests.
+
+Open `/web/platform-probe.html` for real IndexedDB conflict/abort tests, the
+browser's own storage estimate and a bounded real quota attempt, plus the
+qualification facts.
 explicitly injected browser save-handle tests. See the
 [files/input evidence](../../../docs/flat-v-carve/gui1-files-input-evidence.md)
 for native destination failures, actual dialog/restart and browser offline/drop

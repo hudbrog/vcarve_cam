@@ -186,7 +186,7 @@
       }
     }
   },
-  "elapsedMs": 6092.8227,
+  "elapsedMs": 6353.258999999999,
   "export": {
     "artifact_kind": "linuxcnc_export_report",
     "diagnostics": [

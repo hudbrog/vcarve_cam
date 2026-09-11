@@ -171,7 +171,7 @@ remain unmeasured, so no sustained-performance or total-memory pass is claimed.
 | --- | --- | --- |
 | Windows x86_64, OS build 10.0.26200 | Native window, NVIDIA RTX 3090, NVIDIA 595.79, Vulkan, 125% DPI; flower, named controls, typing while busy, Cancel | Native screen-reader support excluded by user; experimental review ready, input/files/renderer qualification incomplete |
 | Windows DX12 | Feature compiled | Unverified runtime |
-| Chromium 152.0.0.0, Windows, Codex in-app browser | WebGPU shell + flower, canvas-only AX tree; earlier DOM comparison labels/input/worker/cancel; 125% DPI | Browser screen-reader access excluded by user; experimental review ready, remaining required checks incomplete |
+| Chromium 152.0.0.0, Windows (headless smoke) and the Codex in-app browser | WebGPU shell + flower, canvas-only AX tree; earlier DOM comparison labels/input/worker/cancel; 125% DPI; headless smoke loads both references, checks canvas focus/`Ctrl+F`/IME commit and reports 0 console errors | Browser screen-reader access excluded by user; experimental review ready, remaining required checks incomplete (real OS IME, real drag gesture, file-dialog confirm/cancel) |
 | Browser GPU/driver | WebGPU adapter identity redacted by browser | Unknown; do not copy native GPU identity into this row |
 | Firefox desktop | No actual run | Unverified required candidate |
 | Linux, Safari/macOS | No actual run/package | Unverified evaluation targets |
@@ -192,9 +192,13 @@ The earlier browser screen-reader blocker interrupted the GUI1 checklist before
 completion. With that requirement removed, resume the following open checks:
 
 - Actual OS IME tours and browser keyboard-only dialog completion/cancellation.
-  Native Ctrl+O/Escape focus restoration, harness IME/Tab/reorder focus and a
-  browser probe that injects composition events into the running application now
-  pass; a real OS IME tour is still manual.
+  Native Ctrl+O/Escape focus restoration, harness IME/Tab/reorder focus, and a
+  headless-browser smoke test that gives the web build canvas focus, sends a real
+  `Ctrl+F` and delivers an IME composition/commit into the focused field all
+  pass. The web build needed `tabindex` on the canvas before any of that worked,
+  and per-frame timing needed a wasm-safe clock; both defects are fixed and
+  covered by `web/smoke-browser.mjs`. A real OS IME tour and real file-dialog
+  cancel/confirm remain manual.
   Native and browser screen-reader tours are out of scope.
 - Implemented and measured since the previous revision: translucent selection
   fill, blade glyph, display picking with a physical-pixel tolerance at several

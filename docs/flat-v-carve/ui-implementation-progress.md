@@ -95,9 +95,18 @@ float finding (41 flower motions differ by one ULP; rendered geometry, tile
 versions, every packed cell and the final checksum agree). Full evidence and the
 remaining manual checks are in
 [paging/viewport evidence](gui1-paging-viewport-evidence.md) and
-[perf-measure.json](gui1-evidence/perf-measure.json). Still open: the real OS
-IME tour, real OS drag gesture, real file-dialog cancel/confirm, real device
-loss, a sustained two-minute M frame-time run and the non-Chromium browser rows.
+[perf-measure.json](gui1-evidence/perf-measure.json).
+
+Driving a real browser then exposed two browser-only defects that the native
+build could not show: per-frame timing used `std::time::Instant`, which panics on
+wasm32 and trapped the whole page on the first loaded scene, and the canvas had
+no `tabindex`, so the browser build never received keyboard input. Both are fixed
+(`src/clock.rs`, `tabindex` on the canvas, published focus state) and covered by
+`web/smoke-browser.mjs`, which loads both builtin references in headless Chrome,
+checks canvas focus, sends a real `Ctrl+F` and delivers an IME commit. Still
+open: the real OS IME tour, real OS drag gesture, real file-dialog
+cancel/confirm, real device loss, a sustained two-minute M frame-time run and the
+non-Chromium browser rows.
 
 Technical checks: native and WASM release builds, fmt, warning-free clippy,
 45 passing state/behavior/file/simulation/transport/picking tests and two separately executed layout golden
