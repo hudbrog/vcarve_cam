@@ -44,6 +44,45 @@ fn l_list_is_virtualized() {
 }
 
 #[test]
+fn stock_checkpoint_navigation_retains_the_scene_and_raw_draft() {
+    let scene = cam_gui1::compute::run(cam_gui1::compute::Request::Reference {
+        flower: false,
+        export: false,
+    })
+    .unwrap();
+    let mut app = App::default();
+    app.set_scene(scene);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280., 800.))
+        .build_state(|ctx, app: &mut App| app.ui(ctx), app);
+    h.get_by_label("Maximum depth").click();
+    h.run();
+    h.get_by_label("Maximum depth").type_text("1.");
+    h.run();
+    h.get_by_role_and_label(egui::accesskit::Role::Slider, "Stock checkpoint")
+        .click();
+    h.run();
+    assert!(
+        h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Stock checkpoint")
+            .value()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap()
+            < 16
+    );
+    h.get_by_label("Stock preview").click();
+    h.run();
+    h.get_by_role_and_label(egui::accesskit::Role::Slider, "Motion playhead");
+    h.get_by_label("Stock preview").click();
+    h.run();
+    h.get_by_role_and_label(egui::accesskit::Role::Slider, "Stock checkpoint");
+    assert_eq!(
+        h.get_by_label("Maximum depth").value().as_deref(),
+        Some("1.")
+    );
+}
+
+#[test]
 #[ignore = "GPU/local golden check: UPDATE_SNAPSHOTS=true cargo test --test interaction dense_layout -- --ignored"]
 fn dense_layout() {
     let mut h = Harness::builder()

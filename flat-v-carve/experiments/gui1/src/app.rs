@@ -16,6 +16,10 @@ pub struct App {
     pub status: String,
     scene: Option<Scene>,
     vertices: Arc<Vec<Vertex>>,
+    stock_cells: Vec<Arc<Vec<u32>>>,
+    show_stock: bool,
+    stock_step: usize,
+    last_stock_tick: f64,
     scene_revision: u64,
     iso: bool,
     zoom: f32,
@@ -42,6 +46,10 @@ impl Default for App {
             status: "Experimental GUI1. Choose a reference to calculate.".into(),
             scene: None,
             vertices: Arc::new(Vec::new()),
+            stock_cells: Vec::new(),
+            show_stock: false,
+            stock_step: 0,
+            last_stock_tick: 0.,
             scene_revision: 0,
             iso: false,
             zoom: 1.,
@@ -60,6 +68,25 @@ impl Default for App {
     }
 }
 impl App {
+    pub fn set_scene(&mut self, mut scene: Scene) {
+        self.vertices = Arc::new(std::mem::take(&mut scene.vertices));
+        self.stock_cells = scene
+            .stock_preview
+            .as_mut()
+            .map(|p| {
+                p.frames
+                    .iter_mut()
+                    .map(|f| Arc::new(std::mem::take(&mut f.cells)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.stock_step = self.stock_cells.len().saturating_sub(1);
+        self.show_stock = !self.stock_cells.is_empty();
+        self.playing = false;
+        self.playhead = (self.vertices.len() - scene.contour_vertices) / 2;
+        self.scene_revision += 1;
+        self.scene = Some(scene);
+    }
     fn motion_count(&self) -> usize {
         self.vertices
             .len()
@@ -76,6 +103,14 @@ impl App {
                 .callback_resources
                 .insert(render::Resources::new(&state.device, state.target_format));
             app.gpu = true;
+            state
+                .renderer
+                .write()
+                .callback_resources
+                .insert(crate::stock_render::Resources::new(
+                    &state.device,
+                    state.target_format,
+                ));
             app.status = format!("Experimental GUI1 · {:?}", state.adapter.get_info());
         }
         app
@@ -102,13 +137,10 @@ impl App {
                 } if self.active == Some(id) => {
                     self.active = None;
                     match result {
-                        Ok(mut scene) => {
-                            self.vertices = Arc::new(std::mem::take(&mut scene.vertices));
-                            self.scene_revision += 1;
-                            self.playhead = (self.vertices.len() - scene.contour_vertices) / 2;
+                        Ok(scene) => {
                             self.status = format!(
                                 "Calculation finished in {elapsed_ms:.1} ms · {} vertices · engine status {} · output programs {}",
-                                self.vertices.len(),
+                                scene.vertices.len(),
                                 scene
                                     .report
                                     .pointer("/summary/status")
@@ -126,7 +158,15 @@ impl App {
                                     scene.programs.len()
                                 );
                             }
-                            self.scene = Some(scene);
+                            if let Some(error) = scene
+                                .report
+                                .get("stockPreviewError")
+                                .and_then(|v| v.as_str())
+                            {
+                                self.status
+                                    .push_str(&format!(" · Stock preview unavailable: {error}"));
+                            }
+                            self.set_scene(scene);
                         }
                         Err(e) => self.status = e,
                     }
@@ -259,11 +299,19 @@ impl App {
                 ui.selectable_value(&mut self.stage, 0, "All stages");
                 ui.selectable_value(&mut self.stage, 1, "Endmill");
                 ui.selectable_value(&mut self.stage, 2, "V-bit");
-                let motion_count = self.motion_count();
-                ui.add(egui::Slider::new(&mut self.playhead, 0..=motion_count).text("Motion playhead"));
+                if self.show_stock {
+                    ui.add(egui::Slider::new(&mut self.stock_step,0..=self.stock_cells.len().saturating_sub(1)).text("Stock checkpoint"));
+                    if let Some(p)=self.scene.as_ref().and_then(|s|s.stock_preview.as_ref()) {self.playhead=p.frames[self.stock_step].prefix;}
+                } else {
+                    let motion_count = self.motion_count();
+                    ui.add(egui::Slider::new(&mut self.playhead, 0..=motion_count).text("Motion playhead"));
+                }
             });
             ui.label(RichText::new(&self.status).color(Color32::from_rgb(210,183,131)));
-            ui.label("Motion display only. Stock removal, export eligibility and physical machining are not established by playback.");
+            if self.show_stock {
+                let p=self.scene.as_ref().unwrap().stock_preview.as_ref().unwrap();
+                ui.label(format!("Stock preview · {:.4} mm cells (reference {:.4}) · motion {} · {:.2} mm³ removed · {} checkpoints",p.cell_mm,p.reference_cell_mm,self.playhead,p.frames[self.stock_step].stats.removed_volume_mm3,p.frames.len()));
+            } else {ui.label("Motion display only. Stock preview uses discrete checkpoints; playback does not establish export eligibility.");}
             ui.horizontal(|ui| {
                 if ui.button("Prepare checked small reference").clicked() { self.start(Request::Reference { flower: false, export: true },ctx); }
                 if ui.button("Prepare checked flower").clicked() { self.start(Request::Reference { flower: true, export: true },ctx); }
@@ -428,6 +476,7 @@ impl App {
                 ui.selectable_value(&mut self.iso, false, "Top"); ui.selectable_value(&mut self.iso, true, "Isometric");
                 if ui.button("Fit").clicked() { self.zoom = 1.; self.yaw = 0.; }
                 ui.add(egui::Slider::new(&mut self.zoom, 0.5..=3.).text("Zoom"));
+                if !self.stock_cells.is_empty() {ui.checkbox(&mut self.show_stock,"Stock preview");}
             });
             ui.label(self.scene.as_ref().map(|s| s.name.as_str()).unwrap_or("Load a combined carving reference"));
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
@@ -444,6 +493,17 @@ impl App {
                 ranges.push(0..contour);
                 if self.stage != 2 { ranges.push(contour..end.min(split).max(contour)); }
                 if self.stage != 1 { ranges.push(split..end.max(split)); }
+                if self.show_stock {
+                    let p=scene.stock_preview.as_ref().unwrap();
+                    let b=scene.bounds;let size=(b[2]-b[0]).max(b[3]-b[1]).max(0.001);let scale=1.6/size;
+                    ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect,crate::stock_render::Callback {
+                        cells:self.stock_cells[self.stock_step].clone(),revision:(self.scene_revision,self.stock_step),
+                        camera:[if self.iso {1.} else {0.},rect.width()/rect.height().max(1.),self.zoom,self.yaw],
+                        grid:[((p.stock.x0-(b[0]+b[2])/2.)*scale) as f32,((p.stock.y0-(b[1]+b[3])/2.)*scale) as f32,
+                            (p.cell_mm*scale) as f32,(p.stock.thickness_mm*scale) as f32,p.cols as f32,p.rows as f32,
+                            ((p.stock.x1-p.stock.x0)*scale) as f32,((p.stock.y1-p.stock.y0)*scale) as f32],
+                    }));
+                }
                 ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, render::Callback {
                     vertices: self.vertices.clone(), revision: self.scene_revision, ranges,
                     camera: [if self.iso {1.} else {0.}, rect.width()/rect.height().max(1.), self.zoom, self.yaw],
@@ -461,9 +521,16 @@ impl App {
                     self.frame_ms.pop_front();
                 }
             }
-            self.playhead = (self.playhead + 200).min(self.motion_count());
-            if self.playhead == self.motion_count() {
-                self.playhead = 0;
+            if self.show_stock {
+                if now - self.last_stock_tick >= 0.25 {
+                    self.stock_step = (self.stock_step + 1) % self.stock_cells.len();
+                    self.last_stock_tick = now;
+                }
+            } else {
+                self.playhead = (self.playhead + 200).min(self.motion_count());
+                if self.playhead == self.motion_count() {
+                    self.playhead = 0;
+                }
             }
             ctx.request_repaint();
         }

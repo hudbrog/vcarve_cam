@@ -31,8 +31,11 @@ WebGPU is required; WebGL2, Firefox, Linux, and Safari are not qualified.
 1. Choose **Flower reference**. The exact embedded job is planned by Rust in a
    disposable process/Worker. Expect 7,048 roughing and 15,835 finishing motions.
    Cyan is endmill, amber is V-bit; both use actual recorded motion endpoints.
-2. Switch Top/Isometric, drag to rotate, zoom, choose Endmill/V-bit, and scrub
-   backward. This only reveals motion lines; it does not simulate stock removal.
+2. Switch Top/Isometric, drag to rotate, zoom, choose Endmill/V-bit paths, and
+   move **Stock checkpoint** backward. Stock removal and the physical stock box
+   are displayed at bounded, exact motion prefixes. The UI labels the preview
+   cell size and finer reference cell size. Uncheck **Stock preview** for the
+   original motion-line timeline. Path filtering preserves cumulative stock.
 3. Type `-`, `1.`, or invalid text into Maximum depth. Reverse artwork order;
    select operation 2 and return to 1. Text belongs to stable source/operation/field
    IDs. Inspector fields are explicitly input probes, not machining edits.
@@ -66,6 +69,8 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 cargo test --locked --test interaction dense_layout -- --ignored
 node web/capture.mjs
+node web/compare-simulation.mjs
+node web/compare-wasm-simulation.mjs
 ```
 
 The ignored image tests are opt-in GPU tests, separately executed locally at
@@ -84,10 +89,13 @@ This establishes software checks, not a new physical machining trial.
 - No domain crate or incumbent UI was changed. Schema-4 migration is captured
   through the existing service; the spike's open adapter supports legacy combined
   jobs only and rejects unsupported input without replacing its prior result.
-- No heightfield port, stock box, picking, blade glyph, checkpoint paging, tiled
-  updates, or complete S/M/L memory qualification. The existing TypeScript
-  simulator remains the reference; choosing a DOM/native-webview shell could
-  reuse it directly, subject to platform qualification.
+- The narrow Rust heightfield port matches the original TS on full-cell native
+  comparisons; the actual WASM module matches every preview checkpoint. See
+  [simulation evidence](../../../docs/flat-v-carve/gui1-simulation-evidence.md).
+  The 512-cell preview preset is explicitly coarser (flower 0.3609375 mm versus
+  0.025 mm reference), has at most 18 checkpoints and a 20 MiB retained-cell cap.
+  Arbitrary stock seeks, picking, blade glyph, checkpoint paging, incremental
+  tile transport and complete S/M/L memory qualification remain unfinished.
 - JSON transport and a whole retained GPU batch are intentionally unoptimized.
   No O(N) mesh construction runs in layout, but draft serialization on save and
   browser JSON decode/transfer still require replacement/budget measurements.

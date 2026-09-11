@@ -45,19 +45,23 @@ remains pending, with keyboard/focus/input behavior and native accessibility in 
 GUI1a: input hashes, unchanged flower/small references, schema-4 service migration,
 actual motion stages and native checked-output reports captured. Flower output
 passed; the small contact-line negative fixture failed M5_FLOOR_RIDGE and yielded
-no program. Simulator source/settings behavior inspected; full runtime comparison
-and stock port remain unverified.
+no program. The simulator now has a narrow Rust port with native full-cell and
+WASM preview comparisons against the original TypeScript. See
+[simulation continuation](gui1-simulation-evidence.md) for evidence and limits.
 
 GUI1b: isolated native/browser three-pane prototype, 40 raw input probes, stable IDs,
 virtualized operation list, custom persistent wgpu motion callback, top/isometric
-views, stages and line reveal timeline. The actual flower renders on both targets.
-No claim of machining edits, stock removal, picking, or artwork collection support.
+views, stages and motion timeline. The actual flower and a stock box now render
+on both targets, with bounded stock removal checkpoints and explicit display
+resolution. No claim of machining edits, picking, or artwork collection support.
 
 GUI1c: same core calculation in disposable native process and browser Worker;
 real native cancellation/typing smoke and five process-stop samples. Portable
 draft/save and injected failures implemented but not comprehensively qualified.
 Browser screen-reader access is an accepted exclusion; IME/native assistive technology, Firefox, device loss,
-actual persistence failure/retry, heightfield and sustained S/M/L tests remain open.
+actual persistence failure/retry, arbitrary interactive stock seeks and sustained
+S/M/L tests remain open. Full-reference native stock and native/WASM preview
+comparisons pass; a 20 MiB checkpoint cap bounds the interactive display preset.
 
 GUI1d: decision updated for the user-approved scope; earlier DOM comparison,
 per-target evidence matrix and conditional GUI2a service/workflow checklist retained.
@@ -65,12 +69,13 @@ Continue the egui simulation/input/runtime qualification within GUI1 before
 promoting the shell into production.
 
 Technical checks: native and WASM release builds, fmt, warning-free clippy,
-three passing behavior/state tests and two separately executed layout golden
+nine passing state/behavior/simulation tests and two separately executed layout golden
 comparisons at 1280×800 and 1440×900. Precise commands and limits are in the
 [experiment README](../../flat-v-carve/experiments/gui1/README.md).
 
 Review readiness: **Windows/Vulkan and Chromium/WebGPU experimental prototype
 only**. Complete GUI1 technical qualification: **not achieved**. User review:
 **pending** for prototype acceptance; the browser screen-reader scope exclusion
-is explicit user feedback and is applied above. Starting commit unchanged; work remains
-uncommitted in the shared checkout. No backend H status was changed.
+is explicit user feedback and is applied above. The initial experiment was committed
+and pushed as `81a9fed`; the simulation continuation is subsequent workspace work.
+No backend H status was changed.

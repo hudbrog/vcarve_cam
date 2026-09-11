@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub const PROTOCOL: &str = "gui1-spike-1";
+pub const PROTOCOL: &str = "gui1-spike-2";
 pub const SMALL: &str = include_str!("../../../fixtures/m4/contact-line.json");
 pub const FLOWER: &str = include_str!("../../../../real_data/flower_box-svg.job-real.json");
 pub const PROFILE: &str = include_str!("../../../../real_data/machine-profile.json");
@@ -34,6 +34,7 @@ pub struct Scene {
     pub report: Value,
     pub job: String,
     pub programs: Vec<cam_core::post::Program>,
+    pub stock_preview: Option<Box<crate::stock_preview::Preview>>,
 }
 pub fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -64,7 +65,24 @@ fn real(input: &str, export: bool) -> Result<Scene, String> {
     }
     let inspection = job.inspect().map_err(|e| e.to_string())?;
     let bounds = inspection.geometry.bounds.ok_or("Artwork has no bounds")?;
-    let b = [bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y];
+    let margin = job
+        .tools
+        .iter()
+        .filter_map(|t| t.geometry.as_ref())
+        .map(|g| match g {
+            cam_core::job::ToolGeometry::Endmill(t) => t.diameter_mm / 2.,
+            cam_core::job::ToolGeometry::Vbit(t) => {
+                t.max_cutting_diameter_mm.max(t.tip_diameter_mm) / 2.
+            }
+        })
+        .fold(0., f64::max)
+        + 1.;
+    let b = [
+        bounds.min.x - margin,
+        bounds.min.y - margin,
+        bounds.max.x + margin,
+        bounds.max.y + margin,
+    ];
     let mut vertices = Vec::new();
     for ring in inspection.geometry.selected.rings_mm() {
         for i in 0..ring.len() {
@@ -100,7 +118,27 @@ fn real(input: &str, export: bool) -> Result<Scene, String> {
         "finishingMotions": plan.vbit_motions.len(), "paths": inspection.geometry.selected.rings_mm().len(),
         "vertices": vertices.len(), "vertexBytes": vertices.len() * std::mem::size_of::<Vertex>(),
         "tools": job.tools.len(), "operations": 1, "stockThicknessMm": job.stock.thickness_mm,
-        "simulation": "Not yet ported: these are actual motion lines, not a heightfield simulation"});
+        "simulation": "Display-only Rust heightfield preview; explicit coarser grid and discrete motion checkpoints"});
+    let slices = cam_service::inspection::Inspection::combined(&plan)
+        .slices
+        .into_iter()
+        .map(|s| s.info)
+        .collect::<Vec<_>>();
+    let preview = crate::sim_setup::build(&job, &plan, &slices)
+        .and_then(|input| crate::stock_preview::build(&input, plan.endmill.motions.len()));
+    let stock_preview = match preview {
+        Ok(preview) => {
+            report["stockPreview"] = json!({"cols":preview.cols,"rows":preview.rows,"cellMm":preview.cell_mm,
+                "referenceCellMm":preview.reference_cell_mm,"retainedCellBytes":preview.retained_bytes,
+                "prefixes":preview.frames.iter().map(|f|f.prefix).collect::<Vec<_>>(),
+                "finalChecksum":preview.frames.last().map(|f|f.checksum.as_str())});
+            Some(Box::new(preview))
+        }
+        Err(error) => {
+            report["stockPreviewError"] = json!(error);
+            None
+        }
+    };
     let mut programs = Vec::new();
     if export {
         let profile =
@@ -134,6 +172,7 @@ fn real(input: &str, export: bool) -> Result<Scene, String> {
         report,
         job: input.into(),
         programs,
+        stock_preview,
     })
 }
 fn vertex(p: [f64; 3], b: [f64; 4], color: [f32; 4]) -> Vertex {
@@ -182,5 +221,6 @@ pub fn synthetic(segments: usize) -> Result<Scene, String> {
         report,
         job: String::new(),
         programs: Vec::new(),
+        stock_preview: None,
     })
 }

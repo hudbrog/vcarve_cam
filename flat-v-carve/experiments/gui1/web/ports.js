@@ -18,8 +18,10 @@ export function startWorker(id, request) {
   worker.onmessage = ({data}) => {
     if (active?.id !== id) return;
     worker.terminate(); active = undefined;
-    const result = data.protocol === 'gui1-spike-1' ? JSON.parse(data.reply) : {Err:'Worker version mismatch'};
-    emit({Computed: {id, elapsed_ms:performance.now()-begin, result}});
+    // Rust already emitted a JSON Result. Wrap it without parsing and then
+    // reserializing millions of stock cells on the browser UI thread.
+    const reply = data.protocol === 'gui1-spike-2' ? data.reply : JSON.stringify({Err:'Worker version mismatch'});
+    globalThis.GUI1.receive_event(`{"Computed":{"id":${JSON.stringify(id)},"elapsed_ms":${performance.now()-begin},"result":${reply}}}`);
   };
   worker.onerror = event => {
     event.preventDefault();
@@ -27,7 +29,7 @@ export function startWorker(id, request) {
     worker.terminate(); active = undefined;
     emit({Computed:{id,elapsed_ms:performance.now()-begin,result:{Err:`Compute worker failed: ${event.message}`}}});
   };
-  worker.postMessage({protocol:'gui1-spike-1',request});
+  worker.postMessage({protocol:'gui1-spike-2',request});
 }
 export function openFile(recovery) {
   const picker = document.createElement('input'); picker.type='file'; picker.accept='.json';

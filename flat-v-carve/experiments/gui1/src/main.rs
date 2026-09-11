@@ -3,6 +3,31 @@
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     let args: Vec<_> = std::env::args_os().collect();
+    if args
+        .get(1)
+        .is_some_and(|a| a == "--sim-fixture" || a == "--simulate")
+    {
+        let result = if args[1] == "--sim-fixture" {
+            cam_gui1::sim_probe::fixture(
+                args.get(2).is_some_and(|a| a == "flower"),
+                std::path::Path::new(args.get(3).expect("fixture output path")),
+            )
+        } else {
+            std::fs::read_to_string(args.get(2).expect("simulation input path"))
+                .map_err(|e| e.to_string())
+                .and_then(|input| {
+                    cam_gui1::sim_probe::run(
+                        &input,
+                        std::path::Path::new(args.get(3).expect("simulation output directory")),
+                    )
+                })
+        };
+        if let Err(e) = result {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if args.get(1).is_some_and(|a| a == "--capture") {
         let folder =
             std::path::PathBuf::from(args.get(2).expect("--capture requires an output directory"));
@@ -43,7 +68,10 @@ fn main() -> eframe::Result {
             let reply = cam_gui1::compute::run(request);
             let file = std::fs::File::create(args.get(3).ok_or("Missing output")?)
                 .map_err(|e| e.to_string())?;
-            serde_json::to_writer(file, &reply).map_err(|e| e.to_string())
+            use std::io::Write;
+            let mut writer = std::io::BufWriter::new(file);
+            serde_json::to_writer(&mut writer, &reply).map_err(|e| e.to_string())?;
+            writer.flush().map_err(|e| e.to_string())
         })();
         if result.is_err() {
             std::process::exit(2);

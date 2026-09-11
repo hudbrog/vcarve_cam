@@ -1,0 +1,993 @@
+{
+  "node": "v24.19.0",
+  "engineSha256": "087911c6ef492f76129486fa821bee956df8358ce8063ebd7dfe572e01bf3f67",
+  "setupSha256": "ce7d8599a3d856c11673c00b2a6713e6ec609b9d2a12fb3178c9c12c92e2d5c8",
+  "nativeSha256": "81632e4e81e312b74b34024e1481616d9f189951af7798a91a817241ea4c28c1",
+  "cases": [
+    {
+      "name": "analytic-random",
+      "inputSha256": "f99e8da203c4f1ddaf88e2805a1cf9e42d08232bf0b3af7289e08d56082707b6",
+      "cellMm": 0.025,
+      "stock": {
+        "x0": -5,
+        "y0": -5,
+        "x1": 5,
+        "y1": 5,
+        "thicknessMm": 4
+      },
+      "snapshots": [
+        {
+          "cellSha256": "baf1862a3e57a773bc10ba4920cffaa69d698720cf8c6ae105ae307533ba5a29",
+          "checkpointBytesUpperBound": 16,
+          "checksum": "811c9dc5",
+          "cols": 400,
+          "fieldBytes": 16,
+          "prefix": 0,
+          "rows": 400,
+          "seekMs": 0.001,
+          "stats": {
+            "appliedMotions": 0,
+            "cuttingMotions": 0,
+            "dirtyCells": 0,
+            "removedVolumeMm3": 0,
+            "stageRemovedMm3": [
+              0,
+              0
+            ]
+          },
+          "tsMs": 0.002599999999915781,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "f8397c302b721e11cc997bebc342192bbf97d2e878de0a37088570d3b9a2f7c2",
+          "checkpointBytesUpperBound": 786464,
+          "checksum": "1cf11f4e",
+          "cols": 400,
+          "fieldBytes": 786448,
+          "prefix": 20,
+          "rows": 400,
+          "seekMs": 8.1273,
+          "stats": {
+            "appliedMotions": 20,
+            "cuttingMotions": 17,
+            "dirtyCells": 136189,
+            "removedVolumeMm3": 247.7165217059806,
+            "stageRemovedMm3": [
+              67.07943148698467,
+              180.63709021896682
+            ]
+          },
+          "tsMs": 36.588300000000004,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "dd7571907eed33159d38dc379b6d2c3ce4c03b949a9f5168e988bfcfd2500945",
+          "checkpointBytesUpperBound": 1572912,
+          "checksum": "6c5ed816",
+          "cols": 400,
+          "fieldBytes": 786448,
+          "prefix": 80,
+          "rows": 400,
+          "seekMs": 19.8079,
+          "stats": {
+            "appliedMotions": 80,
+            "cuttingMotions": 68,
+            "dirtyCells": 159489,
+            "removedVolumeMm3": 351.18554043643775,
+            "stageRemovedMm3": [
+              117.4131115053158,
+              233.77242893110173
+            ]
+          },
+          "tsMs": 41.96090000000004,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "50943c5088a9cd247521b13b5335a5822126f7bba983cfea29ea7d8951937d7f",
+          "checkpointBytesUpperBound": 2359360,
+          "checksum": "422bcbc9",
+          "cols": 400,
+          "fieldBytes": 786448,
+          "prefix": 7,
+          "rows": 400,
+          "seekMs": 2.9836,
+          "stats": {
+            "appliedMotions": 7,
+            "cuttingMotions": 6,
+            "dirtyCells": 104908,
+            "removedVolumeMm3": 170.1283990234485,
+            "stageRemovedMm3": [
+              41.65130079346782,
+              128.47709822995
+            ]
+          },
+          "tsMs": 23.49440000000004,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "62b23ed3b366ef553a51d35af666894e0847ea2273abf50f1a08ee0702a016f7",
+          "checkpointBytesUpperBound": 3145792,
+          "checksum": "7dcc9b71",
+          "cols": 400,
+          "fieldBytes": 786448,
+          "prefix": 55,
+          "rows": 400,
+          "seekMs": 17.2567,
+          "stats": {
+            "appliedMotions": 55,
+            "cuttingMotions": 47,
+            "dirtyCells": 157742,
+            "removedVolumeMm3": 341.8183047608239,
+            "stageRemovedMm3": [
+              113.79853887237101,
+              228.01976588845332
+            ]
+          },
+          "tsMs": 55.28609999999992,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "dd7571907eed33159d38dc379b6d2c3ce4c03b949a9f5168e988bfcfd2500945",
+          "checkpointBytesUpperBound": 3145792,
+          "checksum": "6c5ed816",
+          "cols": 400,
+          "fieldBytes": 786448,
+          "prefix": 80,
+          "rows": 400,
+          "seekMs": 8.2448,
+          "stats": {
+            "appliedMotions": 80,
+            "cuttingMotions": 68,
+            "dirtyCells": 159489,
+            "removedVolumeMm3": 351.18554043643775,
+            "stageRemovedMm3": [
+              117.4131115053158,
+              233.77242893110173
+            ]
+          },
+          "tsMs": 18.326799999999935,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        }
+      ]
+    },
+    {
+      "name": "small-preview",
+      "inputSha256": "0d947a2c6ac46e2c23b2c583e9144360aabff9d48eea00118a9e98464d755601",
+      "cellMm": 0.1,
+      "stock": {
+        "thicknessMm": 8,
+        "x0": -6.350000000000001,
+        "x1": 18.35,
+        "y0": -6.35,
+        "y1": 10.35
+      },
+      "snapshots": [
+        {
+          "cellSha256": "14e7d1bae898cb2d30fc9757f504d4007894464190efde967e348495ab14ba85",
+          "checkpointBytesUpperBound": 4,
+          "checksum": "811c9dc5",
+          "cols": 248,
+          "fieldBytes": 4,
+          "prefix": 0,
+          "rows": 167,
+          "seekMs": 0.0017000000000000001,
+          "stats": {
+            "appliedMotions": 0,
+            "cuttingMotions": 0,
+            "dirtyCells": 0,
+            "removedVolumeMm3": 0,
+            "stageRemovedMm3": [
+              0,
+              0
+            ]
+          },
+          "tsMs": 0.0008000000000265572,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "14e7d1bae898cb2d30fc9757f504d4007894464190efde967e348495ab14ba85",
+          "checkpointBytesUpperBound": 8,
+          "checksum": "811c9dc5",
+          "cols": 248,
+          "fieldBytes": 4,
+          "prefix": 2,
+          "rows": 167,
+          "seekMs": 0.0031999999999999997,
+          "stats": {
+            "appliedMotions": 2,
+            "cuttingMotions": 0,
+            "dirtyCells": 0,
+            "removedVolumeMm3": 0,
+            "stageRemovedMm3": [
+              0,
+              0
+            ]
+          },
+          "tsMs": 0.011799999999993815,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "471180858247849fa46f2cf8d853af916b04425634539e97e487abbf8d4f6cb7",
+          "checkpointBytesUpperBound": 196620,
+          "checksum": "7a42a0d7",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 4,
+          "rows": 167,
+          "seekMs": 0.8316,
+          "stats": {
+            "appliedMotions": 4,
+            "cuttingMotions": 2,
+            "dirtyCells": 608,
+            "removedVolumeMm3": 2.5138347447928586,
+            "stageRemovedMm3": [
+              0,
+              2.5138347447928586
+            ]
+          },
+          "tsMs": 5.161800000000085,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "20fdd25d7030cff0ad5232f030736426ca68af1495e0f4478fd56d69d0306a95",
+          "checkpointBytesUpperBound": 393232,
+          "checksum": "31e7c2bb",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 6,
+          "rows": 167,
+          "seekMs": 0.6,
+          "stats": {
+            "appliedMotions": 6,
+            "cuttingMotions": 4,
+            "dirtyCells": 883,
+            "removedVolumeMm3": 3.90633890287632,
+            "stageRemovedMm3": [
+              0,
+              3.90633890287632
+            ]
+          },
+          "tsMs": 2.22420000000011,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "20fdd25d7030cff0ad5232f030736426ca68af1495e0f4478fd56d69d0306a95",
+          "checkpointBytesUpperBound": 589840,
+          "checksum": "31e7c2bb",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 9,
+          "rows": 167,
+          "seekMs": 0.0013,
+          "stats": {
+            "appliedMotions": 9,
+            "cuttingMotions": 4,
+            "dirtyCells": 883,
+            "removedVolumeMm3": 3.90633890287632,
+            "stageRemovedMm3": [
+              0,
+              3.90633890287632
+            ]
+          },
+          "tsMs": 0.0027000000000043656,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "3a8cdbac382f574c250ee9af53970a809a549f3af3dfe78eedc66af1c87c67db",
+          "checkpointBytesUpperBound": 786448,
+          "checksum": "760cc28f",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 11,
+          "rows": 167,
+          "seekMs": 0.6889,
+          "stats": {
+            "appliedMotions": 11,
+            "cuttingMotions": 6,
+            "dirtyCells": 2399,
+            "removedVolumeMm3": 11.891648737315968,
+            "stageRemovedMm3": [
+              0,
+              11.891648737315968
+            ]
+          },
+          "tsMs": 2.641700000000128,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "a6a199cfbfd3227481d78549045bcb36d1774fd1ec35dd286ba6aced4304544b",
+          "checkpointBytesUpperBound": 786448,
+          "checksum": "e5fe4372",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 13,
+          "rows": 167,
+          "seekMs": 0.6667,
+          "stats": {
+            "appliedMotions": 13,
+            "cuttingMotions": 8,
+            "dirtyCells": 2701,
+            "removedVolumeMm3": 13.35737911039904,
+            "stageRemovedMm3": [
+              0,
+              13.35737911039904
+            ]
+          },
+          "tsMs": 2.6505999999999403,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "a6a199cfbfd3227481d78549045bcb36d1774fd1ec35dd286ba6aced4304544b",
+          "checkpointBytesUpperBound": 786448,
+          "checksum": "e5fe4372",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 16,
+          "rows": 167,
+          "seekMs": 0.0011,
+          "stats": {
+            "appliedMotions": 16,
+            "cuttingMotions": 8,
+            "dirtyCells": 2701,
+            "removedVolumeMm3": 13.35737911039904,
+            "stageRemovedMm3": [
+              0,
+              13.35737911039904
+            ]
+          },
+          "tsMs": 0.0025000000000545697,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "4ef7889a3934136e9de40d3184ecbe76df0c7683398ed91a0f631713e41b80eb",
+          "checkpointBytesUpperBound": 786448,
+          "checksum": "59cbdca9",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 18,
+          "rows": 167,
+          "seekMs": 0.5175,
+          "stats": {
+            "appliedMotions": 18,
+            "cuttingMotions": 10,
+            "dirtyCells": 2959,
+            "removedVolumeMm3": 14.678362401770071,
+            "stageRemovedMm3": [
+              0,
+              14.678362401770071
+            ]
+          },
+          "tsMs": 0.44269999999983156,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "19f6d3c0edf65415a6a9924bc4f6e2b0b12ccb759108bd107795f32e97ac13b4",
+          "checkpointBytesUpperBound": 786448,
+          "checksum": "ea1704e9",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 20,
+          "rows": 167,
+          "seekMs": 0.5404,
+          "stats": {
+            "appliedMotions": 20,
+            "cuttingMotions": 11,
+            "dirtyCells": 2974,
+            "removedVolumeMm3": 14.749943083848335,
+            "stageRemovedMm3": [
+              0,
+              14.749943083848335
+            ]
+          },
+          "tsMs": 0.8407999999999447,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "12f60796c1522eabe81cd54f0257f0e16ae3905d9860128aa72e2c65f90e7689",
+          "checkpointBytesUpperBound": 786448,
+          "checksum": "2a3f7025",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 23,
+          "rows": 167,
+          "seekMs": 0.8799,
+          "stats": {
+            "appliedMotions": 23,
+            "cuttingMotions": 13,
+            "dirtyCells": 4640,
+            "removedVolumeMm3": 41.66712504768319,
+            "stageRemovedMm3": [
+              0,
+              41.66712504768319
+            ]
+          },
+          "tsMs": 1.1504999999999654,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "9c8556864c6c2d72f090f86b023983a9cdbaf6882a231c7900af28b0ac5a5e5d",
+          "checkpointBytesUpperBound": 786448,
+          "checksum": "d05b58e9",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 25,
+          "rows": 167,
+          "seekMs": 0.49069999999999997,
+          "stats": {
+            "appliedMotions": 25,
+            "cuttingMotions": 14,
+            "dirtyCells": 4641,
+            "removedVolumeMm3": 41.84306645303926,
+            "stageRemovedMm3": [
+              0,
+              41.84306645303926
+            ]
+          },
+          "tsMs": 0.34639999999990323,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "9c8556864c6c2d72f090f86b023983a9cdbaf6882a231c7900af28b0ac5a5e5d",
+          "checkpointBytesUpperBound": 786448,
+          "checksum": "d05b58e9",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 27,
+          "rows": 167,
+          "seekMs": 0.0268,
+          "stats": {
+            "appliedMotions": 27,
+            "cuttingMotions": 14,
+            "dirtyCells": 4641,
+            "removedVolumeMm3": 41.84306645303926,
+            "stageRemovedMm3": [
+              0,
+              41.84306645303926
+            ]
+          },
+          "tsMs": 0.0017000000000280124,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "01d823b0c6fe8db69349cc27bafc96b6d98fb91d49e026e366e86bab2ea24e77",
+          "checkpointBytesUpperBound": 786448,
+          "checksum": "d935f89b",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 30,
+          "rows": 167,
+          "seekMs": 0.7115999999999999,
+          "stats": {
+            "appliedMotions": 30,
+            "cuttingMotions": 17,
+            "dirtyCells": 4641,
+            "removedVolumeMm3": 42.0143801022345,
+            "stageRemovedMm3": [
+              0,
+              42.0143801022345
+            ]
+          },
+          "tsMs": 1.0404000000000906,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "01d823b0c6fe8db69349cc27bafc96b6d98fb91d49e026e366e86bab2ea24e77",
+          "checkpointBytesUpperBound": 786448,
+          "checksum": "d935f89b",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 32,
+          "rows": 167,
+          "seekMs": 0.0283,
+          "stats": {
+            "appliedMotions": 32,
+            "cuttingMotions": 17,
+            "dirtyCells": 4641,
+            "removedVolumeMm3": 42.0143801022345,
+            "stageRemovedMm3": [
+              0,
+              42.0143801022345
+            ]
+          },
+          "tsMs": 0.0018999999999778083,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "01d823b0c6fe8db69349cc27bafc96b6d98fb91d49e026e366e86bab2ea24e77",
+          "checkpointBytesUpperBound": 786448,
+          "checksum": "d935f89b",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 34,
+          "rows": 167,
+          "seekMs": 0.1425,
+          "stats": {
+            "appliedMotions": 34,
+            "cuttingMotions": 18,
+            "dirtyCells": 4641,
+            "removedVolumeMm3": 42.0143801022345,
+            "stageRemovedMm3": [
+              0,
+              42.0143801022345
+            ]
+          },
+          "tsMs": 0.14440000000013242,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "d9503ed2d74e9d4dc7f58b0087ce3bcae4a903ad66c87f9a9c383357d8e4fe59",
+          "checkpointBytesUpperBound": 786448,
+          "checksum": "225638a5",
+          "cols": 248,
+          "fieldBytes": 196612,
+          "prefix": 37,
+          "rows": 167,
+          "seekMs": 0.5919,
+          "stats": {
+            "appliedMotions": 37,
+            "cuttingMotions": 20,
+            "dirtyCells": 4641,
+            "removedVolumeMm3": 42.18942183565954,
+            "stageRemovedMm3": [
+              0,
+              42.18942183565954
+            ]
+          },
+          "tsMs": 0.6983000000000175,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        }
+      ]
+    },
+    {
+      "name": "flower-preview",
+      "inputSha256": "b086d35f52f2c27e3b6aa071ac2c9b477e70a6830ca3d14f4dc414d653cb0722",
+      "cellMm": 0.3609375,
+      "stock": {
+        "thicknessMm": 20,
+        "x0": 6.0481750000000005,
+        "x1": 190.84817500000003,
+        "y0": 1.3412374999999983,
+        "y1": 97.7912375
+      },
+      "snapshots": [
+        {
+          "cellSha256": "f4c7baf51386c26eef006afc1751f795d42e82e6a600792c4352126a3197f26c",
+          "checkpointBytesUpperBound": 16,
+          "checksum": "811c9dc5",
+          "cols": 512,
+          "fieldBytes": 16,
+          "prefix": 0,
+          "rows": 268,
+          "seekMs": 0.0024,
+          "stats": {
+            "appliedMotions": 0,
+            "cuttingMotions": 0,
+            "dirtyCells": 0,
+            "removedVolumeMm3": 0,
+            "stageRemovedMm3": [
+              0,
+              0
+            ]
+          },
+          "tsMs": 0.0005999999993946403,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "baa99e80c0afcb9306845a6bfc1717b49ef62653f9f46c2305806f8a2b7dbb3d",
+          "checkpointBytesUpperBound": 393248,
+          "checksum": "efaad4b4",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 1430,
+          "rows": 268,
+          "seekMs": 1.3856000000000002,
+          "stats": {
+            "appliedMotions": 1430,
+            "cuttingMotions": 1416,
+            "dirtyCells": 5845,
+            "removedVolumeMm3": 761.2882246098558,
+            "stageRemovedMm3": [
+              761.2882246098558,
+              0
+            ]
+          },
+          "tsMs": 7.801099999999678,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "d4b75516dd98029bba2f97a740b5a4b06bd47309e620c5dee0bd7dd0a12866d5",
+          "checkpointBytesUpperBound": 786480,
+          "checksum": "dd871ace",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 2860,
+          "rows": 268,
+          "seekMs": 1.526,
+          "stats": {
+            "appliedMotions": 2860,
+            "cuttingMotions": 2837,
+            "dirtyCells": 11123,
+            "removedVolumeMm3": 1448.7269328204352,
+            "stageRemovedMm3": [
+              1448.7269328204352,
+              0
+            ]
+          },
+          "tsMs": 1.7510000000002037,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "3c7e73b4c479caa5ef03e19f2a1da18ee1f5f9c859915ce2d0682a5c4b2c4531",
+          "checkpointBytesUpperBound": 1179712,
+          "checksum": "9f91ad0e",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 4290,
+          "rows": 268,
+          "seekMs": 1.5003,
+          "stats": {
+            "appliedMotions": 4290,
+            "cuttingMotions": 4255,
+            "dirtyCells": 16085,
+            "removedVolumeMm3": 2095.007885859635,
+            "stageRemovedMm3": [
+              2095.007885859635,
+              0
+            ]
+          },
+          "tsMs": 1.8759000000000015,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "43aa52dfa2b3804a712178fbc31988153767d970d44137c8a031d443d1c3f140",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "d69a784c",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 5720,
+          "rows": 268,
+          "seekMs": 1.8223,
+          "stats": {
+            "appliedMotions": 5720,
+            "cuttingMotions": 5661,
+            "dirtyCells": 21206,
+            "removedVolumeMm3": 2761.9979625451933,
+            "stageRemovedMm3": [
+              2761.9979625451933,
+              0
+            ]
+          },
+          "tsMs": 2.482199999999466,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "3d2c62d8cf9ea72e84e0bab832794d817ba36b9c068ecec51d8bbb59d788b1da",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "5ef596ce",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 7048,
+          "rows": 268,
+          "seekMs": 1.1804999999999999,
+          "stats": {
+            "appliedMotions": 7048,
+            "cuttingMotions": 6961,
+            "dirtyCells": 26107,
+            "removedVolumeMm3": 3400.3339058835886,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              0
+            ]
+          },
+          "tsMs": 2.294600000000173,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "7c618fc709af3ef8d21011379afe6968d4d0502da73a2e419fbc9f853cb5a54e",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "fe482363",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 7150,
+          "rows": 268,
+          "seekMs": 1.427,
+          "stats": {
+            "appliedMotions": 7150,
+            "cuttingMotions": 7055,
+            "dirtyCells": 26270,
+            "removedVolumeMm3": 3410.732638455672,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              10.398732572080984
+            ]
+          },
+          "tsMs": 2.2102999999997337,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "9056eaf315bf89b2ca55f7ce11505927dfa49fcde7b0fa635254b194592650dd",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "53ad2511",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 8581,
+          "rows": 268,
+          "seekMs": 19.1517,
+          "stats": {
+            "appliedMotions": 8581,
+            "cuttingMotions": 8423,
+            "dirtyCells": 27696,
+            "removedVolumeMm3": 3511.41992021439,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              111.0860143308153
+            ]
+          },
+          "tsMs": 32.63040000000001,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "e7772de96e811497d6e1d7abc1603a2a43ae0d169a11381af76d3ed14d215a4e",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "76761673",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 10011,
+          "rows": 268,
+          "seekMs": 18.414099999999998,
+          "stats": {
+            "appliedMotions": 10011,
+            "cuttingMotions": 9751,
+            "dirtyCells": 29199,
+            "removedVolumeMm3": 3608.663553380042,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              208.3296474964794
+            ]
+          },
+          "tsMs": 33.5671999999995,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "810c853f57fa262f7f4c8684c34b09fb8e09920e069a26130eff837b7e623ac0",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "b85c5d03",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 11441,
+          "rows": 268,
+          "seekMs": 19.4043,
+          "stats": {
+            "appliedMotions": 11441,
+            "cuttingMotions": 11136,
+            "dirtyCells": 30374,
+            "removedVolumeMm3": 3697.212824661894,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              296.8789187783446
+            ]
+          },
+          "tsMs": 36.6876000000002,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "73f11353613ed5feee725edbf12978e6f5ba62833e012617652367bcd0e5cfbb",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "c35b8890",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 12871,
+          "rows": 268,
+          "seekMs": 18.5548,
+          "stats": {
+            "appliedMotions": 12871,
+            "cuttingMotions": 12530,
+            "dirtyCells": 31766,
+            "removedVolumeMm3": 3790.1222776370814,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              389.78837175359234
+            ]
+          },
+          "tsMs": 33.20799999999963,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "e5616e1e00179878e04ef68a4c376c352c490492093af05a81aac3f1b2f7c369",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "274e514",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 14301,
+          "rows": 268,
+          "seekMs": 18.019299999999998,
+          "stats": {
+            "appliedMotions": 14301,
+            "cuttingMotions": 13906,
+            "dirtyCells": 32733,
+            "removedVolumeMm3": 3854.0245890927467,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              453.69068320930955
+            ]
+          },
+          "tsMs": 33.324499999999716,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "44cb6454c301e34e95e6c3569e4bcfaaf2c93a2af654a00d7fb702960b4b78a8",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "28ce6131",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 15732,
+          "rows": 268,
+          "seekMs": 19.3091,
+          "stats": {
+            "appliedMotions": 15732,
+            "cuttingMotions": 15307,
+            "dirtyCells": 33915,
+            "removedVolumeMm3": 3926.8809594005456,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              526.5470535171705
+            ]
+          },
+          "tsMs": 43.92240000000038,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "9b8f10d3e6fb22eeb2819c246926f2d2fae98ad38a265d5f22abebb58120b413",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "bf071dd1",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 17162,
+          "rows": 268,
+          "seekMs": 18.723,
+          "stats": {
+            "appliedMotions": 17162,
+            "cuttingMotions": 16698,
+            "dirtyCells": 35794,
+            "removedVolumeMm3": 4051.225831870686,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              650.8919259873638
+            ]
+          },
+          "tsMs": 32.01689999999962,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "eb695393fa16ae143f35a8d5d45a947ac30fdc55e01991cf9f72d1c165f81e9a",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "486660f8",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 18592,
+          "rows": 268,
+          "seekMs": 19.7967,
+          "stats": {
+            "appliedMotions": 18592,
+            "cuttingMotions": 18113,
+            "dirtyCells": 37427,
+            "removedVolumeMm3": 4159.024922263814,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              758.6910163805345
+            ]
+          },
+          "tsMs": 33.90180000000055,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "9f2a3f41e9334a3c7c8a2d34d19111fcd224ad8b5d593fc81988bf7464fb0c8b",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "9e9b8c4d",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 20022,
+          "rows": 268,
+          "seekMs": 18.1699,
+          "stats": {
+            "appliedMotions": 20022,
+            "cuttingMotions": 19492,
+            "dirtyCells": 38407,
+            "removedVolumeMm3": 4211.047767239098,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              810.7138613558809
+            ]
+          },
+          "tsMs": 31.8762999999999,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "7e1e1291af8b79b8cd6ffd8fc05470bebaadc61488e7634323242dac7ac41207",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "d42a3900",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 21452,
+          "rows": 268,
+          "seekMs": 18.5386,
+          "stats": {
+            "appliedMotions": 21452,
+            "cuttingMotions": 20844,
+            "dirtyCells": 39248,
+            "removedVolumeMm3": 4265.291911865095,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              864.9580059819061
+            ]
+          },
+          "tsMs": 30.57459999999992,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "cellSha256": "d955e500c610a98343adcbabcc5c31eebfb464d9e94cc909e1cae74a035d1ae8",
+          "checkpointBytesUpperBound": 1572928,
+          "checksum": "9f50b861",
+          "cols": 512,
+          "fieldBytes": 393232,
+          "prefix": 22883,
+          "rows": 268,
+          "seekMs": 17.685,
+          "stats": {
+            "appliedMotions": 22883,
+            "cuttingMotions": 22169,
+            "dirtyCells": 40966,
+            "removedVolumeMm3": 4380.637481277632,
+            "stageRemovedMm3": [
+              3400.3339058835886,
+              980.3035753945139
+            ]
+          },
+          "tsMs": 30.177699999999277,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        }
+      ]
+    }
+  ]
+}

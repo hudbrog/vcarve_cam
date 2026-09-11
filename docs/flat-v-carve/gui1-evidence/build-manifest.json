@@ -1,20 +1,20 @@
 [
   {
     "path": "pkg/cam_gui1_bg.wasm",
-    "bytes": 6289537,
-    "gzipBytes": 2591240,
-    "sha256": "03bd50ca13ab66a7f919c08ba4cda2766c6becd3c11a5e9227d87ba47502d8ae"
+    "bytes": 6351457,
+    "gzipBytes": 2617819,
+    "sha256": "277e057af1384eb90860bde36712a6db9c1fe0711b405ec997242d5e60e905e5"
   },
   {
     "path": "pkg/cam_gui1.js",
     "bytes": 93281,
     "gzipBytes": 16380,
-    "sha256": "6ad620530a695a2cb49e7a17529a1b49632152f84c17fc5600704e042df78da0"
+    "sha256": "9f7ab881dead711b5fca3850da3252a6afbc3f9982c708bfd59460661ad922a0"
   },
   {
     "path": "target/release/cam-gui1-desktop.exe",
-    "bytes": 16678400,
-    "gzipBytes": 6601437,
-    "sha256": "1de711617834398314d462c7004726c68f02a877b48cb5c3bac7c97478d69423"
+    "bytes": 16942592,
+    "gzipBytes": 6696237,
+    "sha256": "1e71577ad3c9d814fecb09287e1479e2f2ff8565352cf2a6f0dc4cad98dc9e12"
   }
 ]

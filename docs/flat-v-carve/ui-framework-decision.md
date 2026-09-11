@@ -46,7 +46,9 @@ The review shell has three resizable panes, independent scroll regions, a
 search, a timeline, top/isometric views, actual roughing/finishing motion batches,
 and disposable compute adapters. Controls are explicitly experimental: numeric
 fields do not mutate the reference job, the two source rows are synthetic, and
-the timeline reveals motion lines rather than removing stock.
+stock playback uses a labeled coarse grid and discrete motion checkpoints.
+The [simulation continuation](gui1-simulation-evidence.md) records the tested
+Rust port, full-cell comparisons, bounded GPU stock preview and remaining limits.
 
 ## Candidate actually tested
 
@@ -55,14 +57,14 @@ the timeline reveals motion lines rather than removing stock.
 | Shell | egui/eframe/egui-wgpu **0.33.3**; egui_kittest **0.33.3** |
 | eframe features | Defaults disabled; `accesskit`, `default_fonts`, `wgpu`, `x11`, `wayland` |
 | wgpu | **27.0.1**; defaults disabled; `std`, `dx12`, `vulkan`, `wgsl`, `webgpu`; resolved wgpu-core/hal in Cargo.lock |
-| Viewport | egui-wgpu callback, persistent vertex buffer and camera uniform; alpha-blended line list; Depth24Plus; one sample |
+| Viewport | egui-wgpu callbacks, persistent motion/packed stock buffers and camera uniforms; lines, stock-cell triangles and box; Depth24Plus; one sample |
 | Rust | **1.95.0**, MSVC x86_64; WASM target wasm32-unknown-unknown |
 | Browser bootstrap | wasm-pack **0.15.0**, wasm-bindgen **0.2.128**, futures **0.4.78**, js-sys/web-sys **0.3.105**, Node **24.19.0** |
 | Browser baseline | WebGPU only. Explicit unavailable message if absent; no WebGL2 fallback claim |
 | Native files | rfd **0.16.0** dialogs and file work on background threads |
 | Browser files | Native HTML file picker and Blob download; download requested is not disk-write confirmation |
 | Execution | Native child process with kill/wait; browser disposable module Worker; request generation gates results; no shared-memory threads |
-| Protocol | Private `gui1-spike-1`; worker handshake checks version; same WASM module contains compute and UI entry points |
+| Protocol | Private `gui1-spike-2`; worker handshake checks version; same WASM module contains compute and UI entry points |
 | CAM | Existing cam-core/cam-service **0.7.7**, legacy combined planning and retained-receipt checked export; no new machining API |
 
 0.33.3 was a bounded, explicitly pinned API baseline, not a claim to be the latest
@@ -123,7 +125,7 @@ engine capture; a filename is not used as identity.
 [small planning/output capture](gui1-evidence/small-reference.json).
 These are software results, not physical trial claims or general output qualification.
 
-Final headless capture had five small-plan times **5.0974, 4.1698, 3.5136, 3.7731,
+The initial headless capture had five small-plan times **5.0974, 4.1698, 3.5136, 3.7731,
 3.5349 ms** (median 3.7731; max/nearest-rank p95 5.0974). A separate small checked
 output run took 5.2604 ms. One flower plan took 2838.8529 ms and its separate native
 plan+checked-output run 4660.7706 ms. These exclude interactive transport/rendering.
@@ -136,14 +138,15 @@ not input-to-visible timing or proof about a browser's stopped CPU latency.
 One interactive flower request, during other build/test work, took 12,990.9 ms
 native and 11,028.9 ms browser including transport. One localhost browser shell
 startup measured 429.6 ms. Neither is a five-repeat cold-start benchmark.
-The final optimized WASM is about 6.29 MB raw / 2.59 MB gzip; native executable is
-about 16.67 MB. [Build sizes and hashes](gui1-evidence/build-manifest.json) record
+The initial optimized WASM was about 6.29 MB raw / 2.59 MB gzip; native executable
+was about 16.67 MB. [Build sizes and hashes](gui1-evidence/build-manifest.json) record
 the exact artifacts. Gzip size is an estimate of compression, not measured
 network transfer; the local server serves uncompressed assets.
 
 S/M/L generators use seed `0x5eed`, 20k/200k/1m line segments, exactly two vertices
 per segment (28 bytes each). They are whole batches, not a paged stock simulation.
-No sustained M, tiled field, picking/DPI, idle-upload or total-memory pass is claimed.
+The later tiled-field comparison is recorded separately in the simulation evidence.
+No sustained M, picking/DPI, idle-upload or total-memory pass is claimed.
 CPU/WASM/JS/GPU peak memory counters remain unknown; vertex bytes are not total memory.
 
 ## Platform and test matrix
@@ -173,8 +176,9 @@ completion. With that requirement removed, resume the following open checks:
 
 - Full IME composition and keyboard-only dialog/focus restoration on both targets,
   plus actual native screen-reader tours. Browser screen-reader tours are out of scope.
-- Stock box, translucent selected fills, blade glyph, display picking across DPI values.
-- Paged motion transport, tiled stock, backward stock checkpoint replay and S/M/L budgets.
+- Translucent selected fills, blade glyph, display picking across DPI values.
+- Paged motion/tile transport, arbitrary interactive stock seeks and S/M/L budgets.
+  Bounded stock checkpoints, native replay and a stock box now have simulation evidence.
 - Actual device loss/recreation. The control only injects a visibly unavailable renderer
   and resumes the same retained scene; it is not a driver/device-loss test.
 - Real file drop, automatic/offline recovery, real quota/destination failures, revision
@@ -182,19 +186,17 @@ completion. With that requirement removed, resume the following open checks:
 - Whole-process allocation accounting, sustained performance, all required browser rows,
   installable packaging and full asset/license distribution checks.
 
-The existing TypeScript heightfield engine/setup source hashes are captured. It uses
-256×256 lazy Uint16 depth tiles, a thickness/65535 quantum, tool ownership, and
-analytic moving endmill/finite-tip V-bit coverage. Its current behavior was inspected,
-not ported or requalified. A DOM shell in a native webview could reuse that behavior
-directly for a legitimate shared UI runtime. A native egui target would require a
-narrow Rust port with matched-input/cell comparisons before simulation qualification.
-No JS runtime was added solely to disguise a port as reuse.
+The TypeScript heightfield now has a narrow Rust port preserving 256×256 lazy
+Uint16 tiles, thickness/65535 quantization, tool ownership and analytic tool coverage.
+Native full-grid and actual WASM preview comparisons pass; see the separate
+simulation evidence for exact prefixes, timing and scope limits. No JS runtime
+was added to the application for simulation.
 
 ## Next bounded decision and GUI2a contract
 
-Continue **GUI1** with egui/eframe and the shared wgpu viewport. Next establish
-the narrow Rust heightfield port against the existing TypeScript simulator, then
-complete the listed input, native accessibility, file/recovery, renderer and
+Continue **GUI1** with egui/eframe and the shared wgpu viewport. The narrow
+heightfield port and bounded preview are established. Next complete the listed
+input, native accessibility, file/recovery, renderer and
 platform probes. Keep one Rust document/reducer/service authority. React/Three.js
 remains the compatibility and simulation reference; a DOM/native-host evaluation
 is no longer required for browser screen-reader support. Ratify the platform

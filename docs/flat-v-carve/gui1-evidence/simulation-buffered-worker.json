@@ -1,0 +1,32 @@
+{
+  "workerAndFileWriteMs": 3569.1383,
+  "jsonBytes": 12226605,
+  "stockPreview": {
+    "cellMm": 0.3609375,
+    "cols": 512,
+    "finalChecksum": "9f50b861",
+    "prefixes": [
+      0,
+      1430,
+      2860,
+      4290,
+      5720,
+      7048,
+      7150,
+      8581,
+      10011,
+      11441,
+      12871,
+      14301,
+      15732,
+      17162,
+      18592,
+      20022,
+      21452,
+      22883
+    ],
+    "referenceCellMm": 0.025,
+    "retainedCellBytes": 9879552,
+    "rows": 268
+  }
+}

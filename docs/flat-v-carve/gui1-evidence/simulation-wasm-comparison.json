@@ -1,0 +1,271 @@
+{
+  "node": "v24.19.0",
+  "wasmSha256": "277e057af1384eb90860bde36712a6db9c1fe0711b405ec997242d5e60e905e5",
+  "records": [
+    {
+      "name": "small",
+      "elapsedMs": 115.7204,
+      "cols": 248,
+      "rows": 167,
+      "cellMm": 0.1,
+      "retainedCellBytes": 2816288,
+      "snapshots": [
+        {
+          "prefix": 0,
+          "checksum": "811c9dc5",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 2,
+          "checksum": "811c9dc5",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 4,
+          "checksum": "7a42a0d7",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 6,
+          "checksum": "31e7c2bb",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 9,
+          "checksum": "31e7c2bb",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 11,
+          "checksum": "760cc28f",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 13,
+          "checksum": "e5fe4372",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 16,
+          "checksum": "e5fe4372",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 18,
+          "checksum": "59cbdca9",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 20,
+          "checksum": "ea1704e9",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 23,
+          "checksum": "2a3f7025",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 25,
+          "checksum": "d05b58e9",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 27,
+          "checksum": "d05b58e9",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 30,
+          "checksum": "d935f89b",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 32,
+          "checksum": "d935f89b",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 34,
+          "checksum": "d935f89b",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 37,
+          "checksum": "225638a5",
+          "cellCount": 41416,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        }
+      ]
+    },
+    {
+      "name": "flower",
+      "elapsedMs": 10657.840400000001,
+      "cols": 512,
+      "rows": 268,
+      "cellMm": 0.3609375,
+      "retainedCellBytes": 9879552,
+      "snapshots": [
+        {
+          "prefix": 0,
+          "checksum": "811c9dc5",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 1430,
+          "checksum": "efaad4b4",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 2860,
+          "checksum": "dd871ace",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 4290,
+          "checksum": "9f91ad0e",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 5720,
+          "checksum": "d69a784c",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 7048,
+          "checksum": "5ef596ce",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 7150,
+          "checksum": "fe482363",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 8581,
+          "checksum": "53ad2511",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 10011,
+          "checksum": "76761673",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 11441,
+          "checksum": "b85c5d03",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 12871,
+          "checksum": "c35b8890",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 14301,
+          "checksum": "274e514",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 15732,
+          "checksum": "28ce6131",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 17162,
+          "checksum": "bf071dd1",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 18592,
+          "checksum": "486660f8",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 20022,
+          "checksum": "9e9b8c4d",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 21452,
+          "checksum": "d42a3900",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        },
+        {
+          "prefix": 22883,
+          "checksum": "9f50b861",
+          "cellCount": 137216,
+          "depthDifferences": 0,
+          "ownerDifferences": 0
+        }
+      ]
+    }
+  ]
+}
