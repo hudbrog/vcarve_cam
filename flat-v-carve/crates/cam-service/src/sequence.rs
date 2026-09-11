@@ -313,8 +313,20 @@ fn open(raw: &str) -> Result<Value> {
     }
     let version: Value =
         serde_json::from_str(raw).map_err(|e| error("SEQUENCE_JOB_JSON", e.to_string()))?;
-    let migrated = version.get("schema_version").and_then(Value::as_u64)
-        != Some(cam_core::project::CAM_JOB_SCHEMA_VERSION as u64);
+    let schema = version.get("schema_version").and_then(Value::as_u64);
+    // A collection document must be refused by this ui-8 client, never
+    // flattened to schema 4 or migrated through the legacy path.
+    if schema > Some(cam_core::project::CAM_JOB_SCHEMA_VERSION as u64) {
+        return Err(error(
+            "SEQUENCE_SCHEMA_UNSUPPORTED",
+            format!(
+                "schema {} documents need a client that preserves the artwork collection; \
+                 this ui-8 client refuses them instead of flattening them",
+                schema.unwrap_or_default()
+            ),
+        ));
+    }
+    let migrated = schema != Some(cam_core::project::CAM_JOB_SCHEMA_VERSION as u64);
     let job = if migrated {
         migrate_legacy_json(raw)?
     } else {

@@ -1,8 +1,11 @@
 //! Canonical schema-4 CAM job: editable setup, tools and an ordered operation list.
 //!
-//! This is the new public document model. The legacy schema-3 [`crate::job::Job`]
-//! remains the model used by the existing V-carve engine; import it as `LegacyJob`
-//! when adapting, and never construct a fake legacy job for non-V-carve planners.
+//! This is the frozen schema-4 migration DTO: the schema-5 collection model
+//! ([`v5`]) migrates through `CamJob::from_json`, and later slices must not
+//! change this serialized shape without a new named compatibility step. The
+//! legacy schema-3 [`crate::job::Job`] remains the model used by the existing
+//! V-carve engine; import it as `LegacyJob` when adapting, and never construct
+//! a fake legacy job for non-V-carve planners.
 use crate::{
     geometry::{Diagnostic, Point, Result},
     job::{MachineProfile, PlanningTolerances, SourceSnapshot},
@@ -16,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 pub mod migrate;
+pub mod v5;
 
 pub const CAM_JOB_SCHEMA_VERSION: u32 = 4;
 

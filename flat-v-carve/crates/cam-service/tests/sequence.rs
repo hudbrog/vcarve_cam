@@ -138,6 +138,25 @@ fn operation_list_edits_keep_documents_valid_and_ids_stable() {
 }
 
 #[test]
+fn schema5_collection_documents_are_refused_not_flattened() {
+    // A minimal structurally valid schema-5 document: the ui-8 client must
+    // refuse it explicitly instead of flattening it to schema 4 or routing
+    // it through the legacy migration path.
+    let collection = json!({
+        "schema_version": 5,
+        "name": "collection",
+        "artwork": [],
+        "tools": [],
+        "operations": []
+    });
+    let error = execute(SequenceCommand::Open {
+        json: collection.to_string(),
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "SEQUENCE_SCHEMA_UNSUPPORTED");
+}
+
+#[test]
 fn plan_reports_every_operation_and_rejects_prefix_scope_for_unknown_ids() {
     let document = opened();
     let result = execute(SequenceCommand::Plan {
