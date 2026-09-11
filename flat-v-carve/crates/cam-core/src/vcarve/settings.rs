@@ -76,6 +76,17 @@ pub(super) struct Context {
 }
 impl Context {
     pub fn new(job: &Job) -> Result<Self> {
+        Self::build(job, None)
+    }
+    /// Context over an already-resolved selected region (plan section 22.4):
+    /// the shared machining entry point for the schema-4 adapter and the H3
+    /// collection planner. The region is the resolved union of the selected
+    /// filled components; the legacy job still carries every non-geometric
+    /// setting and no source is re-imported.
+    pub(super) fn with_region(job: &Job, region: crate::geometry::Region) -> Result<Self> {
+        Self::build(job, Some(region))
+    }
+    fn build(job: &Job, region: Option<crate::geometry::Region>) -> Result<Self> {
         job.validate_settings()?;
         let settings = job.vbit_planning.clone().ok_or_else(|| {
             error(
@@ -83,7 +94,10 @@ impl Context {
                 "configure vbit_planning for the combined stage",
             )
         })?;
-        let geometry = job.inspect()?.geometry;
+        let selected = match region {
+            Some(region) => region,
+            None => job.inspect()?.geometry.selected,
+        };
         let slot = job
             .tools
             .iter()
@@ -106,7 +120,7 @@ impl Context {
         };
         let mill = Endmill::try_from(spec.clone())?;
         let target = Target::for_planning(
-            geometry.selected,
+            selected,
             Depth::new(required(
                 job.operation.max_depth_mm,
                 "operation.max_depth_mm",

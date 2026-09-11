@@ -15,17 +15,17 @@ pub mod evidence;
 pub mod replay;
 
 use crate::{
-    contours::{ContourCatalogue, ResolvedAnchor},
+    contours::ResolvedAnchor,
     geometry::{Diagnostic, Point, Result},
     model::VBit,
     motion::Position,
-    operations::LocatedDiagnostic,
-    project::{CamJob, DragKnifeSettings, StartSelection, ToolGeometry},
+    operations::{LocatedDiagnostic, PlanContext, PlannerGeometry},
+    project::{DragKnifeSettings, StartSelection, ToolGeometry},
     sequence::{
         CoolantIntent, GenerationStatus, LocalStage, PathControlIntent, PlanIssue,
         PlannedOperation, ProcessIntent, ProcessSpindle, StageRole,
     },
-    setup::resolve_heights,
+    setup::resolve_heights_values,
     toolpath::{Interpolation, MotionEffect, MotionPurpose, PlannedMotion},
 };
 use replay::{IntendedTip, ReplayStatus, replay};
@@ -70,11 +70,22 @@ fn issue(code: &str, message: impl Into<String>, operation_id: &str) -> PlanIssu
     }
 }
 
-/// Required-but-unset fields for planning this knife operation.
+/// Required-but-unset fields for planning this knife operation. The artwork
+/// field names the collection entry ("source" in schema 4, "artwork" in
+/// schema 5).
 pub fn missing_fields(
-    job: &CamJob,
+    job: &crate::project::CamJob,
     operation_id: &str,
     settings: &DragKnifeSettings,
+) -> Vec<LocatedDiagnostic> {
+    missing_fields_ctx(&PlanContext::from_v4(job), operation_id, settings, "source")
+}
+
+pub(crate) fn missing_fields_ctx(
+    ctx: &PlanContext,
+    operation_id: &str,
+    settings: &DragKnifeSettings,
+    artwork_field: &str,
 ) -> Vec<LocatedDiagnostic> {
     let mut missing = vec![];
     let mut push = |path: String, what: &str| {
@@ -84,28 +95,28 @@ pub fn missing_fields(
             format!("set {what} before planning operation '{operation_id}'"),
         ));
     };
-    if job.source.is_none() {
+    if !ctx.has_artwork {
         push(
-            "source".into(),
+            artwork_field.into(),
             "an SVG source (knife operations select centerline chains)",
         );
     }
-    if job.setup.stock.thickness_mm.is_none() {
+    if ctx.setup.stock.thickness_mm.is_none() {
         push("setup.stock.thickness_mm".into(), "the stock thickness");
     }
-    if job.setup.stock.xy.is_none() {
+    if ctx.setup.stock.xy.is_none() {
         push(
             "setup.stock.xy".into(),
             "physical stock XY dimensions (alignment contact)",
         );
     }
-    if job.setup.clearance_above_stock_mm.is_none() {
+    if ctx.setup.clearance_above_stock_mm.is_none() {
         push(
             "setup.clearance_above_stock_mm".into(),
             "the clearance plane",
         );
     }
-    if job.tolerances.motion_tolerance_mm.is_none() {
+    if ctx.tolerances.motion_tolerance_mm.is_none() {
         push(
             "tolerances.motion_tolerance_mm".into(),
             "the motion tolerance",
@@ -126,10 +137,7 @@ pub fn missing_fields(
             push(format!("operations[{operation_id}].{name}"), name);
         }
     }
-    let tool = job
-        .tools
-        .iter()
-        .find(|t| t.id == settings.assignment.tool_id);
+    let tool = ctx.tool(&settings.assignment.tool_id);
     if tool.is_some_and(|t| t.geometry.is_none()) {
         push(
             format!("operations[{operation_id}].assignment.tool"),
@@ -162,13 +170,11 @@ pub fn missing_fields(
 }
 
 fn knife_geometry(
-    job: &CamJob,
+    ctx: &PlanContext,
     settings: &DragKnifeSettings,
 ) -> Result<crate::project::DragKnifeSpec> {
-    let tool = job
-        .tools
-        .iter()
-        .find(|t| t.id == settings.assignment.tool_id)
+    let tool = ctx
+        .tool(&settings.assignment.tool_id)
         .ok_or_else(|| error("PROJECT_TOOL_REFERENCE", "knife tool not found"))?;
     match &tool.geometry {
         Some(ToolGeometry::DragKnife(spec)) => Ok(spec.clone()),
@@ -431,8 +437,8 @@ fn rotate_ring_to(vertices: &mut Vec<Point>, p: Point) {
     *vertices = rotated;
 }
 
-fn point_in_stock(job: &CamJob, p: Point) -> bool {
-    match job.setup.stock.xy {
+fn point_in_stock(ctx: &PlanContext, p: Point) -> bool {
+    match ctx.setup.stock.xy {
         Some(rect) => {
             p.x > rect.min_x_mm - RESERVE_MM
                 && p.y > rect.min_y_mm - RESERVE_MM
@@ -457,22 +463,18 @@ struct PriorSweep {
     floor_z: f64,
 }
 
-fn prior_sweeps(job: &CamJob, prior_motions: &[PlannedMotion]) -> Result<Vec<PriorSweep>> {
+fn prior_sweeps(ctx: &PlanContext, prior_motions: &[PlannedMotion]) -> Result<Vec<PriorSweep>> {
     let mut sweeps = vec![];
     for motion in prior_motions
         .iter()
         .filter(|motion| motion.effect == MotionEffect::MillingSweep)
     {
-        let tool = job
-            .tools
-            .iter()
-            .find(|t| t.id == motion.tool_id)
-            .ok_or_else(|| {
-                error(
-                    "STOCK_HISTORY_TOOL",
-                    format!("prior stage uses unknown tool '{}'", motion.tool_id),
-                )
-            })?;
+        let tool = ctx.tool(&motion.tool_id).ok_or_else(|| {
+            error(
+                "STOCK_HISTORY_TOOL",
+                format!("prior stage uses unknown tool '{}'", motion.tool_id),
+            )
+        })?;
         let radius = match &tool.geometry {
             Some(ToolGeometry::Endmill(spec)) => spec.diameter_mm / 2.,
             Some(ToolGeometry::Vbit(spec)) => {
@@ -796,13 +798,19 @@ fn emit_swivel_chords(
 /// Plan one drag-knife operation against the stock prefix the preceding
 /// operations actually left behind (plan section 22.10 F3c).
 pub(crate) fn plan(
-    job: &CamJob,
+    ctx: &PlanContext,
     operation_id: &str,
     settings: &DragKnifeSettings,
     published_faces: &BTreeMap<String, crate::operations::PublishedFace>,
     prior_motions: &[PlannedMotion],
+    geometry: &PlannerGeometry,
 ) -> Result<PlannedOperation> {
-    let missing = missing_fields(job, operation_id, settings);
+    let missing = missing_fields_ctx(
+        ctx,
+        operation_id,
+        settings,
+        crate::operations::profile::artwork_field(geometry),
+    );
     if !missing.is_empty() {
         return Ok(incomplete(
             missing
@@ -817,15 +825,15 @@ pub(crate) fn plan(
                 .collect(),
         ));
     }
-    let geometry = knife_geometry(job, settings)?;
-    let d = geometry.blade_offset_mm;
-    let tolerance = job.tolerances.motion_tolerance_mm.expect("checked above");
+    let spec = knife_geometry(ctx, settings)?;
+    let d = spec.blade_offset_mm;
+    let tolerance = ctx.tolerances.motion_tolerance_mm.expect("checked above");
     // Error allocation: import flattening spent its share upstream; swivel
     // linearization spends a quarter of the motion tolerance so the replay
     // budget (the full tolerance, measured against the intended polyline)
     // keeps headroom.
     let linearization_error = tolerance / 4.;
-    let catalogue = ContourCatalogue::build(job)?;
+    let catalogue = geometry.catalogue()?;
     let selected = match catalogue.select_chains(&settings.chains) {
         Ok(selected) => selected,
         Err(diag) => {
@@ -865,8 +873,12 @@ pub(crate) fn plan(
         .iter()
         .map(|(id, face)| (id.clone(), face.z_mm))
         .collect();
-    let heights = match resolve_heights(job, 0, &settings.top, &settings.bottom, &published_planes)
-    {
+    let heights = match resolve_heights_values(
+        ctx.setup.stock.thickness_mm,
+        &settings.top,
+        &settings.bottom,
+        &published_planes,
+    ) {
         Ok(heights) => heights,
         Err(diag) => {
             return Ok(incomplete(vec![issue(
@@ -878,7 +890,7 @@ pub(crate) fn plan(
     };
     // Through cutting is permission, not a moved bottom (plan section 6.4).
     let allowance = settings.through_cut_allowance_mm.unwrap_or(0.);
-    let thickness = job.setup.stock.thickness_mm.expect("checked above");
+    let thickness = ctx.setup.stock.thickness_mm.expect("checked above");
     let below = -thickness - heights.bottom_z;
     if below > allowance + 1e-9 {
         return Ok(incomplete(vec![issue(
@@ -891,13 +903,13 @@ pub(crate) fn plan(
         )]));
     }
     // Knife cut depth must not exceed the declared capability.
-    if heights.top_z - heights.bottom_z > geometry.max_cut_depth_mm + 1e-9 {
+    if heights.top_z - heights.bottom_z > spec.max_cut_depth_mm + 1e-9 {
         return Ok(incomplete(vec![issue(
             "KNIFE_DEPTH_CAPABILITY",
             format!(
                 "cut depth {:.4} mm exceeds the knife's declared maximum cut depth {:.4} mm",
                 heights.top_z - heights.bottom_z,
-                geometry.max_cut_depth_mm
+                spec.max_cut_depth_mm
             ),
             operation_id,
         )]));
@@ -914,7 +926,7 @@ pub(crate) fn plan(
         )]));
     }
     let layers = crate::operations::face::depth_layers(&heights, stepdown);
-    let clearance = job.setup.clearance_above_stock_mm.expect("checked above");
+    let clearance = ctx.setup.clearance_above_stock_mm.expect("checked above");
     let cutting_feed = settings
         .assignment
         .cutting_feed_mm_min
@@ -970,7 +982,7 @@ pub(crate) fn plan(
         // Alignment/contact swivels plant the tip at the chain start inside
         // actual stock; a start outside stock cannot keep the blade engaged
         // (plan section 12.3).
-        if !point_in_stock(job, vertices[0]) {
+        if !point_in_stock(ctx, vertices[0]) {
             return Ok(incomplete(vec![issue(
                 "KNIFE_ALIGNMENT_UNAVAILABLE",
                 format!(
@@ -997,7 +1009,7 @@ pub(crate) fn plan(
     // prior milling sweeps the intact stock trivially satisfies this and a
     // knife-only job stays usable.
     if !prior_motions.is_empty() {
-        let sweeps = match prior_sweeps(job, prior_motions) {
+        let sweeps = match prior_sweeps(ctx, prior_motions) {
             Ok(sweeps) => sweeps,
             Err(diag) => {
                 return Ok(incomplete(vec![issue(

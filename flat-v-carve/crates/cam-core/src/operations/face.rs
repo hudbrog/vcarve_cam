@@ -5,15 +5,13 @@
 use crate::{
     geometry::{Diagnostic, Result},
     motion::Position,
-    operations::LocatedDiagnostic,
-    project::{
-        CamJob, FaceArea, FaceSettings, MillingAssignment, RectXY, ToolGeometry, WorkZeroXY,
-    },
+    operations::{LocatedDiagnostic, PlanContext},
+    project::{FaceArea, FaceSettings, MillingAssignment, RectXY, ToolGeometry, WorkZeroXY},
     sequence::{
         CoolantIntent, GenerationStatus, LocalStage, PathControlIntent, PlanIssue,
         PlannedOperation, ProcessIntent, ProcessSpindle, StageRole,
     },
-    setup::{ResolvedHeights, resolve_heights},
+    setup::{ResolvedHeights, resolve_heights_values},
     toolpath::{Interpolation, MotionEffect, MotionPurpose, PlannedMotion},
 };
 use std::collections::BTreeMap;
@@ -37,9 +35,9 @@ pub struct FaceGeometry {
 }
 
 /// Expand the requested area by its per-side margins.
-pub fn coverage_rectangle(settings: &FaceSettings, job: &CamJob) -> Result<RectXY> {
+pub(crate) fn coverage_rectangle(settings: &FaceSettings, ctx: &PlanContext) -> Result<RectXY> {
     let base = match &settings.area {
-        FaceArea::EntireStock => job.setup.stock.xy.ok_or_else(|| {
+        FaceArea::EntireStock => ctx.setup.stock.xy.ok_or_else(|| {
             error(
                 "SETUP_STOCK_XY_REQUIRED",
                 "facing the entire stock requires physical stock XY dimensions",
@@ -59,9 +57,18 @@ fn expand(rect: RectXY, margins: &crate::project::FaceMargins) -> RectXY {
     }
 }
 
-/// Required-but-unset fields for planning this face operation.
+/// Required-but-unset fields for planning this face operation (schema-4
+/// service surface; delegates to the shared context form).
 pub fn missing_fields(
-    job: &CamJob,
+    job: &crate::project::CamJob,
+    operation_id: &str,
+    settings: &FaceSettings,
+) -> Vec<LocatedDiagnostic> {
+    missing_fields_ctx(&PlanContext::from_v4(job), operation_id, settings)
+}
+
+pub(crate) fn missing_fields_ctx(
+    ctx: &PlanContext,
     operation_id: &str,
     settings: &FaceSettings,
 ) -> Vec<LocatedDiagnostic> {
@@ -73,22 +80,22 @@ pub fn missing_fields(
             format!("set {what} before planning operation '{operation_id}'"),
         ));
     };
-    if job.setup.stock.thickness_mm.is_none() {
+    if ctx.setup.stock.thickness_mm.is_none() {
         push("setup.stock.thickness_mm".into(), "the stock thickness");
     }
-    if job.setup.clearance_above_stock_mm.is_none() {
+    if ctx.setup.clearance_above_stock_mm.is_none() {
         push(
             "setup.clearance_above_stock_mm".into(),
             "the clearance plane",
         );
     }
-    if matches!(settings.area, FaceArea::EntireStock) && job.setup.stock.xy.is_none() {
+    if matches!(settings.area, FaceArea::EntireStock) && ctx.setup.stock.xy.is_none() {
         push(
             "setup.stock.xy".into(),
             "physical stock XY dimensions (entire-stock facing)",
         );
     }
-    if job.tolerances.motion_tolerance_mm.is_none() {
+    if ctx.tolerances.motion_tolerance_mm.is_none() {
         push(
             "tolerances.motion_tolerance_mm".into(),
             "the motion tolerance",
@@ -106,10 +113,7 @@ pub fn missing_fields(
             "the stepover",
         );
     }
-    let tool = job
-        .tools
-        .iter()
-        .find(|t| t.id == settings.assignment.tool_id);
+    let tool = ctx.tool(&settings.assignment.tool_id);
     if tool.is_some_and(|t| t.geometry.is_none()) {
         push(
             format!("operations[{operation_id}].assignment.tool"),
@@ -134,7 +138,7 @@ pub fn missing_fields(
     }
     // Facing uses no work-zero XY dependency; the setup origin keeps legacy
     // documents usable. Anchor selections still transform output only.
-    if !matches!(job.setup.work_zero.xy, WorkZeroXY::SetupOrigin) && job.setup.stock.xy.is_none() {
+    if !matches!(ctx.setup.work_zero.xy, WorkZeroXY::SetupOrigin) && ctx.setup.stock.xy.is_none() {
         push(
             format!("operations[{operation_id}]"),
             "an XY work-zero selection with physical stock dimensions",
@@ -143,11 +147,9 @@ pub fn missing_fields(
     missing
 }
 
-fn cutter_radius(job: &CamJob, assignment: &MillingAssignment) -> Result<f64> {
-    let tool = job
-        .tools
-        .iter()
-        .find(|t| t.id == assignment.tool_id)
+fn cutter_radius(ctx: &PlanContext, assignment: &MillingAssignment) -> Result<f64> {
+    let tool = ctx
+        .tool(&assignment.tool_id)
         .ok_or_else(|| error("PROJECT_TOOL_REFERENCE", "face tool not found"))?;
     match &tool.geometry {
         Some(ToolGeometry::Endmill(g)) => Ok(g.diameter_mm / 2.),
@@ -274,8 +276,8 @@ pub fn coverage_gaps(
     gaps
 }
 
-fn footprint_wholly_outside_stock(job: &CamJob, x: f64, y: f64, radius: f64) -> bool {
-    match job.setup.stock.xy {
+fn footprint_wholly_outside_stock(ctx: &PlanContext, x: f64, y: f64, radius: f64) -> bool {
+    match ctx.setup.stock.xy {
         Some(rect) => {
             let max_x = rect.min_x_mm + rect.width_mm;
             let max_y = rect.min_y_mm + rect.length_mm;
@@ -307,11 +309,11 @@ fn stage_id(operation_id: &str) -> String {
 
 /// Plan one face operation.
 pub(crate) fn plan(
-    job: &CamJob,
+    ctx: &PlanContext,
     operation_id: &str,
     settings: &FaceSettings,
 ) -> Result<PlannedOperation> {
-    let missing = missing_fields(job, operation_id, settings);
+    let missing = missing_fields_ctx(ctx, operation_id, settings);
     if !missing.is_empty() {
         return Ok(incomplete(
             operation_id,
@@ -340,8 +342,8 @@ pub(crate) fn plan(
             )],
         ));
     }
-    let coverage = coverage_rectangle(settings, job)?;
-    let radius = cutter_radius(job, &settings.assignment)?;
+    let coverage = coverage_rectangle(settings, ctx)?;
+    let radius = cutter_radius(ctx, &settings.assignment)?;
     let stepover = settings.stepover_mm.expect("checked above");
     let stepdown = settings
         .stepdown_mm
@@ -360,7 +362,12 @@ pub(crate) fn plan(
             )],
         ));
     }
-    let heights = resolve_heights(job, 0, &settings.top, &settings.bottom, &BTreeMap::new())?;
+    let heights = resolve_heights_values(
+        ctx.setup.stock.thickness_mm,
+        &settings.top,
+        &settings.bottom,
+        &BTreeMap::new(),
+    )?;
     let layers = depth_layers(&heights, stepdown);
     let geometry = FaceGeometry {
         along_y: angle == 90.,
@@ -417,7 +424,7 @@ pub(crate) fn plan(
         length_mm: coverage.length_mm
             + (entry_overrun + exit_overrun + 2. * radius + 2. * RESERVE_MM),
     };
-    let clearance = job.setup.clearance_above_stock_mm.expect("checked above");
+    let clearance = ctx.setup.clearance_above_stock_mm.expect("checked above");
     let cutting_feed = settings
         .assignment
         .cutting_feed_mm_min
@@ -517,7 +524,7 @@ pub(crate) fn plan(
                         },
                         None,
                     ));
-                    let air = footprint_wholly_outside_stock(job, entry.x, entry.y, radius);
+                    let air = footprint_wholly_outside_stock(ctx, entry.x, entry.y, radius);
                     let descend_from = if air {
                         clearance
                     } else {
@@ -574,7 +581,7 @@ pub(crate) fn plan(
                 None => {
                     // First motion of the stage: assume clearance above the
                     // entry point; nothing about the prior position is claimed.
-                    let air = footprint_wholly_outside_stock(job, entry.x, entry.y, radius);
+                    let air = footprint_wholly_outside_stock(ctx, entry.x, entry.y, radius);
                     let start_z = clearance;
                     let mid_z = if air { cut_z } else { heights.top_z.max(cut_z) };
                     if start_z > mid_z {

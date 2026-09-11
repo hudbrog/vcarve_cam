@@ -1,5 +1,5 @@
 use crate::{
-    geometry::{Diagnostic, Point, Result},
+    geometry::{Diagnostic, Point, Region, Result},
     job::{Job, ToolGeometry},
     model::{Depth, Endmill, VBit},
     target::Target,
@@ -99,10 +99,17 @@ fn required(v: Option<f64>, name: &str) -> Result<f64> {
 }
 impl Context {
     pub fn new(job: &Job) -> Result<Self> {
-        Self::with_target(job, None)
+        Self::build(job, None, None)
     }
-    /// `shared` is freshly constructed from this exact job by combined planning.
-    pub(super) fn with_target(job: &Job, shared: Option<std::sync::Arc<Target>>) -> Result<Self> {
+    /// Build the planning context. `region` is an already-resolved selected
+    /// union (plan section 22.4: the H3 collection planner's input);
+    /// `shared` is a freshly constructed target from combined planning; both
+    /// absent means the legacy job's own source is imported here.
+    pub(super) fn build(
+        job: &Job,
+        region: Option<Region>,
+        shared: Option<std::sync::Arc<Target>>,
+    ) -> Result<Self> {
         job.validate_settings()?;
         let settings = job.endmill_planning.clone().ok_or_else(|| {
             error(
@@ -111,15 +118,15 @@ impl Context {
             )
         })?;
         settings.validate()?;
-        let geometry = if shared.is_none() {
-            Some(job.inspect()?.geometry)
-        } else {
-            None
+        // A shared target (combined planning) already embeds this job's
+        // geometry; a resolved region arrives from the collection planner;
+        // otherwise the legacy job's own source is imported here.
+        let geometry = match (region, &shared) {
+            (Some(region), _) => Some(region),
+            (None, Some(_)) => None,
+            (None, None) => Some(job.inspect()?.geometry.selected),
         };
-        if geometry
-            .as_ref()
-            .is_some_and(|g| g.selected.rings().is_empty())
-        {
+        if geometry.as_ref().is_some_and(|g| g.rings().is_empty()) {
             return Err(error(
                 "EMPTY_SELECTION",
                 "select at least one region before planning",
@@ -156,7 +163,7 @@ impl Context {
         let target = match shared {
             Some(target) => target,
             None => std::sync::Arc::new(Target::for_planning(
-                geometry.unwrap().selected,
+                geometry.expect("region or import supplied"),
                 Depth::new(depth)?,
                 vbit.angle(),
             )?),

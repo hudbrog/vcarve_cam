@@ -6,14 +6,17 @@
 //! operations; new Face/Profile/Knife planners never build legacy jobs.
 use crate::operations::LocatedDiagnostic;
 use crate::{
-    geometry::{Diagnostic, Result},
+    geometry::{Diagnostic, Region, Result},
     job::{
         Job as LegacyJob, MachineProfile as LegacyMachineProfile,
-        OperationSettings as LegacyOperationSettings, StockSettings as LegacyStockSettings,
-        ToolGeometry as LegacyToolGeometry, ToolSettings as LegacyToolSettings,
+        OperationSettings as LegacyOperationSettings, SourceSnapshot as LegacySourceSnapshot,
+        StockSettings as LegacyStockSettings, ToolGeometry as LegacyToolGeometry,
+        ToolSettings as LegacyToolSettings,
     },
     model::{EndmillSpec, VBitSpec},
-    pocket::{EndmillPlanningSettings, EntryStrategy, plan_endmill},
+    operations::PlanContext,
+    pocket::{EndmillPlanningSettings, EntryStrategy, plan_endmill_with_region},
+    project::v5::{CamJobV5, FlatVcarveSettingsV5},
     project::{
         CamJob, FlatVcarveMode, FlatVcarveSettings, MillingAssignment, ToolCapabilities,
         ToolGeometry,
@@ -23,8 +26,9 @@ use crate::{
         PathControlIntent, PlanIssue, PlannedOperation, ProcessIntent, ProcessSpindle, StageRole,
         legacy_motion_mapping,
     },
+    svg::Bounds,
     toolpath::PlannedMotion,
-    vcarve::plan_combined,
+    vcarve::plan_combined_with_region,
 };
 
 fn incomplete(_operation_id: &str, issues: Vec<PlanIssue>) -> PlannedOperation {
@@ -52,6 +56,27 @@ pub fn missing_fields(
     operation_id: &str,
     settings: &FlatVcarveSettings,
 ) -> Vec<LocatedDiagnostic> {
+    missing_fields_ctx(&PlanContext::from_v4(job), operation_id, settings, "source")
+}
+
+/// The collection-document variant of [`missing_fields`] (plan section 22.4):
+/// identical requirements, with the artwork container field named for the
+/// collection and the assignments carried by the schema-5 shapes.
+pub(crate) fn missing_fields_v5(
+    ctx: &PlanContext,
+    operation_id: &str,
+    settings: &FlatVcarveSettingsV5,
+) -> Vec<LocatedDiagnostic> {
+    let mapped = crate::project::v5::resolve::to_flat_vcarve_settings(settings);
+    missing_fields_ctx(ctx, operation_id, &mapped, "artwork")
+}
+
+fn missing_fields_ctx(
+    ctx: &PlanContext,
+    operation_id: &str,
+    settings: &FlatVcarveSettings,
+    artwork_field: &str,
+) -> Vec<LocatedDiagnostic> {
     let mut missing = vec![];
     let mut push = |path: String, what: &str| {
         missing.push(LocatedDiagnostic::missing(
@@ -60,28 +85,28 @@ pub fn missing_fields(
             format!("set {what} before planning operation '{operation_id}'"),
         ));
     };
-    if job.source.is_none() {
-        push("source".into(), "an imported SVG source");
+    if !ctx.has_artwork {
+        push(artwork_field.into(), "an imported SVG source");
     }
-    if job.setup.stock.thickness_mm.is_none() {
+    if ctx.setup.stock.thickness_mm.is_none() {
         push("setup.stock.thickness_mm".into(), "the stock thickness");
     }
-    if job.setup.clearance_above_stock_mm.is_none() {
+    if ctx.setup.clearance_above_stock_mm.is_none() {
         push(
             "setup.clearance_above_stock_mm".into(),
             "the clearance plane",
         );
     }
-    if job.setup.start_xy_mm.is_none() {
+    if ctx.setup.start_xy_mm.is_none() {
         push("setup.start_xy_mm".into(), "the start XY");
     }
-    if job.tolerances.motion_tolerance_mm.is_none() {
+    if ctx.tolerances.motion_tolerance_mm.is_none() {
         push(
             "tolerances.motion_tolerance_mm".into(),
             "the motion tolerance",
         );
     }
-    if job.tolerances.verification_tolerance_mm.is_none() {
+    if ctx.tolerances.verification_tolerance_mm.is_none() {
         push(
             "tolerances.verification_tolerance_mm".into(),
             "the verification tolerance",
@@ -141,7 +166,7 @@ pub fn missing_fields(
             settings.mode == FlatVcarveMode::Combined,
         ),
     ] {
-        let tool = job.tools.iter().find(|t| t.id == assignment.tool_id);
+        let tool = ctx.tool(&assignment.tool_id);
         if tool.is_some_and(|t| t.geometry.is_none()) {
             push(format!("tools[{role}].geometry"), "the tool geometry");
         }
@@ -161,7 +186,7 @@ pub fn missing_fields(
     }
     // Entry capability per stage, mirroring the legacy planners' checks.
     if let Some(rough) = &settings.rough {
-        let endmill = job.tools.iter().find(|t| t.id == settings.endmill.tool_id);
+        let endmill = ctx.tool(&settings.endmill.tool_id);
         match rough.entry {
             EntryStrategy::Plunge => {
                 if endmill.is_none_or(|t| t.capabilities.plunge_capable != Some(true)) {
@@ -182,7 +207,7 @@ pub fn missing_fields(
         }
     }
     if settings.mode == FlatVcarveMode::Combined {
-        let vbit = job.tools.iter().find(|t| t.id == settings.vbit.tool_id);
+        let vbit = ctx.tool(&settings.vbit.tool_id);
         if vbit.is_none_or(|t| t.capabilities.plunge_capable.is_none()) {
             push(
                 format!("operations[{operation_id}].vbit.plunge_capable"),
@@ -240,6 +265,96 @@ fn legacy_tool(
         ramp_capable: capabilities.ramp_capable,
         plunge_capable: slot_plunge_capable,
     })
+}
+
+/// Construct the legacy planning job for a collection Flat V-carve operation.
+/// The legacy model requires exactly one source snapshot; in the collection
+/// path the resolved region is the geometry authority and the snapshot is an
+/// explicitly inert settings carrier — never parsed, never a synthetic SVG
+/// for re-import (plan section 22.4).
+pub(crate) fn to_legacy_job_v5(
+    job: &CamJobV5,
+    ctx: &PlanContext,
+    operation_id: &str,
+    settings: &FlatVcarveSettingsV5,
+) -> Result<LegacyJob> {
+    let mapped = crate::project::v5::resolve::to_flat_vcarve_settings(settings);
+    let endmill_tool = ctx
+        .tool(&settings.endmill.tool_id)
+        .ok_or_else(|| error("PROJECT_TOOL_REFERENCE", "endmill tool not found"))?;
+    let vbit_tool = ctx
+        .tool(&settings.vbit.tool_id)
+        .ok_or_else(|| error("PROJECT_TOOL_REFERENCE", "V-bit tool not found"))?;
+    let rough = settings
+        .rough
+        .as_ref()
+        .ok_or_else(|| error("MISSING_MACHINING_SETTING", "rough settings are required"))?;
+    let endmill_planning = EndmillPlanningSettings {
+        clearance_z_mm: ctx
+            .setup
+            .clearance_above_stock_mm
+            .ok_or_else(|| error("MISSING_MACHINING_SETTING", "clearance is required"))?,
+        start_xy_mm: ctx
+            .setup
+            .start_xy_mm
+            .ok_or_else(|| error("MISSING_MACHINING_SETTING", "start XY is required"))?,
+        strategy: rough.strategy,
+        entry: rough.entry.clone(),
+        max_layers: rough.max_layers,
+        max_loops_per_layer: rough.max_loops_per_layer,
+        max_motions: rough.max_motions,
+    };
+    let legacy = LegacyJob {
+        schema_version: crate::job::JOB_SCHEMA_VERSION,
+        name: job.name.clone(),
+        source: LegacySourceSnapshot {
+            filename: "collection".into(),
+            svg: String::new(),
+        },
+        import: crate::svg::ImportOptions {
+            geometry_tolerance_mm: 0.001,
+            ticks_per_mm: None,
+            placement: crate::svg::Placement::default(),
+            mode: crate::svg::ImportMode::Fill,
+        },
+        selected_region_ids: mapped.component_ids.clone(),
+        stock: LegacyStockSettings {
+            thickness_mm: ctx.setup.stock.thickness_mm,
+        },
+        operation: LegacyOperationSettings {
+            id: operation_id.into(),
+            endmill_id: mapped.endmill.tool_id.clone(),
+            vbit_id: mapped.vbit.tool_id.clone(),
+            max_depth_mm: settings.max_depth_mm,
+            wall_allowance_mm: settings.wall_allowance_mm,
+            max_floor_ridge_mm: settings.max_floor_ridge_mm,
+            max_detail_residual_mm: settings.max_detail_residual_mm,
+        },
+        tools: vec![
+            legacy_tool(
+                endmill_tool.id,
+                endmill_tool.geometry.ok_or_else(|| {
+                    error("MISSING_MACHINING_SETTING", "endmill geometry is required")
+                })?,
+                endmill_tool.capabilities,
+                &mapped.endmill,
+            )?,
+            legacy_tool(
+                vbit_tool.id,
+                vbit_tool.geometry.ok_or_else(|| {
+                    error("MISSING_MACHINING_SETTING", "V-bit geometry is required")
+                })?,
+                vbit_tool.capabilities,
+                &mapped.vbit,
+            )?,
+        ],
+        tolerances: ctx.tolerances.clone(),
+        machine_profile: job.legacy_machine_profile.clone(),
+        endmill_planning: Some(endmill_planning),
+        vbit_planning: settings.finish.clone(),
+    };
+    legacy.validate_settings()?;
+    Ok(legacy)
 }
 
 /// Construct the legacy job for exactly this operation's component selection,
@@ -406,65 +521,114 @@ fn map_motions(
         .collect()
 }
 
+fn incomplete_from_missing(missing: Vec<LocatedDiagnostic>) -> PlannedOperation {
+    PlannedOperation {
+        status: GenerationStatus::Incomplete,
+        stages: vec![],
+        motions: vec![],
+        stage_evidence: vec![],
+        pass_evidence: vec![],
+        issues: missing
+            .iter()
+            .map(|d| PlanIssue {
+                code: d.code.clone(),
+                message: format!("{} ({})", d.message, d.field_path.as_deref().unwrap_or("")),
+                operation_id: d.operation_id.clone(),
+                stage_id: None,
+            })
+            .collect(),
+        preparation: vec![],
+        named_outputs: vec![],
+    }
+}
+
+/// The resolved carving top in setup coordinates, including uniform-surface
+/// admission for face-referenced tops (plan section 13.2). Top resolution and
+/// admission are generation outcomes, not document errors.
+fn resolve_carve_top(
+    ctx: &PlanContext,
+    operation_id: &str,
+    top: &crate::project::HeightRef,
+    target_bounds: Option<Bounds>,
+    published_faces: &std::collections::BTreeMap<String, crate::operations::PublishedFace>,
+    prior_motions: &[PlannedMotion],
+) -> Result<f64> {
+    let planes: std::collections::BTreeMap<String, f64> = published_faces
+        .iter()
+        .map(|(id, face)| (id.clone(), face.z_mm))
+        .collect();
+    crate::setup::resolve_top_values(ctx.setup.stock.thickness_mm, top, &planes).and_then(|top_z| {
+        if let crate::project::HeightReference::FaceResult {
+            operation_id: face_id,
+        } = &top.reference
+        {
+            admit_uniform_faced_top(
+                operation_id,
+                face_id,
+                published_faces,
+                target_bounds,
+                prior_motions,
+                top_z,
+            )?;
+        }
+        Ok(top_z)
+    })
+}
+
 /// Plan one Flat V-carve operation through the legacy engine and map its
 /// output into generic rough/finish stages without reordering motions.
 /// Missing editable values yield an incomplete, empty result carrying the
 /// located diagnostics; the plan stays inspectable and cannot be exported.
 pub(crate) fn plan(
     job: &CamJob,
+    ctx: &PlanContext,
     operation_id: &str,
     settings: &FlatVcarveSettings,
     published_faces: &std::collections::BTreeMap<String, crate::operations::PublishedFace>,
     prior_motions: &[PlannedMotion],
 ) -> Result<PlannedOperation> {
-    let missing = missing_fields(job, operation_id, settings);
+    let missing = missing_fields_ctx(ctx, operation_id, settings, "source");
     if !missing.is_empty() {
-        return Ok(PlannedOperation {
-            status: GenerationStatus::Incomplete,
-            stages: vec![],
-            motions: vec![],
-            stage_evidence: vec![],
-            pass_evidence: vec![],
-            issues: missing
-                .iter()
-                .map(|d| PlanIssue {
-                    code: d.code.clone(),
-                    message: format!("{} ({})", d.message, d.field_path.as_deref().unwrap_or("")),
-                    operation_id: d.operation_id.clone(),
-                    stage_id: None,
-                })
-                .collect(),
-            preparation: vec![],
-            named_outputs: vec![],
-        });
+        return Ok(incomplete_from_missing(missing));
     }
-    // The resolved carving top in setup coordinates (plan section 13.2): a
-    // face-referenced top shifts the legacy planner into a local frame with
-    // the faced plane at local Z=0.
-    let planes: std::collections::BTreeMap<String, f64> = published_faces
-        .iter()
-        .map(|(id, face)| (id.clone(), face.z_mm))
-        .collect();
-    // Top resolution and uniform-surface admission are generation outcomes,
-    // not document errors: the rest of the job stays plannable for inspection.
-    let admission = crate::setup::resolve_top(job, &settings.top, &planes).and_then(|top_z| {
-        if let crate::project::HeightReference::FaceResult {
-            operation_id: face_id,
-        } = &settings.top.reference
-        {
-            admit_uniform_faced_top(
-                job,
-                operation_id,
-                settings,
-                face_id,
-                published_faces,
-                prior_motions,
-                top_z,
-            )?;
+    // Resolve the selection's filled union once. The legacy planners consumed
+    // the identical import through their own job inspection; the resolved-
+    // region entry points and the collection path share this result (plan
+    // section 22.4: one import, one union authority).
+    let source = job.source.as_ref().expect("missing fields checked");
+    let imported = crate::svg::import_svg(&source.svg, &job.import, Some(&settings.component_ids));
+    let (region, bounds) = match imported {
+        Ok(geometry) => (geometry.selected, geometry.bounds),
+        Err(diagnostic) => {
+            // A face-referenced top ran its admission through this import and
+            // reported the failure as an incomplete generation; preserve that
+            // exact behavior (a stock-top import failure stayed a hard error
+            // inside the legacy planners).
+            if matches!(
+                settings.top.reference,
+                crate::project::HeightReference::FaceResult { .. }
+            ) {
+                return Ok(incomplete(
+                    operation_id,
+                    vec![PlanIssue {
+                        code: diagnostic.code,
+                        message: diagnostic.message,
+                        operation_id: Some(operation_id.into()),
+                        stage_id: None,
+                    }],
+                ));
+            }
+            return Err(diagnostic);
         }
-        Ok(top_z)
-    });
-    let top_z = match admission {
+    };
+    let top_z = match resolve_carve_top(
+        ctx,
+        operation_id,
+        &settings.top,
+        bounds,
+        published_faces,
+        prior_motions,
+    ) {
         Ok(top_z) => top_z,
         Err(diagnostic) => {
             return Ok(incomplete(
@@ -489,17 +653,114 @@ pub(crate) fn plan(
             planning.clearance_z_mm -= top_z;
         }
     }
-    let legacy = legacy;
+    run_legacy(
+        &legacy,
+        region,
+        operation_id,
+        settings.mode,
+        &settings.endmill,
+        &settings.vbit,
+        top_z,
+    )
+}
+
+/// The collection-document entry (plan section 22.4): the resolved union of
+/// the selected filled components arrives from the document resolver —
+/// possibly spanning several artwork items — and no source is imported,
+/// merged or synthesized here.
+pub(crate) fn plan_v5(
+    ctx: &PlanContext,
+    job: &CamJobV5,
+    operation_id: &str,
+    settings: &FlatVcarveSettingsV5,
+    resolved: &crate::project::v5::resolve::ResolvedVcarveRegion,
+    published_faces: &std::collections::BTreeMap<String, crate::operations::PublishedFace>,
+    prior_motions: &[PlannedMotion],
+) -> Result<PlannedOperation> {
+    let missing = missing_fields_v5(ctx, operation_id, settings);
+    if !missing.is_empty() {
+        return Ok(incomplete_from_missing(missing));
+    }
+    let top_z = match resolve_carve_top(
+        ctx,
+        operation_id,
+        &settings.top,
+        resolved.bounds,
+        published_faces,
+        prior_motions,
+    ) {
+        Ok(top_z) => top_z,
+        Err(diagnostic) => {
+            return Ok(incomplete(
+                operation_id,
+                vec![PlanIssue {
+                    code: diagnostic.code,
+                    message: diagnostic.message,
+                    operation_id: Some(operation_id.into()),
+                    stage_id: None,
+                }],
+            ));
+        }
+    };
+    // Legacy-construction failures are generation outcomes in the collection
+    // model (numeric readiness is planner-side): the rest of the job stays
+    // inspectable instead of failing the whole plan.
+    let mut legacy = match to_legacy_job_v5(job, ctx, operation_id, settings) {
+        Ok(legacy) => legacy,
+        Err(diagnostic) => {
+            return Ok(incomplete(
+                operation_id,
+                vec![PlanIssue {
+                    code: diagnostic.code,
+                    message: diagnostic.message,
+                    operation_id: Some(operation_id.into()),
+                    stage_id: None,
+                }],
+            ));
+        }
+    };
+    if top_z != 0. {
+        let thickness = legacy.stock.thickness_mm.expect("missing fields checked") + top_z;
+        legacy.stock.thickness_mm = Some(thickness);
+        if let Some(planning) = &mut legacy.endmill_planning {
+            planning.clearance_z_mm -= top_z;
+        }
+    }
+    let mapped = crate::project::v5::resolve::to_flat_vcarve_settings(settings);
+    run_legacy(
+        &legacy,
+        resolved.region.clone(),
+        operation_id,
+        mapped.mode,
+        &mapped.endmill,
+        &mapped.vbit,
+        top_z,
+    )
+}
+
+/// Shared machining core over a fully constructed legacy job and the resolved
+/// selected region. The schema-4 adapter and the collection planner meet
+/// here; neither mode re-imports any source.
+#[allow(clippy::too_many_arguments)]
+fn run_legacy(
+    legacy: &LegacyJob,
+    region: Region,
+    operation_id: &str,
+    mode: FlatVcarveMode,
+    endmill: &MillingAssignment,
+    vbit: &MillingAssignment,
+    top_z: f64,
+) -> Result<PlannedOperation> {
     let rough_stage_id = format!("{operation_id}-vcarve-rough");
     let finish_stage_id = format!("{operation_id}-vcarve-finish");
-    match settings.mode {
+    match mode {
         FlatVcarveMode::EndmillOnly => {
-            let plan = plan_endmill(&legacy)?;
+            let plan = plan_endmill_with_region(legacy, region)?;
             let mut motions = map_motions(
                 &plan.motions,
                 operation_id,
                 &rough_stage_id,
-                &settings.endmill.tool_id,
+                &endmill.tool_id,
                 false,
                 |_| 0,
             );
@@ -520,9 +781,9 @@ pub(crate) fn plan(
                 stages: vec![LocalStage {
                     stage_id: rough_stage_id.clone(),
                     role: StageRole::VcarveRough,
-                    tool_id: settings.endmill.tool_id.clone(),
+                    tool_id: endmill.tool_id.clone(),
                     motion_range: (0, motions.len()),
-                    intent: milling_intent(&settings.endmill)?,
+                    intent: milling_intent(endmill)?,
                 }],
                 motions,
                 stage_evidence: vec![LegacyStageEvidence {
@@ -537,12 +798,12 @@ pub(crate) fn plan(
             })
         }
         FlatVcarveMode::Combined => {
-            let plan = plan_combined(&legacy)?;
+            let plan = plan_combined_with_region(legacy, region)?;
             let mut endmill_motions = map_motions(
                 &plan.endmill.motions,
                 operation_id,
                 &rough_stage_id,
-                &settings.endmill.tool_id,
+                &endmill.tool_id,
                 false,
                 |_| 0,
             );
@@ -559,7 +820,7 @@ pub(crate) fn plan(
                 &plan.vbit_motions,
                 operation_id,
                 &finish_stage_id,
-                &settings.vbit.tool_id,
+                &vbit.tool_id,
                 true,
                 |id| pass_by_motion.get(&id).copied().unwrap_or(0),
             );
@@ -614,9 +875,9 @@ pub(crate) fn plan(
                 stages.push(LocalStage {
                     stage_id: rough_stage_id.clone(),
                     role: StageRole::VcarveRough,
-                    tool_id: settings.endmill.tool_id.clone(),
+                    tool_id: endmill.tool_id.clone(),
                     motion_range: (0, rough_end),
-                    intent: milling_intent(&settings.endmill)?,
+                    intent: milling_intent(endmill)?,
                 });
                 evidence.push(LegacyStageEvidence {
                     stage_id: rough_stage_id,
@@ -634,9 +895,9 @@ pub(crate) fn plan(
                 stages.push(LocalStage {
                     stage_id: finish_stage_id.clone(),
                     role: StageRole::VcarveFinish,
-                    tool_id: settings.vbit.tool_id.clone(),
+                    tool_id: vbit.tool_id.clone(),
                     motion_range: (rough_end, motions.len()),
-                    intent: milling_intent(&settings.vbit)?,
+                    intent: milling_intent(vbit)?,
                 });
                 evidence.push(LegacyStageEvidence {
                     stage_id: finish_stage_id,
@@ -669,13 +930,14 @@ fn shift_to_setup(motions: &mut [PlannedMotion], top_z: f64) {
 /// Uniform-top admission (plan section 13.2): a face-referenced carve may run
 /// only where the referenced face established a plane across the whole carve
 /// target, and no earlier removal went below that plane inside the target.
+/// The target bounds arrive resolved — one source or a cross-item union — so
+/// admission never re-imports geometry.
 #[allow(clippy::too_many_arguments)]
 fn admit_uniform_faced_top(
-    job: &CamJob,
     operation_id: &str,
-    settings: &FlatVcarveSettings,
     face_id: &str,
     published_faces: &std::collections::BTreeMap<String, crate::operations::PublishedFace>,
+    target_bounds: Option<Bounds>,
     prior_motions: &[PlannedMotion],
     top_z: f64,
 ) -> Result<()> {
@@ -687,12 +949,7 @@ fn admit_uniform_faced_top(
             ),
         ));
     };
-    let geometry = crate::svg::import_svg(
-        &job.source.as_ref().expect("missing fields checked").svg,
-        &job.import,
-        Some(&settings.component_ids),
-    )?;
-    let Some(bounds) = geometry.bounds else {
+    let Some(bounds) = target_bounds else {
         return Err(error(
             "SURFACE_REFERENCE_OUTSIDE_COVERAGE",
             format!(

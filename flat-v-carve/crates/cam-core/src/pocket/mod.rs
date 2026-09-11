@@ -207,7 +207,17 @@ fn strategy_depth(ctx: &Context, depth: f64) -> f64 {
 }
 
 pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
-    plan_with_target(job, None).map(|(plan, _)| plan)
+    let geometry = job.inspect()?;
+    plan_region(job, Some(geometry.geometry.selected), None).map(|(plan, _)| plan)
+}
+
+/// Plan the rough stage over a caller-resolved selected region: the shared
+/// machining entry point for the schema-4 adapter and the H3 collection
+/// planner (plan section 22.4). The legacy job carries every non-geometric
+/// setting; the region is the resolved union of the selected filled
+/// components and is never re-imported here.
+pub fn plan_endmill_with_region(job: &Job, region: Region) -> Result<EndmillPlan> {
+    plan_region(job, Some(region), None).map(|(plan, _)| plan)
 }
 
 /// Keep the freshly constructed target for the next tool of the same job.
@@ -217,8 +227,16 @@ pub(crate) fn plan_with_target(
     job: &Job,
     shared: Option<std::sync::Arc<crate::target::Target>>,
 ) -> Result<(EndmillPlan, std::sync::Arc<crate::target::Target>)> {
+    plan_region(job, None, shared)
+}
+
+fn plan_region(
+    job: &Job,
+    region: Option<Region>,
+    shared: Option<std::sync::Arc<crate::target::Target>>,
+) -> Result<(EndmillPlan, std::sync::Arc<crate::target::Target>)> {
     let mut timing = crate::timing::Timer::new("endmill");
-    let ctx = Context::with_target(job, shared)?;
+    let ctx = Context::build(job, region, shared)?;
     timing.lap("context");
     let levels = depths(&ctx)?;
     let mut motions = vec![];

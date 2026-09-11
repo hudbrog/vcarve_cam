@@ -650,8 +650,17 @@ fn execute(
     Ok(())
 }
 pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
+    let geometry = job.inspect()?;
+    plan_combined_with_region(job, geometry.geometry.selected)
+}
+
+/// Combined planning over a caller-resolved selected region: the shared
+/// machining entry point for the schema-4 adapter and the H3 collection
+/// planner (plan section 22.4). No source is imported or re-imported here;
+/// the region is the resolved union of the selected filled components.
+pub fn plan_combined_with_region(job: &Job, region: Region) -> Result<CombinedPlan> {
     let mut timing = crate::timing::Timer::new("combined");
-    let mut ctx = Context::new(job)?;
+    let mut ctx = Context::with_region(job, region)?;
     timing.lap("context");
     let (endmill, target) = crate::pocket::plan_with_target(job, Some(ctx.target.clone()))?;
     // Both contexts use this job's selected geometry, depth and V-bit angle.

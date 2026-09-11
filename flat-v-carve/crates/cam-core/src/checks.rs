@@ -8,9 +8,10 @@
 use crate::{
     geometry::{Diagnostic, Result},
     sequence::{
-        ExecutionItem, ExecutionStage, GenerationStatus, OperationPlan, ProcessSpindle, StageRole,
+        ExecutionItem, ExecutionStage, GenerationStatus, OperationPlan, OperationResult,
+        ProcessSpindle, StageRole,
     },
-    toolpath::{Interpolation, MotionEffect, MotionPurpose},
+    toolpath::{Interpolation, MotionEffect, MotionPurpose, PlannedMotion},
 };
 use serde::{Deserialize, Serialize};
 
@@ -72,8 +73,33 @@ enum Expected<'a> {
     Run(&'a ExecutionStage),
 }
 
-/// Run the automatic basic checks over a finished plan.
+/// Run the automatic basic checks over a finished schema-4 plan.
 pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
+    check_assembly(
+        &plan.operation_results,
+        &plan.stages,
+        &plan.motions,
+        &plan.execution,
+    )
+}
+
+/// The same automatic checks over a schema-5 collection plan (H3): the
+/// assembly invariants are identical; only the embedded document differs.
+pub fn check_plan_v5(plan: &crate::sequence::OperationPlanV5) -> Result<BasicCheckReport> {
+    check_assembly(
+        &plan.operation_results,
+        &plan.stages,
+        &plan.motions,
+        &plan.execution,
+    )
+}
+
+fn check_assembly(
+    operation_results: &[OperationResult],
+    stages: &[ExecutionStage],
+    motions: &[PlannedMotion],
+    execution: &[ExecutionItem],
+) -> Result<BasicCheckReport> {
     let mut findings = vec![];
     let mut failed = false;
     macro_rules! fail {
@@ -85,7 +111,7 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
 
     // Generation completeness: incomplete or inconclusive operations block
     // export of this sequence but the report itself stays deterministic.
-    for result in &plan.operation_results {
+    for result in operation_results {
         match result.generation_status {
             GenerationStatus::Complete | GenerationStatus::Empty => {}
             GenerationStatus::Incomplete | GenerationStatus::Inconclusive => {
@@ -105,7 +131,7 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
 
     // Stage/motion ownership: dense motion ids, exactly one stage each,
     // stages ordered and contiguous.
-    for (expected_id, motion) in plan.motions.iter().enumerate() {
+    for (expected_id, motion) in motions.iter().enumerate() {
         if motion.id != expected_id {
             fail!(
                 "PLAN_MOTION_IDS",
@@ -117,7 +143,7 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
             break;
         }
     }
-    for (index, stage) in plan.stages.iter().enumerate() {
+    for (index, stage) in stages.iter().enumerate() {
         if stage.motion_range.0 >= stage.motion_range.1 {
             let mut f = finding(
                 "PLAN_STAGE_RANGE",
@@ -132,7 +158,7 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
             failed = true;
             continue;
         }
-        if stage.motion_range.1 > plan.motions.len() {
+        if stage.motion_range.1 > motions.len() {
             let mut f = finding(
                 "PLAN_STAGE_RANGE",
                 format!("stage '{}' extends past the motion array", stage.stage_id),
@@ -142,7 +168,7 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
             failed = true;
             continue;
         }
-        if index > 0 && plan.stages[index - 1].motion_range.1 != stage.motion_range.0 {
+        if index > 0 && stages[index - 1].motion_range.1 != stage.motion_range.0 {
             let mut f = finding(
                 "PLAN_STAGE_ORDER",
                 format!(
@@ -154,7 +180,7 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
             findings.push(f);
             failed = true;
         }
-        for motion in &plan.motions[stage.motion_range.0..stage.motion_range.1] {
+        for motion in &motions[stage.motion_range.0..stage.motion_range.1] {
             if motion.stage_id != stage.stage_id || motion.tool_id != stage.tool_id {
                 let mut f = finding(
                     "PLAN_STAGE_OWNERSHIP",
@@ -170,25 +196,24 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
             }
         }
     }
-    let covered: usize = plan
-        .stages
+    let covered: usize = stages
         .iter()
         .map(|s| s.motion_range.1 - s.motion_range.0)
         .sum();
-    if covered != plan.motions.len() {
+    if covered != motions.len() {
         fail!(
             "PLAN_STAGE_COVERAGE",
             format!(
                 "{} of {} motions are covered by stages",
                 covered,
-                plan.motions.len()
+                motions.len()
             )
         );
     }
 
     // Motion semantics: finite coordinates, positive feeds on linear feeds,
     // no feed on rapids, milling sweeps only with a milling stage role.
-    for motion in &plan.motions {
+    for motion in motions {
         if !motion.start.finite() || !motion.end.finite() {
             let mut f = finding(
                 "PLAN_MOTION_NUMERIC",
@@ -222,7 +247,7 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
                 }
             }
         }
-        let role = stage_role(plan, &motion.stage_id);
+        let role = stage_role(stages, &motion.stage_id);
         let knife_stage = role == Some(StageRole::Knife);
         if motion.effect == MotionEffect::MillingSweep
             && !matches!(
@@ -322,7 +347,7 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
     // recurring tools are re-selected rather than regrouped.
     let mut expected: Vec<Expected<'_>> = vec![];
     let mut selected: Option<&str> = None;
-    for stage in &plan.stages {
+    for stage in stages {
         if selected != Some(stage.tool_id.as_str()) {
             expected.push(Expected::ToolChange(&stage.tool_id, stage));
             selected = Some(stage.tool_id.as_str());
@@ -330,7 +355,7 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
         expected.push(Expected::Intent(stage));
         expected.push(Expected::Run(stage));
     }
-    let mut actual = plan.execution.iter();
+    let mut actual = execution.iter();
     for want in &expected {
         let Some(got) = actual.next() else {
             let mut f = finding(
@@ -406,8 +431,8 @@ fn stage_of<'a>(expected: &'a Expected<'_>) -> &'a ExecutionStage {
     }
 }
 
-fn stage_role(plan: &OperationPlan, stage_id: &str) -> Option<StageRole> {
-    plan.stages
+fn stage_role(stages: &[ExecutionStage], stage_id: &str) -> Option<StageRole> {
+    stages
         .iter()
         .find(|s| s.stage_id == stage_id)
         .map(|s| s.role)

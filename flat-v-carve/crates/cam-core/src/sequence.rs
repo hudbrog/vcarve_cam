@@ -4,9 +4,19 @@
 //! in document order into one executable plan. Slice A2 supports the Flat
 //! V-carve compatibility adapter against original stock-top geometry; later
 //! slices add stock history, face/profile/knife planners and export.
+//! `plan_job_v5` (H3) assembles schema-5 collection documents the same way
+//! through cross-source resolution, and carries the semantic machining
+//! identity of plan section 22.8 instead of a whole-job receipt.
 use crate::{
     geometry::{Diagnostic, Result},
-    project::{CamJob, OperationSettings, SpindleDirection},
+    project::{
+        CamJob, OperationSettings, SpindleDirection,
+        v5::{
+            self, CamJobV5, GeometryRef, KnifeAssignmentV5, MillingAssignmentV5,
+            OperationSettingsV5, OperationV5, ReadinessScope, artwork,
+            references::planning_readiness, resolve,
+        },
+    },
     toolpath::{Interpolation, MotionEffect, MotionPurpose, PlannedMotion},
 };
 use serde::{Deserialize, Serialize};
@@ -14,6 +24,9 @@ use std::collections::BTreeSet;
 
 pub const OPERATION_PLAN_ARTIFACT_KIND: &str = "operation_plan";
 pub const OPERATION_PLAN_SCHEMA_VERSION: u32 = 1;
+/// Schema 2 of the operation-plan artifact carries an embedded collection
+/// document and semantic identities (plan sections 22.2 and 22.8).
+pub const OPERATION_PLAN_V5_SCHEMA_VERSION: u32 = 2;
 
 fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("sequence")
@@ -657,63 +670,671 @@ impl OperationPlan {
                 "stock history requires the stock thickness",
             )
         })?;
-        let mut history =
-            crate::stock::history::StockHistory::new(thickness, self.job_snapshot.setup.stock.xy)?;
-        for stage in &self.stages {
-            // Knife traces never enter the milling-stock model (plan section
-            // 9.1); knife stages contribute no sweeps and need no cutter.
-            if stage.role == StageRole::Knife {
-                if through == Some(stage.operation_id.as_str()) {
-                    break;
-                }
-                continue;
-            }
-            let cutter = self
-                .job_snapshot
-                .tools
-                .iter()
-                .find(|tool| tool.id == stage.tool_id)
-                .and_then(|tool| match &tool.geometry {
-                    Some(crate::project::ToolGeometry::Endmill(g)) => {
-                        Some(crate::stock::history::SweepCutter::FlatEndmill {
-                            radius_mm: g.diameter_mm / 2.,
-                        })
-                    }
-                    Some(crate::project::ToolGeometry::Vbit(spec)) => {
-                        Some(crate::stock::history::SweepCutter::VBit { spec: spec.clone() })
-                    }
-                    _ => None,
-                });
-            let Some(cutter) = cutter else {
-                return Err(error(
-                    "STOCK_HISTORY_TOOL",
-                    format!(
-                        "stage '{}' uses a tool without milling geometry",
-                        stage.stage_id
-                    ),
-                ));
-            };
-            let motions: Vec<crate::stock::history::SweepMotion> = self.motions
-                [stage.motion_range.0..stage.motion_range.1]
-                .iter()
-                .filter(|motion| motion.effect == crate::toolpath::MotionEffect::MillingSweep)
-                .map(|motion| crate::stock::history::SweepMotion {
-                    start: motion.start,
-                    end: motion.end,
-                })
-                .collect();
-            if !motions.is_empty() {
-                history.push(crate::stock::history::SweepBatch {
-                    stage_id: stage.stage_id.clone(),
-                    operation_id: stage.operation_id.clone(),
-                    cutter,
-                    motions,
-                });
-            }
+        let tools = &self.job_snapshot.tools;
+        compose_stock_history(
+            thickness,
+            self.job_snapshot.setup.stock.xy,
+            &self.stages,
+            &self.motions,
+            &|tool_id| {
+                tools
+                    .iter()
+                    .find(|tool| tool.id == tool_id)
+                    .and_then(|tool| tool.geometry.clone())
+            },
+            through,
+        )
+    }
+}
+
+/// Shared removal-history composition over an executed plan prefix: the
+/// schema-4 and schema-5 plan shapes feed the same stages/motions through
+/// their own tool lookups.
+fn compose_stock_history(
+    thickness: f64,
+    xy: Option<crate::project::RectXY>,
+    stages: &[ExecutionStage],
+    motions: &[PlannedMotion],
+    tool_geometry: &dyn Fn(&str) -> Option<crate::project::ToolGeometry>,
+    through: Option<&str>,
+) -> Result<crate::stock::history::StockHistory> {
+    let mut history = crate::stock::history::StockHistory::new(thickness, xy)?;
+    for stage in stages {
+        // Knife traces never enter the milling-stock model (plan section
+        // 9.1); knife stages contribute no sweeps and need no cutter.
+        if stage.role == StageRole::Knife {
             if through == Some(stage.operation_id.as_str()) {
                 break;
             }
+            continue;
         }
-        Ok(history)
+        let cutter = tool_geometry(&stage.tool_id).and_then(|geometry| match &geometry {
+            crate::project::ToolGeometry::Endmill(g) => {
+                Some(crate::stock::history::SweepCutter::FlatEndmill {
+                    radius_mm: g.diameter_mm / 2.,
+                })
+            }
+            crate::project::ToolGeometry::Vbit(spec) => {
+                Some(crate::stock::history::SweepCutter::VBit { spec: spec.clone() })
+            }
+            _ => None,
+        });
+        let Some(cutter) = cutter else {
+            return Err(error(
+                "STOCK_HISTORY_TOOL",
+                format!(
+                    "stage '{}' uses a tool without milling geometry",
+                    stage.stage_id
+                ),
+            ));
+        };
+        let sweeps: Vec<crate::stock::history::SweepMotion> = motions
+            [stage.motion_range.0..stage.motion_range.1]
+            .iter()
+            .filter(|motion| motion.effect == crate::toolpath::MotionEffect::MillingSweep)
+            .map(|motion| crate::stock::history::SweepMotion {
+                start: motion.start,
+                end: motion.end,
+            })
+            .collect();
+        if !sweeps.is_empty() {
+            history.push(crate::stock::history::SweepBatch {
+                stage_id: stage.stage_id.clone(),
+                operation_id: stage.operation_id.clone(),
+                cutter,
+                motions: sweeps,
+            });
+        }
+        if through == Some(stage.operation_id.as_str()) {
+            break;
+        }
     }
+    Ok(history)
+}
+
+// ---------------------------------------------------------------------------
+// Schema-5 collection plans (H3, plan sections 22.4 and 22.8): the same
+// ordered assembly over resolved cross-source geometry, with semantic
+// identities replacing the whole-job receipt.
+// ---------------------------------------------------------------------------
+
+/// The ordered operation plan of a schema-5 collection document. The
+/// `machining_identity` is the semantic scope identity of plan section 22.8:
+/// it excludes display names, provenance, artwork row order, unreferenced
+/// items/tools and the work-zero selection, so those edits keep a plan
+/// current while used-source and assignment edits do not.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationPlanV5 {
+    pub artifact_kind: String,
+    pub schema_version: u32,
+    pub engine_version: String,
+    pub job_snapshot: CamJobV5,
+    pub machining_identity: String,
+    pub execution_fingerprint: String,
+    pub operation_results: Vec<OperationResult>,
+    pub stages: Vec<ExecutionStage>,
+    pub motions: Vec<PlannedMotion>,
+    pub execution: Vec<ExecutionItem>,
+    #[serde(default)]
+    pub preparation_requirements: Vec<PreparationRequirement>,
+    #[serde(default)]
+    pub generation_diagnostics: Vec<PlanIssue>,
+}
+
+/// Enabled operations of `job` inside `scope`, in document order.
+fn scoped_enabled_operations_v5<'a>(
+    job: &'a CamJobV5,
+    scope: &ReadinessScope,
+) -> Result<Vec<&'a OperationV5>> {
+    Ok(match scope {
+        ReadinessScope::AllEnabled => job.operations.iter().filter(|op| op.enabled).collect(),
+        ReadinessScope::ThroughOperation { operation_id } => {
+            let Some(end) = job.operations.iter().position(|op| op.id == *operation_id) else {
+                return Err(error(
+                    "READINESS_SCOPE",
+                    format!("prefix scope references unknown operation '{operation_id}'"),
+                ));
+            };
+            job.operations[..=end]
+                .iter()
+                .filter(|op| op.enabled)
+                .collect()
+        }
+    })
+}
+
+/// Tool IDs referenced by one collection operation's settings, in
+/// assignment order (mirrors the schema-4 `tool_ids_of`).
+fn tool_ids_of_v5(settings: &OperationSettingsV5) -> Vec<&str> {
+    match settings {
+        OperationSettingsV5::FlatVcarve(s) => {
+            vec![s.endmill.tool_id.as_str(), s.vbit.tool_id.as_str()]
+        }
+        OperationSettingsV5::Face(s) => vec![s.assignment.tool_id.as_str()],
+        OperationSettingsV5::Profile(s) => vec![s.assignment.tool_id.as_str()],
+        OperationSettingsV5::DragKnife(s) => vec![s.assignment.tool_id.as_str()],
+    }
+}
+
+/// Every artwork item an operation's settings address (selections and
+/// anchors). Unreferenced items never enter a machining identity.
+fn referenced_item_ids(settings: &OperationSettingsV5) -> Vec<&v5::ArtworkItemId> {
+    fn anchors(start: &v5::StartSelectionV5) -> Vec<&GeometryRef> {
+        match start {
+            v5::StartSelectionV5::Automatic => vec![],
+            v5::StartSelectionV5::Anchor(anchor) => vec![&anchor.geometry],
+        }
+    }
+    fn tab_anchors(tabs: &Option<v5::TabSettingsV5>) -> Vec<&GeometryRef> {
+        match tabs {
+            Some(v5::TabSettingsV5 {
+                placement: v5::TabPlacementV5::Manual { anchors },
+                ..
+            }) => anchors.iter().map(|a| &a.geometry).collect(),
+            _ => vec![],
+        }
+    }
+    match settings {
+        OperationSettingsV5::FlatVcarve(s) => {
+            s.components.iter().map(|r| &r.artwork_item_id).collect()
+        }
+        OperationSettingsV5::Face(_) => vec![],
+        OperationSettingsV5::Profile(s) => s
+            .contours
+            .iter()
+            .map(|c| &c.geometry.artwork_item_id)
+            .chain(anchors(&s.start).into_iter().map(|r| &r.artwork_item_id))
+            .chain(tab_anchors(&s.tabs).into_iter().map(|r| &r.artwork_item_id))
+            .collect(),
+        OperationSettingsV5::DragKnife(s) => s
+            .chains
+            .iter()
+            .map(|r| &r.artwork_item_id)
+            .chain(anchors(&s.start).into_iter().map(|r| &r.artwork_item_id))
+            .collect(),
+    }
+}
+
+/// The machining-relevant projection of one assignment: copied cutting
+/// values with provenance stripped (plan section 22.8 excludes applied
+/// profile baselines from machining identity).
+fn semantic_milling(assignment: &MillingAssignmentV5) -> MillingAssignmentV5 {
+    MillingAssignmentV5 {
+        tool_id: assignment.tool_id.clone(),
+        spindle_rpm: assignment.spindle_rpm,
+        spindle_direction: assignment.spindle_direction,
+        cutting_feed_mm_min: assignment.cutting_feed_mm_min,
+        plunge_feed_mm_min: assignment.plunge_feed_mm_min,
+        max_stepdown_mm: assignment.max_stepdown_mm,
+        stepover_mm: assignment.stepover_mm,
+        applied_profile: None,
+    }
+}
+
+fn semantic_knife(assignment: &KnifeAssignmentV5) -> KnifeAssignmentV5 {
+    KnifeAssignmentV5 {
+        tool_id: assignment.tool_id.clone(),
+        cutting_feed_mm_min: assignment.cutting_feed_mm_min,
+        plunge_feed_mm_min: assignment.plunge_feed_mm_min,
+        swivel_feed_mm_min: assignment.swivel_feed_mm_min,
+        max_stepdown_mm: assignment.max_stepdown_mm,
+        applied_profile: None,
+    }
+}
+
+fn semantic_settings(settings: &OperationSettingsV5) -> OperationSettingsV5 {
+    match settings {
+        OperationSettingsV5::FlatVcarve(s) => {
+            OperationSettingsV5::FlatVcarve(v5::FlatVcarveSettingsV5 {
+                components: s.components.clone(),
+                mode: s.mode,
+                endmill: semantic_milling(&s.endmill),
+                vbit: semantic_milling(&s.vbit),
+                top: s.top.clone(),
+                max_depth_mm: s.max_depth_mm,
+                wall_allowance_mm: s.wall_allowance_mm,
+                max_floor_ridge_mm: s.max_floor_ridge_mm,
+                max_detail_residual_mm: s.max_detail_residual_mm,
+                rough: s.rough.clone(),
+                finish: s.finish.clone(),
+            })
+        }
+        OperationSettingsV5::Face(s) => OperationSettingsV5::Face(v5::FaceSettingsV5 {
+            area: s.area.clone(),
+            margins: s.margins,
+            entry_overrun_mm: s.entry_overrun_mm,
+            exit_overrun_mm: s.exit_overrun_mm,
+            top: s.top.clone(),
+            bottom: s.bottom.clone(),
+            stepdown_mm: s.stepdown_mm,
+            stepover_mm: s.stepover_mm,
+            pass_angle_deg: s.pass_angle_deg,
+            pattern: s.pattern,
+            assignment: semantic_milling(&s.assignment),
+        }),
+        OperationSettingsV5::Profile(s) => OperationSettingsV5::Profile(v5::ProfileSettingsV5 {
+            contours: s.contours.clone(),
+            assignment: semantic_milling(&s.assignment),
+            top: s.top.clone(),
+            bottom: s.bottom.clone(),
+            stepdown_mm: s.stepdown_mm,
+            through_cut_allowance_mm: s.through_cut_allowance_mm,
+            direction: s.direction,
+            order: s.order,
+            start: s.start.clone(),
+            finish: s.finish.clone(),
+            entry: s.entry.clone(),
+            lead_in: s.lead_in.clone(),
+            lead_out: s.lead_out.clone(),
+            tabs: s.tabs.clone(),
+        }),
+        OperationSettingsV5::DragKnife(s) => {
+            OperationSettingsV5::DragKnife(v5::DragKnifeSettingsV5 {
+                chains: s.chains.clone(),
+                assignment: semantic_knife(&s.assignment),
+                top: s.top.clone(),
+                bottom: s.bottom.clone(),
+                stepdown_mm: s.stepdown_mm,
+                swivel_depth_mm: s.swivel_depth_mm,
+                corner_threshold_deg: s.corner_threshold_deg,
+                through_cut_allowance_mm: s.through_cut_allowance_mm,
+
+                start: s.start.clone(),
+                closure_overlap_mm: s.closure_overlap_mm,
+                alignment: s.alignment.clone(),
+            })
+        }
+    }
+}
+
+impl OperationPlanV5 {
+    /// The semantic machining identity of one scope (plan section 22.8):
+    /// engine and artifact contracts, setup material/travel (the work-zero
+    /// selection is deliberately absent — it changes output, never motions),
+    /// tolerances, the artwork items the scope actually selects (sorted by
+    /// stable item ID with their content revision, interpretation and
+    /// placement — never row order), the enabled operation order with their
+    /// provenance-stripped settings, and the used tools' geometry snapshots.
+    pub fn machining_identity(job: &CamJobV5, scope: &ReadinessScope) -> Result<String> {
+        let enabled = scoped_enabled_operations_v5(job, scope)?;
+        let (artwork_inputs, tool_snapshots) = semantic_scope_inputs(job, &enabled)?;
+        let operations: Vec<(&str, OperationSettingsV5)> = enabled
+            .iter()
+            .map(|op| (op.id.as_str(), semantic_settings(&op.settings)))
+            .collect();
+        crate::plan_hash::hash(&(
+            "machining-identity",
+            env!("CARGO_PKG_VERSION"),
+            OPERATION_PLAN_ARTIFACT_KIND,
+            OPERATION_PLAN_V5_SCHEMA_VERSION,
+            &job.setup.stock,
+            &job.setup.clearance_above_stock_mm,
+            &job.setup.start_xy_mm,
+            &job.tolerances,
+            &artwork_inputs,
+            &tool_snapshots,
+            &operations,
+        ))
+        .map_err(|e| error("PLAN_JSON", e.to_string()))
+    }
+
+    /// Plan every enabled collection operation inside `scope` in document
+    /// order through cross-source resolution (plan sections 22.4 and 22.5).
+    /// Reference-blocked and numerically incomplete operations become
+    /// incomplete results with located issues; they never fail the whole
+    /// plan, and their dependents see the missing published outputs.
+    pub fn plan_job_v5(
+        job: &CamJobV5,
+        scope: &ReadinessScope,
+        limits: &PlanLimits,
+    ) -> Result<Self> {
+        job.validate_structure()?;
+        let enabled = scoped_enabled_operations_v5(job, scope)?;
+        if enabled.len() > limits.max_operations {
+            return Err(error(
+                "PLAN_RESOURCE_LIMIT",
+                format!(
+                    "{} enabled operations exceed the limit of {}",
+                    enabled.len(),
+                    limits.max_operations
+                ),
+            ));
+        }
+        let readiness = planning_readiness(job, scope)?;
+        let combined = artwork::inspect_artwork(job)?;
+        let catalogue = resolve::assembled_catalogue(&combined)?;
+        let ctx = crate::operations::PlanContext::from_v5(job);
+        let mut operation_results = vec![];
+        let mut stages = vec![];
+        let mut motions = vec![];
+        let mut execution = vec![];
+        let mut generation_diagnostics = vec![];
+        let mut preparation_requirements = vec![];
+        let mut planned_ids = BTreeSet::new();
+        let mut published_faces = crate::operations::PublishedFaceMap::new();
+        let mut current_tool: Option<String> = None;
+        // Semantic prefix stock identities (plan section 9.2 over collection
+        // inputs): the initial view hashes stock/travel/tolerances, the
+        // referenced artwork (sorted by item ID) and the used tool snapshots;
+        // each operation extends it with its semantic settings and actual
+        // execution, so editing an earlier operation stales every later id.
+        let mut stock_before = semantic_initial_stock(job, &enabled)?;
+        for op in enabled {
+            if !planned_ids.insert(op.id.clone()) {
+                return Err(error(
+                    "PLAN_OPERATION_ID",
+                    "enabled operation IDs must be unique",
+                ));
+            }
+            if stages.len() + 1 > limits.max_stages || motions.len() >= limits.max_motions {
+                return Err(error(
+                    "PLAN_RESOURCE_LIMIT",
+                    "job exceeds the stage or motion budget before completing all operations",
+                ));
+            }
+            // Invalid references cannot reach planners (plan section 22.5):
+            // the blocked operation turns incomplete with its located issues.
+            let planned = match readiness
+                .operations
+                .iter()
+                .find(|entry| entry.operation_id == op.id)
+            {
+                Some(entry) if !entry.ready => PlannedOperation {
+                    status: GenerationStatus::Incomplete,
+                    stages: vec![],
+                    motions: vec![],
+                    stage_evidence: vec![],
+                    pass_evidence: vec![],
+                    issues: entry
+                        .blockers
+                        .iter()
+                        .map(|d| PlanIssue {
+                            code: d.code.clone(),
+                            message: format!(
+                                "{} ({})",
+                                d.message,
+                                d.field_path.as_deref().unwrap_or("")
+                            ),
+                            operation_id: d.operation_id.clone(),
+                            stage_id: None,
+                        })
+                        .collect(),
+                    preparation: vec![],
+                    named_outputs: vec![],
+                },
+                _ => resolve::plan_operation_v5(
+                    job,
+                    &ctx,
+                    op,
+                    &combined,
+                    &catalogue,
+                    &published_faces,
+                    &motions,
+                )?,
+            };
+            let base = motions.len();
+            if base + planned.motions.len() > limits.max_motions {
+                return Err(error(
+                    "PLAN_RESOURCE_LIMIT",
+                    format!("operation '{}' exceeds the remaining motion budget", op.id),
+                ));
+            }
+            let executed_snapshot: Vec<(
+                usize,
+                crate::motion::Position,
+                crate::motion::Position,
+                crate::toolpath::Interpolation,
+                crate::toolpath::MotionEffect,
+                Option<f64>,
+            )> = motions[base..]
+                .iter()
+                .map(|m: &crate::toolpath::PlannedMotion| {
+                    (
+                        m.id,
+                        m.start,
+                        m.end,
+                        m.interpolation,
+                        m.effect,
+                        m.feed_mm_min,
+                    )
+                })
+                .collect();
+            let stage_snapshot: Vec<_> = planned
+                .stages
+                .iter()
+                .map(|s| (&s.stage_id, s.role, &s.tool_id))
+                .collect();
+            let used_tool_snapshots = semantic_tool_snapshots(job, &op.settings);
+            let stock_after = crate::plan_hash::hash(&(
+                &stock_before,
+                &op.id,
+                &semantic_settings(&op.settings),
+                &used_tool_snapshots,
+                &stage_snapshot,
+                &executed_snapshot,
+            ))
+            .map_err(|e| error("PLAN_JSON", e.to_string()))?;
+            for mut motion in planned.motions {
+                motion.id += base;
+                motions.push(motion);
+            }
+            // Spindle direction stays unresolved for migrated assignments;
+            // preparing executable process state requires resolving it first.
+            for stage in &planned.stages {
+                if let ProcessSpindle::Milling {
+                    direction: None, ..
+                } = &stage.intent.spindle
+                {
+                    preparation_requirements.push(PreparationRequirement {
+                        code: "PROCESS_SPINDLE_DIRECTION".into(),
+                        message: format!(
+                            "stage '{}' needs an explicit spindle direction before export",
+                            stage.stage_id
+                        ),
+                        operation_id: Some(op.id.clone()),
+                        stage_id: Some(stage.stage_id.clone()),
+                    });
+                }
+            }
+            for stage in planned.stages {
+                let entry = motions[base + stage.motion_range.0].start;
+                let exit = motions[base + stage.motion_range.1 - 1].end;
+                let stage_id = stage.stage_id.clone();
+                if current_tool.as_ref() != Some(&stage.tool_id) {
+                    execution.push(ExecutionItem::ToolChange {
+                        tool_id: stage.tool_id.clone(),
+                    });
+                    current_tool = Some(stage.tool_id.clone());
+                }
+                execution.push(ExecutionItem::SetProcessIntent {
+                    intent: stage.intent.clone(),
+                });
+                execution.push(ExecutionItem::RunStage {
+                    stage_id: stage_id.clone(),
+                });
+                stages.push(ExecutionStage {
+                    stage_id: stage_id.clone(),
+                    operation_id: op.id.clone(),
+                    tool_id: stage.tool_id,
+                    role: stage.role,
+                    motion_range: (base + stage.motion_range.0, base + stage.motion_range.1),
+                    entry_position: entry,
+                    exit_position: exit,
+                });
+            }
+            for issue in &planned.preparation {
+                preparation_requirements.push(issue.clone());
+            }
+            for mut issue in planned.issues {
+                issue.operation_id.get_or_insert_with(|| op.id.clone());
+                generation_diagnostics.push(issue);
+            }
+            operation_results.push(OperationResult {
+                operation_id: op.id.clone(),
+                generation_status: planned.status,
+                stage_ids: stages
+                    .iter()
+                    .filter(|s| s.operation_id == op.id)
+                    .map(|s| s.stage_id.clone())
+                    .collect(),
+                stock_before_id: stock_before.clone(),
+                stock_after_id: stock_after.clone(),
+                named_outputs: planned.named_outputs,
+                legacy_stage_evidence: planned.stage_evidence,
+                legacy_pass_evidence: planned.pass_evidence,
+            });
+            stock_before = stock_after;
+            for output in &operation_results.last().expect("just pushed").named_outputs {
+                if output.kind == "face_plane"
+                    && let (Some(z_mm), Some(covered)) = (output.z_mm, output.covered)
+                {
+                    published_faces.insert(
+                        op.id.clone(),
+                        crate::operations::PublishedFace { z_mm, covered },
+                    );
+                }
+            }
+        }
+        let engine_version = env!("CARGO_PKG_VERSION").to_string();
+        let machining_identity = Self::machining_identity(job, scope)?;
+        let execution_fingerprint = crate::plan_hash::hash(&(
+            &machining_identity,
+            &stages,
+            &motions,
+            &execution,
+            &operation_results,
+        ))
+        .map_err(|e| error("PLAN_JSON", e.to_string()))?;
+        Ok(Self {
+            artifact_kind: OPERATION_PLAN_ARTIFACT_KIND.into(),
+            schema_version: OPERATION_PLAN_V5_SCHEMA_VERSION,
+            engine_version,
+            job_snapshot: job.clone(),
+            machining_identity,
+            execution_fingerprint,
+            operation_results,
+            stages,
+            motions,
+            execution,
+            preparation_requirements,
+            generation_diagnostics,
+        })
+    }
+
+    /// Compose the ordered removal history of the executed prefix ending at
+    /// `through` (all operations when None); knife traces never enter.
+    pub fn stock_history(
+        &self,
+        through: Option<&str>,
+    ) -> Result<crate::stock::history::StockHistory> {
+        let thickness = self.job_snapshot.setup.stock.thickness_mm.ok_or_else(|| {
+            error(
+                "SETUP_STOCK_THICKNESS_REQUIRED",
+                "stock history requires the stock thickness",
+            )
+        })?;
+        let tools = &self.job_snapshot.tools;
+        compose_stock_history(
+            thickness,
+            self.job_snapshot.setup.stock.xy,
+            &self.stages,
+            &self.motions,
+            &|tool_id| {
+                tools
+                    .iter()
+                    .find(|tool| tool.id == tool_id)
+                    .and_then(|tool| tool.geometry.clone())
+            },
+            through,
+        )
+    }
+}
+
+/// A used tool as it enters a machining identity: geometry and capabilities
+/// only — identity strings, display names and provenance never enter a
+/// machining identity (plan section 22.8).
+type SemanticToolSnapshot<'a> = (
+    &'a str,
+    Option<&'a crate::project::ToolGeometry>,
+    &'a crate::project::ToolCapabilities,
+);
+
+/// A referenced artwork item as it enters a machining identity: content
+/// revision, interpretation and placement.
+type SemanticArtworkInput<'a> = (
+    &'a str,
+    v5::SourceRevision,
+    &'a v5::SvgInterpretation,
+    &'a crate::svg::Placement,
+);
+
+fn semantic_tool_snapshots<'a>(
+    job: &'a CamJobV5,
+    settings: &'a OperationSettingsV5,
+) -> Vec<SemanticToolSnapshot<'a>> {
+    tool_ids_of_v5(settings)
+        .into_iter()
+        .filter_map(|id| job.tools.iter().find(|tool| tool.id == id))
+        .map(|tool| (tool.id.as_str(), tool.geometry.as_ref(), &tool.capabilities))
+        .collect()
+}
+
+/// Artwork inputs and tool snapshots referenced by one scope, sorted by
+/// stable IDs: content revision, interpretation and placement enter the
+/// identity; display names, provenance and row order never do.
+fn semantic_scope_inputs<'a>(
+    job: &'a CamJobV5,
+    enabled: &[&'a OperationV5],
+) -> Result<(Vec<SemanticArtworkInput<'a>>, Vec<SemanticToolSnapshot<'a>>)> {
+    let mut item_ids = BTreeSet::new();
+    let mut tool_ids = BTreeSet::new();
+    for operation in enabled {
+        for id in referenced_item_ids(&operation.settings) {
+            item_ids.insert(id.0.as_str());
+        }
+        for id in tool_ids_of_v5(&operation.settings) {
+            tool_ids.insert(id);
+        }
+    }
+    let artwork_inputs = item_ids
+        .iter()
+        .filter_map(|id| job.artwork.iter().find(|item| item.id.0 == *id))
+        .map(|item| {
+            Ok((
+                item.id.0.as_str(),
+                item.source_revision()
+                    .map_err(|e| error("PLAN_JSON", e.message))?,
+                &item.import_settings,
+                &item.placement,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let tool_snapshots = tool_ids
+        .iter()
+        .filter_map(|id| job.tools.iter().find(|tool| tool.id == *id))
+        .map(|tool| (tool.id.as_str(), tool.geometry.as_ref(), &tool.capabilities))
+        .collect();
+    Ok((artwork_inputs, tool_snapshots))
+}
+
+/// Initial semantic stock identity for a collection scope: stock/travel/
+/// tolerances plus the referenced artwork (sorted by item ID) and used tool
+/// snapshots. Display names, provenance, artwork row order and unreferenced
+/// content never enter it (plan section 22.8).
+fn semantic_initial_stock(job: &CamJobV5, enabled: &[&OperationV5]) -> Result<String> {
+    let (artwork_inputs, tool_snapshots) = semantic_scope_inputs(job, enabled)?;
+    crate::plan_hash::hash(&(
+        "stock-initial",
+        OPERATION_PLAN_ARTIFACT_KIND,
+        OPERATION_PLAN_V5_SCHEMA_VERSION,
+        env!("CARGO_PKG_VERSION"),
+        &job.setup.stock,
+        &job.setup.clearance_above_stock_mm,
+        &job.setup.start_xy_mm,
+        &job.tolerances,
+        &artwork_inputs,
+        &tool_snapshots,
+    ))
+    .map_err(|e| error("PLAN_JSON", e.to_string()))
 }

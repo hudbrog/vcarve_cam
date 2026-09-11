@@ -34,6 +34,7 @@ pub mod artwork;
 pub mod commands;
 pub mod migrate;
 pub mod references;
+pub mod resolve;
 
 pub use artwork::{CombinedCatalogue, GeometryPick, SetupBounds, inspect_artwork, item_catalogue};
 pub use references::ReadinessScope;

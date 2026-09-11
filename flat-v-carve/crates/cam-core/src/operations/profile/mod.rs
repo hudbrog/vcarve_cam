@@ -10,20 +10,20 @@ mod entries;
 mod tabs;
 
 use crate::{
-    contours::{ContourCatalogue, ContourRole, ResolvedAnchor},
+    contours::{ContourRole, ResolvedAnchor},
     geometry::{Diagnostic, Grid, Point, Result},
     motion::Position,
-    operations::{LocatedDiagnostic, PublishedFace},
+    operations::{LocatedDiagnostic, PlanContext, PlannerGeometry, PublishedFace},
     project::{
-        CamJob, ContourOrder, ContourSide, CutDirection, HeightReference, LeadSpec,
-        MillingAssignment, ProfileEntry, ProfileSettings, StartSelection, TabPlacement,
-        TabSettings, ToolGeometry, TraversalDirection,
+        ContourOrder, ContourSide, CutDirection, HeightReference, LeadSpec, MillingAssignment,
+        ProfileEntry, ProfileSettings, StartSelection, TabPlacement, TabSettings, ToolGeometry,
+        TraversalDirection,
     },
     sequence::{
         CoolantIntent, GenerationStatus, LocalStage, NamedOutput, PathControlIntent, PlanIssue,
         PlannedOperation, ProcessIntent, ProcessSpindle, StageRole, TabPlacementOutput,
     },
-    setup::resolve_heights,
+    setup::resolve_heights_values,
     toolpath::{Interpolation, MotionEffect, MotionPurpose, PlannedMotion},
 };
 use entries::LeadShape;
@@ -31,6 +31,15 @@ use std::collections::BTreeMap;
 
 fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("profile")
+}
+
+/// Field name of the artwork container in missing-field diagnostics: the
+/// attached single source in schema 4, the collection in schema 5.
+pub(crate) fn artwork_field(geometry: &PlannerGeometry) -> &'static str {
+    match geometry {
+        PlannerGeometry::SourceJob(_) => "source",
+        PlannerGeometry::Catalogue(_) => "artwork",
+    }
 }
 
 fn incomplete(issues: Vec<PlanIssue>) -> PlannedOperation {
@@ -140,11 +149,24 @@ fn loop_distance(vertices: &[Point], p: Point) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
-/// Required-but-unset fields for planning this profile operation.
+/// Required-but-unset fields for planning this profile operation (schema-4
+/// service surface; delegates to the shared context form).
 pub fn missing_fields(
-    job: &CamJob,
+    job: &crate::project::CamJob,
     operation_id: &str,
     settings: &ProfileSettings,
+) -> Vec<LocatedDiagnostic> {
+    missing_fields_ctx(&PlanContext::from_v4(job), operation_id, settings, "source")
+}
+
+/// The shared context form: the artwork field names the collection entry
+/// ("source" in schema 4, "artwork" in schema 5); the selection itself is
+/// checked identically either way.
+pub(crate) fn missing_fields_ctx(
+    ctx: &PlanContext,
+    operation_id: &str,
+    settings: &ProfileSettings,
+    artwork_field: &str,
 ) -> Vec<LocatedDiagnostic> {
     let mut missing = vec![];
     let mut push = |path: String, what: &str| {
@@ -154,22 +176,22 @@ pub fn missing_fields(
             format!("set {what} before planning operation '{operation_id}'"),
         ));
     };
-    if job.source.is_none() {
+    if !ctx.has_artwork {
         push(
-            "source".into(),
+            artwork_field.into(),
             "an SVG source (profiles select artwork contours)",
         );
     }
-    if job.setup.stock.thickness_mm.is_none() {
+    if ctx.setup.stock.thickness_mm.is_none() {
         push("setup.stock.thickness_mm".into(), "the stock thickness");
     }
-    if job.setup.clearance_above_stock_mm.is_none() {
+    if ctx.setup.clearance_above_stock_mm.is_none() {
         push(
             "setup.clearance_above_stock_mm".into(),
             "the clearance plane",
         );
     }
-    if job.tolerances.motion_tolerance_mm.is_none() {
+    if ctx.tolerances.motion_tolerance_mm.is_none() {
         push(
             "tolerances.motion_tolerance_mm".into(),
             "the motion tolerance",
@@ -195,10 +217,7 @@ pub fn missing_fields(
             "climb or conventional cutting",
         );
     }
-    let tool = job
-        .tools
-        .iter()
-        .find(|t| t.id == settings.assignment.tool_id);
+    let tool = ctx.tool(&settings.assignment.tool_id);
     if tool.is_some_and(|t| t.geometry.is_none()) {
         push(
             format!("operations[{operation_id}].assignment.tool"),
@@ -337,11 +356,9 @@ pub fn missing_fields(
     missing
 }
 
-fn cutter_radius(job: &CamJob, assignment: &MillingAssignment) -> Result<f64> {
-    let tool = job
-        .tools
-        .iter()
-        .find(|t| t.id == assignment.tool_id)
+fn cutter_radius(ctx: &PlanContext, assignment: &MillingAssignment) -> Result<f64> {
+    let tool = ctx
+        .tool(&assignment.tool_id)
         .ok_or_else(|| error("PROJECT_TOOL_REFERENCE", "profile tool not found"))?;
     match &tool.geometry {
         Some(ToolGeometry::Endmill(g)) => Ok(g.diameter_mm / 2.),
@@ -988,12 +1005,13 @@ fn emit_loop_layers(
 /// Plan one profile operation.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan(
-    job: &CamJob,
+    ctx: &PlanContext,
     operation_id: &str,
     settings: &ProfileSettings,
     published_faces: &BTreeMap<String, PublishedFace>,
+    geometry: &PlannerGeometry,
 ) -> Result<PlannedOperation> {
-    let missing = missing_fields(job, operation_id, settings);
+    let missing = missing_fields_ctx(ctx, operation_id, settings, artwork_field(geometry));
     if !missing.is_empty() {
         return Ok(incomplete(
             missing
@@ -1011,10 +1029,8 @@ pub(crate) fn plan(
     // Ramp entries need an explicitly ramp-capable tool (plan section 10.1);
     // the unset capability is a missing field, a false one is a conflict.
     if let ProfileEntry::Ramp { .. } = &settings.entry {
-        let tool = job
-            .tools
-            .iter()
-            .find(|t| t.id == settings.assignment.tool_id)
+        let tool = ctx
+            .tool(&settings.assignment.tool_id)
             .expect("tool reference validated");
         if tool.capabilities.ramp_capable == Some(false) {
             return Ok(incomplete(vec![issue(
@@ -1101,7 +1117,7 @@ pub(crate) fn plan(
         )]));
     }
 
-    let catalogue = ContourCatalogue::build(job)?;
+    let catalogue = geometry.catalogue()?;
     let selected = match catalogue.select(
         &settings
             .contours
@@ -1128,7 +1144,7 @@ pub(crate) fn plan(
         },
     };
 
-    let radius = cutter_radius(job, &settings.assignment)?;
+    let radius = cutter_radius(ctx, &settings.assignment)?;
     // A top height referencing a face plane admits only geometry inside that
     // face's established planar coverage (plan section 6.3). The check uses
     // the cutter corridor — source contour dilated by the cutter radius —
@@ -1141,7 +1157,7 @@ pub(crate) fn plan(
                 operation_id,
             )]));
         };
-        let reserve = radius + job.tolerances.motion_tolerance_mm.expect("checked above");
+        let reserve = radius + ctx.tolerances.motion_tolerance_mm.expect("checked above");
         let covered = plane.covered;
         for contour in &selected {
             for vertex in &contour.vertices {
@@ -1166,10 +1182,15 @@ pub(crate) fn plan(
         .iter()
         .map(|(id, face)| (id.clone(), face.z_mm))
         .collect();
-    let heights = resolve_heights(job, 0, &settings.top, &settings.bottom, &published_planes)?;
+    let heights = resolve_heights_values(
+        ctx.setup.stock.thickness_mm,
+        &settings.top,
+        &settings.bottom,
+        &published_planes,
+    )?;
     // Through cutting is permission, not a moved bottom (plan section 6.4).
     let allowance = settings.through_cut_allowance_mm.unwrap_or(0.);
-    if let Some(thickness) = job.setup.stock.thickness_mm {
+    if let Some(thickness) = ctx.setup.stock.thickness_mm {
         let below = -thickness - heights.bottom_z;
         if below > allowance + 1e-9 {
             return Ok(incomplete(vec![issue(
@@ -1197,8 +1218,8 @@ pub(crate) fn plan(
 
     // Tabs (plan section 10.3): the protected bridge is measured from the
     // physical stock bottom, independent of any through-cut allowance.
-    let thickness = job.setup.stock.thickness_mm.expect("checked above");
-    let margin = job.tolerances.motion_tolerance_mm.expect("checked above");
+    let thickness = ctx.setup.stock.thickness_mm.expect("checked above");
+    let margin = ctx.tolerances.motion_tolerance_mm.expect("checked above");
     let mut tab_top_z: Option<f64> = None;
     let mut tab_anchors: BTreeMap<String, Vec<ResolvedAnchor>> = BTreeMap::new();
     if let Some(tab) = &settings.tabs {
@@ -1292,7 +1313,7 @@ pub(crate) fn plan(
 
     let ordered = order_contours(&selected, settings.order);
     let grid = Grid::new(
-        job.tolerances.motion_tolerance_mm.expect("checked above"),
+        ctx.tolerances.motion_tolerance_mm.expect("checked above"),
         contour_extent(&ordered),
     )?;
     /// Rough and finishing loops of one contour: its complete work happens
@@ -1302,7 +1323,7 @@ pub(crate) fn plan(
         finish: Vec<CompensatedLoop>,
     }
     // Everything the loop builder needs beyond the per-call geometry.
-    let clearance = job.setup.clearance_above_stock_mm.expect("checked above");
+    let clearance = ctx.setup.clearance_above_stock_mm.expect("checked above");
     let lead_in_len = entry_specs
         .lead_in
         .as_ref()

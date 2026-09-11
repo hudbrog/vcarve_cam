@@ -90,6 +90,11 @@ pub struct Contour {
     /// Placement-independent fingerprint of the source geometry (page-space
     /// quantized at `FINGERPRINT_STEP_MM`).
     pub source_fingerprint: String,
+    /// The owning artwork placement this entry's setup vertices were produced
+    /// with. Single-source catalogues carry the document placement on every
+    /// entry; an assembled collection catalogue carries each owner item's
+    /// placement, so anchor resolution never crosses items (plan section 22.4).
+    pub(crate) placement: Placement,
 }
 
 impl Contour {
@@ -130,9 +135,6 @@ pub struct ContourCatalogue {
     /// closed per the source subpath, in document and subpath order. Knife
     /// operations select these by ID; they never union.
     pub open_chains: Vec<Contour>,
-    /// The artwork placement the setup-space vertices were produced with;
-    /// anchors resolve through it into current setup coordinates.
-    placement: Placement,
 }
 
 impl ContourCatalogue {
@@ -197,6 +199,7 @@ impl ContourCatalogue {
                 source_fingerprint: fingerprint(&outer_page),
                 vertices: outer_setup,
                 page_vertices: outer_page,
+                placement: placement.clone(),
             });
             for (index, (setup, page_ring)) in hole_entries.into_iter().enumerate() {
                 contours.push(Contour {
@@ -210,6 +213,7 @@ impl ContourCatalogue {
                     source_fingerprint: fingerprint(&page_ring),
                     vertices: setup,
                     page_vertices: page_ring,
+                    placement: placement.clone(),
                 });
             }
         }
@@ -249,6 +253,7 @@ impl ContourCatalogue {
                 source_fingerprint: fingerprint(&page_vertices),
                 vertices,
                 page_vertices,
+                placement: placement.clone(),
             });
         }
         let chain_ids: std::collections::BTreeSet<&str> =
@@ -263,7 +268,6 @@ impl ContourCatalogue {
         Ok(Self {
             contours,
             open_chains,
-            placement,
         })
     }
 
@@ -339,8 +343,11 @@ impl ContourCatalogue {
             contour.closed,
         )?;
         // Forward placement transform (plan section 6.1): rotate about the
-        // origin, scale, translate. Tangents rotate without translation.
-        let placement = &self.placement;
+        // origin, scale, translate. Tangents rotate without translation. The
+        // placement is the owning item's, never a document-wide one, so an
+        // assembled collection catalogue resolves each anchor through its
+        // own source space (plan section 22.4).
+        let placement = &contour.placement;
         let (s, c) = placement.rotation_deg.to_radians().sin_cos();
         let k = placement.scale;
         let origin = placement.origin_mm;

@@ -95,7 +95,18 @@ pub fn resolve_heights(
     bottom: &crate::project::HeightRef,
     published_planes: &std::collections::BTreeMap<String, f64>,
 ) -> Result<ResolvedHeights> {
-    let thickness = job.setup.stock.thickness_mm.ok_or_else(|| {
+    resolve_heights_values(job.setup.stock.thickness_mm, top, bottom, published_planes)
+}
+
+/// Thickness-driven [`resolve_heights`] shared by the schema-4 and schema-5
+/// planner paths; only the stock thickness comes from the job.
+pub fn resolve_heights_values(
+    thickness: Option<f64>,
+    top: &crate::project::HeightRef,
+    bottom: &crate::project::HeightRef,
+    published_planes: &std::collections::BTreeMap<String, f64>,
+) -> Result<ResolvedHeights> {
+    let thickness = thickness.ok_or_else(|| {
         error(
             "SETUP_STOCK_THICKNESS_REQUIRED",
             "height references require the stock thickness",
@@ -157,7 +168,17 @@ pub fn resolve_top(
     height: &crate::project::HeightRef,
     published_planes: &std::collections::BTreeMap<String, f64>,
 ) -> Result<f64> {
-    let thickness = job.setup.stock.thickness_mm.ok_or_else(|| {
+    resolve_top_values(job.setup.stock.thickness_mm, height, published_planes)
+}
+
+/// Thickness-driven [`resolve_top`] shared by the schema-4 and schema-5
+/// planner paths.
+pub fn resolve_top_values(
+    thickness: Option<f64>,
+    height: &crate::project::HeightRef,
+    published_planes: &std::collections::BTreeMap<String, f64>,
+) -> Result<f64> {
+    let thickness = thickness.ok_or_else(|| {
         error(
             "SETUP_STOCK_THICKNESS_REQUIRED",
             "height references require the stock thickness",
