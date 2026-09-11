@@ -36,6 +36,10 @@ pub enum AffectedEntity {
     ArtworkItem(ArtworkItemId),
     Operation(String),
     Setup,
+    /// A job tool snapshot was created or replaced (H4 resource commands).
+    JobTool(String),
+    /// The applied machine configuration changed.
+    MachineConfiguration,
 }
 
 /// The uniform result of a document command: the updated document, the
@@ -52,7 +56,7 @@ impl CommandOutcome {
     /// Validate the candidate structurally, enforce the aggregate serialized
     /// budget, then inspect references. Failing any step preserves the prior
     /// document because commands never mutate their input.
-    fn commit(job: CamJobV5, affected: Vec<AffectedEntity>) -> Result<Self> {
+    pub(crate) fn commit(job: CamJobV5, affected: Vec<AffectedEntity>) -> Result<Self> {
         job.to_json()?;
         let issues = super::references::inspect_references(&job)?.issues;
         Ok(Self {

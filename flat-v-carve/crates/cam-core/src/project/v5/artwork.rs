@@ -44,7 +44,8 @@ pub fn item_catalogue(item: &ArtworkItem) -> Result<ContourCatalogue> {
 }
 
 /// Axis-aligned bounds in setup coordinates.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetupBounds {
     pub min_x_mm: f64,
     pub min_y_mm: f64,

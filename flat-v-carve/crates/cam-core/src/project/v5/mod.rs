@@ -32,9 +32,12 @@ use std::collections::BTreeSet;
 
 pub mod artwork;
 pub mod commands;
+pub mod inspection;
+pub mod machine;
 pub mod migrate;
 pub mod references;
 pub mod resolve;
+pub mod resources;
 
 pub use artwork::{CombinedCatalogue, GeometryPick, SetupBounds, inspect_artwork, item_catalogue};
 pub use references::ReadinessScope;
@@ -240,7 +243,7 @@ pub struct SourceRevision {
 }
 
 /// Which local geometry space a reference addresses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GeometryRefKind {
     /// A filled component of the item's fill import (Flat V-carve selection).

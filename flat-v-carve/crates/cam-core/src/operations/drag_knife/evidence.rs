@@ -16,7 +16,7 @@ use crate::{
         IntendedTip, ReplayOutcome, ReplaySample, ReplayStatus, replay_traced,
     },
     post::sequence::{DecodedProgram, PreparedExecution},
-    sequence::{OperationPlan, StageRole},
+    sequence::{SequencePlan, StageRole},
     toolpath::{MotionEffect, MotionPurpose, PlannedMotion},
 };
 use serde::{Deserialize, Serialize};
@@ -78,7 +78,7 @@ fn setup_position(machine: crate::motion::Position, offset: [f64; 3]) -> crate::
 /// retaining samples. Used by export, where only the pass/fail outcome
 /// gates the bytes.
 pub fn replay_emitted(
-    plan: &OperationPlan,
+    plan: &dyn SequencePlan,
     prepared: &PreparedExecution,
     decoded: &DecodedProgram,
     step_budget: usize,
@@ -93,13 +93,13 @@ pub fn replay_emitted(
 /// headings, intended tips and the initial-heading assumption come from
 /// the trusted plan and nothing else.
 pub(crate) fn replay_emitted_bounded(
-    plan: &OperationPlan,
+    plan: &dyn SequencePlan,
     prepared: &PreparedExecution,
     decoded: &DecodedProgram,
     step_budget: usize,
     sample_budget: usize,
 ) -> Result<EmittedReplay> {
-    if decoded.motions.len() != plan.motions.len() {
+    if decoded.motions.len() != plan.motions().len() {
         return Err(error(
             "KNIFE_EVIDENCE_SOURCE",
             "decoded motions do not correspond one-to-one with the plan; \
@@ -107,7 +107,7 @@ pub(crate) fn replay_emitted_bounded(
         ));
     }
     let knife_stage_ids: Vec<&str> = plan
-        .stages
+        .stages()
         .iter()
         .filter(|stage| stage.role == StageRole::Knife)
         .map(|stage| stage.stage_id.as_str())
@@ -121,17 +121,12 @@ pub(crate) fn replay_emitted_bounded(
     // One blade offset for the whole replay: knife stages share one knife
     // tool contract in this release; distinct knives need distinct reports.
     let mut blade_offset = None;
-    for motion in &plan.motions {
+    for motion in plan.motions() {
         if knife_stage_ids.contains(&motion.stage_id.as_str()) {
             let offset = plan
-                .job_snapshot
-                .tools
-                .iter()
-                .find(|tool| tool.id == motion.tool_id)
-                .and_then(|tool| match &tool.geometry {
-                    Some(crate::project::ToolGeometry::DragKnife(spec)) => {
-                        Some(spec.blade_offset_mm)
-                    }
+                .tool_geometry(&motion.tool_id)
+                .and_then(|geometry| match geometry {
+                    crate::project::ToolGeometry::DragKnife(spec) => Some(spec.blade_offset_mm),
                     _ => None,
                 })
                 .ok_or_else(|| {
@@ -157,23 +152,19 @@ pub(crate) fn replay_emitted_bounded(
         }
     }
     let blade_offset = blade_offset.expect("knife stages present");
-    let tip_budget = plan
-        .job_snapshot
-        .tolerances
-        .motion_tolerance_mm
-        .ok_or_else(|| {
-            error(
-                "KNIFE_EVIDENCE_SOURCE",
-                "the plan lacks the motion tolerance that bounds tip error",
-            )
-        })?;
+    let tip_budget = plan.tolerances().motion_tolerance_mm.ok_or_else(|| {
+        error(
+            "KNIFE_EVIDENCE_SOURCE",
+            "the plan lacks the motion tolerance that bounds tip error",
+        )
+    })?;
     // Decoded machine coordinates back into setup coordinates. Missing
     // starts (the machine-owned M6 boundary) fall back to the trusted
     // plan's start; the ends are pinned by output comparison anyway.
     let offset = prepared.machine_offset_mm;
     let mut motions: Vec<PlannedMotion> = vec![];
     let mut intended: Vec<IntendedTip> = vec![];
-    for (planned, read) in plan.motions.iter().zip(&decoded.motions) {
+    for (planned, read) in plan.motions().iter().zip(&decoded.motions) {
         let mut replayed = planned.clone();
         replayed.start = match read.start {
             Some(machine) => setup_position(machine, offset),
@@ -192,7 +183,7 @@ pub(crate) fn replay_emitted_bounded(
         sample_budget,
     );
     let initial_heading = plan
-        .motions
+        .motions()
         .iter()
         .find(|motion| {
             motion.effect == MotionEffect::KnifeTrace && motion.blade_heading_deg.is_some()
@@ -285,7 +276,7 @@ pub struct KnifeEvidenceReport {
 /// supplies the exact program SHA-256; the report is meaningless against
 /// any other bytes.
 pub fn build_evidence(
-    plan: &OperationPlan,
+    plan: &dyn SequencePlan,
     prepared: &PreparedExecution,
     decoded: &DecodedProgram,
     program_sha256: &str,
@@ -308,7 +299,7 @@ pub fn build_evidence(
         .samples
         .iter()
         .filter_map(|sample| {
-            let motion = plan.motions.get(sample.motion)?;
+            let motion = plan.motions().get(sample.motion)?;
             let intended = match intended_from_plan(motion, replay.blade_offset_mm) {
                 IntendedTip::Lifted => None,
                 IntendedTip::Planted(p) => Some((p, None)),
@@ -337,7 +328,7 @@ pub fn build_evidence(
         artifact_kind: KNIFE_EVIDENCE_ARTIFACT_KIND.into(),
         schema_version: KNIFE_EVIDENCE_SCHEMA_VERSION,
         engine_version: env!("CARGO_PKG_VERSION").into(),
-        execution_fingerprint: plan.execution_fingerprint.clone(),
+        execution_fingerprint: plan.execution_fingerprint().to_string(),
         program_sha256: program_sha256.to_string(),
         output_decimal_places: prepared.output_decimal_places,
         machine_offset_mm: prepared.machine_offset_mm,

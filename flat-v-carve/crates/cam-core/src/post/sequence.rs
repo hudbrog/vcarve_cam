@@ -6,14 +6,15 @@
 //! spindle state from the emitted bytes. Detailed stock-quality analysis
 //! stays optional and is never run here.
 use crate::{
-    checks::{BasicCheckReport, check_plan, require_pass},
+    checks::{BasicCheckReport, require_pass},
     geometry::{Diagnostic, Result},
     operations::drag_knife::replay::ReplayStatus,
     project::{
         CamJob, MillingAssignment, OperationSettings, SpindleDirection as JobSpindleDirection,
     },
     sequence::{
-        ExecutionStage, GenerationStatus, OperationPlan, ProcessSpindle, StageRole, TrustedPlan,
+        ExecutionStage, GenerationStatus, ProcessSpindle, SequencePlan, StageRole,
+        TrustedSequencePlan,
     },
     toolpath::{Interpolation, PlannedMotion},
 };
@@ -366,11 +367,11 @@ pub fn apply_legacy_profile(profile: &LinuxCncProfile, job: &CamJob) -> Result<C
     Ok(applied)
 }
 
-fn stage_intent(plan: &OperationPlan, stage: &ExecutionStage) -> Result<ProcessSpindle> {
+fn stage_intent(plan: &dyn SequencePlan, stage: &ExecutionStage) -> Result<ProcessSpindle> {
     // Walk execution in order; the intent immediately preceding this stage's
     // RunStage is the one that applies to it.
     let mut pending: Option<ProcessSpindle> = None;
-    for item in &plan.execution {
+    for item in plan.execution() {
         match item {
             crate::sequence::ExecutionItem::ToolChange { .. } => {}
             crate::sequence::ExecutionItem::SetProcessIntent { intent } => {
@@ -441,12 +442,14 @@ fn resolve_process(
 
 impl PreparedExecution {
     /// Bind a checked plan to a profile with fully resolved process state.
-    pub fn prepare(plan: &TrustedPlan, profile: &SequenceProfile) -> Result<Self> {
-        let plan = plan.plan();
-        let basic_checks = check_plan(plan)?;
+    /// Accepts both trusted plan shapes through [`TrustedSequencePlan`]; a
+    /// plain plan reference is not an acceptable argument.
+    pub fn prepare(plan: &dyn TrustedSequencePlan, profile: &SequenceProfile) -> Result<Self> {
+        let plan = plan.trusted();
+        let basic_checks = plan.basic_checks()?;
         require_pass(&basic_checks)?;
         profile.validate_shape()?;
-        for stage in &plan.stages {
+        for stage in plan.stages() {
             if profile.tool(&stage.tool_id).is_none() {
                 return Err(error(
                     "POST_TOOL_MAPPING",
@@ -457,7 +460,7 @@ impl PreparedExecution {
                 ));
             }
         }
-        if let Some(clearance) = plan.job_snapshot.setup.clearance_above_stock_mm
+        if let Some(clearance) = plan.setup().clearance_above_stock_mm
             && clearance != profile.clearance_z_mm
         {
             return Err(error(
@@ -469,7 +472,7 @@ impl PreparedExecution {
         // point, XY anchors included. Machine-profile startup/M6 positions
         // are already expressed in the controller work frame and are never
         // transformed again.
-        let work_zero = crate::setup::resolve_work_zero(&plan.job_snapshot)?;
+        let work_zero = crate::setup::resolve_work_zero_setup(plan.setup())?;
         let machine_offset = work_zero.output_offset();
         for value in [machine_offset.0, machine_offset.1, machine_offset.2] {
             if !value.is_finite() || rounded(value, profile.decimal_places) != value {
@@ -480,7 +483,7 @@ impl PreparedExecution {
             }
         }
         let mut stages = vec![];
-        for stage in &plan.stages {
+        for stage in plan.stages() {
             let process = resolve_process(stage, &stage_intent(plan, stage)?, profile)?;
             stages.push(PreparedStage {
                 stage: stage.clone(),
@@ -500,7 +503,7 @@ impl PreparedExecution {
                 },
             });
         }
-        let plan_fingerprint = plan.execution_fingerprint.clone();
+        let plan_fingerprint = plan.execution_fingerprint().to_string();
         let profile_fingerprint =
             crate::plan_hash::hash(profile).map_err(|e| error("POST_JSON", e.to_string()))?;
         let process_fingerprint =
@@ -521,12 +524,16 @@ impl PreparedExecution {
 
     /// Emit the one ordered program for this execution and verify it with an
     /// independent numeric readback. Detailed quality analysis is not run.
-    pub fn export(&self, plan: &TrustedPlan, profile: &SequenceProfile) -> Result<SequenceExport> {
-        let plan = plan.plan();
-        if plan.motions.is_empty() {
+    pub fn export(
+        &self,
+        plan: &dyn TrustedSequencePlan,
+        profile: &SequenceProfile,
+    ) -> Result<SequenceExport> {
+        let plan = plan.trusted();
+        if plan.motions().is_empty() {
             return Err(error("POST_EMPTY", "no executable motions"));
         }
-        for result in &plan.operation_results {
+        for result in plan.operation_results() {
             if matches!(
                 result.generation_status,
                 GenerationStatus::Incomplete | GenerationStatus::Inconclusive
@@ -545,7 +552,7 @@ impl PreparedExecution {
         // rounded knife motions stays within its tip budget (F3b); never
         // delete a required move.
         let has_knife = plan
-            .stages
+            .stages()
             .iter()
             .any(|stage| stage.role == StageRole::Knife);
         let mut places = profile.decimal_places;
@@ -635,7 +642,7 @@ impl PreparedExecution {
 
     fn emit(
         &self,
-        plan: &OperationPlan,
+        plan: &dyn SequencePlan,
         profile: &SequenceProfile,
         places: usize,
     ) -> Result<(String, Vec<usize>)> {
@@ -723,7 +730,7 @@ impl PreparedExecution {
                 }
             }
             bridge_counts.push(stage_bridges.len());
-            let motions = &plan.motions[stage.motion_range.0..stage.motion_range.1];
+            let motions = &plan.motions()[stage.motion_range.0..stage.motion_range.1];
             for motion in motions {
                 let end = machine_position(motion.end, self.machine_offset_mm, places);
                 let feed = match motion.feed_mm_min {
@@ -761,10 +768,10 @@ impl PreparedExecution {
 /// modal/process codes) — never silently ignored.
 pub fn verify_program(
     prepared: &PreparedExecution,
-    plan: &TrustedPlan,
+    plan: &dyn TrustedSequencePlan,
     program: &SequenceProgram,
 ) -> Result<SequenceExportReport> {
-    let plan = plan.plan();
+    let plan = plan.trusted();
     let decoded = prepared.decode_program(plan, prepared.output_decimal_places, &program.gcode)?;
     compare_with_plan(prepared, plan, &program.gcode, &decoded)?;
     Ok(SequenceExportReport {
@@ -904,18 +911,18 @@ impl PreparedExecution {
     /// Expected machine bridge blocks per stage: stage 0 departs from the
     /// declared program start, later stages from the previous stage's last
     /// motion end.
-    fn expected_bridges(&self, plan: &OperationPlan, places: usize) -> Vec<Vec<BridgeBlock>> {
+    fn expected_bridges(&self, plan: &dyn SequencePlan, places: usize) -> Vec<Vec<BridgeBlock>> {
         let mut previous = self.program_start_position_mm;
         let mut expected = vec![];
         for stage in &self.stages {
             let entry = machine_position(
-                plan.motions[stage.stage.motion_range.0].start,
+                plan.motions()[stage.stage.motion_range.0].start,
                 self.machine_offset_mm,
                 places,
             );
             expected.push(bridge_blocks(previous, entry));
             previous = Some(machine_position(
-                plan.motions[stage.stage.motion_range.1 - 1].end,
+                plan.motions()[stage.stage.motion_range.1 - 1].end,
                 self.machine_offset_mm,
                 places,
             ));
@@ -928,7 +935,7 @@ impl PreparedExecution {
     /// unsupported or unexpected state change instead of ignoring it (F3a).
     pub fn decode_program(
         &self,
-        plan: &OperationPlan,
+        plan: &dyn SequencePlan,
         places: usize,
         gcode: &str,
     ) -> Result<DecodedProgram> {
@@ -1542,23 +1549,23 @@ fn stage_slot_of(prepared: &PreparedExecution, motions_so_far: usize) -> usize {
 /// Modal/process state was already verified per motion during decoding.
 fn compare_with_plan(
     prepared: &PreparedExecution,
-    plan: &OperationPlan,
+    plan: &dyn SequencePlan,
     gcode: &str,
     decoded: &DecodedProgram,
 ) -> Result<()> {
     let motions = &decoded.motions;
-    if motions.len() != plan.motions.len() {
+    if motions.len() != plan.motions().len() {
         return Err(error(
             "POST_SEQUENCE_MISMATCH",
             format!(
                 "read back {} motions for {} planned (from {} bytes)",
                 motions.len(),
-                plan.motions.len(),
+                plan.motions().len(),
                 gcode.len()
             ),
         ));
     }
-    for (index, (read, planned)) in motions.iter().zip(plan.motions.iter()).enumerate() {
+    for (index, (read, planned)) in motions.iter().zip(plan.motions().iter()).enumerate() {
         let expected_end = machine_position(
             planned.end,
             prepared.machine_offset_mm,
@@ -1588,7 +1595,7 @@ fn compare_with_plan(
             ));
         }
         let stage = plan
-            .stages
+            .stages()
             .iter()
             .find(|s| index >= s.motion_range.0 && index < s.motion_range.1)
             .ok_or_else(|| {
@@ -1645,8 +1652,8 @@ fn modal_lines(work_offset: &str, path_control: PathControl) -> Vec<String> {
     ]
 }
 
-fn first_motion<'a>(plan: &'a OperationPlan, stage: &ExecutionStage) -> &'a PlannedMotion {
-    &plan.motions[stage.motion_range.0]
+fn first_motion<'a>(plan: &'a dyn SequencePlan, stage: &ExecutionStage) -> &'a PlannedMotion {
+    &plan.motions()[stage.motion_range.0]
 }
 
 fn rounded_position(p: crate::motion::Position, places: usize) -> crate::motion::Position {
@@ -1686,14 +1693,14 @@ fn scalar(v: f64) -> Result<String> {
     Ok(v.to_string())
 }
 
-fn motions_preserved(plan: &OperationPlan, places: usize) -> bool {
-    plan.motions.iter().all(|m| {
+fn motions_preserved(plan: &dyn SequencePlan, places: usize) -> bool {
+    plan.motions().iter().all(|m| {
         let a = rounded_position(m.start, places);
         let b = rounded_position(m.end, places);
         // A motion must survive formatting as a real move; pure-Z and pure-XY
         // moves only need their changing axis to survive.
         a != b
-    }) && plan.motions.windows(2).all(|w| {
+    }) && plan.motions().windows(2).all(|w| {
         // A zero-length formatted block cannot be distinguished from collapse;
         // require distinct endpoints for every motion at this precision.
         rounded_position(w[0].start, places) != rounded_position(w[0].end, places)

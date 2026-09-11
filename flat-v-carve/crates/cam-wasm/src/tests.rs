@@ -432,3 +432,65 @@ fn knife_commands_round_trip_through_the_worker_envelope() {
         json!(true)
     );
 }
+
+#[test]
+fn collection_commands_round_trip_through_the_worker_envelope() {
+    let legacy = include_str!("../../../fixtures/m3/rectangle.json");
+    let open = json!({
+        "apiVersion": "ui-9", "requestId": "col-1", "revision": 1,
+        "command": {"operation": "open", "json": legacy}
+    });
+    let reply = parse(&super::collection(&open.to_string(), &instance()));
+    let document = reply["ok"]["data"].clone();
+    assert_eq!(document["migrated"], json!(true));
+    assert_eq!(document["job"]["schema_version"], json!(5));
+    // The collection projection carries the artwork tree, inspection DTOs
+    // and the same assignment statuses the native route serves.
+    assert_eq!(document["artwork"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        document["inspection"]["assignments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // Inspection re-reads the schema-5 document without any library or
+    // configuration file.
+    let inspect = json!({
+        "apiVersion": "ui-9", "requestId": "col-2", "revision": 2,
+        "command": {"operation": "inspect", "job": document["job"]}
+    });
+    let reply = parse(&super::collection(&inspect.to_string(), &instance()));
+    assert_eq!(
+        reply["ok"]["data"]["inspection"]["machine"]["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    // Admission mirrors the HTTP route: wrong API version, weak identity.
+    let wrong = json!({
+        "apiVersion": "ui-8", "requestId": "col-3", "revision": 3,
+        "command": {"operation": "capabilities"}
+    });
+    let reply = parse(&super::collection(&wrong.to_string(), &instance()));
+    assert_eq!(reply["error"]["code"], "TASK_INSTANCE");
+    let weak = json!({
+        "apiVersion": "ui-9", "requestId": "", "revision": 3,
+        "command": {"operation": "capabilities"}
+    });
+    let reply = parse(&super::collection(&weak.to_string(), &instance()));
+    assert_eq!(reply["error"]["code"], "REQUEST_IDENTITY");
+
+    let capabilities = json!({
+        "apiVersion": "ui-9", "requestId": "col-4", "revision": 4,
+        "command": {"operation": "capabilities"}
+    });
+    let reply = parse(&super::collection(&capabilities.to_string(), &instance()));
+    assert_eq!(
+        reply["ok"]["data"]["features"]["appliedMachineConfiguration"],
+        json!(true)
+    );
+}

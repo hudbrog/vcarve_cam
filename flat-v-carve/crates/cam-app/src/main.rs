@@ -1,4 +1,5 @@
 mod bundled_ui;
+mod collection_cli;
 mod combined_svg;
 mod job_cli;
 mod job_svg;
@@ -54,6 +55,9 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     }
     if command == "sequence" {
         return sequence_cli::run(args.collect());
+    }
+    if command == "collection" {
+        return collection_cli::run(args.collect());
     }
     if matches!(command.as_str(), "export" | "verify-gcode") {
         return post_cli::run(&command, args.collect());

@@ -571,3 +571,67 @@ async fn sequence_route_opens_plans_and_rejects_foreign_versions() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(value["error"]["code"], "TASK_INSTANCE");
 }
+
+async fn collection_call(app: &Router, api_version: &str, command: Value) -> (StatusCode, Value) {
+    let token = token(app).await;
+    call(
+        app,
+        "POST",
+        "/api/v1/collection",
+        &[
+            ("host", "127.0.0.1:4848"),
+            ("origin", "http://127.0.0.1:4848"),
+            ("x-cam-session", &token),
+            ("content-type", "application/json"),
+        ],
+        json!({"apiVersion":api_version,"requestId":"col-1","revision":7,"command":command})
+            .to_string(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn collection_route_migrates_serves_inspection_and_rejects_foreign_versions() {
+    let app = cam_server::router(4848, Default::default()).unwrap();
+    let (status, value) = collection_call(
+        &app,
+        "ui-9",
+        json!({"operation":"open","json":M3_RECTANGLE}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["apiVersion"], "ui-9");
+    assert_eq!(value["data"]["migrated"], true);
+    assert_eq!(value["data"]["job"]["schema_version"], 5);
+    assert_eq!(value["data"]["artwork"].as_array().unwrap().len(), 1);
+
+    // Inspection of the schema-5 document answers without any library or
+    // configuration file, with the machine readout present but empty.
+    let job = value["data"]["job"].clone();
+    let (status, value) =
+        collection_call(&app, "ui-9", json!({"operation":"inspect","job":job})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        value["data"]["inspection"]["machine"]["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    // Resolving before any configuration exists is a located diagnostic.
+    let (status, value) = collection_call(
+        &app,
+        "ui-9",
+        json!({"operation":"resolveProfile","job":job,
+            "scope":{"kind":"allEnabled"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(value["diagnostic"]["code"], "MACHINE_CONFIGURATION_ABSENT");
+
+    // ui-8 requests are foreign to this route.
+    let (status, value) = collection_call(&app, "ui-8", json!({"operation":"capabilities"})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(value["error"]["code"], "TASK_INSTANCE");
+}

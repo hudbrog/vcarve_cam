@@ -9,6 +9,7 @@
 //! identity of plan section 22.8 instead of a whole-job receipt.
 use crate::{
     geometry::{Diagnostic, Result},
+    job::PlanningTolerances,
     project::{
         CamJob, OperationSettings, SpindleDirection,
         v5::{
@@ -341,6 +342,130 @@ impl TrustedPlan {
     /// checked where they matter (basic checks, export preparation).
     pub fn from_generated(plan: OperationPlan) -> Self {
         Self(plan)
+    }
+}
+
+/// The schema-5 collection counterpart of [`TrustedPlan`]: only
+/// [`OperationPlanV5::plan_job_v5`] creates it in-process, so export
+/// preparation over collection documents accepts nothing a client serialized.
+pub struct TrustedPlanV5(OperationPlanV5);
+impl std::fmt::Debug for TrustedPlanV5 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrustedPlanV5")
+            .field("execution_fingerprint", &self.0.execution_fingerprint)
+            .finish_non_exhaustive()
+    }
+}
+impl TrustedPlanV5 {
+    pub fn plan(&self) -> &OperationPlanV5 {
+        &self.0
+    }
+    /// Bind a collection plan this engine just generated in this process.
+    pub fn from_generated(plan: OperationPlanV5) -> Self {
+        Self(plan)
+    }
+}
+
+/// The plan surface the post pipeline and emitted-output evidence consume
+/// (H4): both the schema-4 and schema-5 plan shapes expose it, so preparation,
+/// export, decoding, comparison and knife replay run identical algorithms over
+/// collection documents instead of a second pipeline.
+pub trait SequencePlan {
+    fn setup(&self) -> &crate::project::SetupSettings;
+    fn tolerances(&self) -> &PlanningTolerances;
+    /// Geometry snapshot of a job tool, if the tool exists and carries one.
+    fn tool_geometry(&self, tool_id: &str) -> Option<&crate::project::ToolGeometry>;
+    fn stages(&self) -> &[ExecutionStage];
+    fn motions(&self) -> &[PlannedMotion];
+    fn execution(&self) -> &[ExecutionItem];
+    fn operation_results(&self) -> &[OperationResult];
+    fn execution_fingerprint(&self) -> &str;
+    /// The automatic basic checks of this plan shape.
+    fn basic_checks(&self) -> Result<crate::checks::BasicCheckReport>;
+}
+
+impl SequencePlan for OperationPlan {
+    fn setup(&self) -> &crate::project::SetupSettings {
+        &self.job_snapshot.setup
+    }
+    fn tolerances(&self) -> &PlanningTolerances {
+        &self.job_snapshot.tolerances
+    }
+    fn tool_geometry(&self, tool_id: &str) -> Option<&crate::project::ToolGeometry> {
+        self.job_snapshot
+            .tools
+            .iter()
+            .find(|tool| tool.id == tool_id)
+            .and_then(|tool| tool.geometry.as_ref())
+    }
+    fn stages(&self) -> &[ExecutionStage] {
+        &self.stages
+    }
+    fn motions(&self) -> &[PlannedMotion] {
+        &self.motions
+    }
+    fn execution(&self) -> &[ExecutionItem] {
+        &self.execution
+    }
+    fn operation_results(&self) -> &[OperationResult] {
+        &self.operation_results
+    }
+    fn execution_fingerprint(&self) -> &str {
+        &self.execution_fingerprint
+    }
+    fn basic_checks(&self) -> Result<crate::checks::BasicCheckReport> {
+        crate::checks::check_plan(self)
+    }
+}
+
+impl SequencePlan for OperationPlanV5 {
+    fn setup(&self) -> &crate::project::SetupSettings {
+        &self.job_snapshot.setup
+    }
+    fn tolerances(&self) -> &PlanningTolerances {
+        &self.job_snapshot.tolerances
+    }
+    fn tool_geometry(&self, tool_id: &str) -> Option<&crate::project::ToolGeometry> {
+        self.job_snapshot
+            .tools
+            .iter()
+            .find(|tool| tool.id == tool_id)
+            .and_then(|tool| tool.geometry.as_ref())
+    }
+    fn stages(&self) -> &[ExecutionStage] {
+        &self.stages
+    }
+    fn motions(&self) -> &[PlannedMotion] {
+        &self.motions
+    }
+    fn execution(&self) -> &[ExecutionItem] {
+        &self.execution
+    }
+    fn operation_results(&self) -> &[OperationResult] {
+        &self.operation_results
+    }
+    fn execution_fingerprint(&self) -> &str {
+        &self.execution_fingerprint
+    }
+    fn basic_checks(&self) -> Result<crate::checks::BasicCheckReport> {
+        crate::checks::check_plan_v5(self)
+    }
+}
+
+/// Trust boundary of the post pipeline: only wrappers this engine itself
+/// constructed can hand a [`SequencePlan`] to preparation and export. A
+/// serialized plan, a client-built struct or a plain reference cannot.
+pub trait TrustedSequencePlan {
+    fn trusted(&self) -> &dyn SequencePlan;
+}
+impl TrustedSequencePlan for TrustedPlan {
+    fn trusted(&self) -> &dyn SequencePlan {
+        self.plan()
+    }
+}
+impl TrustedSequencePlan for TrustedPlanV5 {
+    fn trusted(&self) -> &dyn SequencePlan {
+        self.plan()
     }
 }
 
@@ -783,7 +908,7 @@ pub struct OperationPlanV5 {
 }
 
 /// Enabled operations of `job` inside `scope`, in document order.
-fn scoped_enabled_operations_v5<'a>(
+pub(crate) fn scoped_enabled_operations_v5<'a>(
     job: &'a CamJobV5,
     scope: &ReadinessScope,
 ) -> Result<Vec<&'a OperationV5>> {
@@ -805,8 +930,9 @@ fn scoped_enabled_operations_v5<'a>(
 }
 
 /// Tool IDs referenced by one collection operation's settings, in
-/// assignment order (mirrors the schema-4 `tool_ids_of`).
-fn tool_ids_of_v5(settings: &OperationSettingsV5) -> Vec<&str> {
+/// assignment order (mirrors the schema-4 `tool_ids_of`). Shared with the
+/// H4 machine-configuration resolver for active-scope mapping validation.
+pub(crate) fn tool_ids_of_v5(settings: &OperationSettingsV5) -> Vec<&str> {
     match settings {
         OperationSettingsV5::FlatVcarve(s) => {
             vec![s.endmill.tool_id.as_str(), s.vbit.tool_id.as_str()]

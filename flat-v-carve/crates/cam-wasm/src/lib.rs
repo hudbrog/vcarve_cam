@@ -18,6 +18,7 @@ use cam_core::{
 };
 use cam_service::{
     admission::{self, Failure},
+    collection::{self, CollectionRequest},
     document::{self, DocumentRequest, ENGINE_VERSION},
     export,
     inspection::Inspection,
@@ -157,6 +158,38 @@ pub fn sequence(request_json: &str, instance_id: &str) -> String {
         &request.request_id,
         request.revision,
         sequence::execute(request.command),
+    ))
+}
+
+/// ui-9 collection operations (H4): schema-5 artwork-collection documents,
+/// cutting-profile and machine-configuration commands, scope-aware planning
+/// and read-only inspection. Same envelope and admission rules as the HTTP
+/// collection route.
+#[wasm_bindgen]
+pub fn collection(request_json: &str, instance_id: &str) -> String {
+    let request = match serde_json::from_str::<CollectionRequest>(request_json) {
+        Ok(request) => request,
+        Err(error) => {
+            return admission_error(Failure::new(
+                400,
+                "REQUEST_JSON",
+                &format!("The request body is not valid collection JSON: {error}"),
+            ));
+        }
+    };
+    if let Err(failure) = collection::validate_identity(
+        &request.api_version,
+        instance_id,
+        &request.request_id,
+        request.revision,
+        instance_id,
+    ) {
+        return admission_error(failure);
+    }
+    ok(collection::envelope(
+        &request.request_id,
+        request.revision,
+        collection::execute(request.command),
     ))
 }
 

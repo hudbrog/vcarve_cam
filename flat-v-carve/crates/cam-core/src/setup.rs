@@ -35,23 +35,29 @@ impl WorkZeroPoint {
 /// XY dimensions; legacy migrated jobs keep `setup origin`/`stock top`
 /// coordinates that resolve without them.
 pub fn resolve_work_zero(job: &CamJob) -> Result<WorkZeroPoint> {
-    let z_mm = match job.setup.work_zero.z {
+    resolve_work_zero_setup(&job.setup)
+}
+
+/// Setup-driven [`resolve_work_zero`] shared by the schema-4 and schema-5
+/// plan views: only the setup block is consulted, so both document shapes
+/// resolve the identical output transform.
+pub fn resolve_work_zero_setup(setup: &crate::project::SetupSettings) -> Result<WorkZeroPoint> {
+    let z_mm = match setup.work_zero.z {
         WorkZeroZ::StockTop => 0.,
-        WorkZeroZ::StockBottom => -job.setup.stock.thickness_mm.ok_or_else(|| {
+        WorkZeroZ::StockBottom => -setup.stock.thickness_mm.ok_or_else(|| {
             error(
                 "SETUP_STOCK_THICKNESS_REQUIRED",
                 "the stock-bottom datum requires the stock thickness",
             )
         })?,
     };
-    let (x_mm, y_mm) = match &job.setup.work_zero.xy {
+    let (x_mm, y_mm) = match &setup.work_zero.xy {
         WorkZeroXY::SetupOrigin => (0., 0.),
         WorkZeroXY::StockAnchor {
             x_fraction,
             y_fraction,
         } => {
-            let rect = job
-                .setup
+            let rect = setup
                 .stock
                 .xy
                 .ok_or_else(|| error(

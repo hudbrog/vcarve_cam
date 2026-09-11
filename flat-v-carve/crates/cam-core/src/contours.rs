@@ -56,7 +56,8 @@ fn error(code: &str, message: impl Into<String>) -> Diagnostic {
 /// A contour's role within its filled component. `Open` marks imported
 /// centerline chains (knife import): `closed` on the chain then records
 /// whether the source subpath closed itself.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ContourRole {
     Outer,
     Hole,

@@ -185,6 +185,10 @@ pub fn router_with_library(
             post(sequence_request).layer(DefaultBodyLimit::max(REQUEST_BYTES)),
         )
         .route(
+            "/api/v1/collection",
+            post(collection_request).layer(DefaultBodyLimit::max(REQUEST_BYTES)),
+        )
+        .route(
             "/api/v1/library",
             post(library_metadata).layer(DefaultBodyLimit::max(library::METADATA_BYTES)),
         )
@@ -730,6 +734,69 @@ async fn sequence_request(
     .await;
     let mut envelope = json!({
         "apiVersion": cam_service::sequence::SEQUENCE_API_VERSION,
+        "engineVersion": ENGINE_VERSION,
+        "requestId": request_id,
+        "revision": revision,
+    });
+    match result {
+        Ok(Ok(data)) => {
+            envelope["data"] = data;
+            Json(envelope).into_response()
+        }
+        Ok(Err(diagnostic)) => {
+            envelope["diagnostic"] = json!(cam_service::document::UiDiagnostic::from(diagnostic));
+            (StatusCode::UNPROCESSABLE_ENTITY, Json(envelope)).into_response()
+        }
+        Err(_) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "ENGINE_FAILURE",
+            "The engine could not finish this request. Your draft is unchanged.",
+        ),
+    }
+}
+
+/// ui-9 collection operations on schema-5 CamJobV5 documents (H4): open and
+/// migrate, cutting-profile and machine-configuration commands, scope-aware
+/// planning and read-only inspection. Same admission rules as ui-8.
+async fn collection_request(
+    State(state): State<AppState>,
+    body: Result<Json<cam_service::collection::CollectionRequest>, JsonRejection>,
+) -> Response {
+    let request = match body {
+        Ok(Json(value)) => value,
+        Err(rejection) => return error(rejection.status(), "REQUEST_JSON", &rejection.body_text()),
+    };
+    if let Err(failure) = cam_service::collection::validate_identity(
+        &request.api_version,
+        &state.token,
+        &request.request_id,
+        request.revision,
+        &state.token,
+    ) {
+        return error(
+            failure.0.try_into().unwrap_or(StatusCode::CONFLICT),
+            failure.1,
+            &failure.2,
+        );
+    }
+    let (request_id, revision) = (request.request_id.clone(), request.revision);
+    let permit = match state.workers.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_BUSY",
+                "The engine is inspecting other requests. Retry shortly.",
+            );
+        }
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        cam_service::collection::execute(request.command)
+    })
+    .await;
+    let mut envelope = json!({
+        "apiVersion": cam_service::collection::COLLECTION_API_VERSION,
         "engineVersion": ENGINE_VERSION,
         "requestId": request_id,
         "revision": revision,
