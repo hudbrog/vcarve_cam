@@ -59,6 +59,7 @@ CI includes workspace checks and native/browser review artifacts. The incumbent
 Deprecating their UI entry point follows user acceptance of the replacement's
 needed workflows; promoting the new crate does not declare that cutover complete.
 
-GUI2b source authoring and GUI2c broader context/recovery work remain separate
-increments. Full GUI2 acceptance, actual OS IME/device-loss tours and unqualified
-platforms retain the limits documented in the framework decision.
+GUI2b source authoring, GUI2c working-context recovery and the revision-2 visual
+pass are now documented in [the GUI2b/c report](gui2bc-progress.md). User acceptance,
+actual OS IME/device-loss tours and unqualified platforms retain the limits
+documented in the framework decision.

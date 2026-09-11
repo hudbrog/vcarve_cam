@@ -12,6 +12,12 @@ use crate::{
 use cam_core::project::v5::{CamJobV5, OperationSettingsV5};
 use egui::{Color32, RichText};
 use serde_json::{Value, json};
+#[path = "inspector.rs"]
+mod inspector;
+#[path = "resume.rs"]
+mod resume;
+#[path = "workspace_ui.rs"]
+mod workspace_ui;
 
 // Read-only widget geometry for real-browser pointer tests of the canvas.
 // No command or document mutation is exposed by this probe.
@@ -45,7 +51,7 @@ pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
         8 => s.endmill.max_stepdown_mm,
         9 => s.endmill.stepover_mm,
         10 => s.endmill.plunge_feed_mm_min,
-        _ => None,
+        _ => crate::authoring::value(job, field),
     }
 }
 pub fn set_value(job: &CamJobV5, field: usize, value: Option<f64>) -> Result<CamJobV5, String> {
@@ -64,22 +70,25 @@ pub fn set_value(job: &CamJobV5, field: usize, value: Option<f64>) -> Result<Cam
         8 => s.endmill.max_stepdown_mm = value,
         9 => s.endmill.stepover_mm = value,
         10 => s.endmill.plunge_feed_mm_min = value,
-        _ => return Err("Unknown field".into()),
+        _ => crate::authoring::set(&mut job, field, value)?,
     }
     job.validate_structure().map_err(|e| e.to_string())?;
     Ok(job)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Document {
     pub job: CamJobV5,
     pub raw: Draft,
+    pub finish_draft: Option<cam_core::vcarve::VBitPlanningSettings>,
 }
 impl Document {
     pub fn new(job: CamJobV5) -> Self {
         Self {
+            raw: Draft::for_job(&job),
+            finish_draft: engine::settings(&job).finish.clone(),
             job,
-            raw: Draft::default(),
         }
     }
     pub fn text(&self, field: usize) -> String {
@@ -94,25 +103,49 @@ impl Document {
             })
     }
     pub fn edit(&mut self, field: usize, text: String) -> Result<(), String> {
+        let group = crate::authoring::group(field);
+        for &member in group {
+            let previous = self.text(member);
+            self.raw.raw.entry(self.raw.key(member)).or_insert(previous);
+        }
         self.raw.raw.insert(self.raw.key(field), text.clone());
         let number = Draft::parse(&text).map_err(str::to_string)?;
-        self.job = set_value(&self.job, field, number)?;
+        if group.is_empty() {
+            self.job = set_value(&self.job, field, number)?;
+        } else {
+            let values = group
+                .iter()
+                .map(|&member| {
+                    Draft::parse(&self.text(member))
+                        .map_err(str::to_string)?
+                        .ok_or("Complete all dimensions in this group".into())
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let mut candidate = self.job.clone();
+            crate::authoring::set_group(&mut candidate, field, &values)?;
+            candidate.validate_structure().map_err(|e| e.to_string())?;
+            self.job = candidate;
+        }
         Ok(())
     }
     pub fn pending(&self) -> bool {
-        LIVE_FIELDS.iter().any(|&field| {
-            let text = self.text(field);
-            Draft::parse(&text)
-                .ok()
-                .filter(|v| set_value(&self.job, field, *v).is_ok())
-                != Some(value(&self.job, field))
-        })
+        crate::authoring::FIELDS
+            .iter()
+            .filter(|&&f| crate::authoring::active(&self.job, f))
+            .any(|&field| {
+                let text = self.text(field);
+                Draft::parse(&text).ok() != Some(value(&self.job, field))
+            })
     }
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
-            schema: 2,
+            schema: 3,
             draft: self.raw.clone(),
             job: Some(self.job.to_json().expect("validated document")),
+            finish_draft: self.finish_draft.clone(),
+            workspace: Default::default(),
+            undo: vec![],
+            redo: vec![],
         }
     }
 }
@@ -121,6 +154,7 @@ pub struct App {
     pub document: Option<Document>,
     pub revision: u64,
     saved_revision: Option<u64>,
+    saved_job_hash: Option<String>,
     undo: Vec<Document>,
     redo: Vec<Document>,
     edit_group: Option<usize>,
@@ -139,9 +173,20 @@ pub struct App {
     search: String,
     ime: bool,
     focus: Option<egui::Id>,
+    components: Vec<crate::authoring::Component>,
+    inspector_tab: usize,
+    preview_dirty: bool,
+    inspector_width: f32,
+    scroll: [f32; 6],
+    simulate: bool,
+    last_workspace: Option<crate::recovery::Workspace>,
+    plan_fingerprint: Option<String>,
+    resume_view: Option<(String, usize)>,
+    cancelled_id: Option<u64>,
 }
 #[derive(Clone, Copy)]
 enum IoKind {
+    Svg,
     Open,
     Profile,
     Save(Option<u64>),
@@ -152,6 +197,7 @@ impl Default for App {
             document: None,
             revision: 0,
             saved_revision: None,
+            saved_job_hash: None,
             undo: vec![],
             redo: vec![],
             edit_group: None,
@@ -171,6 +217,16 @@ impl Default for App {
             search: String::new(),
             ime: false,
             focus: None,
+            components: vec![],
+            inspector_tab: 2,
+            preview_dirty: false,
+            inspector_width: 325.,
+            scroll: [0.; 6],
+            simulate: false,
+            last_workspace: None,
+            plan_fingerprint: None,
+            resume_view: None,
+            cancelled_id: None,
         }
     }
 }
@@ -180,6 +236,7 @@ impl App {
             view: View::new_viewer(cc),
             ..Default::default()
         };
+        Self::theme(&cc.egui_ctx);
         app.recovery.enabled = true;
         app.recovery.status = "Checking local recovery…".into();
         app.port.load_recovery(cc.egui_ctx.clone());
@@ -192,14 +249,13 @@ impl App {
     fn changed(&mut self, ctx: &egui::Context) {
         self.revision += 1;
         self.prepared = None;
+        self.preview_dirty = true;
         self.recovery.changed(ctx.input(|i| i.time));
     }
     fn remember(&mut self) {
         if let Some(doc) = &self.document {
             self.undo.push(doc.clone());
-            if self.undo.len() > 32 {
-                self.undo.remove(0);
-            }
+            Self::trim_history(&mut self.undo);
         }
         self.redo.clear();
     }
@@ -209,7 +265,10 @@ impl App {
         }
         let id = self.id();
         self.active = Some((id, self.revision));
+        self.cancelled_id = None;
         self.status = match command {
+            Command::ImportSvg { .. } => "Importing SVG…",
+            Command::Preview { .. } => "Updating artwork preview…",
             Command::Seek { .. } => "Loading stock position…",
             Command::Open { .. } => "Opening document…",
             Command::ApplyProfile { .. } => "Applying machine configuration…",
@@ -227,7 +286,7 @@ impl App {
         let id = self.id();
         self.io = Some((id, kind));
         self.focus = ctx.memory(|m| m.focused());
-        self.port.open(id, false, ctx.clone());
+        self.port.open(id, matches!(kind, IoKind::Svg), ctx.clone());
     }
     fn save(&mut self, name: String, bytes: Vec<u8>, revision: Option<u64>, ctx: &egui::Context) {
         self.retained_save = Some((name.clone(), bytes.clone(), revision));
@@ -270,11 +329,19 @@ impl App {
             return;
         }
         match reply["kind"].as_str() {
+            Some("preview") => {
+                self.components =
+                    serde_json::from_value(reply["components"].clone()).unwrap_or_default();
+                self.preview_dirty = false;
+                self.view.load_scene(Ok((meta, payload)));
+                self.status =
+                    "Artwork preview updated. Generate to calculate cutting motions.".into();
+            }
             Some("seek") => match self.view.accept_stock(meta, payload) {
                 Ok(()) => self.status = "Stock position loaded from retained execution.".into(),
                 Err(e) => self.status = e,
             },
-            Some("opened" | "profile") => {
+            Some("opened" | "profile" | "imported") => {
                 let job = match CamJobV5::from_json(&meta.job) {
                     Ok(job) => job,
                     Err(e) => {
@@ -283,29 +350,68 @@ impl App {
                     }
                 };
                 self.remember();
-                let raw = if reply["kind"] == "profile" {
+                let mut raw = if reply["kind"] == "profile" {
                     self.document
                         .as_ref()
                         .map(|d| d.raw.clone())
-                        .unwrap_or_default()
+                        .unwrap_or_else(|| Draft::for_job(&job))
                 } else {
-                    Draft::default()
+                    Draft::for_job(&job)
                 };
-                self.document = Some(Document { job, raw });
+                if reply["kind"] == "profile" {
+                    for field in [7, 32, 33, 38, 39] {
+                        raw.raw.remove(&raw.key(field));
+                    }
+                }
+                self.document = Some(Document {
+                    finish_draft: engine::settings(&job).finish.clone().or_else(|| {
+                        (reply["kind"] == "profile")
+                            .then(|| self.document.as_ref().and_then(|d| d.finish_draft.clone()))
+                            .flatten()
+                    }),
+                    job,
+                    raw,
+                });
                 self.changed(ctx);
                 self.plan = None;
+                self.preview_dirty = false;
+                self.components =
+                    serde_json::from_value(reply["components"].clone()).unwrap_or_default();
+                if reply["kind"] == "imported" {
+                    self.inspector_tab = 0;
+                } else if reply["kind"] == "opened" {
+                    self.inspector_tab = 2;
+                }
+                if reply["kind"] != "profile" {
+                    self.search.clear();
+                    self.scroll = [0.; 6];
+                    self.simulate = false;
+                    self.plan_fingerprint = None;
+                    self.resume_view = None;
+                    self.saved_job_hash = None;
+                }
                 self.status=if reply["kind"]=="profile" {"Machine snapshot applied. Save job includes its datum, mappings and process settings."}else{"Opened as schema 5. Save writes a new portable job; original input file is unchanged."}.into();
                 self.view.load_scene(Ok((meta, payload)));
+                if self.inspector_tab == 0 {
+                    self.status="SVG imported. Select filled components and enter stock, target and cutting settings; no machining defaults were copied.".into();
+                }
             }
             Some("generated") => {
                 if let Some(handle) = reply["handle"].as_str() {
                     self.plan = Some((handle.into(), self.revision));
+                    self.plan_fingerprint =
+                        reply["executionFingerprint"].as_str().map(str::to_owned);
                     self.prepared = None;
                     self.status = format!(
                         "Generated {} motions · basic checks complete · ready to simulate or prepare output",
                         meta.motions
                     );
                     self.view.load_scene(Ok((meta, payload)));
+                    if let Some((fingerprint, prefix)) = self.resume_view.take()
+                        && self.plan_fingerprint.as_ref() == Some(&fingerprint)
+                    {
+                        self.view.seek(prefix);
+                    }
                 }
             }
             Some("prepared") => {
@@ -318,85 +424,106 @@ impl App {
     }
     fn poll(&mut self, ctx: &egui::Context) {
         while let Some(event) = self.port.poll() {
-            match event {
-                Event::Computed { id, result, .. } => self.accept(id, result, ctx),
-                Event::Cancelled { stop_ms, .. } => {
-                    if self.active.is_none() {
-                        self.status = format!(
-                            "Cancelled; retained execution expired. Worker stop reported in {stop_ms:.2} ms."
-                        );
-                    }
+            self.event(event, ctx);
+        }
+    }
+    fn event(&mut self, event: Event, ctx: &egui::Context) {
+        match event {
+            Event::Computed { id, result, .. } => self.accept(id, result, ctx),
+            Event::Cancelled { id, stop_ms } => {
+                if self.cancelled_id == Some(id) && self.active.is_none() {
+                    self.cancelled_id = None;
+                    self.status = format!(
+                        "Cancelled; retained execution expired. Worker stop reported in {stop_ms:.2} ms."
+                    );
                 }
-                Event::Io { id, result } => {
-                    let Some((expected, kind)) = self.io else {
-                        continue;
-                    };
-                    if id != expected {
-                        continue;
+            }
+            Event::Io { id, result } => {
+                let Some((expected, kind)) = self.io else {
+                    return;
+                };
+                if id != expected {
+                    return;
+                }
+                self.io = None;
+                if let Some(focus) = self.focus.take() {
+                    ctx.memory_mut(|m| m.request_focus(focus));
+                }
+                match result {
+                    Ok(IoValue::Svg { filename, svg }) => {
+                        self.submit(Command::ImportSvg { filename, svg }, ctx)
                     }
-                    self.io = None;
-                    if let Some(focus) = self.focus.take() {
-                        ctx.memory_mut(|m| m.request_focus(focus));
-                    }
-                    match result {
-                        Ok(IoValue::Job(json)) => match kind {
-                            IoKind::Open => self.submit(Command::Open { json }, ctx),
-                            IoKind::Profile => {
-                                if let Some(doc) = &self.document {
-                                    self.submit(
-                                        Command::ApplyProfile {
-                                            job: doc.job.to_json().unwrap(),
-                                            json,
-                                        },
-                                        ctx,
-                                    )
-                                }
-                            }
-                            _ => {}
-                        },
-                        Ok(IoValue::Saved(message)) => {
-                            if let IoKind::Save(Some(revision)) = kind
-                                && revision == self.revision
-                                && message.starts_with("Saved")
-                            {
-                                self.saved_revision = Some(revision);
-                            }
-                            self.status = message;
-                            self.retry = false;
-                        }
-                        Err(error) => {
-                            self.status = error;
-                            if matches!(kind, IoKind::Save(_)) {
-                                self.retry = true;
+                    Ok(IoValue::Job(json)) => match kind {
+                        IoKind::Svg => self.submit(
+                            Command::ImportSvg {
+                                filename: "Imported.svg".into(),
+                                svg: json,
+                            },
+                            ctx,
+                        ),
+                        IoKind::Open => self.submit(Command::Open { json }, ctx),
+                        IoKind::Profile => {
+                            if let Some(doc) = &self.document {
+                                self.submit(
+                                    Command::ApplyProfile {
+                                        job: doc.job.to_json().unwrap(),
+                                        json,
+                                    },
+                                    ctx,
+                                )
                             }
                         }
                         _ => {}
+                    },
+                    Ok(IoValue::Saved(message)) => {
+                        if let IoKind::Save(Some(revision)) = kind
+                            && revision == self.revision
+                            && message.starts_with("Saved")
+                        {
+                            self.saved_revision = Some(revision);
+                            self.saved_job_hash = self
+                                .retained_save
+                                .as_ref()
+                                .map(|(_, bytes, _)| crate::compute::hash(bytes));
+                            self.recovery.changed(ctx.input(|i| i.time));
+                        }
+                        self.status = message;
+                        self.retry = false;
                     }
+                    Err(error) => {
+                        self.status = error;
+                        if matches!(kind, IoKind::Save(_)) {
+                            self.retry = true;
+                        }
+                    }
+                    _ => {}
                 }
-                Event::RecoveryLoaded(result) => match result {
-                    Ok(stored) => {
-                        self.recovery.revision = stored.as_ref().map(|s| s.revision);
-                        self.recovery.offered = stored.filter(|s| s.snapshot.schema == 2);
-                        self.recovery.ready = true;
-                        self.recovery.status = "Local recovery ready".into();
-                    }
-                    Err(e) => {
-                        self.recovery.failed = true;
-                        self.recovery.status = e;
-                    }
-                },
-                Event::RecoverySaved { edit, result } => self.recovery.written(edit, result),
-                Event::Notice(text) => self.status = text,
-                Event::OfflineStatus(_) => {}
             }
+            Event::RecoveryLoaded(result) => match result {
+                Ok(stored) => {
+                    self.recovery.revision = stored.as_ref().map(|s| s.revision);
+                    self.recovery.offered = stored.filter(|s| s.snapshot.schema == 3);
+                    self.recovery.ready = true;
+                    self.recovery.status = "Local recovery ready".into();
+                }
+                Err(e) => {
+                    self.recovery.failed = true;
+                    self.recovery.status = e;
+                }
+            },
+            Event::RecoverySaved { edit, result } => self.recovery.written(edit, result),
+            Event::Notice(text) => self.status = text,
+            Event::OfflineStatus(_) => {}
         }
     }
     fn undo(&mut self, ctx: &egui::Context) {
         if let Some(previous) = self.undo.pop() {
             if let Some(current) = self.document.replace(previous) {
                 self.redo.push(current);
+                Self::trim_history(&mut self.redo);
             }
             self.edit_group = None;
+            self.plan = None;
             self.changed(ctx);
         }
     }
@@ -404,8 +531,10 @@ impl App {
         if let Some(next) = self.redo.pop() {
             if let Some(current) = self.document.replace(next) {
                 self.undo.push(current);
+                Self::trim_history(&mut self.undo);
             }
             self.edit_group = None;
+            self.plan = None;
             self.changed(ctx);
         }
     }
@@ -446,94 +575,25 @@ impl App {
                 self.save_job(ctx);
             }
         }
-        egui::TopBottomPanel::top("gui2-commands").show(ctx,|ui|{
-            ui.horizontal_wrapped(|ui|{
-                ui.label(RichText::new("FLAT / V").strong().size(20.));ui.label("GUI2 · Flat V-carve");
-                let idle=self.active.is_none()&&self.io.is_none();
-                if button(ui,"Open job",idle).clicked(){self.open(IoKind::Open,ctx);}
-                if button(ui,"Flower fixture",idle).clicked(){self.submit(Command::Open{json:engine::FLOWER.into()},ctx);}
-                if button(ui,"Save job",self.document.is_some()&&self.io.is_none()).clicked(){self.save_job(ctx);}
-                if button(ui,"Undo",!self.undo.is_empty()).clicked(){self.undo(ctx);}
-                if button(ui,"Redo",!self.redo.is_empty()).clicked(){self.redo(ctx);}
-                let ready=self.document.as_ref().is_some_and(|d|!d.pending());
-                if button(ui,"Generate",idle&&ready).clicked(){self.submit(Command::Generate{job:self.document.as_ref().unwrap().job.to_json().unwrap()},ctx);}
-                if button(ui,"Prepare checked output",idle&&self.current()).clicked(){self.submit(Command::Prepare{job:self.document.as_ref().unwrap().job.to_json().unwrap(),handle:self.plan.as_ref().unwrap().0.clone()},ctx);}
-                if button(ui,"Save checked bytes",idle&&self.prepared.is_some()).clicked(){self.save_output(ctx);}
-                if button(ui,"Cancel",self.active.is_some()).clicked(){self.port.cancel();self.active=None;self.plan=None;self.prepared=None;self.status="Stopping compute; document and previous display retained.".into();}
-                if self.active.is_some(){ui.spinner();}
-                ui.label(if self.document.is_some()&&self.saved_revision!=Some(self.revision){"Unsaved job / draft"}else{""});
-            });
-            ui.label(RichText::new(&self.status).color(Color32::from_rgb(221,192,136)));
-            if self.view.motion_count()>0&&!self.current(){ui.colored_label(Color32::YELLOW,"Previous simulation is stale. Generate the current draft before export.");}
-            ui.horizontal_wrapped(|ui|{
-                ui.small(&self.recovery.status);
-                if self.recovery.offered.is_some(){
-                    if button(ui,"Restore draft",true).clicked(){let snapshot=self.recovery.offered.take().unwrap().snapshot;
-                        if let Some(job)=snapshot.job.and_then(|j|CamJobV5::from_json(&j).ok()) {self.remember();self.document=Some(Document{job,raw:snapshot.draft});self.changed(ctx);self.plan=None;self.status="Draft restored. Generate again; saved artifact handles are never recovered.".into();}}
-                    if button(ui,"Keep current",true).clicked(){self.recovery.offered=None;self.recovery.changed(ctx.input(|i|i.time));}
-                }
-                if self.recovery.failed&&ui.button("Reload recovery").clicked(){self.recovery.failed=false;self.port.load_recovery(ctx.clone());}
-                if self.retry&&self.io.is_none()&&button(ui,"Retry previous save", self.retained_save_revision==self.revision || self.retained_save.as_ref().is_some_and(|(_,_,r)|r.is_some())).clicked() && let Some((name,bytes,revision))=self.retained_save.clone(){self.save(name,bytes,revision,ctx);}
-            });
-        });
-        egui::SidePanel::left("gui2-inspector").default_width(300.).width_range(260.0..=440.0).resizable(true).show(ctx,|ui|{
-            egui::ScrollArea::vertical().show(ui,|ui|{
-                ui.heading("Setup & cutting");
-                if let Some(doc)=&self.document {
-                    ui.label(RichText::new(&doc.job.name).strong());
-                    ui.label(format!("{} · {} selected filled components",doc.job.artwork[0].name,engine::settings(&doc.job).components.len()));
-                    ui.small("Job includes artwork and applied machine settings.");
-                    ui.separator();
-                    for (label,assignment) in [("Endmill",&engine::settings(&doc.job).endmill),("V-bit",&engine::settings(&doc.job).vbit)]{
-                        let direction=match assignment.spindle_direction {Some(cam_core::project::SpindleDirection::Clockwise)=>"CW",Some(cam_core::project::SpindleDirection::Counterclockwise)=>"CCW",None=>"direction unset"};
-                        ui.label(format!("{label} · {} RPM · {direction}",assignment.spindle_rpm.map_or("unset".into(),|v|v.to_string())));
-                        if let Some(tool)=doc.job.tools.iter().find(|t|t.id==assignment.tool_id){let description=match &tool.geometry {
-                            Some(cam_core::project::ToolGeometry::Endmill(t))=>format!("Ø {} mm · cutting length {} mm",t.diameter_mm,t.cutting_length_mm),
-                            Some(cam_core::project::ToolGeometry::Vbit(t))=>format!("{}° · tip Ø {} mm · cutting Ø {} mm",t.included_angle_deg,t.tip_diameter_mm,t.max_cutting_diameter_mm),
-                            _=>"Tool geometry unset".into(),};ui.small(description);}
-                    }
-                    ui.separator();
-                    ui.label("Machine");
-                    if let Some(machine)=&doc.job.machine_configuration {ui.label(&machine.origin.name);for row in &machine.tools{ui.small(format!("{} → T{}{}",row.job_tool_id,row.tool_number.map_or("unset".into(),|n|n.to_string()),row.length_offset_number.map_or(String::new(),|n|format!(" · H{n}"))));}}
-                    else {ui.colored_label(Color32::YELLOW,"No machine configuration applied");}
-                    ui.small(format!("Z zero: {}",match doc.job.setup.work_zero.z {cam_core::project::WorkZeroZ::StockBottom=>"stock bottom",cam_core::project::WorkZeroZ::StockTop=>"stock top"}));
-                    if doc.job.setup.stock.xy.is_none(){ui.small("Stock XY is unset; display uses inferred artwork + cutter bounds.");}
-                }
-                let idle=self.active.is_none()&&self.io.is_none()&&self.document.is_some();
-                if button(ui,"Load machine profile",idle).clicked(){self.open(IoKind::Profile,ctx);}
-                if button(ui,"Apply flower machine profile",idle).clicked(){self.submit(Command::ApplyProfile{job:self.document.as_ref().unwrap().job.to_json().unwrap(),json:engine::PROFILE.into()},ctx);}
-                ui.separator();
-                ui.add(egui::TextEdit::singleline(&mut self.search).id(egui::Id::new("gui2-search")).hint_text("Search cutting settings"));
-                for field in LIVE_FIELDS {
-                    if !FIELDS[field].to_lowercase().contains(&self.search.to_lowercase()){continue;}
-                    let Some(doc)=&self.document else{break;};let mut text=doc.text(field);
-                    let response=ui.horizontal(|ui| {
-                        let label=ui.add_sized([112.,20.],egui::Label::new(FIELDS[field]));
-                        let response=ui.add(egui::TextEdit::singleline(&mut text).id(egui::Id::new(("gui2-field",&doc.job.operations[0].id,field))).desired_width(72.).char_limit(128).hint_text("Unset")).labelled_by(label.id);
-                        ui.small(if matches!(field,2|3|10){"mm/min"}else{"mm"});response
-                    }).inner;
-                    observe_control(FIELDS[field],response.rect);
-                    if response.changed(){if self.edit_group!=Some(field){self.remember();self.edit_group=Some(field);}
-                        let result=self.document.as_mut().unwrap().edit(field,text.clone());self.changed(ctx);
-                        self.status=result.err().unwrap_or_else(||"Cutting setting changed; generate to update simulation.".into());
-                    }
-                    if response.lost_focus(){self.edit_group=None;}
-                    if let Err(error)=Draft::parse(&text){ui.colored_label(Color32::LIGHT_RED,error);}
-                }
-                if self.document.as_ref().is_some_and(Document::pending){ui.colored_label(Color32::YELLOW,"Partial/invalid text is kept in recovery. Complete it before generation or job save.");}
-                ui.separator();ui.heading("Export");
-
-                let prepared=self.prepared.as_ref().filter(|(_,r)|*r==self.revision).map(|(v,_)|v);
-                if let Some(prepared)=prepared {
-                    ui.label(format!("{} · {} bytes",prepared["file"]["filename"].as_str().unwrap_or(""),prepared["file"]["byteLength"]));
-                    ui.small(format!("SHA256 {}",prepared["file"]["sha256"].as_str().unwrap_or("")));
-                    ui.collapsing("Process and check report",|ui|{ui.monospace(serde_json::to_string_pretty(&prepared["bundle"]["report"]).unwrap());});
-
-                }
-            });
-        });
+        self.commands(ctx);
+        self.navigator(ctx);
+        self.inspector(ctx);
+        if self.preview_dirty
+            && self.plan.is_none()
+            && self.active.is_none()
+            && self.io.is_none()
+            && ctx.input(|i| i.time) - self.recovery.last_edit > 0.3
+            && let Some(doc) = &self.document
+        {
+            self.submit(
+                Command::Preview {
+                    job: doc.job.to_json().unwrap(),
+                },
+                ctx,
+            );
+        }
         self.view.stock_loading = self.active.is_some();
-        self.view.show(ctx);
+        self.view.show(ctx, self.simulate);
         if self.active.is_none()
             && let Some(prefix) = self.view.take_stock_request()
             && let Some((handle, _)) = &self.plan
@@ -549,7 +609,7 @@ impl App {
         let files = ctx.input(|i| i.raw.dropped_files.clone());
         if !files.is_empty() {
             if files.len() != 1 || self.io.is_some() || self.active.is_some() {
-                self.status = "Drop one JSON job when the current action finishes.".into();
+                self.status = "Drop one SVG or JSON job when the current action finishes.".into();
             } else {
                 let id = self.id();
                 self.io = Some((id, IoKind::Open));
@@ -557,14 +617,17 @@ impl App {
             }
         }
         let now = ctx.input(|i| i.time);
-        if self.recovery.due(now)
-            && let Some(doc) = &self.document
-        {
+        let workspace = self.workspace();
+        if self.document.is_some() && self.last_workspace.as_ref() != Some(&workspace) {
+            self.last_workspace = Some(workspace);
+            self.recovery.changed(now);
+        }
+        if self.recovery.due(now) && self.document.is_some() {
             self.recovery.pending = Some(self.recovery.edit);
             self.port.save_recovery(
                 self.recovery.edit,
                 self.recovery.revision,
-                doc.snapshot(),
+                self.recovery_snapshot().expect("document present"),
                 ctx.clone(),
             );
         }
@@ -578,7 +641,7 @@ impl App {
                 ui.spinner();
             });
         }
-        crate::viewport::probe::publish(json!({"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"status":self.status,"revision":self.revision,"active":self.active.is_some(),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":self.document.as_ref().map(|d|json!({"name":d.job.name,"depth":engine::settings(&d.job).max_depth_mm,"feed":engine::settings(&d.job).endmill.cutting_feed_mm_min,"machine":d.job.machine_configuration.is_some(),"rawDepth":d.text(0),"rawFeed":d.text(2)})),"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
+        crate::viewport::probe::publish(json!({"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":self.document.as_ref().map(|d|json!({"name":d.job.name,"depth":engine::settings(&d.job).max_depth_mm,"feed":engine::settings(&d.job).endmill.cutting_feed_mm_min,"machine":d.job.machine_configuration.is_some(),"rawDepth":d.text(0),"rawFeed":d.text(2),"components":engine::settings(&d.job).components.len(),"mode":engine::settings(&d.job).mode,"stock":d.job.setup.stock,"placement":d.job.artwork[0].placement,"workZero":d.job.setup.work_zero,"endmillGeometry":crate::authoring::tool(&d.job,false).and_then(|t|t.geometry.clone()),"vbitGeometry":crate::authoring::tool(&d.job,true).and_then(|t|t.geometry.clone())})),"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
     }
     fn save_output(&mut self, ctx: &egui::Context) {
         if let Some((prepared, revision)) = &self.prepared

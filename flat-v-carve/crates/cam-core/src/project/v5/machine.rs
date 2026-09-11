@@ -202,7 +202,18 @@ pub fn resolve_sequence_profile(job: &CamJobV5, scope: &ReadinessScope) -> Resul
     let enabled = scoped_enabled_operations_v5(job, scope)?;
     let mut used_ids = BTreeSet::new();
     for operation in &enabled {
-        for id in tool_ids_of_v5(&operation.settings) {
+        // The nominal V-bit shape still participates in target geometry and
+        // execution fingerprints in endmill-only mode. It is not a physical
+        // stage, so its unused controller mapping cannot block preparation.
+        let executed = match &operation.settings {
+            super::OperationSettingsV5::FlatVcarve(s)
+                if s.mode == crate::project::FlatVcarveMode::EndmillOnly =>
+            {
+                vec![s.endmill.tool_id.as_str()]
+            }
+            settings => tool_ids_of_v5(settings),
+        };
+        for id in executed {
             used_ids.insert(id.to_string());
         }
     }

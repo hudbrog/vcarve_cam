@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 pub enum IoValue {
     Job(String),
+    Svg { filename: String, svg: String },
     Draft(Draft),
     Saved(String),
 }
@@ -85,21 +86,27 @@ mod native {
                 .get_or_insert_with(|| crate::worker::Session::new(self.tx.clone()))
                 .start(id, request, ctx);
         }
-        pub fn open(&self, id: u64, recovery: bool, ctx: egui::Context) {
+        pub fn open(&self, id: u64, svg: bool, ctx: egui::Context) {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
-                let value = (|| -> Result<String, String> {
+                let result = (|| -> Result<IoValue, String> {
                     let path = rfd::FileDialog::new()
-                        .add_filter("JSON", &["json"])
+                        .add_filter(
+                            if svg { "SVG" } else { "JSON" },
+                            if svg { &["svg"] } else { &["json"] },
+                        )
                         .pick_file()
                         .ok_or("Open cancelled")?;
-                    crate::file_io::read_text(&path, 8_000_000)
+                    let text = crate::file_io::read_text(&path, 8_000_000)?;
+                    Ok(if svg {
+                        IoValue::Svg {
+                            filename: path.file_name().unwrap().to_string_lossy().into(),
+                            svg: text,
+                        }
+                    } else {
+                        IoValue::Job(text)
+                    })
                 })();
-                let result = if recovery {
-                    value.and_then(|v| Draft::recover(&v)).map(IoValue::Draft)
-                } else {
-                    value.map(IoValue::Job)
-                };
                 let _ = tx.send(Event::Io { id, result });
                 ctx.request_repaint();
             });
@@ -130,6 +137,12 @@ mod native {
             });
         }
         pub fn drop_file(&self, id: u64, file: egui::DroppedFile, ctx: egui::Context) {
+            let filename = file
+                .path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| file.name.clone());
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let result = if let Some(path) = file.path {
@@ -145,7 +158,7 @@ mod native {
                 };
                 let _ = tx.send(Event::Io {
                     id,
-                    result: result.map(IoValue::Job),
+                    result: result.map(|text| dropped_value(filename, text)),
                 });
                 ctx.request_repaint();
             });
@@ -261,15 +274,21 @@ mod browser {
                 &serde_json::to_string(&request).expect("request serializes"),
             );
         }
-        pub fn open(&self, id: u64, recovery: bool, ctx: egui::Context) {
+        pub fn open(&self, id: u64, svg: bool, ctx: egui::Context) {
             CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
-            openFile(id as f64, recovery);
+            openFile(id as f64, svg);
         }
         pub fn save(&self, id: u64, name: String, bytes: Vec<u8>, deny: bool, ctx: egui::Context) {
             CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
             saveFile(id as f64, &name, &bytes, deny);
         }
         pub fn drop_file(&self, id: u64, file: egui::DroppedFile, ctx: egui::Context) {
+            let filename = file
+                .path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| file.name.clone());
             CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
             let result = file
                 .bytes
@@ -282,7 +301,7 @@ mod browser {
                         .map(str::to_owned)
                         .map_err(|e| e.to_string())
                 })
-                .map(IoValue::Job);
+                .map(|text| dropped_value(filename, text));
             EVENTS.with(|q| q.borrow_mut().push_back(Event::Io { id, result }));
         }
         pub fn load_recovery(&self, ctx: egui::Context) {
@@ -307,3 +326,14 @@ mod browser {
 }
 #[cfg(target_arch = "wasm32")]
 pub use browser::Port;
+
+fn dropped_value(filename: String, text: String) -> IoValue {
+    if filename.to_ascii_lowercase().ends_with(".svg") {
+        IoValue::Svg {
+            filename,
+            svg: text,
+        }
+    } else {
+        IoValue::Job(text)
+    }
+}

@@ -4,21 +4,79 @@ use serde::{Deserialize, Serialize};
 pub const MAX_BYTES: usize = 9_000_000;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct Workspace {
+    pub inspector: usize,
+    pub inspector_width: f32,
+    pub scroll: [f32; 6],
+    pub search: String,
+    pub simulate: bool,
+    pub view: crate::viewport::ViewSettings,
+    pub plan_fingerprint: Option<String>,
+    pub saved_job_hash: Option<String>,
+}
+impl Default for Workspace {
+    fn default() -> Self {
+        Self {
+            inspector: 2,
+            inspector_width: 325.,
+            scroll: [0.; 6],
+            search: String::new(),
+            simulate: false,
+            view: Default::default(),
+            plan_fingerprint: None,
+            saved_job_hash: None,
+        }
+    }
+}
+impl Workspace {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.inspector > 5
+            || !self.inspector_width.is_finite()
+            || !(240. ..=600.).contains(&self.inspector_width)
+            || self
+                .scroll
+                .iter()
+                .any(|n| !n.is_finite() || *n < 0. || *n > 100000.)
+            || self.search.len() > 512
+            || self
+                .saved_job_hash
+                .as_ref()
+                .is_some_and(|s| s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()))
+            || self
+                .plan_fingerprint
+                .as_ref()
+                .is_some_and(|s| s.len() > 128)
+        {
+            return Err("Invalid saved workspace".into());
+        }
+        self.view.validate()
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Snapshot {
     pub schema: u32,
     pub draft: Draft,
     pub job: Option<String>,
+    pub finish_draft: Option<cam_core::vcarve::VBitPlanningSettings>,
+    pub workspace: Workspace,
+    pub undo: Vec<crate::app::Document>,
+    pub redo: Vec<crate::app::Document>,
 }
 impl Snapshot {
     pub fn new(draft: Draft, job: Option<String>) -> Self {
         Self {
-            schema: 2,
+            schema: 3,
             draft,
             job,
+            finish_draft: None,
+            workspace: Default::default(),
+            undo: vec![],
+            redo: vec![],
         }
     }
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != 2 {
+        if self.schema != 3 {
             return Err("Unsupported session recovery schema".into());
         }
         Draft::recover(&serde_json::to_string(&self.draft).map_err(|e| e.to_string())?)?;
@@ -26,7 +84,22 @@ impl Snapshot {
             if job.len() > 8_000_000 {
                 return Err("Recovery job exceeds 8 MB".into());
             }
-            crate::session::open(job)?;
+            let job = crate::session::open(job)?;
+            if self.draft.artwork_item != job.artwork[0].id.0
+                || self.draft.operation != job.operations[0].id
+            {
+                return Err("Recovery fields belong to another document".into());
+            }
+        }
+        self.workspace.validate()?;
+        if let Some(finish) = &self.finish_draft {
+            finish.validate().map_err(|e| e.to_string())?;
+        }
+        if self.undo.len() + self.redo.len() > 32 {
+            return Err("Recovery history exceeds 32 transactions".into());
+        }
+        for doc in self.undo.iter().chain(&self.redo) {
+            doc.validate()?;
         }
         Ok(())
     }

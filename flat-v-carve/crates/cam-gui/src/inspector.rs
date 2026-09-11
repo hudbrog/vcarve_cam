@@ -1,0 +1,474 @@
+use super::*;
+use crate::authoring::{self, settings_mut};
+use cam_core::project::{FlatVcarveMode, SpindleDirection, WorkZeroXY, WorkZeroZ};
+
+impl App {
+    fn edit_job(
+        &mut self,
+        ctx: &egui::Context,
+        clear: &[usize],
+        edit: impl FnOnce(&mut CamJobV5) -> Result<(), String>,
+    ) {
+        let Some(doc) = &self.document else { return };
+        let mut job = doc.job.clone();
+        let cached_finish = engine::settings(&job)
+            .finish
+            .clone()
+            .or(doc.finish_draft.clone());
+        let old_mode = engine::settings(&job).mode;
+        if let Err(error) = edit(&mut job) {
+            self.status = error;
+            return;
+        }
+        if old_mode != engine::settings(&job).mode
+            && engine::settings(&job).mode == FlatVcarveMode::Combined
+            && cached_finish.is_some()
+        {
+            settings_mut(&mut job).finish = cached_finish.clone();
+        }
+        if let Err(error) = job.validate_structure().map_err(|e| e.to_string()) {
+            self.status = error;
+            return;
+        }
+        self.remember();
+        let doc = self.document.as_mut().unwrap();
+        doc.finish_draft = engine::settings(&job).finish.clone().or(cached_finish);
+        doc.job = job;
+        for &field in clear {
+            doc.raw.raw.remove(&doc.raw.key(field));
+        }
+        self.edit_group = None;
+        self.plan = None;
+        self.changed(ctx);
+        self.status = "Job changed. Generate to update the cutting result.".into();
+    }
+    fn numbers(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, fields: &[usize]) {
+        for &field in fields {
+            if !FIELDS[field]
+                .to_lowercase()
+                .contains(&self.search.to_lowercase())
+            {
+                continue;
+            }
+            let Some(doc) = &self.document else {
+                return;
+            };
+            let mut text = doc.text(field);
+            let response = ui
+                .horizontal(|ui| {
+                    let label = ui.add_sized([116., 20.], egui::Label::new(FIELDS[field]));
+                    let response = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut text)
+                                .id(egui::Id::new((
+                                    "carving-field",
+                                    &doc.job.operations[0].id,
+                                    field,
+                                )))
+                                .desired_width(72.)
+                                .char_limit(128)
+                                .hint_text("Unset"),
+                        )
+                        .labelled_by(label.id);
+                    ui.small(match field {
+                        2 | 3 | 10 | 21 => "mm/min",
+                        11 | 22 => "RPM",
+                        16 | 28 => "deg",
+                        29 => "×",
+                        32 | 33 | 38 | 39 => "",
+                        _ => "mm",
+                    });
+                    response
+                })
+                .inner;
+            observe_control(FIELDS[field], response.rect);
+            if response.changed() {
+                if self.edit_group != Some(field) {
+                    self.remember();
+                    self.edit_group = Some(field);
+                }
+                let result = self.document.as_mut().unwrap().edit(field, text.clone());
+                if matches!(field,6|26..=31|40..=45) {
+                    self.plan = None;
+                }
+                self.changed(ctx);
+                self.status = result
+                    .err()
+                    .unwrap_or_else(|| "Setting changed; generate to update simulation.".into());
+            }
+            if response.lost_focus() {
+                self.edit_group = None;
+            }
+            if let Err(error) = Draft::parse(&text) {
+                ui.colored_label(Color32::from_rgb(176, 42, 35), error);
+            }
+        }
+    }
+    pub(super) fn inspector(&mut self, ctx: &egui::Context) {
+        let panel=egui::SidePanel::right("gui2-inspector").default_width(self.inspector_width).width_range(300.0..=480.0).resizable(true).show(ctx,|ui|{
+            ui.add_space(8.);
+            ui.strong(["ARTWORK", "STOCK & WORK ZERO", "OPERATION", "MACHINE & EXPORT", "JOB TOOL · ENDMILL", "JOB TOOL · V-BIT"][self.inspector_tab]);
+            ui.separator();
+            let r=ui.add(egui::TextEdit::singleline(&mut self.search).id(egui::Id::new("gui2-search")).char_limit(512).hint_text("Filter fields"));observe_control("Filter fields",r.rect);
+            if r.changed(){self.scroll[self.inspector_tab]=0.;}
+            let area=egui::ScrollArea::vertical().id_salt(("inspector-scroll",self.inspector_tab)).vertical_scroll_offset(self.scroll[self.inspector_tab]).show(ui,|ui|{
+                if self.document.is_none(){ui.label("Import an SVG or open a saved job to begin.");return;}
+                match self.inspector_tab {0=>self.artwork_panel(ui,ctx),1=>self.setup_panel(ui,ctx),2=>self.cutting_panel(ui,ctx),3=>self.machine_panel(ui,ctx),index=>{
+                    let finish=index==5;
+                    ui.heading(if finish {"V-bit geometry"}else{"Endmill geometry"});
+                    self.numbers(ui,ctx,if finish {&[16,17,18,19]}else{&[12,13]});
+                    ui.separator();ui.label("Used by Flat V-carve");
+                    ui.small(if finish {"Defines the V-shaped target in both modes; executes finishing in Combined mode."}else{"Endmill clearing stage"});
+                    if button(ui,"Edit cutting assignment",true).clicked(){self.navigate(2);}
+                    if button(ui,"Edit controller mapping",true).clicked(){self.navigate(3);}
+                }}
+                if self.document.as_ref().is_some_and(Document::pending){ui.colored_label(Color32::from_rgb(164,83,12),"Complete partial fields before generation or job save. Recovery keeps the raw text.");}
+            });
+            observe_control("Inspector viewport",area.inner_rect);
+            self.scroll[self.inspector_tab]=area.state.offset.y;
+        });
+        self.inspector_width = panel.response.rect.width();
+    }
+    fn artwork_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.heading("Artwork & placement");
+        ui.label(&self.document.as_ref().unwrap().job.artwork[0].name);
+        ui.small("SVG units become mm. Origin is in the SVG page: placement = scale × rotate(page − origin).");
+        self.numbers(ui, ctx, &[26, 27, 28, 29]);
+        ui.separator();
+        ui.label("Filled components");
+        let count = engine::settings(&self.document.as_ref().unwrap().job)
+            .components
+            .len();
+        ui.small(format!(
+            "{count} selected. Cyan = selected; gray = excluded."
+        ));
+        if button(
+            ui,
+            "Select all filled components",
+            !self.components.is_empty(),
+        )
+        .clicked()
+        {
+            let refs = self
+                .components
+                .iter()
+                .map(|c| c.reference.clone())
+                .collect();
+            self.edit_job(ctx, &[], |job| {
+                settings_mut(job).components = refs;
+                Ok(())
+            });
+        }
+        if button(ui, "Clear component selection", count > 0).clicked() {
+            self.edit_job(ctx, &[], |job| {
+                settings_mut(job).components.clear();
+                Ok(())
+            });
+        }
+        for component in self.components.clone() {
+            let id = &component.reference.local_geometry_id;
+            let mut selected = engine::settings(&self.document.as_ref().unwrap().job)
+                .components
+                .contains(&component.reference);
+            let r = ui.checkbox(&mut selected, id);
+            observe_control(&format!("Component {id}"), r.rect);
+            if r.changed() {
+                self.edit_job(ctx, &[], |job| {
+                    let refs = &mut settings_mut(job).components;
+                    refs.retain(|r| r != &component.reference);
+                    if selected {
+                        refs.push(component.reference.clone());
+                    }
+                    Ok(())
+                });
+            }
+            ui.small(format!(
+                "[{:.2}, {:.2}] – [{:.2}, {:.2}] mm",
+                component.bounds[0], component.bounds[1], component.bounds[2], component.bounds[3]
+            ));
+        }
+    }
+    fn setup_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.heading("Physical stock");
+        self.numbers(ui, ctx, &[6, 40, 41, 42, 43]);
+        if button(ui, "Unset stock XY", true).clicked() {
+            self.edit_job(ctx, &[40, 41, 42, 43], |job| {
+                job.setup.stock.xy = None;
+                Ok(())
+            });
+        }
+        ui.small("Enter all four XY values to define the rectangle. Unset stock remains a saveable incomplete job.");
+        ui.separator();
+        ui.heading("Work zero");
+        let custom = matches!(
+            self.document.as_ref().unwrap().job.setup.work_zero.xy,
+            WorkZeroXY::CustomPoint { .. }
+        );
+        ui.horizontal(|ui| {
+            for (label, is_custom) in [("Setup origin", false), ("Custom XY", true)] {
+                let r = ui.selectable_label(
+                    if is_custom {
+                        custom
+                    } else {
+                        matches!(
+                            self.document.as_ref().unwrap().job.setup.work_zero.xy,
+                            WorkZeroXY::SetupOrigin
+                        )
+                    },
+                    label,
+                );
+                observe_control(label, r.rect);
+                if r.clicked() {
+                    self.edit_job(ctx, &[44, 45], |job| {
+                        job.setup.work_zero.xy = if is_custom {
+                            WorkZeroXY::CustomPoint { x_mm: 0., y_mm: 0. }
+                        } else {
+                            WorkZeroXY::SetupOrigin
+                        };
+                        Ok(())
+                    });
+                }
+            }
+        });
+        if custom {
+            self.numbers(ui, ctx, &[44, 45]);
+        }
+        ui.horizontal(|ui| {
+            for (label, z) in [
+                ("Z: stock top", WorkZeroZ::StockTop),
+                ("Z: stock bottom", WorkZeroZ::StockBottom),
+            ] {
+                let r = ui.selectable_label(
+                    self.document.as_ref().unwrap().job.setup.work_zero.z == z,
+                    label,
+                );
+                observe_control(label, r.rect);
+                if r.clicked() {
+                    self.edit_job(ctx, &[], |job| {
+                        job.setup.work_zero.z = z;
+                        Ok(())
+                    });
+                }
+            }
+        });
+        ui.small("Work zero affects output coordinates; simulation stays in setup coordinates. Applying a machine does not change this datum.");
+        self.numbers(ui, ctx, &[7, 30, 31]);
+        if button(ui, "Unset start XY", true).clicked() {
+            self.edit_job(ctx, &[30, 31], |job| {
+                job.setup.start_xy_mm = None;
+                Ok(())
+            });
+        }
+        ui.separator();
+        ui.heading("Planning tolerances");
+        self.numbers(ui, ctx, &[23, 25]);
+    }
+    fn cutting_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.heading("Flat V-carve");
+        ui.horizontal(|ui| {
+            for (label, mode) in [
+                ("Endmill only", FlatVcarveMode::EndmillOnly),
+                ("Combined", FlatVcarveMode::Combined),
+            ] {
+                let r = ui.selectable_label(
+                    engine::settings(&self.document.as_ref().unwrap().job).mode == mode,
+                    label,
+                );
+                observe_control(label, r.rect);
+                if r.clicked() {
+                    self.edit_job(ctx, &[], |job| {
+                        authoring::set_mode(job, mode);
+                        Ok(())
+                    });
+                }
+            }
+        });
+        self.numbers(ui, ctx, &[0, 1, 4]);
+        ui.heading("Endmill assignment");
+        ui.small("Choose the clearing strategy and confirm plunge capability explicitly.");
+        ui.horizontal(|ui| {
+            for (label, strategy) in [
+                (
+                    "Depth-dependent clearing",
+                    cam_core::pocket::ClearingStrategy::DepthDependent,
+                ),
+                (
+                    "Deepest-region clearing",
+                    cam_core::pocket::ClearingStrategy::DeepestRegion,
+                ),
+            ] {
+                let selected = engine::settings(&self.document.as_ref().unwrap().job)
+                    .rough
+                    .as_ref()
+                    .is_some_and(|r| r.strategy == strategy);
+                let r = ui.selectable_label(selected, label);
+                observe_control(label, r.rect);
+                if r.clicked() {
+                    self.edit_job(ctx, &[], |job| {
+                        settings_mut(job).rough =
+                            Some(cam_core::project::FlatVcarveRoughSettings {
+                                strategy,
+                                ..Default::default()
+                            });
+                        Ok(())
+                    });
+                }
+            }
+        });
+        self.numbers(ui, ctx, &[12, 13, 2, 10, 8, 9, 11]);
+        self.direction(ui, ctx, false);
+        let mut plunge = authoring::tool(&self.document.as_ref().unwrap().job, false)
+            .and_then(|t| t.capabilities.plunge_capable);
+        let before = plunge;
+        ui.label("Endmill can plunge");
+        ui.horizontal(|ui| {
+            for (label, v) in [
+                ("Plunge unset", None),
+                ("Plunge yes", Some(true)),
+                ("Plunge no", Some(false)),
+            ] {
+                let r = ui.selectable_value(&mut plunge, v, label);
+                observe_control(label, r.rect);
+            }
+        });
+        if plunge != before {
+            self.edit_job(ctx, &[], |job| {
+                authoring::tool_mut(job, false)?.capabilities.plunge_capable = plunge;
+                Ok(())
+            });
+        }
+        ui.heading("V-shaped target");
+        ui.small(
+            "Geometry is required in both modes. Endmill-only does not execute a V-bit stage.",
+        );
+        self.numbers(ui, ctx, &[16, 17, 18, 19]);
+        if engine::settings(&self.document.as_ref().unwrap().job).mode == FlatVcarveMode::Combined {
+            ui.heading("V-bit finishing assignment");
+            self.numbers(ui, ctx, &[3, 21, 20, 46, 22, 5]);
+            self.direction(ui, ctx, true);
+            let mut plunge = authoring::tool(&self.document.as_ref().unwrap().job, true)
+                .and_then(|t| t.capabilities.plunge_capable);
+            let before = plunge;
+            ui.horizontal(|ui| {
+                for (label, v) in [
+                    ("V-bit plunge unset", None),
+                    ("V-bit plunge yes", Some(true)),
+                    ("V-bit plunge no", Some(false)),
+                ] {
+                    let r = ui.selectable_value(&mut plunge, v, label);
+                    observe_control(label, r.rect);
+                }
+            });
+            if plunge != before {
+                self.edit_job(ctx, &[], |job| {
+                    authoring::tool_mut(job, true)?.capabilities.plunge_capable = plunge;
+                    Ok(())
+                });
+            }
+        } else {
+            ui.small("V-bit cutting values and controller mapping are retained but unused.");
+        }
+    }
+    fn direction(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, finish: bool) {
+        let s = engine::settings(&self.document.as_ref().unwrap().job);
+        let mut direction = if finish {
+            s.vbit.spindle_direction
+        } else {
+            s.endmill.spindle_direction
+        };
+        let before = direction;
+        ui.horizontal(|ui| {
+            for (name, v) in [
+                ("unset", None),
+                ("CW", Some(SpindleDirection::Clockwise)),
+                ("CCW", Some(SpindleDirection::Counterclockwise)),
+            ] {
+                let label = format!("{} {name}", if finish { "V-bit" } else { "Endmill" });
+                let r = ui.selectable_value(&mut direction, v, &label);
+                observe_control(&label, r.rect);
+            }
+        });
+        if direction != before {
+            self.edit_job(ctx, &[], |job| {
+                let s = settings_mut(job);
+                if finish {
+                    s.vbit.spindle_direction = direction
+                } else {
+                    s.endmill.spindle_direction = direction
+                };
+                Ok(())
+            });
+        }
+    }
+    fn machine_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.heading("Applied machine");
+        let idle = self.active.is_none() && self.io.is_none();
+        if button(ui, "Load machine profile", idle).clicked() {
+            self.open(IoKind::Profile, ctx);
+        }
+        let example = ui.collapsing("Example machine (review fixture)", |ui| {
+            if button(ui, "Apply flower machine profile", idle).clicked() {
+                self.submit(
+                    Command::ApplyProfile {
+                        job: self.document.as_ref().unwrap().job.to_json().unwrap(),
+                        json: engine::PROFILE.into(),
+                    },
+                    ctx,
+                );
+            }
+        });
+        observe_control("Example machine", example.header_response.rect);
+        if let Some(machine) = &self.document.as_ref().unwrap().job.machine_configuration {
+            ui.label(&machine.origin.name);
+            ui.small(format!(
+                "Work offset: {}",
+                machine.work_offset.as_deref().unwrap_or("unset")
+            ));
+            ui.small("Profile values are copied into this job. T/H mappings are explicit; cutter size never assigns a controller number.");
+            self.numbers(ui, ctx, &[7, 32, 33]);
+            if engine::settings(&self.document.as_ref().unwrap().job).mode
+                == FlatVcarveMode::Combined
+            {
+                self.numbers(ui, ctx, &[38, 39]);
+            }
+            ui.small("Setup owns the datum. Clearance is shared with Setup.");
+        } else {
+            ui.colored_label(
+                Color32::from_rgb(164, 83, 12),
+                "Import a schema-2 machine profile before checked export.",
+            );
+        }
+        ui.separator();
+        ui.heading("Export");
+        if button(
+            ui,
+            "Save checked bytes",
+            self.active.is_none()
+                && self.io.is_none()
+                && self
+                    .prepared
+                    .as_ref()
+                    .is_some_and(|(_, r)| *r == self.revision),
+        )
+        .clicked()
+        {
+            self.save_output(ctx);
+        }
+        if let Some((prepared, revision)) = &self.prepared
+            && *revision == self.revision
+        {
+            ui.label(format!(
+                "{} · {} bytes",
+                prepared["file"]["filename"].as_str().unwrap_or(""),
+                prepared["file"]["byteLength"]
+            ));
+            ui.small(format!(
+                "SHA256 {}",
+                prepared["file"]["sha256"].as_str().unwrap_or("")
+            ));
+            ui.collapsing("Process and check report", |ui| {
+                ui.monospace(serde_json::to_string_pretty(&prepared["bundle"]["report"]).unwrap());
+            });
+        }
+    }
+}

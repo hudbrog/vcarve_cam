@@ -67,6 +67,7 @@ pub struct Resources {
     format: wgpu::TextureFormat,
     pager: Pager,
     overlay_revision: u64,
+    contour_identity: Option<(u64, usize, usize)>,
     pub stats: SharedStats,
 }
 
@@ -94,6 +95,7 @@ impl Resources {
             format,
             pager: Pager::new(DEFAULT_PAGE_BUDGET),
             overlay_revision: u64::MAX,
+            contour_identity: None,
             stats,
         };
         resources.stats.lock().unwrap().scene_buffer_bytes = resources.scene_capacity;
@@ -114,6 +116,7 @@ impl Resources {
         self.overlay_triangles =
             buffer(device, self.triangles_capacity, wgpu::BufferUsages::VERTEX);
         self.overlay_revision = u64::MAX;
+        self.contour_identity = None;
         self.pager.forget();
         let mut stats = self.stats.lock().unwrap();
         stats.recoveries += 1;
@@ -127,6 +130,7 @@ impl Resources {
         if need > self.scene_capacity {
             self.scene_capacity = need.next_power_of_two();
             self.scene = buffer(device, self.scene_capacity, wgpu::BufferUsages::VERTEX);
+            self.contour_identity = None;
             self.pager.forget();
             self.stats.lock().unwrap().scene_buffer_bytes = self.scene_capacity;
         }
@@ -242,6 +246,7 @@ pub struct Callback {
     pub required: Vec<usize>,
     pub budget_bytes: u64,
     pub contour_vertices: usize,
+    pub contour_range: std::ops::Range<usize>,
     pub revision: u64,
     pub camera: [f32; 4],
     pub lines: Arc<Vec<Vertex>>,
@@ -270,6 +275,18 @@ impl egui_wgpu::CallbackTrait for Callback {
         }
         let base_bytes = page_base_bytes(self.contour_vertices);
         r.ensure_scene(device, base_bytes as u64 + self.table.buffer_bytes() as u64);
+        let contour_identity = (
+            self.identity,
+            self.contour_range.start,
+            self.contour_range.end,
+        );
+        if base_bytes > 0
+            && self.contour_range.len() == base_bytes
+            && r.contour_identity != Some(contour_identity)
+        {
+            queue.write_buffer(&r.scene, 0, &self.payload[self.contour_range.clone()]);
+            r.contour_identity = Some(contour_identity);
+        }
         queue.write_buffer(&r.camera, 0, bytemuck::cast_slice(&self.camera));
         let table = self.table;
         let plan = r.pager.plan(

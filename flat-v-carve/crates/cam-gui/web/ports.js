@@ -16,7 +16,7 @@ export function startWorker(id, request) {
   active = {worker,id};
   worker.onmessage = ({data}) => {
     if (active?.id !== id) return;
-    if (data.protocol !== 'cam-gui-retained-1' || data.gui2Protocol !== 'gui2-retained-1') {
+    if (data.protocol !== 'cam-gui-retained-2' || data.gui2Protocol !== 'gui2-retained-2') {
       cancelWorker();
       emit({Computed:{id,elapsed_ms:performance.now()-begin,result:{Err:'Worker version mismatch; reload matching assets'}}});return;
     }
@@ -29,20 +29,18 @@ export function startWorker(id, request) {
     worker.terminate();active=undefined;
     emit({Computed:{id,elapsed_ms:performance.now()-begin,result:{Err:'Compute worker failed: '+event.message}}});
   };
-  worker.postMessage({protocol:'cam-gui-retained-1',request});
+  worker.postMessage({protocol:'cam-gui-retained-2',request});
 }
-export function openFile(id,recovery) {
+export function openFile(id,svg) {
   const complete=result=>emit({Io:{id,result}});
-  const picker = document.createElement('input'); picker.type='file'; picker.accept='.json';
+  const picker = document.createElement('input'); picker.type='file'; picker.accept=svg?'.svg':'.json';
   picker.onchange = async () => {
     const file=picker.files[0]; if (!file) {complete({Err:'Open cancelled'});return;}
     try {
       if (file.size > 8_000_000) throw new Error('Input exceeds 8 MB limit');
       const text=await file.text();
       // Rust validates recovery shape/version as well; JSON is never interpreted as instructions.
-      if (recovery) {
-        complete({Ok:{Draft:JSON.parse(globalThis.CAM_GUI.validate_recovery(text))}});
-      } else complete({Ok:{Job:text}});
+      complete({Ok:svg?{Svg:{filename:file.name,svg:text}}:{Job:text}});
     } catch (e) { complete({Err:String(e)}); }
   };
   picker.oncancel=()=>complete({Err:'Open cancelled; current draft retained'});

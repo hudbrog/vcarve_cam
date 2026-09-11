@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cell::RefCell;
 
-pub const PROTOCOL: &str = "gui2-retained-1";
+pub const PROTOCOL: &str = "gui2-retained-2";
 pub const FLOWER: &str = include_str!("../../../fixtures/gui2/flower.job.json");
 pub const PROFILE: &str = include_str!("../../../fixtures/gui2/machine.json");
 pub const MOTION_LIMIT: usize = 100_000;
@@ -25,6 +25,8 @@ struct Display {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Command {
+    ImportSvg { filename: String, svg: String },
+    Preview { job: String },
     Seek { handle: String, prefix: usize },
     Open { json: String },
     ApplyProfile { job: String, json: String },
@@ -88,6 +90,11 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"seek","prefix":prefix,"handle":handle}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None})
             });
         }
+        Command::ImportSvg { filename, svg } => (
+            crate::authoring::import_svg(filename, svg)?,
+            json!({"kind":"imported"}),
+        ),
+        Command::Preview { job } => (open(&job)?, json!({"kind":"preview"})),
         Command::Open { json } => (open(&json)?, json!({"kind":"opened"})),
         Command::ApplyProfile { job, json } => {
             let mut job = open(&job)?;
@@ -96,6 +103,7 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             let profile = v5::machine::apply_machine_configuration(&job, &machine, &machine.id)
                 .map_err(|e| e.to_string())?;
             job = profile.job;
+            job.setup.clearance_above_stock_mm = Some(machine.clearance_z_mm);
             (job, json!({"kind":"profile"}))
         }
         Command::Generate { job } => {
@@ -196,60 +204,102 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
 }
 
 fn outline(job: &CamJobV5, mut report: Value) -> Result<(SceneMeta, Vec<u8>), String> {
-    let region = v5::artwork::inspect_artwork(job).and_then(|catalogue| {
-        v5::resolve::resolve_vcarve_region(job, &job.operations[0].id, settings(job), &catalogue)
-    });
-    let mut vertices = Vec::new();
+    let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
+    let mut components = Vec::new();
+    let mut points = Vec::new();
     let mut bounds = [0., 0., 1., 1.];
-    match region {
-        Ok(region) => {
-            if let Some(b) = region.bounds {
-                bounds = [b.min.x - 7., b.min.y - 7., b.max.x + 7., b.max.y + 7.];
-                if let Some(xy) = job.setup.stock.xy {
-                    bounds = [
-                        xy.min_x_mm,
-                        xy.min_y_mm,
-                        xy.min_x_mm + xy.width_mm,
-                        xy.min_y_mm + xy.length_mm,
-                    ];
-                }
-                for ring in region.region.rings_mm() {
-                    for i in 0..ring.len() {
-                        for p in [ring[i], ring[(i + 1) % ring.len()]] {
-                            vertices.push(vertex([p.x, p.y, 0.02], bounds, [0.85, 0.87, 0.76, 1.]));
-                        }
-                    }
-                }
-                if let Some(thickness) = job.setup.stock.thickness_mm {
-                    let corners = [
-                        [bounds[0], bounds[1]],
-                        [bounds[2], bounds[1]],
-                        [bounds[2], bounds[3]],
-                        [bounds[0], bounds[3]],
-                    ];
-                    for i in 0..4 {
-                        for z in [0., -thickness] {
-                            for p in [corners[i], corners[(i + 1) % 4]] {
-                                vertices.push(vertex(
-                                    [p[0], p[1], z],
-                                    bounds,
-                                    [0.3, 0.45, 0.55, 1.],
-                                ));
-                            }
-                        }
-                        for z in [0., -thickness] {
-                            vertices.push(vertex(
-                                [corners[i][0], corners[i][1], z],
-                                bounds,
-                                [0.3, 0.45, 0.55, 1.],
-                            ));
-                        }
+    if let Some(item) = catalogue.items.first() {
+        if let Some(error) = &item.import_error {
+            report["artworkIssue"] = json!(error);
+        }
+        for entry in &item.entries {
+            if entry.kind == v5::GeometryRefKind::FilledComponent {
+                components.push(crate::authoring::Component {
+                    reference: entry.reference.clone(),
+                    bounds: [
+                        entry.bounds.min_x_mm,
+                        entry.bounds.min_y_mm,
+                        entry.bounds.max_x_mm,
+                        entry.bounds.max_y_mm,
+                    ],
+                });
+            }
+        }
+        if let Some(catalogue) = &item.catalogue {
+            for contour in &catalogue.contours {
+                let selected = settings(job)
+                    .components
+                    .iter()
+                    .any(|r| r.local_geometry_id == contour.component_id);
+                let color = if selected {
+                    [0.25, 0.8, 0.85, 1.]
+                } else {
+                    [0.5, 0.55, 0.6, 1.]
+                };
+                for i in 0..contour.vertices.len() {
+                    for p in [
+                        contour.vertices[i],
+                        contour.vertices[(i + 1) % contour.vertices.len()],
+                    ] {
+                        points.push(([p.x, p.y, 0.02], color));
                     }
                 }
             }
         }
-        Err(error) => report["artworkIssue"] = json!(error.to_string()),
     }
+    if !points.is_empty() {
+        bounds = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for (p, _) in &points {
+            bounds[0] = bounds[0].min(p[0]);
+            bounds[1] = bounds[1].min(p[1]);
+            bounds[2] = bounds[2].max(p[0]);
+            bounds[3] = bounds[3].max(p[1]);
+        }
+    }
+    if let Some(xy) = job.setup.stock.xy {
+        report["stockRect"] = json!([
+            xy.min_x_mm,
+            xy.min_y_mm,
+            xy.width_mm,
+            xy.length_mm,
+            job.setup.stock.thickness_mm.unwrap_or(0.)
+        ]);
+        bounds = [
+            bounds[0].min(xy.min_x_mm),
+            bounds[1].min(xy.min_y_mm),
+            bounds[2].max(xy.min_x_mm + xy.width_mm),
+            bounds[3].max(xy.min_y_mm + xy.length_mm),
+        ];
+        let corners = [
+            [xy.min_x_mm, xy.min_y_mm],
+            [xy.min_x_mm + xy.width_mm, xy.min_y_mm],
+            [xy.min_x_mm + xy.width_mm, xy.min_y_mm + xy.length_mm],
+            [xy.min_x_mm, xy.min_y_mm + xy.length_mm],
+        ];
+        for i in 0..4 {
+            for z in [0., -job.setup.stock.thickness_mm.unwrap_or(0.)] {
+                for p in [corners[i], corners[(i + 1) % 4]] {
+                    points.push(([p[0], p[1], z], [0.35, 0.5, 0.65, 1.]));
+                }
+            }
+        }
+    }
+    bounds = [
+        bounds[0] - 2.,
+        bounds[1] - 2.,
+        bounds[2] + 2.,
+        bounds[3] + 2.,
+    ];
+    let vertices = points
+        .into_iter()
+        .map(|(p, c)| vertex(p, bounds, c))
+        .collect::<Vec<_>>();
+    report["components"] = json!(components);
     package(Package {
         name: job.name.clone(),
         job: job.to_json().map_err(|e| e.to_string())?,

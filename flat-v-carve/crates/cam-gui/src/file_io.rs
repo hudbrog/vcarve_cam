@@ -49,6 +49,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 pub struct Store {
     directory: PathBuf,
 }
+
 impl Store {
     pub fn new(directory: PathBuf) -> Self {
         Self { directory }
@@ -107,5 +108,49 @@ impl Store {
         }
         atomic_write(&self.directory.join("session.json"), &bytes)?;
         Ok(revision)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn recovery_conflict_and_denied_replacement_preserve_last_good_draft() {
+        let directory =
+            std::env::temp_dir().join(format!("cam-gui-store-test-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let store = Store::new(directory.clone());
+        let mut doc =
+            crate::app::Document::new(crate::session::open(crate::session::FLOWER).unwrap());
+        assert_eq!(store.save(None, doc.snapshot()).unwrap(), 1);
+        doc.edit(0, "1.2".into()).unwrap();
+        assert!(
+            store
+                .save(None, doc.snapshot())
+                .unwrap_err()
+                .contains("Revision conflict")
+        );
+        assert_eq!(store.load().unwrap().unwrap().revision, 1);
+        let path = directory.join("session.json");
+        let old = fs::read(&path).unwrap();
+        // A deny-delete handle deterministically rejects replacement on Windows.
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let locked = File::options()
+                .read(true)
+                .share_mode(1)
+                .open(&path)
+                .unwrap();
+            assert!(store.save(Some(1), doc.snapshot()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), old);
+            drop(locked);
+        }
+        assert_eq!(store.save(Some(1), doc.snapshot()).unwrap(), 2);
+        assert_ne!(fs::read(&path).unwrap(), old);
+        assert_eq!(store.load().unwrap().unwrap().snapshot.draft, doc.raw);
+        fs::remove_file(path).unwrap();
+        fs::remove_file(directory.join("session.lock")).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 }

@@ -71,6 +71,25 @@ impl Drop for Worker {
 #[test]
 fn persistent_native_process_open_edit_generate_seek_prepare_save_reopen_and_stop() {
     let mut worker = Worker::new();
+    let (imported, _) = worker.request(Command::ImportSvg {
+        filename: "new-carving.svg".into(),
+        svg: include_str!("../../../fixtures/gui2/new-carving.svg").into(),
+    });
+    let incomplete = gui::open(&imported.job).unwrap();
+    assert!(incomplete.setup.stock.thickness_mm.is_none());
+    assert!(gui::settings(&incomplete).components.is_empty());
+    let (preview, _) = worker.request(Command::Preview {
+        job: imported.job.clone(),
+    });
+    assert_eq!(
+        preview.report["gui2"]["components"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let (reopened, _) = worker.request(Command::Open { json: imported.job });
+    assert_eq!(gui::open(&reopened.job).unwrap(), incomplete);
     let (opened, _) = worker.request(Command::Open {
         json: gui::FLOWER.into(),
     });

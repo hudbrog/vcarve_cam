@@ -1,4 +1,5 @@
 pub mod app;
+pub mod authoring;
 pub mod clock;
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]

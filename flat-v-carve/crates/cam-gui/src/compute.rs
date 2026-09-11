@@ -13,7 +13,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-pub const PROTOCOL: &str = "cam-gui-retained-1";
+pub const PROTOCOL: &str = "cam-gui-retained-2";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Request {
     Gui2(crate::session::Command),

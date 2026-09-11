@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const FIELDS: [&str; 40] = [
+pub const FIELDS: [&str; 47] = [
     "Maximum depth",
     "Wall allowance",
     "Roughing feed",
@@ -40,37 +40,37 @@ pub const FIELDS: [&str; 40] = [
     "Output precision",
     "Blend tolerance",
     "Recovery interval",
-    "Optional probe",
-    "Tool name / IME probe",
+    "V-bit tool number",
+    "V-bit length offset",
+    "Stock minimum X",
+    "Stock minimum Y",
+    "Stock width",
+    "Stock length",
+    "Work zero X",
+    "Work zero Y",
+    "Finish stepover",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Draft {
     pub schema: u32,
-    pub sources: Vec<u64>,
-    pub selected_source: u64,
-    pub operation: u64,
+    pub artwork_item: String,
+    pub operation: String,
     // String keys encode stable source/operation/field IDs, never row positions.
     pub raw: BTreeMap<String, String>,
 }
-impl Default for Draft {
-    fn default() -> Self {
+impl Draft {
+    pub fn for_job(job: &cam_core::project::v5::CamJobV5) -> Self {
         Self {
-            schema: 1,
-            sources: vec![101, 202],
-            selected_source: 101,
-            operation: 1,
+            schema: 2,
+            artwork_item: job.artwork[0].id.0.clone(),
+            operation: job.operations[0].id.clone(),
             raw: BTreeMap::new(),
         }
     }
-}
-impl Draft {
     pub fn key(&self, field: usize) -> String {
-        format!(
-            "{}/{}/{}",
-            self.selected_source, self.operation, FIELDS[field]
-        )
+        format!("{}/{}/{}", self.artwork_item, self.operation, FIELDS[field])
     }
     pub fn parse(text: &str) -> Result<Option<f64>, &'static str> {
         if text.trim().is_empty() {
@@ -91,24 +91,17 @@ impl Draft {
             return Err("Recovery exceeds 1 MB input budget".into());
         }
         let draft: Self = serde_json::from_str(text).map_err(|e| e.to_string())?;
-        if draft.schema != 1
-            || draft.sources.len() != 2
-            || !draft.sources.contains(&101)
-            || !draft.sources.contains(&202)
-            || !draft.sources.contains(&draft.selected_source)
-            || !(1..=1000).contains(&draft.operation)
+        if draft.schema != 2
+            || !cam_core::preview::valid_id(&draft.artwork_item)
+            || !cam_core::preview::valid_id(&draft.operation)
         {
             return Err("Unsupported recovery identity/schema".into());
         }
         for (key, text) in &draft.raw {
             let parts: Vec<_> = key.splitn(3, '/').collect();
             if parts.len() != 3
-                || !matches!(parts[0], "101" | "202")
-                || parts[1]
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|v| (1..=1000).contains(v))
-                    .is_none()
+                || parts[0] != draft.artwork_item
+                || parts[1] != draft.operation
                 || !FIELDS.contains(&parts[2])
                 || text.chars().count() > 4096
             {
@@ -123,19 +116,15 @@ impl Draft {
 mod tests {
     use super::*;
     #[test]
-    fn partial_text_survives_reorder_navigation_and_recovery() {
-        let mut d = Draft::default();
-        let key = d.key(0);
-        d.raw.insert(key.clone(), "-".into());
-        d.sources.reverse();
-        d.operation = 2;
-        d.selected_source = 202;
-        assert!(!d.raw.contains_key(&d.key(0)));
-        let mut restored = Draft::recover(&serde_json::to_string(&d).unwrap()).unwrap();
-        restored.operation = 1;
-        restored.selected_source = 101;
-        assert_eq!(restored.raw[&restored.key(0)], "-");
-        for text in ["-", "1.", "paste invalid", "NaN", "inf"] {
+    fn raw_fields_use_real_document_identity_and_reject_foreign_keys() {
+        let job = crate::session::open(crate::session::FLOWER).unwrap();
+        let mut draft = Draft::for_job(&job);
+        draft.raw.insert(draft.key(0), "-".into());
+        let recovered = Draft::recover(&serde_json::to_string(&draft).unwrap()).unwrap();
+        assert_eq!(recovered, draft);
+        draft.operation = "another-operation".into();
+        assert!(Draft::recover(&serde_json::to_string(&draft).unwrap()).is_err());
+        for text in ["-", "1.", "invalid", "NaN", "inf"] {
             assert!(Draft::parse(text).is_err());
         }
         assert_eq!(Draft::parse(""), Ok(None));

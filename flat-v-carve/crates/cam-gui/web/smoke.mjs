@@ -17,7 +17,7 @@ const chrome = edge
   : 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const base = process.argv.find(argument => argument.startsWith('--url='))?.slice('--url='.length)
   ?? 'http://127.0.0.1:5182/web/index.html';
-const port = 9335;
+const port = Number(process.argv.find(argument=>argument.startsWith('--port='))?.slice(7)??9335);
 const profile = mkdtempSync(path.join(tmpdir(), 'gui2-smoke-'));
 const browser = spawn(chrome, [
   `--remote-debugging-port=${port}`,
@@ -104,27 +104,43 @@ const pressKey = async (key, code, modifiers = 0) => {
 };
 
 const control = async label => {
-  const current=await state();const rect=current.controls?.[label];
-  if(!rect)throw new Error(`Missing control ${label}`);
-  await click((rect[0]+rect[2])/2,(rect[1]+rect[3])/2);
+  for(let attempt=0;attempt<12;attempt++) {
+    const current=await state(); const rect=current.controls?.[label];
+    if(!rect)throw new Error(`Missing control ${label}`);
+    const clip=current.controls?.['Inspector viewport'];
+    const bottom=clip?.[3]??await evaluate('innerHeight-65');
+    const top=clip?.[1]??150;
+    if(rect[1]>=top && rect[3]<=bottom || rect[0]<850 || ['Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
+      await click((rect[0]+rect[2])/2,(rect[1]+rect[3])/2); await sleep(120);return;
+    }
+    await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:1100,y:350});
+    await send('Input.dispatchMouseEvent',{type:'mouseWheel',x:1100,y:350,deltaX:0,deltaY:rect[1]<top?-200:200});await sleep(200);
+  }
+  throw new Error(`Could not scroll to ${label}`);
 };
 const edit = async(label,text)=>{
+  await control('Filter fields');await pressKey('a','KeyA',2);await send('Input.insertText',{text:label});await sleep(160);
   await control(label);await pressKey('a','KeyA',2);
   await send('Input.insertText',{text});await sleep(100);
 };
 const out=path.resolve('artifacts/gui/browser-smoke',new Date().toISOString().replaceAll(':','-'));mkdirSync(out,{recursive:true});
+const screenshot=async name=>{const shot=await send('Page.captureScreenshot',{format:'png'});const bytes=Buffer.from(shot.data,'base64');writeFileSync(path.join(out,name),bytes);return bytes;};
 const checks=[];
 const record=(label,value)=>{checks.push({label,value});console.log(label);};
 try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  await control('Flower fixture');await waitFor(s=>s.job?.name==='flower_box.svg','canonical flower');
-  await control('Apply flower machine profile');await waitFor(s=>s.job?.machine,'applied machine');
-  await edit('Roughing feed','1900');await waitFor(s=>s.job?.feed===1900,'real feed edit');
+  if(process.argv.includes('--authoring')) {
+    const {authoringScenario}=await import('./authoring-scenario.mjs');
+    await authoringScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,writeFileSync,path,out});
+  } else {
+  await control('File');await control('Flower fixture');await waitFor(s=>s.job?.name==='flower_box.svg','canonical flower');
+  await control('Machine');await control('Example machine');await control('Apply flower machine profile');await waitFor(s=>s.job?.machine,'applied machine');
+  await control('Cutting');await edit('Roughing feed','1900');await waitFor(s=>s.job?.feed===1900,'real feed edit');
   await edit('Maximum depth','1.1');await waitFor(s=>s.job?.depth===1.1,'real depth edit');
   await control('Generate');const generated=await waitFor(s=>s.current&&!s.active&&s.motions>20000,'generated edited execution',120);
   record('real edits generate',generated);
-  await control('After endmill');const rough=await waitFor(s=>!s.active&&s.stockPrefix>0&&s.stockPrefix<s.motions,'roughing stock');record('roughing stock',rough.stockPrefix);
+  await control('Simulate');await control('After endmill');const rough=await waitFor(s=>!s.active&&s.stockPrefix>0&&s.stockPrefix<s.motions,'roughing stock');record('roughing stock',rough.stockPrefix);
   await control('After V-bit');const final=await waitFor(s=>!s.active&&s.stockPrefix===s.motions,'finishing stock');record('finishing stock',final.stockPrefix);
   const rect=(await state()).controls['Stock motion'];await click(rect[0]+35,(rect[1]+rect[3])/2);
   const scrub=await waitFor(s=>!s.active&&s.stockPrefix>0&&s.stockPrefix<final.stockPrefix&&s.stockPrefix!==rough.stockPrefix,'backward arbitrary scrub');record('backward scrub',scrub.stockPrefix);
@@ -140,9 +156,9 @@ try {
   await control('Save job');await waitFor(s=>s.status.includes('Download requested'),'job download');
   for(let i=0;i<100&&!existsSync(path.join(out,'carving.gui2.job.json'));i++)await sleep(100);
   const saved=readFileSync(path.join(out,'carving.gui2.job.json'),'utf8');const job=JSON.parse(saved);
-  if(job.schema_version!==5||!job.machine_configuration||job.operations[0].settings.endmill?.cutting_feed_mm_min===0)throw new Error('Invalid saved job');
+  if(job.schema_version!==5||!job.machine_configuration||job.operations[0].settings.settings.endmill.cutting_feed_mm_min!==1900)throw new Error('Invalid saved job');
   const screenshot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(path.join(out,'workspace.png'),Buffer.from(screenshot.data,'base64'));
-  await edit('Maximum depth','-');await waitFor(s=>s.pending&&!s.current,'pending text invalidates output');
+  await control('Cutting');await edit('Maximum depth','-');await waitFor(s=>s.pending&&!s.current,'pending text invalidates output');
   await sleep(1600);await send('Page.reload');await waitFor(s=>s.controls?.['Restore draft'],'recoverable draft');
   await control('Restore draft');await waitFor(s=>s.pending&&s.job?.rawDepth==='-','raw draft restored');record('restart recovers partial input without artifact trust',await state());
   await evaluate(`(()=>{const transfer=new DataTransfer();transfer.items.add(new File([${JSON.stringify(saved)}],'saved.job.json',{type:'application/json'}));document.getElementById('cam').dispatchEvent(new DragEvent('drop',{dataTransfer:transfer,bubbles:true,cancelable:true}));})()`);
@@ -150,10 +166,11 @@ try {
   await control('Generate');await waitFor(s=>s.active,'live generation');await control('Cancel');await waitFor(s=>!s.active&&!s.current,'worker cancelled');record('real Worker termination',await state());
   await control('Generate');await waitFor(s=>s.current&&!s.active,'fresh worker regenerates',120);
   await control('Prepare checked output');await waitFor(s=>s.prepared&&!s.active,'fresh worker prepares retained plan',120);
+  }
   if(problems.length)throw new Error('Browser errors: '+problems.join('\n'));
   writeFileSync(path.join(out,'evidence.json'),JSON.stringify({url:base,checks,consoleErrors:problems,note:'Real Chromium/WebGPU UI and WASM Worker. Denied save is injected; the fallback download is written and its actual bytes checked. Browser terminate call does not measure stopped CPU latency.'},null,2));
   console.log('GUI2 browser workflow passed');
-} catch(error) {console.error(error);console.error(await state());console.error(problems);process.exitCode=1;}
+} catch(error) {const screenshot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(path.join(out,'failure.png'),Buffer.from(screenshot.data,'base64'));console.error(error);console.error(await state());console.error(problems);process.exitCode=1;}
 finally {
   await Promise.race([send('Browser.close'),sleep(1500)]);
   socket.close();browser.kill();await sleep(500);

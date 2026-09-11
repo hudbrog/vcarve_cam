@@ -52,6 +52,42 @@ struct StockView {
     prefix: usize,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ViewSettings {
+    pub isometric: bool,
+    pub zoom: f32,
+    pub yaw: f32,
+    pub stage: usize,
+    pub stock: bool,
+    pub prefix: usize,
+}
+impl Default for ViewSettings {
+    fn default() -> Self {
+        Self {
+            isometric: false,
+            zoom: 1.,
+            yaw: 0.,
+            stage: 0,
+            stock: true,
+            prefix: 0,
+        }
+    }
+}
+impl ViewSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.zoom.is_finite()
+            || !(0.5..=3.).contains(&self.zoom)
+            || !self.yaw.is_finite()
+            || self.stage > 2
+            || self.prefix > crate::session::MOTION_LIMIT
+        {
+            return Err("Invalid saved viewport".into());
+        }
+        Ok(())
+    }
+}
+
 pub struct Viewport {
     pub stock_loading: bool,
     requested_stock: Option<usize>,
@@ -120,7 +156,7 @@ impl Default for Viewport {
             hash_ms: 0.,
             stock: None,
             stock_prefix: 0,
-            show_stock: false,
+            show_stock: true,
             gpu_unavailable: false,
             drill: render::Drill::None,
             gpu: false,
@@ -133,6 +169,25 @@ impl Default for Viewport {
 }
 
 impl Viewport {
+    pub fn settings(&self) -> ViewSettings {
+        ViewSettings {
+            isometric: self.iso,
+            zoom: self.zoom,
+            yaw: self.yaw,
+            stage: self.stage,
+            stock: self.show_stock,
+            prefix: self.stock_prefix,
+        }
+    }
+    pub fn restore_settings(&mut self, settings: &ViewSettings) {
+        self.iso = settings.isometric;
+        self.zoom = settings.zoom;
+        self.yaw = settings.yaw;
+        self.stage = settings.stage;
+        self.show_stock = settings.stock;
+        self.playing = false;
+        self.requested_stock = None;
+    }
     /// Adopt a compute result: metadata plus its binary payload.
     pub fn load_scene(&mut self, result: Result<(SceneMeta, Vec<u8>), String>) {
         match result {
@@ -156,7 +211,7 @@ impl Viewport {
         self.hash_cursor = 0;
         let required = self.compute_required(&scene);
         self.required_pages = required;
-        self.show_stock = self.stock.is_some();
+
         self.playing = false;
         self.scene_revision += 1;
         self.scene = Some(scene);
@@ -193,7 +248,6 @@ impl Viewport {
     }
 
     pub fn new_viewer(cc: &eframe::CreationContext<'_>) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
         let mut app = Self::default();
         if let Some(state) = &cc.wgpu_render_state {
             let mut renderer = state.renderer.write();
@@ -216,11 +270,83 @@ impl Viewport {
         app
     }
 
+    fn draw_workspace(&self, ui: &egui::Ui, rect: egui::Rect) {
+        let painter = ui.painter().with_clip_rect(rect);
+        let camera = Camera {
+            iso: self.iso,
+            aspect: rect.width() / rect.height().max(1.),
+            zoom: self.zoom,
+            yaw: self.yaw,
+        };
+        let project = |p: [f32; 3]| {
+            let xy = camera.to_points(camera.ndc(p), [rect.width(), rect.height()]);
+            rect.center() + egui::vec2(xy[0], xy[1])
+        };
+        for i in -20..=20 {
+            let n = i as f32 / 10.;
+            let stroke = egui::Stroke::new(
+                1.,
+                if i == 0 {
+                    Color32::from_rgb(207, 217, 223)
+                } else {
+                    Color32::from_rgb(232, 237, 240)
+                },
+            );
+            painter.line_segment([project([n, -2., 0.]), project([n, 2., 0.])], stroke);
+            painter.line_segment([project([-2., n, 0.]), project([2., n, 0.])], stroke);
+        }
+        if self.stock.is_none()
+            && let Some(scene) = &self.scene
+            && let Some(xy) = scene.meta.report["gui2"]["stockRect"].as_array()
+            && xy.len() == 5
+        {
+            let values: Vec<f64> = xy.iter().filter_map(|n| n.as_f64()).collect();
+            if values.len() != 5 {
+                return;
+            }
+            let b = scene.meta.bounds;
+            let scale = 1.6 / (b[2] - b[0]).max(b[3] - b[1]).max(0.001);
+            let corners = [
+                [values[0], values[1]],
+                [values[0] + values[2], values[1]],
+                [values[0] + values[2], values[1] + values[3]],
+                [values[0], values[1] + values[3]],
+            ];
+            let points = |z: f64| {
+                corners.map(|p| {
+                    project([
+                        ((p[0] - (b[0] + b[2]) / 2.) * scale) as f32,
+                        ((p[1] - (b[1] + b[3]) / 2.) * scale) as f32,
+                        (z * scale) as f32,
+                    ])
+                })
+            };
+            let top = points(0.);
+            let bottom = points(-values[4]);
+            if self.iso {
+                for i in 0..4 {
+                    let j = (i + 1) % 4;
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![top[i], top[j], bottom[j], bottom[i]],
+                        Color32::from_rgb(170, 143, 104),
+                        egui::Stroke::NONE,
+                    ));
+                }
+            }
+            painter.add(egui::Shape::convex_polygon(
+                top.to_vec(),
+                Color32::from_rgb(215, 190, 150),
+                egui::Stroke::new(1., Color32::from_rgb(175, 153, 116)),
+            ));
+        }
+    }
     fn viewport(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.iso, false, "Top");
-                ui.selectable_value(&mut self.iso, true, "Isometric");
+                let top = ui.selectable_value(&mut self.iso, false, "Top");
+                crate::app::observe_control("Top", top.rect);
+                let iso = ui.selectable_value(&mut self.iso, true, "Isometric");
+                crate::app::observe_control("Isometric", iso.rect);
                 if ui.button("Fit").clicked() {
                     self.zoom = 1.;
                     self.yaw = 0.;
@@ -229,21 +355,19 @@ impl Viewport {
                 if self.stock.is_some() {
                     ui.checkbox(&mut self.show_stock, "Stock preview");
                 }
-                ui.add(
-                    egui::Slider::new(&mut self.pick_tolerance_px, 2.0..=24.0)
-                        .text("Pick tolerance (px)"),
-                );
             });
             ui.label(
                 self.scene
                     .as_ref()
                     .map(|scene| scene.meta.name.as_str())
-                    .unwrap_or("Load a combined carving reference"),
+                    .unwrap_or("Import an SVG to start your carving"),
             );
             let (rect, response) =
                 ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+            crate::app::observe_control("Artwork viewport", rect);
             ui.painter()
-                .rect_filled(rect, 0., Color32::from_rgb(21, 29, 38));
+                .rect_filled(rect, 0., Color32::from_rgb(246, 248, 250));
+            self.draw_workspace(ui, rect);
             if response.dragged() {
                 self.yaw += response.drag_delta().x * 0.005;
             }
@@ -324,6 +448,13 @@ impl Viewport {
                             required: self.required_pages.clone(),
                             budget_bytes: self.page_budget,
                             contour_vertices: scene.meta.contour_vertices,
+                            contour_range: scene
+                                .meta
+                                .sections
+                                .iter()
+                                .find(|s| s.kind == pages::SECTION_CONTOUR)
+                                .map(|s| s.offset..s.offset + s.len)
+                                .unwrap_or(0..0),
                             revision: self.overlay_revision,
                             camera: [
                                 if self.iso { 1. } else { 0. },
@@ -357,9 +488,10 @@ impl Viewport {
     }
 
     /// Shared production viewport and cumulative stock transport.
-    pub fn show(&mut self, ctx: &egui::Context) {
+    pub fn show(&mut self, ctx: &egui::Context, simulate: bool) {
         self.fingerprint_pages();
-        egui::TopBottomPanel::bottom("gui2-playback").show(ctx, |ui| {
+        if simulate {
+            egui::TopBottomPanel::bottom("gui2-playback").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 let play=ui.button(if self.playing {"Pause"} else {"Play"});crate::app::observe_control(if self.playing {"Pause"} else {"Play"},play.rect);if play.clicked() { self.playing = !self.playing; if self.playing && self.stock_prefix==self.motion_count(){self.stock_seek(0);} }
                 let start=ui.button("Start");crate::app::observe_control("Start",start.rect);if start.clicked() {self.playing=false;self.stock_seek(0);}
@@ -368,14 +500,22 @@ impl Viewport {
                     self.stock_seek(prefix);
                 }
                 let finish=ui.button("After V-bit");crate::app::observe_control("After V-bit",finish.rect);if finish.clicked(){self.playing=false;self.stock_seek(self.motion_count());}
-                ui.selectable_value(&mut self.stage,0,"All paths");
-                ui.selectable_value(&mut self.stage,1,"Endmill paths");
-                ui.selectable_value(&mut self.stage,2,"V-bit paths");
+                egui::ComboBox::from_id_salt("visible-path-stage").selected_text(["All paths","Endmill paths","V-bit paths"][self.stage]).show_ui(ui,|ui| {
+                    ui.selectable_value(&mut self.stage,0,"All paths");
+                    ui.selectable_value(&mut self.stage,1,"Endmill paths");
+                    ui.selectable_value(&mut self.stage,2,"V-bit paths");
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().slider_width=(ui.available_width()-160.).max(80.);
                 let mut prefix=self.stock_prefix;
                 let slider=ui.add(egui::Slider::new(&mut prefix,0..=self.motion_count()).text("Stock motion"));crate::app::observe_control("Stock motion",slider.rect);if slider.changed(){self.playing=false;self.stock_seek(prefix);}
             });
             if let Some(stock)=&self.stock {ui.label(format!("Display simulation · {:.4} mm cells (reference {:.4}) · {} / {} motions · {:.2} mm³ removed",stock.meta.cell_mm,stock.meta.reference_cell_mm,stock.prefix,self.motion_count(),stock.stats.removed_volume_mm3));}
         });
+        } else {
+            self.playing = false;
+        }
         self.viewport(ctx);
         let now = ctx.input(|i| i.time);
         if self.playing && !self.stock_loading && self.requested_stock.is_none() {
