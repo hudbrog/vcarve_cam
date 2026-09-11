@@ -1,0 +1,5 @@
+/target/
+/pkg/
+/artifacts/
+**/snapshots/**/*.diff.png
+**/snapshots/**/*.new.png

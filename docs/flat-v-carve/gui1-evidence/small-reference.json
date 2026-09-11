@@ -1,0 +1,1670 @@
+{
+  "canonicalOpen": {
+    "documentFingerprint": "d5decf2f5a22dfe7da82e06b0f576e4d20055dd876a9e993547036cffc09659d",
+    "job": {
+      "import": {
+        "geometry_tolerance_mm": 0.005,
+        "placement": {
+          "origin_mm": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "rotation_deg": 0.0,
+          "scale": 1.0
+        },
+        "ticks_per_mm": null
+      },
+      "name": "Synthetic M4 contact-line",
+      "operations": [
+        {
+          "enabled": true,
+          "id": "flat-v-carve",
+          "name": "Flat V-carve",
+          "settings": {
+            "kind": "flat_vcarve",
+            "settings": {
+              "component_ids": [
+                "pocket::0"
+              ],
+              "endmill": {
+                "cutting_feed_mm_min": 300.0,
+                "max_stepdown_mm": 1.0,
+                "plunge_feed_mm_min": 100.0,
+                "spindle_rpm": 10000.0,
+                "stepover_mm": 1.5,
+                "tool_id": "endmill"
+              },
+              "finish": {
+                "max_cleanup_iterations": 2,
+                "max_curve_segments": 8192,
+                "max_depth_passes": 32,
+                "max_motions": 30000,
+                "max_paths": 2048,
+                "max_quality_samples": 10000,
+                "quality_sample_spacing_mm": 1.0,
+                "reachability_max_cells": 4096,
+                "stock_slices": 3
+              },
+              "max_depth_mm": 2.0,
+              "max_detail_residual_mm": 0.0,
+              "max_floor_ridge_mm": 0.0,
+              "mode": "combined",
+              "rough": {
+                "entry": {
+                  "kind": "plunge"
+                },
+                "max_layers": 32,
+                "max_loops_per_layer": 128,
+                "max_motions": 10000,
+                "strategy": "depth_dependent"
+              },
+              "top": {
+                "offset_mm": 0.0,
+                "reference": {
+                  "kind": "stock_top"
+                }
+              },
+              "vbit": {
+                "cutting_feed_mm_min": 250.0,
+                "max_stepdown_mm": 1.0,
+                "plunge_feed_mm_min": 80.0,
+                "spindle_rpm": 12000.0,
+                "stepover_mm": 0.5,
+                "tool_id": "vbit"
+              },
+              "wall_allowance_mm": 0.5
+            }
+          }
+        }
+      ],
+      "schema_version": 4,
+      "setup": {
+        "clearance_above_stock_mm": 5.0,
+        "start_xy_mm": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "stock": {
+          "thickness_mm": 8.0
+        },
+        "work_zero": {
+          "xy": {
+            "kind": "setup_origin"
+          },
+          "z": "stock_top"
+        }
+      },
+      "source": {
+        "filename": "synthetic.svg",
+        "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12mm\" height=\"4mm\" viewBox=\"0 0 12 4\"><path id=\"pocket\" d=\"M0 0h12v4H0z\"/></svg>"
+      },
+      "tolerances": {
+        "motion_tolerance_mm": 0.005,
+        "verification_tolerance_mm": 0.05
+      },
+      "tools": [
+        {
+          "capabilities": {
+            "plunge_capable": true,
+            "ramp_capable": false
+          },
+          "geometry": {
+            "dimensions": {
+              "cutting_length_mm": 6.0,
+              "diameter_mm": 4.0
+            },
+            "kind": "endmill"
+          },
+          "id": "endmill",
+          "name": "endmill"
+        },
+        {
+          "capabilities": {
+            "plunge_capable": true
+          },
+          "geometry": {
+            "dimensions": {
+              "cutting_height_mm": 5.0,
+              "included_angle_deg": 90.0,
+              "max_cutting_diameter_mm": 12.0,
+              "tip_diameter_mm": 0.0
+            },
+            "kind": "vbit"
+          },
+          "id": "vbit",
+          "name": "vbit"
+        }
+      ]
+    },
+    "migrated": true,
+    "missingByOperation": {
+      "flat-v-carve": []
+    },
+    "operations": [
+      {
+        "depth": {
+          "maxDepthMm": 2.0,
+          "mode": "combined"
+        },
+        "enabled": true,
+        "id": "flat-v-carve",
+        "kind": "flat_vcarve",
+        "name": "Flat V-carve",
+        "toolIds": [
+          "endmill",
+          "vbit"
+        ]
+      }
+    ],
+    "setup": {
+      "clearanceAboveStockMm": 5.0,
+      "stock": {
+        "physicalXy": false,
+        "thicknessMm": 8.0,
+        "xy": null
+      },
+      "workZero": {
+        "xy": {
+          "kind": "setup_origin"
+        },
+        "z": "stock_top"
+      }
+    }
+  },
+  "elapsedMs": 5.2604,
+  "export": {
+    "artifact_kind": "linuxcnc_export_report",
+    "diagnostics": [],
+    "emitted_motion_fingerprint": null,
+    "emitted_verification": null,
+    "engine_version": "0.7.7",
+    "layout": "combined",
+    "limitations": [
+      "Acceptance covers authenticated modeled stock and the exact emitted linear subset under the declared machine contract; it is not LinuxCNC simulation or physical-machine approval.",
+      "Operator startup position, active current-tool compensation, homing, stock datum, table height, zero XY rotation, safe clearance across fixtures, and M6 return behavior require machine setup. Hidden macro/probing motion and tool-table contents are not interpreted.",
+      "Per-tool files restore all required modes independently; V-bit rest machining still requires the matching endmill stock history. No G28/G30/G53 or probing positions are invented.",
+      "Path blending G64 is active: stock verification certifies the programmed path, but the machine may deviate from it by up to the 0.05 mm blend tolerance."
+    ],
+    "machine_z_offset_mm": 8.0,
+    "output_decimal_places": 3,
+    "plan_verification": {
+      "artifact_kind": "verification_report",
+      "authenticated_plan_fingerprint": "3e05c91f71440b650b8279ce92022eaa9c4d868ca3716b21c3be5b29e13ac0dd",
+      "engine_version": "0.7.7",
+      "input_fingerprint": "df21e15b65b6ae14e10d2b13bb2217c83c450014bf75af71c26854b8332302a3",
+      "motion_fingerprint": "f1f9f54ef873811b836aa8b35a250b3bc1abe8e1f49ad4d5fc1da7e437f22d39",
+      "options": {
+        "decimal_places": null,
+        "max_cells": 1000000,
+        "max_depth": 24,
+        "max_depth_bands": 512,
+        "max_findings": 64,
+        "reachability_max_cells": 4096
+      },
+      "original": {
+        "analytically_clear_motion_count": 20,
+        "arithmetic_reserve_mm": 2.182787284255028e-11,
+        "bounds": {
+          "floor_ridge_mm": {
+            "lower": 0.009999999956344263,
+            "upper": 2.0
+          },
+          "other_reachable_residual_mm": {
+            "lower": 0.0,
+            "upper": 2.0
+          },
+          "overcut_mm": {
+            "lower": 0.0,
+            "upper": 2.182787284255028e-11
+          },
+          "overcut_volume_mm3": {
+            "lower": 0.0,
+            "upper": 2.773047890536969e-9
+          },
+          "residual_volume_mm3": {
+            "lower": 0.0,
+            "upper": 254.08320000209213
+          },
+          "total_residual_mm": {
+            "lower": 0.009999999956344263,
+            "upper": 2.0
+          },
+          "unreachable_detail_mm": {
+            "lower": 0.0,
+            "upper": 0.0
+          }
+        },
+        "checked_motion_count": 37,
+        "depth_bands": [
+          {
+            "from_depth_mm": 0.0,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.03125
+          },
+          {
+            "from_depth_mm": 0.03125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.0625
+          },
+          {
+            "from_depth_mm": 0.0625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.09375
+          },
+          {
+            "from_depth_mm": 0.09375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.125
+          },
+          {
+            "from_depth_mm": 0.125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.15625
+          },
+          {
+            "from_depth_mm": 0.15625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.1875
+          },
+          {
+            "from_depth_mm": 0.1875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.21875
+          },
+          {
+            "from_depth_mm": 0.21875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.25
+          },
+          {
+            "from_depth_mm": 0.25,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.28125
+          },
+          {
+            "from_depth_mm": 0.28125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.3125
+          },
+          {
+            "from_depth_mm": 0.3125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.34375
+          },
+          {
+            "from_depth_mm": 0.34375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.375
+          },
+          {
+            "from_depth_mm": 0.375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.40625
+          },
+          {
+            "from_depth_mm": 0.40625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.4375
+          },
+          {
+            "from_depth_mm": 0.4375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.46875
+          },
+          {
+            "from_depth_mm": 0.46875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.5
+          },
+          {
+            "from_depth_mm": 0.5,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.53125
+          },
+          {
+            "from_depth_mm": 0.53125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.5625
+          },
+          {
+            "from_depth_mm": 0.5625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.59375
+          },
+          {
+            "from_depth_mm": 0.59375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.625
+          },
+          {
+            "from_depth_mm": 0.625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.65625
+          },
+          {
+            "from_depth_mm": 0.65625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.6875
+          },
+          {
+            "from_depth_mm": 0.6875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.71875
+          },
+          {
+            "from_depth_mm": 0.71875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.75
+          },
+          {
+            "from_depth_mm": 0.75,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.78125
+          },
+          {
+            "from_depth_mm": 0.78125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.8125
+          },
+          {
+            "from_depth_mm": 0.8125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.84375
+          },
+          {
+            "from_depth_mm": 0.84375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.875
+          },
+          {
+            "from_depth_mm": 0.875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.90625
+          },
+          {
+            "from_depth_mm": 0.90625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.9375
+          },
+          {
+            "from_depth_mm": 0.9375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 0.96875
+          },
+          {
+            "from_depth_mm": 0.96875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.0
+          },
+          {
+            "from_depth_mm": 1.0,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.03125
+          },
+          {
+            "from_depth_mm": 1.03125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.0625
+          },
+          {
+            "from_depth_mm": 1.0625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.09375
+          },
+          {
+            "from_depth_mm": 1.09375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.125
+          },
+          {
+            "from_depth_mm": 1.125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.15625
+          },
+          {
+            "from_depth_mm": 1.15625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.1875
+          },
+          {
+            "from_depth_mm": 1.1875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.21875
+          },
+          {
+            "from_depth_mm": 1.21875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.25
+          },
+          {
+            "from_depth_mm": 1.25,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.28125
+          },
+          {
+            "from_depth_mm": 1.28125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.3125
+          },
+          {
+            "from_depth_mm": 1.3125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.34375
+          },
+          {
+            "from_depth_mm": 1.34375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.375
+          },
+          {
+            "from_depth_mm": 1.375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.40625
+          },
+          {
+            "from_depth_mm": 1.40625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.4375
+          },
+          {
+            "from_depth_mm": 1.4375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.46875
+          },
+          {
+            "from_depth_mm": 1.46875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.5
+          },
+          {
+            "from_depth_mm": 1.5,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.53125
+          },
+          {
+            "from_depth_mm": 1.53125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.5625
+          },
+          {
+            "from_depth_mm": 1.5625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.59375
+          },
+          {
+            "from_depth_mm": 1.59375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.625
+          },
+          {
+            "from_depth_mm": 1.625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.65625
+          },
+          {
+            "from_depth_mm": 1.65625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.6875
+          },
+          {
+            "from_depth_mm": 1.6875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.71875
+          },
+          {
+            "from_depth_mm": 1.71875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.75
+          },
+          {
+            "from_depth_mm": 1.75,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.78125
+          },
+          {
+            "from_depth_mm": 1.78125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.8125
+          },
+          {
+            "from_depth_mm": 1.8125,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.84375
+          },
+          {
+            "from_depth_mm": 1.84375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.875
+          },
+          {
+            "from_depth_mm": 1.875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.90625
+          },
+          {
+            "from_depth_mm": 1.90625,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.9375
+          },
+          {
+            "from_depth_mm": 1.9375,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 1.96875
+          },
+          {
+            "from_depth_mm": 1.96875,
+            "nominal_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "overcut_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "removed_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "residual_area_mm2": {
+              "lower": 0.0,
+              "upper": 127.04160000104606
+            },
+            "to_depth_mm": 2.0
+          }
+        ],
+        "detail_residual_limit_mm": 0.0,
+        "domain": {
+          "max": {
+            "x": 13.980000000021828,
+            "y": 5.980000000021828
+          },
+          "min": {
+            "x": -1.9800000000218276,
+            "y": -1.9800000000218276
+          }
+        },
+        "evaluated_cells": 1,
+        "findings": [
+          {
+            "cell": {
+              "max": {
+                "x": 13.980000000021828,
+                "y": 5.980000000021828
+              },
+              "min": {
+                "x": -1.9800000000218276,
+                "y": -1.9800000000218276
+              }
+            },
+            "code": "M5_FLOOR_RIDGE",
+            "limit_mm": 0.0,
+            "location": {
+              "x": 6.000000000000001,
+              "y": 2.0
+            },
+            "measured_mm": {
+              "lower": 0.009999999956344263,
+              "upper": 2.0
+            },
+            "message": "an independent point witness exceeds the criterion; upper bound covers the whole cell",
+            "motion_id": null,
+            "status": "failed"
+          }
+        ],
+        "floor_ridge_limit_mm": 0.0,
+        "limitations": [
+          "Bounds apply to the rebuilt normalized polygon target, modeled cutters, and recorded linear XYZ motions. Source flattening/snap depth error is reported separately; this is not a topology proof for arbitrary SVG artwork.",
+          "Analytical distance queries use explicit floating-point reserves, not directed-rounding interval arithmetic. Preview polygon Boolean results are not used as acceptance evidence.",
+          "Depth-band areas and residual volumes retain spatial uncertainty. A pass bounds maximum finish errors; it does not claim that area or volume uncertainty has a requested dimensional tolerance.",
+          "Fixture/holder clearance, machine dynamics, feeds suitability, and hidden tool-change motions are outside this geometric contract. Numeric formatting is checked by explicit rounded-coordinate verification or the M6 emitted-program reader."
+        ],
+        "maximum_error_uncertainty_mm": 2.0,
+        "maximum_refinement_depth": 0,
+        "omitted_findings": 0,
+        "reachability_cells": 0,
+        "source_geometry_depth_error_mm": 0.0013560660171779825,
+        "status": "failed",
+        "terminal_cells": 1,
+        "unresolved_cells": 0,
+        "verification_tolerance_mm": 0.05
+      },
+      "rounded": null,
+      "schema_version": 1,
+      "status": "failed",
+      "verification_fingerprint": "30795367a3433d0ca3607270ee2169a3d79b81d1c9256e3649d2f84bd32bd176"
+    },
+    "profile": {
+      "clearance_z_mm": 5.0,
+      "coolant": "off",
+      "decimal_places": 3,
+      "id": "printnc",
+      "length_compensation": "macro_managed",
+      "m6": {
+        "local_offsets_unused": true,
+        "preserves_work_datum": true,
+        "reference": "hi",
+        "return_position": {
+          "kind": "safe_retract",
+          "transit_xy_mm": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "z_mm": 150.0
+        },
+        "reviewed": true,
+        "tool_offsets_z_only": true
+      },
+      "path_control": {
+        "kind": "blend",
+        "naive_cam_tolerance_mm": 0.05,
+        "tolerance_mm": 0.05
+      },
+      "program_start_position_mm": null,
+      "schema_version": 1,
+      "spindle_spinup_seconds": 0.5,
+      "tools": [
+        {
+          "length_offset_number": null,
+          "spindle_direction": "clockwise",
+          "tool_id": "endmill",
+          "tool_number": 1
+        },
+        {
+          "length_offset_number": null,
+          "spindle_direction": "clockwise",
+          "tool_id": "vbit",
+          "tool_number": 2
+        }
+      ],
+      "work_offset": "G54",
+      "z_datum": "stock_bottom"
+    },
+    "profile_fingerprint": "2f5dbb447ef061ca6bfde2585b0624e56190e2efc3698a04a71d3f0fe64e25d8",
+    "programs": [],
+    "schema_version": 1,
+    "status": "failed"
+  },
+  "finishingMotions": 37,
+  "inputSha256": "c284f37511ae8dd9acbebb0304977e63382cb2c6085f0610ca137fcbdfb537ac",
+  "operations": 1,
+  "paths": 1,
+  "profileSha256": "9f6a43a4bf338b4e7d62999888726cbc35c0d08f1313942befc262abe22556ea",
+  "protocol": "gui1-spike-1",
+  "roughingMotions": 0,
+  "simulation": "Not yet ported: these are actual motion lines, not a heightfield simulation",
+  "sourceSha256": "7539d62f3163d128a131a30e8726c9ae002e35304ddf699392e77482fa7928bd",
+  "stockThicknessMm": 8.0,
+  "summary": {
+    "cuttingMotionCount": 20,
+    "diagnostics": [],
+    "engineVersion": "0.7.7",
+    "generationIssues": [],
+    "inputFingerprint": "795750b21430b4be872a1db1fc5837e1fc02ce2a9c7fdb935cd2ee5db5b6eb77",
+    "limitations": [
+      "Quality maxima are measured at the configured lattice and motion witnesses, not certified over the entire height field; adaptive full-volume verification remains M5.",
+      "Individual variable-radius capsule brackets include snapping. Repeated polygon Boolean errors and topology are not a formal interval proof.",
+      "Guarded V-bit depths/contours reserve geometric clearance; normalized source error is reported separately by job inspection.",
+      "Tool transitions here are planning markers only; machine output requires M6 export. Fixture/holder clearance and cutting loads remain outside this planning analysis.",
+      "Clearance is checked against normalized geometry; source curve/quantization errors are reported by job inspection.",
+      "Slice sweep polygons bracket individual capsules; repeated integer Boolean operations are engineering approximations, not a formal interval proof.",
+      "Remaining target includes slopes, allowance, and endmill-inaccessible detail for M4. Adaptive full-volume verification belongs to M5.",
+      "Tool capabilities and feeds are explicit inputs; cutting loads, fixtures, machine motion, and G-code are not verified by M3."
+    ],
+    "meaning": "M4 candidate-family completion, continuous segment clearance, floor slice coverage, and sampled combined finish-quality evidence.",
+    "motionCount": 37,
+    "motionFingerprint": "da4b56b365400e5228d5512de6f8ab0cc1926ffc3c59428c85e94d03d201a078",
+    "omittedDiagnostics": 0,
+    "omittedGenerationIssues": 0,
+    "omittedMotionCount": 0,
+    "previewMotionCount": 37,
+    "status": "complete"
+  },
+  "tools": 2,
+  "vertexBytes": 2296,
+  "vertices": 82
+}

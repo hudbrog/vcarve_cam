@@ -1,0 +1,22 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>GUI1 DOM accessibility boundary probe</title>
+<style>body{max-width:720px;margin:40px auto;background:#151d26;color:#eee;font:16px system-ui}label{display:block;margin:16px 0}input,button{font:inherit;padding:8px;margin:4px}output{white-space:pre-wrap}</style>
+<h1>GUI1 · DOM input boundary probe</h1>
+<p>This narrow alternative tests native browser semantics, raw input and a disposable Rust worker. It is not a second application or a framework selection.</p>
+<div id="sources"><section id="a"><h2>flower.svg · #101</h2><label for="depth-a">Maximum depth, source 101 (mm)</label><input id="depth-a" inputmode="decimal" placeholder="Unset" aria-describedby="draft-note"></section>
+<section id="b"><h2>flower.svg · #202</h2><label for="depth-b">Maximum depth, source 202 (mm)</label><input id="depth-b" inputmode="decimal" placeholder="Unset" aria-describedby="draft-note"></section></div>
+<p id="draft-note">Raw text is an input probe and does not change the reference job.</p>
+<button id="reverse">Reverse artwork order</button><button id="calculate">Calculate small reference in Rust</button>
+<button id="busy">Busy worker</button><button id="cancel" disabled>Cancel calculation</button>
+<p><output id="result" role="status" aria-live="polite">Ready</output></p>
+<script type="module">
+const sources=document.getElementById('sources'), result=document.getElementById('result'), cancel=document.getElementById('cancel');
+let worker;
+document.getElementById('reverse').onclick=()=>{const focused=document.activeElement;sources.append(sources.firstElementChild);focused?.focus();};
+function run(request){worker?.terminate();worker=new Worker('./worker.js',{type:'module'});cancel.disabled=false;result.textContent='Calculating; inputs remain editable';
+worker.onmessage=({data})=>{const value=JSON.parse(data.reply);result.textContent=value.Err??JSON.stringify(value.Ok.report.summary,null,2);worker.terminate();worker=undefined;cancel.disabled=true;};
+worker.onerror=e=>{result.textContent=e.message;worker?.terminate();worker=undefined;cancel.disabled=true;};
+worker.postMessage({protocol:'gui1-spike-1',request:JSON.stringify(request)});}
+document.getElementById('calculate').onclick=()=>run({Reference:{flower:false,export:false}});
+document.getElementById('busy').onclick=()=>run('Busy');
+cancel.onclick=()=>{worker?.terminate();worker=undefined;cancel.disabled=true;result.textContent='Cancellation requested through Worker.terminate; stopped CPU time is not exposed by the browser.';};
+</script></html>

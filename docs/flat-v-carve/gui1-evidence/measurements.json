@@ -1,0 +1,69 @@
+{
+  "nativeExecutableBytes": 16672256,
+  "inputs": [
+    {
+      "path": "real_data/flower_box-svg.job-real.json",
+      "bytes": 29693,
+      "sha256": "80dd0208cec4d2622d5c5719a96e16ef85d4c2a82e8e72dae8c2c1ecaa552ae7"
+    },
+    {
+      "path": "real_data/flower_box.svg",
+      "bytes": 27096,
+      "sha256": "817743c4f77f644fdf703fa9301eba8a52f35df66503f5b0a953c822f6d63154"
+    },
+    {
+      "path": "real_data/machine-profile.json",
+      "bytes": 966,
+      "sha256": "9f6a43a4bf338b4e7d62999888726cbc35c0d08f1313942befc262abe22556ea"
+    },
+    {
+      "path": "flat-v-carve/fixtures/m4/contact-line.json",
+      "bytes": 2379,
+      "sha256": "c284f37511ae8dd9acbebb0304977e63382cb2c6085f0610ca137fcbdfb537ac"
+    },
+    {
+      "path": "flat-v-carve/web/src/sim/engine.ts",
+      "bytes": 21776,
+      "sha256": "087911c6ef492f76129486fa821bee956df8358ce8063ebd7dfe572e01bf3f67"
+    },
+    {
+      "path": "flat-v-carve/web/src/sim/setup.ts",
+      "bytes": 4153,
+      "sha256": "ce7d8599a3d856c11673c00b2a6713e6ec609b9d2a12fb3178c9c12c92e2d5c8"
+    }
+  ],
+  "samples": [
+    {
+      "export": false,
+      "elapsedMs": 5.0974
+    },
+    {
+      "export": false,
+      "elapsedMs": 4.1698
+    },
+    {
+      "export": false,
+      "elapsedMs": 3.5136
+    },
+    {
+      "export": false,
+      "elapsedMs": 3.7731000000000003
+    },
+    {
+      "export": false,
+      "elapsedMs": 3.5349
+    },
+    {
+      "export": true,
+      "elapsedMs": 5.2604
+    }
+  ],
+  "cancellationKillToExitMs": [
+    2.3600000000001273,
+    2.2291000000000167,
+    2.235700000000179,
+    2.204099999999926,
+    2.4302000000006956
+  ],
+  "note": "CPU process kill-to-exit probe; UI input-to-visible, actual simulator, GPU/JS/WASM peak memory and sustained M budget are not qualified."
+}
