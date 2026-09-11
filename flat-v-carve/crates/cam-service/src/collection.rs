@@ -14,7 +14,7 @@ use cam_core::{
     checks::check_plan_v5,
     geometry::{Diagnostic, Result},
     operations::drag_knife::evidence::{KNIFE_EVIDENCE_MAX_SAMPLES, build_evidence},
-    post::sequence::{PreparedExecution, SequenceProfile},
+    post::sequence::{OutputLayout, PreparedExecution, SequenceProfile},
     project::v5::{
         self, CAM_JOB_V5_SCHEMA_VERSION, CamJobV5,
         commands::AffectedEntity,
@@ -33,7 +33,7 @@ use sha2::{Digest, Sha256};
 
 pub const COLLECTION_API_VERSION: &str = "ui-9";
 
-fn error(code: &str, message: impl Into<String>) -> Diagnostic {
+pub(crate) fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("collection")
 }
 
@@ -129,6 +129,39 @@ pub enum CollectionCommand {
         scope: CollectionScope,
         sample_limit: Option<usize>,
     },
+    /// Retained planning task (H5, plan section 22.8): registers a
+    /// cancellable generation of the submitted document snapshot for the
+    /// scope, answered by `TaskStatus` with a service-owned plan handle.
+    /// Needs the retained runtime; the stateless entry refuses it.
+    Generate { job: Value, scope: CollectionScope },
+    /// State of one retained task; a succeeded generation carries its plan
+    /// handle, a succeeded preparation its bundle handle.
+    TaskStatus { task_id: String },
+    /// Cancel one retained task. A completion arriving afterwards is
+    /// discarded and can never issue a handle.
+    CancelTask { task_id: String },
+    /// One bounded page of a retained plan's ordered motions. Never replans:
+    /// the page is read from the retained generated execution.
+    ReadMotions { plan_handle: String, offset: usize },
+    /// The bounded plan inspection of a retained plan.
+    ReadInspection { plan_handle: String },
+    /// Register a preparation task for one retained plan: the submitted
+    /// current document supplies the applied machine configuration and must
+    /// still match the plan's machining identity for the plan's scope; the
+    /// output scope is the plan's scope and can never exceed it.
+    PrepareOutput {
+        plan_handle: String,
+        job: Value,
+        layout: OutputLayout,
+    },
+    /// A finished preparation's bundle handle, report and ordered manifest.
+    PreparedOutput { task_id: String },
+    /// The exact checked bytes of one file of a retained bundle — identical
+    /// on every read, including retries after a failed save.
+    ReadPreparedBytes {
+        bundle_handle: String,
+        filename: String,
+    },
     /// Advertised kinds, features and limits.
     Capabilities,
 }
@@ -146,7 +179,7 @@ pub enum CollectionScope {
 }
 
 impl CollectionScope {
-    fn readiness(&self) -> ReadinessScope {
+    pub(crate) fn readiness(&self) -> ReadinessScope {
         match self {
             Self::AllEnabled => ReadinessScope::AllEnabled,
             Self::ThroughOperation { operation_id } => ReadinessScope::ThroughOperation {
@@ -166,7 +199,7 @@ pub fn fingerprint(job: &CamJobV5) -> String {
     format!("{:x}", hash.finalize())
 }
 
-fn parse_job(value: &Value) -> Result<CamJobV5> {
+pub(crate) fn parse_job(value: &Value) -> Result<CamJobV5> {
     let raw = value.to_string();
     if raw.len() > crate::document::JOB_BYTES {
         return Err(error("JOB_RESOURCE_LIMIT", "job exceeds 64 MB"));
@@ -276,7 +309,10 @@ fn command_projection(
     }))
 }
 
-fn plan_summary(plan: &OperationPlanV5, checks: &cam_core::checks::BasicCheckReport) -> Value {
+pub(crate) fn plan_summary(
+    plan: &OperationPlanV5,
+    checks: &cam_core::checks::BasicCheckReport,
+) -> Value {
     json!({
         "engineVersion": ENGINE_VERSION,
         "machiningIdentity": plan.machining_identity,
@@ -317,7 +353,7 @@ fn plan_summary(plan: &OperationPlanV5, checks: &cam_core::checks::BasicCheckRep
     })
 }
 
-fn motion_page(plan: &OperationPlanV5, offset: usize) -> Result<Value> {
+pub(crate) fn motion_page(plan: &OperationPlanV5, offset: usize) -> Result<Value> {
     if offset > plan.motions.len() {
         return Err(error(
             "COLLECTION_MOTION_OFFSET",
@@ -336,7 +372,7 @@ fn motion_page(plan: &OperationPlanV5, offset: usize) -> Result<Value> {
     }))
 }
 
-fn inspect_plan_value(plan: &OperationPlanV5) -> Result<PlanInspection> {
+pub(crate) fn inspect_plan_value(plan: &OperationPlanV5) -> Result<PlanInspection> {
     inspection::inspect_plan(plan)
 }
 
@@ -361,8 +397,11 @@ fn open(raw: &str) -> Result<Value> {
     document_projection(&job, migrated)
 }
 
-/// Execute one ui-9 command. Planning recomputes from the submitted document
-/// on every call; retained-plan task leases arrive with the H5 output slice.
+/// Execute one stateless ui-9 command. Planning recomputes from the
+/// submitted document on every call; the retained-artifact commands (H5)
+/// own service-side state and are refused here — route them through
+/// [`crate::retained::Retained::execute`], which delegates every stateless
+/// command back to this function unchanged.
 pub fn execute(command: CollectionCommand) -> Result<Value> {
     match command {
         CollectionCommand::Open { json } => open(&json),
@@ -540,6 +579,7 @@ pub fn execute(command: CollectionCommand) -> Result<Value> {
             "engineVersion": ENGINE_VERSION,
             "operationKinds": ["flat_vcarve", "face", "profile", "drag_knife"],
             "planScopes": ["all_enabled", "through_operation"],
+            "outputLayouts": ["one_program", "sequential_files"],
             "features": {
                 "artworkCollection": true,
                 "cuttingProfiles": true,
@@ -551,13 +591,33 @@ pub fn execute(command: CollectionCommand) -> Result<Value> {
                 "knifeContactChecks": true,
                 "legacyJobMigration": true,
                 "motionPaging": true,
+                "retainedExecution": true,
+                "retainedPaging": true,
+                "preparedBundles": true,
+                "sequentialFiles": true,
+                "exactByteRetry": true,
             },
             "limits": {
                 "pageMotions": crate::task::PAGE_MOTIONS,
                 "jobBytes": crate::document::JOB_BYTES,
                 "libraryBytes": tool_library::MAX_LIBRARY_BYTES,
+                "programBytes": crate::export::PROGRAM_BYTES,
+                "retainedPlans": crate::retained::RETAINED_PLANS,
+                "retainedBundles": crate::retained::RETAINED_BUNDLES,
+                "retainedTasks": crate::retained::RETAINED_TASKS,
             },
         })),
+        CollectionCommand::Generate { .. }
+        | CollectionCommand::TaskStatus { .. }
+        | CollectionCommand::CancelTask { .. }
+        | CollectionCommand::ReadMotions { .. }
+        | CollectionCommand::ReadInspection { .. }
+        | CollectionCommand::PrepareOutput { .. }
+        | CollectionCommand::PreparedOutput { .. }
+        | CollectionCommand::ReadPreparedBytes { .. } => Err(error(
+            "RETAINED_STATE_REQUIRED",
+            "retained-artifact commands need the retained runtime; route them through the stateful entry",
+        )),
     }
 }
 

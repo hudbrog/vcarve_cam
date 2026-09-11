@@ -635,3 +635,188 @@ async fn collection_route_migrates_serves_inspection_and_rejects_foreign_version
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(value["error"]["code"], "TASK_INSTANCE");
 }
+
+/// H5 retained tasks over the collection route: Generate answers pending
+/// and is driven on a worker the request never waits for; TaskStatus polls
+/// to completion; paging and exact-byte reads serve from the retained
+/// runtime while the engine stays free for the next request.
+#[tokio::test]
+async fn collection_route_drives_retained_tasks_to_prepared_bytes() {
+    let app = cam_server::router(4848, Default::default()).unwrap();
+    // The migrated schema-5 document supplies the job and its tool ids.
+    let (status, value) = collection_call(
+        &app,
+        "ui-9",
+        json!({"operation":"open","json":M3_RECTANGLE}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let mut job = value["data"]["job"].clone();
+    // The schema-2 fixture predates per-assignment spindle direction; give
+    // every assignment one so preparation has complete process state.
+    fn set_spindle_direction(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                let needs = map.contains_key("tool_id")
+                    && map.get("spindle_direction").is_none_or(Value::is_null);
+                if needs {
+                    map.insert("spindle_direction".into(), json!("clockwise"));
+                }
+                for (_, child) in map.iter_mut() {
+                    set_spindle_direction(child);
+                }
+            }
+            Value::Array(items) => {
+                for item in items.iter_mut() {
+                    set_spindle_direction(item);
+                }
+            }
+            _ => {}
+        }
+    }
+    set_spindle_direction(&mut job);
+    // The job's own tools name the mapping rows the configuration needs.
+    let tools = job["tools"].as_array().unwrap().clone();
+    assert!(!tools.is_empty());
+    let tool_rows: Vec<Value> = tools
+        .iter()
+        .enumerate()
+        .map(|(index, tool)| {
+            json!({"tool_id": tool["id"], "tool_number": 3 + index,
+                "length_offset_number": null})
+        })
+        .collect();
+
+    // Apply the machine configuration through the same transport, then
+    // register a generation for the whole document: accepted, pending, and
+    // driven without this request waiting for it.
+    let (status, value) = collection_call(
+        &app,
+        "ui-9",
+        json!({"operation":"applyMachineConfiguration","job":job,
+            "profile":{
+                "schema_version": 2, "id": "workbench", "work_offset": "G54",
+                "clearance_z_mm": 5.0, "decimal_places": 3,
+                "program_start_position_mm": null,
+                "length_compensation": "macro_managed",
+                "path_control": {"kind": "exact_path"},
+                "tools": tool_rows, "spindle_spinup_seconds": 0.5,
+                "coolant": "off",
+                "m6": {
+                    "reference": "test-contract", "reviewed": true,
+                    "return_position": {"kind": "caller_position"},
+                    "preserves_work_datum": true, "local_offsets_unused": true,
+                    "tool_offsets_z_only": true,
+                },
+            },
+            "configuration_name":"Workbench"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let configured = value["data"]["job"].clone();
+    let (status, value) = collection_call(
+        &app,
+        "ui-9",
+        json!({"operation":"generate","job":configured,
+            "scope":{"kind":"allEnabled"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{value}");
+    assert_eq!(value["data"]["task"]["state"], "pending");
+    let task_id = value["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Poll while the detached worker computes.
+    let mut task = Value::Null;
+    for _ in 0..500 {
+        let (status, value) = collection_call(
+            &app,
+            "ui-9",
+            json!({"operation":"taskStatus","task_id":task_id}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        task = value["data"]["task"].clone();
+        match task["state"].as_str().unwrap() {
+            "succeeded" | "failed" | "cancelled" => break,
+            _ => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+        }
+    }
+    assert_eq!(task["state"], "succeeded", "{task}");
+    let plan_handle = task["planHandle"].as_str().unwrap().to_string();
+
+    // Paging reads the retained generation without replanning.
+    let (status, value) = collection_call(
+        &app,
+        "ui-9",
+        json!({"operation":"readMotions","plan_handle":plan_handle,"offset":0}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value["data"]["motions"]["count"].as_u64().unwrap() > 0);
+    assert_eq!(value["data"]["retained"]["plansRun"], json!(1));
+
+    // Prepare the retained plan for sequential files, poll, and read the
+    // exact bytes twice: identical on retry.
+    let (status, value) = collection_call(
+        &app,
+        "ui-9",
+        json!({"operation":"prepareOutput","plan_handle":plan_handle,
+            "job":configured,"layout":"sequential_files"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{value}");
+    let prepare_id = value["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut prepared_task = Value::Null;
+    for _ in 0..500 {
+        let (status, value) = collection_call(
+            &app,
+            "ui-9",
+            json!({"operation":"taskStatus","task_id":prepare_id}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        prepared_task = value["data"]["task"].clone();
+        match prepared_task["state"].as_str().unwrap() {
+            "succeeded" | "failed" | "cancelled" => break,
+            _ => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+        }
+    }
+    assert_eq!(prepared_task["state"], "succeeded", "{prepared_task}");
+    let bundle_handle = prepared_task["bundleHandle"].as_str().unwrap().to_string();
+    let (status, value) = collection_call(
+        &app,
+        "ui-9",
+        json!({"operation":"preparedOutput","task_id":prepare_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let files = value["data"]["bundle"]["files"].as_array().unwrap().clone();
+    assert!(!files.is_empty());
+    let filename = files[0]["filename"].as_str().unwrap().to_string();
+    let (status, first) = collection_call(
+        &app,
+        "ui-9",
+        json!({"operation":"readPreparedBytes","bundle_handle":bundle_handle,
+            "filename":filename}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let file = first["data"]["file"].clone();
+    // The retry after a failed save returns the identical checked bytes.
+    let (status, retry) = collection_call(
+        &app,
+        "ui-9",
+        json!({"operation":"readPreparedBytes","bundle_handle":bundle_handle,
+            "filename":filename}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(file["gcode"], retry["data"]["file"]["gcode"]);
+    assert_eq!(file["sha256"], files[0]["sha256"]);
+}

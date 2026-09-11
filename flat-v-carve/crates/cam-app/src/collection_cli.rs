@@ -1,8 +1,12 @@
-//! ui-9 collection commands (H4): open/migrate schema-5 documents, resource
-//! commands, the applied machine configuration and scope-aware planning —
-//! all through the shared service projection so CLI and adapters agree.
+//! ui-9 collection commands (H4/H5): open/migrate schema-5 documents,
+//! resource commands, the applied machine configuration, scope-aware
+//! planning — and retained export: one generation, one preparation, the
+//! ordered output files written with their manifest and report — all
+//! through the shared service projection so CLI and adapters agree.
+use cam_core::post::sequence::OutputLayout;
 use cam_core::project::v5::resources::AssignmentRole;
 use cam_service::collection::{CollectionCommand, CollectionScope};
+use cam_service::retained::Retained;
 use std::{
     fs,
     io::Read,
@@ -11,7 +15,7 @@ use std::{
 
 type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-pub const HELP: &str = "Collection (schema-5) operations\n\nUsage:\n  cam collection open <job.json> --output <schema5-job.json>\n      Open any supported job (schema 1-5); older schemas migrate once into the collection model.\n  cam collection inspect <job.json> --output <inspection.json>\n      Read-only inspection: artwork tree, used-by index, assignments, machine readout.\n  cam collection plan <job.json> --output <summary.json> [--through <operation-id>]\n      Plan all enabled collection operations, or the enabled prefix ending at --through.\n  cam collection apply-profile <job.json> --library <library.json> --library-id <id> --operation <operation-id> --role <endmill|vbit|milling|knife> --tool <library-tool-id> --preset <preset-id> --output <schema5-job.json>\n      Copy one named cutting profile into exactly one assignment; unset preset fields copy as unset.\n  cam collection reset <job.json> --operation <operation-id> --role <role> --output <schema5-job.json>\n      Restore one assignment's copied baseline without any library file.\n  cam collection reapply <job.json> --library <library.json> --library-id <id> --operation <operation-id> --role <role> --output <schema5-job.json>\n      Reapply the stored provenance from the supplied current library revision.\n  cam collection apply-tool <job.json> --library <library.json> --library-id <id> --operation <operation-id> --role <role> --tool <library-tool-id> --output <schema5-job.json>\n      Bind a library tool's geometry to one assignment with copied provenance.\n  cam collection apply-machine <job.json> --profile <profile.json> --name <configuration-name> --output <schema5-job.json>\n      Copy a reusable configuration into the job's one applied machine snapshot.\n  cam collection set-mapping <job.json> --tool <job-tool-id> [--number <T>] [--length <H>] --output <schema5-job.json>\n      Set one job tool's mapping exactly; giving neither number removes the row.\n  cam collection resolve-profile <job.json> --output <profile.json> [--through <operation-id>]\n      Resolve the applied snapshot into the validated schema-2 profile for a scope.\n  cam collection knife-evidence <job.json> --output <new-directory> [--samples <n>] [--through <operation-id>]\n      Export through the applied machine configuration and publish the bounded independent knife-trace report.\n";
+pub const HELP: &str = "Collection (schema-5) operations\n\nUsage:\n  cam collection open <job.json> --output <schema5-job.json>\n      Open any supported job (schema 1-5); older schemas migrate once into the collection model.\n  cam collection inspect <job.json> --output <inspection.json>\n      Read-only inspection: artwork tree, used-by index, assignments, machine readout.\n  cam collection plan <job.json> --output <summary.json> [--through <operation-id>]\n      Plan all enabled collection operations, or the enabled prefix ending at --through.\n  cam collection apply-profile <job.json> --library <library.json> --library-id <id> --operation <operation-id> --role <endmill|vbit|milling|knife> --tool <library-tool-id> --preset <preset-id> --output <schema5-job.json>\n      Copy one named cutting profile into exactly one assignment; unset preset fields copy as unset.\n  cam collection reset <job.json> --operation <operation-id> --role <role> --output <schema5-job.json>\n      Restore one assignment's copied baseline without any library file.\n  cam collection reapply <job.json> --library <library.json> --library-id <id> --operation <operation-id> --role <role> --output <schema5-job.json>\n      Reapply the stored provenance from the supplied current library revision.\n  cam collection apply-tool <job.json> --library <library.json> --library-id <id> --operation <operation-id> --role <role> --tool <library-tool-id> --output <schema5-job.json>\n      Bind a library tool's geometry to one assignment with copied provenance.\n  cam collection apply-machine <job.json> --profile <profile.json> --name <configuration-name> --output <schema5-job.json>\n      Copy a reusable configuration into the job's one applied machine snapshot.\n  cam collection set-mapping <job.json> --tool <job-tool-id> [--number <T>] [--length <H>] --output <schema5-job.json>\n      Set one job tool's mapping exactly; giving neither number removes the row.\n  cam collection resolve-profile <job.json> --output <profile.json> [--through <operation-id>]\n      Resolve the applied snapshot into the validated schema-2 profile for a scope.\n  cam collection knife-evidence <job.json> --output <new-directory> [--samples <n>] [--through <operation-id>]\n      Export through the applied machine configuration and publish the bounded independent knife-trace report.\n  cam collection export <job.json> --output <new-directory> [--through <operation-id>] [--layout one|sequential]\n      Retained export: plan once, prepare the ordered output and write every checked file with its manifest and report (default layout: sequential files; --layout one writes the single sequence.ngc).\n";
 
 fn read(path: &Path, limit: usize) -> AppResult<String> {
     let file = fs::File::open(path)?;
@@ -70,6 +74,7 @@ pub fn run(args: Vec<String>) -> AppResult<bool> {
             | "set-mapping"
             | "resolve-profile"
             | "knife-evidence"
+            | "export"
     ) {
         return Err(format!("unknown collection command {command:?}").into());
     }
@@ -87,6 +92,7 @@ pub fn run(args: Vec<String>) -> AppResult<bool> {
     let mut number: Option<u32> = None;
     let mut length: Option<u32> = None;
     let mut samples: Option<usize> = None;
+    let mut layout: Option<String> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" | "-h" => {
@@ -107,10 +113,13 @@ pub fn run(args: Vec<String>) -> AppResult<bool> {
                 if through.is_none()
                     && matches!(
                         command.as_str(),
-                        "plan" | "resolve-profile" | "knife-evidence"
+                        "plan" | "resolve-profile" | "knife-evidence" | "export"
                     ) =>
             {
                 through = Some(args.next().ok_or("--through requires an operation ID")?)
+            }
+            "--layout" if layout.is_none() && command == "export" => {
+                layout = Some(args.next().ok_or("--layout requires one or sequential")?)
             }
             "--library"
                 if library.is_none()
@@ -404,6 +413,89 @@ pub fn run(args: Vec<String>) -> AppResult<bool> {
                     .map(Vec::len)
                     .unwrap_or(0),
                 result["report"]["programSha256"].as_str().unwrap_or("?"),
+            );
+            Ok(true)
+        }
+        "export" => {
+            let output = output.ok_or("'collection export' requires --output (a directory)")?;
+            let layout = match layout.as_deref() {
+                None | Some("sequential") => OutputLayout::SequentialFiles,
+                Some("one") => OutputLayout::OneProgram,
+                Some(other) => {
+                    return Err(
+                        format!("unknown layout {other:?}; expected one or sequential").into(),
+                    );
+                }
+            };
+            let job = load_job_value(&input)?;
+            // One retained generation, one preparation: every written file
+            // comes from the bundle's exact checked bytes.
+            let mut runtime = Retained::new();
+            let generated = runtime.execute_driven(CollectionCommand::Generate {
+                job: job.clone(),
+                scope: scope(through),
+            })?;
+            let task = &generated["task"];
+            if task["state"].as_str() != Some("succeeded") {
+                return Err(format!(
+                    "planning failed: {}",
+                    task["diagnostic"]["message"]
+                        .as_str()
+                        .unwrap_or("no diagnostic")
+                )
+                .into());
+            }
+            let plan_handle = task["planHandle"].as_str().unwrap().to_string();
+            let prepared = runtime.execute_driven(CollectionCommand::PrepareOutput {
+                plan_handle,
+                job,
+                layout,
+            })?;
+            let task = &prepared["task"];
+            if task["state"].as_str() != Some("succeeded") {
+                return Err(format!(
+                    "preparation failed: {}",
+                    task["diagnostic"]["message"]
+                        .as_str()
+                        .unwrap_or("no diagnostic")
+                )
+                .into());
+            }
+            let prepare_task = task["taskId"].as_str().unwrap().to_string();
+            let bundle = runtime.execute(CollectionCommand::PreparedOutput {
+                task_id: prepare_task,
+            })?["bundle"]
+                .clone();
+            let bundle_handle = bundle["bundleHandle"].as_str().unwrap().to_string();
+            fs::create_dir_all(&output)?;
+            let files = bundle["files"].as_array().cloned().unwrap_or_default();
+            for file in &files {
+                let filename = file["filename"].as_str().unwrap();
+                let bytes = runtime.execute(CollectionCommand::ReadPreparedBytes {
+                    bundle_handle: bundle_handle.clone(),
+                    filename: filename.to_string(),
+                })?["file"]["gcode"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                write(&output.join(filename), &bytes)?;
+            }
+            write(
+                &output.join("manifest.json"),
+                &(serde_json::to_string_pretty(&bundle["manifest"])? + "\n"),
+            )?;
+            write(
+                &output.join("report.json"),
+                &(serde_json::to_string_pretty(&bundle["report"])? + "\n"),
+            )?;
+            eprintln!(
+                "exported {} file(s) to {} (layout: {}, execution sha256 {})",
+                files.len(),
+                output.display(),
+                bundle["layout"].as_str().unwrap_or("?"),
+                bundle["manifest"]["executionFingerprint"]
+                    .as_str()
+                    .unwrap_or("?"),
             );
             Ok(true)
         }

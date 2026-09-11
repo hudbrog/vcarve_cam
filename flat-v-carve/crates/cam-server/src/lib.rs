@@ -26,7 +26,7 @@ use std::{
     fs,
     io::{self, Read},
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::sync::Semaphore;
@@ -146,6 +146,10 @@ struct AppState {
     requests: Arc<Semaphore>,
     planning: Arc<planning::Planning>,
     library: Option<library::Library>,
+    /// The ui-9 retained runtime (H5): service-owned plans, bundles and
+    /// task records. Every critical section is memory-bound — planning and
+    /// export compute happens outside the lock after `claim`.
+    retained: Arc<Mutex<cam_service::retained::Retained>>,
 }
 pub fn router(port: u16, assets: Assets) -> io::Result<Router> {
     router_with_planning(port, assets, planning::Planning::new()?)
@@ -175,6 +179,7 @@ pub fn router_with_library(
         requests: Arc::new(Semaphore::new(8)),
         planning,
         library: directory.map(library::Library::new),
+        retained: Arc::new(Mutex::new(cam_service::retained::Retained::new())),
     };
     Ok(Router::new()
         .route("/api/v1/session", get(session))
@@ -755,9 +760,13 @@ async fn sequence_request(
     }
 }
 
-/// ui-9 collection operations on schema-5 CamJobV5 documents (H4): open and
-/// migrate, cutting-profile and machine-configuration commands, scope-aware
-/// planning and read-only inspection. Same admission rules as ui-8.
+/// ui-9 collection operations on schema-5 CamJobV5 documents (H4/H5): open
+/// and migrate, cutting-profile and machine-configuration commands,
+/// scope-aware planning and read-only inspection — plus the retained
+/// commands (H5) served from the service-owned runtime: cancellable
+/// Generate/PrepareOutput tasks answered pending and driven on a worker,
+/// with status, cancellation, paging and exact-byte reads answered while
+/// the engine computes. Same admission rules as ui-8.
 async fn collection_request(
     State(state): State<AppState>,
     body: Result<Json<cam_service::collection::CollectionRequest>, JsonRejection>,
@@ -780,6 +789,15 @@ async fn collection_request(
         );
     }
     let (request_id, revision) = (request.request_id.clone(), request.revision);
+    if cam_service::retained::Retained::starts_task(&request.command) {
+        return collection_register_task(state, request.command, request_id, revision).await;
+    }
+    if cam_service::retained::Retained::is_retained(&request.command) {
+        // Status, cancellation, paging and byte reads answer while the
+        // engine computes: no worker permit, memory-bound lock sections.
+        let result = lock_retained(&state.retained).execute(request.command);
+        return collection_envelope(request_id, revision, result);
+    }
     let permit = match state.workers.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
@@ -795,6 +813,32 @@ async fn collection_request(
         cam_service::collection::execute(request.command)
     })
     .await;
+    collection_envelope_response(request_id, revision, result)
+}
+
+/// Lock the retained runtime; registration and delivery only move memory,
+/// so poisoning (which cannot happen in these sections) still recovers.
+fn lock_retained(
+    runtime: &Arc<Mutex<cam_service::retained::Retained>>,
+) -> std::sync::MutexGuard<'_, cam_service::retained::Retained> {
+    runtime
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn collection_envelope(
+    request_id: String,
+    revision: u64,
+    data: cam_core::geometry::Result<Value>,
+) -> Response {
+    collection_envelope_response(request_id, revision, Ok(data))
+}
+
+fn collection_envelope_response(
+    request_id: String,
+    revision: u64,
+    result: Result<cam_core::geometry::Result<Value>, tokio::task::JoinError>,
+) -> Response {
     let mut envelope = json!({
         "apiVersion": cam_service::collection::COLLECTION_API_VERSION,
         "engineVersion": ENGINE_VERSION,
@@ -816,6 +860,80 @@ async fn collection_request(
             "The engine could not finish this request. Your draft is unchanged.",
         ),
     }
+}
+
+/// Register a retained Generate/PrepareOutput task: reply with its pending
+/// snapshot immediately, then drive it to completion on a worker the
+/// caller no longer waits for. A CancelTask arriving in between wins over
+/// the eventual completion by the runtime's own contract.
+async fn collection_register_task(
+    state: AppState,
+    command: cam_service::collection::CollectionCommand,
+    request_id: String,
+    revision: u64,
+) -> Response {
+    let Ok(permit) = state.workers.clone().try_acquire_owned() else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "SERVICE_BUSY",
+            "The engine is inspecting other requests. Retry shortly.",
+        );
+    };
+    let runtime = state.retained.clone();
+    let registered = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        lock_retained(&runtime).execute(command)
+    })
+    .await;
+    let data = match registered {
+        Ok(registration) => registration,
+        Err(_) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ENGINE_FAILURE",
+                "The engine could not accept this task. Retry with the same request.",
+            );
+        }
+    };
+    if data.is_err() {
+        // Registration itself was refused (unparseable document, full
+        // ledger): a located diagnostic, never a phantom task.
+        return collection_envelope(request_id, revision, data);
+    }
+    let data = data.expect("registration succeeded");
+    let task_id = data["task"]["taskId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let runtime = state.retained.clone();
+    let workers = state.workers.clone();
+    tokio::task::spawn(async move {
+        // The queue of engine work stays bounded: the driver waits for a
+        // worker slot, claims under the lock, computes on the blocking pool
+        // outside it, and delivers the outcome back under it.
+        let Ok(permit) = workers.clone().acquire_owned().await else {
+            return;
+        };
+        let claimed = lock_retained(&runtime).claim(&task_id);
+        if let Ok(Some(claimed)) = claimed {
+            let outcome = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                cam_service::retained::compute(claimed)
+            })
+            .await;
+            if let Ok(outcome) = outcome {
+                lock_retained(&runtime).complete(&task_id, outcome);
+            }
+        }
+    });
+    let mut envelope = json!({
+        "apiVersion": cam_service::collection::COLLECTION_API_VERSION,
+        "engineVersion": ENGINE_VERSION,
+        "requestId": request_id,
+        "revision": revision,
+    });
+    envelope["data"] = data;
+    (StatusCode::ACCEPTED, Json(envelope)).into_response()
 }
 
 async fn asset(State(state): State<AppState>, request: Request) -> Response {

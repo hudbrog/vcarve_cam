@@ -494,3 +494,156 @@ fn collection_commands_round_trip_through_the_worker_envelope() {
         json!(true)
     );
 }
+
+/// H5 retained commands through the worker: a Generate registers and runs
+/// inline to a terminal snapshot with its plan handle; paging reads the
+/// retained generation without replanning; preparation and exact-byte
+/// reads reuse it — all inside the single-threaded worker, with the same
+/// envelope the HTTP route serves.
+#[test]
+fn retained_collection_tasks_round_trip_inline() {
+    let legacy = include_str!("../../../fixtures/m3/rectangle.json");
+    let open = json!({
+        "apiVersion": "ui-9", "requestId": "ret-1", "revision": 1,
+        "command": {"operation": "open", "json": legacy}
+    });
+    let reply = parse(&super::collection(&open.to_string(), &instance()));
+    let mut job = reply["ok"]["data"]["job"].clone();
+    // The schema-2 fixture predates per-assignment spindle direction.
+    fn set_spindle_direction(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                let needs = map.contains_key("tool_id")
+                    && map.get("spindle_direction").is_none_or(Value::is_null);
+                if needs {
+                    map.insert("spindle_direction".into(), json!("clockwise"));
+                }
+                for (_, child) in map.iter_mut() {
+                    set_spindle_direction(child);
+                }
+            }
+            Value::Array(items) => {
+                for item in items.iter_mut() {
+                    set_spindle_direction(item);
+                }
+            }
+            _ => {}
+        }
+    }
+    set_spindle_direction(&mut job);
+    let tool_rows: Vec<Value> = job["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(index, tool)| {
+            json!({"tool_id": tool["id"], "tool_number": 3 + index,
+                "length_offset_number": null})
+        })
+        .collect();
+    let configured = json!({
+        "apiVersion": "ui-9", "requestId": "ret-2", "revision": 2,
+        "command": {"operation": "applyMachineConfiguration", "job": job,
+            "profile": {
+                "schema_version": 2, "id": "workbench", "work_offset": "G54",
+                "clearance_z_mm": 5.0, "decimal_places": 3,
+                "program_start_position_mm": null,
+                "length_compensation": "macro_managed",
+                "path_control": {"kind": "exact_path"},
+                "tools": tool_rows, "spindle_spinup_seconds": 0.5,
+                "coolant": "off",
+                "m6": {
+                    "reference": "test-contract", "reviewed": true,
+                    "return_position": {"kind": "caller_position"},
+                    "preserves_work_datum": true, "local_offsets_unused": true,
+                    "tool_offsets_z_only": true,
+                },
+            },
+            "configuration_name": "Workbench"}
+    });
+    let reply = parse(&super::collection(&configured.to_string(), &instance()));
+    assert!(reply["ok"]["data"]["job"].is_object(), "{reply}");
+    let job = reply["ok"]["data"]["job"].clone();
+
+    // Generate runs inline: the reply is the terminal snapshot.
+    let generate = json!({
+        "apiVersion": "ui-9", "requestId": "ret-3", "revision": 3,
+        "command": {"operation": "generate", "job": job,
+            "scope": {"kind": "allEnabled"}}
+    });
+    let reply = parse(&super::collection(&generate.to_string(), &instance()));
+    let task = &reply["ok"]["data"]["task"];
+    assert_eq!(task["state"], json!("succeeded"), "{reply}");
+    let plan_handle = task["planHandle"].as_str().unwrap().to_string();
+
+    // Paging and preparation reuse that one generation.
+    let read = json!({
+        "apiVersion": "ui-9", "requestId": "ret-4", "revision": 4,
+        "command": {"operation": "readMotions", "plan_handle": plan_handle, "offset": 0}
+    });
+    let reply = parse(&super::collection(&read.to_string(), &instance()));
+    assert!(
+        reply["ok"]["data"]["motions"]["count"].as_u64().unwrap() > 0,
+        "{reply}"
+    );
+    assert_eq!(reply["ok"]["data"]["retained"]["plansRun"], json!(1));
+
+    let prepare = json!({
+        "apiVersion": "ui-9", "requestId": "ret-5", "revision": 5,
+        "command": {"operation": "prepareOutput", "plan_handle": plan_handle,
+            "job": job, "layout": "sequential_files"}
+    });
+    let reply = parse(&super::collection(&prepare.to_string(), &instance()));
+    let task = &reply["ok"]["data"]["task"];
+    assert_eq!(task["state"], json!("succeeded"), "{reply}");
+    let bundle_handle = task["bundleHandle"].as_str().unwrap().to_string();
+
+    let prepared = json!({
+        "apiVersion": "ui-9", "requestId": "ret-6", "revision": 6,
+        "command": {"operation": "preparedOutput", "task_id": task["taskId"]}
+    });
+    let reply = parse(&super::collection(&prepared.to_string(), &instance()));
+    let files = reply["ok"]["data"]["bundle"]["files"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(!files.is_empty());
+    let filename = files[0]["filename"].as_str().unwrap().to_string();
+
+    // Exact bytes, twice: a retried save after a failure is byte-identical.
+    let read_bytes = json!({
+        "apiVersion": "ui-9", "requestId": "ret-7", "revision": 7,
+        "command": {"operation": "readPreparedBytes", "bundle_handle": bundle_handle,
+            "filename": filename}
+    });
+    let first =
+        parse(&super::collection(&read_bytes.to_string(), &instance()))["ok"]["data"]["file"]
+            .clone();
+    let retry =
+        parse(&super::collection(&read_bytes.to_string(), &instance()))["ok"]["data"]["file"]
+            .clone();
+    assert_eq!(first["gcode"], retry["gcode"]);
+    assert_eq!(first["sha256"], files[0]["sha256"]);
+
+    // Cancellation through the same envelope: a cancelled task never
+    // issues a handle even though this adapter computes inline.
+    let cancel_after_register = json!({
+        "apiVersion": "ui-9", "requestId": "ret-8", "revision": 8,
+        "command": {"operation": "generate", "job": job,
+            "scope": {"kind": "allEnabled"}}
+    });
+    let reply = parse(&super::collection(
+        &cancel_after_register.to_string(),
+        &instance(),
+    ));
+    assert_eq!(reply["ok"]["data"]["task"]["state"], json!("succeeded"));
+    let cancel = json!({
+        "apiVersion": "ui-9", "requestId": "ret-9", "revision": 9,
+        "command": {"operation": "cancelTask",
+            "task_id": reply["ok"]["data"]["task"]["taskId"]}
+    });
+    let reply = parse(&super::collection(&cancel.to_string(), &instance()));
+    // Terminal tasks are final: cancelling a finished generation changes
+    // nothing and the plan handle stays issued.
+    assert_eq!(reply["ok"]["data"]["task"]["state"], json!("succeeded"));
+}

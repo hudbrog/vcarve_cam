@@ -177,6 +177,68 @@ pub struct SequenceExport {
     pub report: SequenceExportReport,
 }
 
+/// Ordered output layout of a prepared execution (plan section 14.5): one
+/// program, or sequential files split at contiguous tool stages so a
+/// recurring tool keeps its execution position instead of being regrouped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum OutputLayout {
+    OneProgram,
+    SequentialFiles,
+}
+
+/// One manifest entry of an export bundle. The manifest describes ordering
+/// and stock prerequisites for humans and supervisors; it is never
+/// authoritative input to the numeric reader (plan section 14.5).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BundleManifestFile {
+    pub order: usize,
+    pub filename: String,
+    pub sha256: String,
+    pub byte_length: usize,
+    pub stage_ids: Vec<String>,
+    pub tool_number: u32,
+    /// This file's global `[first, end)` motion span within the plan.
+    pub motion_range: (usize, usize),
+    /// The files that must run before this one, in order.
+    pub runs_after: Vec<String>,
+    /// The last operation covered by this file's stages: after running it,
+    /// the stock is through this operation (the starting stock of the next
+    /// file in the manifest).
+    pub stock_through_operation: String,
+}
+
+/// Companion manifest of an export bundle: ordered files, per-file exact
+/// byte digests and the stock/ordering prerequisites of each file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SequenceBundleManifest {
+    pub artifact_kind: String,
+    pub schema_version: u32,
+    pub engine_version: String,
+    pub layout: OutputLayout,
+    pub plan_fingerprint: String,
+    pub profile_fingerprint: String,
+    pub process_fingerprint: String,
+    pub execution_fingerprint: String,
+    pub output_decimal_places: usize,
+    pub files: Vec<BundleManifestFile>,
+}
+
+/// A checked export bundle (H5): the exact bytes of every ordered file, the
+/// manifest and the aggregate report. Every file is decoded and compared
+/// independently against the plan; `report.program_sha256` binds the exact
+/// bytes — the single file's digest for [`OutputLayout::OneProgram`], the
+/// digest of the ordered per-file digests otherwise.
+#[derive(Clone, Debug)]
+pub struct SequenceBundle {
+    pub layout: OutputLayout,
+    pub files: Vec<SequenceProgram>,
+    pub manifest: SequenceBundleManifest,
+    pub report: SequenceExportReport,
+}
+
 impl SequenceProfile {
     pub fn from_json(text: &str) -> Result<Self> {
         if text.len() > 64_000 {
@@ -529,6 +591,61 @@ impl PreparedExecution {
         plan: &dyn TrustedSequencePlan,
         profile: &SequenceProfile,
     ) -> Result<SequenceExport> {
+        let bundle = self.export_bundle(plan, profile, OutputLayout::OneProgram)?;
+        let Some(program) = bundle.files.into_iter().next() else {
+            return Err(error("POST_EMPTY", "no executable motions"));
+        };
+        Ok(SequenceExport {
+            program,
+            report: bundle.report,
+        })
+    }
+
+    /// Stage-index groups of [`PreparedStage`]s per file for a layout: one
+    /// group covering everything, or one group per run of contiguous stages
+    /// on the same tool. Adjacent same-tool stages share a file; a recurring
+    /// tool gets its own later file in execution order (plan section 14.5).
+    fn file_groups(&self, layout: OutputLayout) -> Vec<(usize, usize)> {
+        let count = self.stages.len();
+        match layout {
+            OutputLayout::OneProgram => vec![(0, count)],
+            OutputLayout::SequentialFiles => {
+                let mut groups = vec![];
+                let mut start = 0;
+                for index in 1..=count {
+                    let same_tool = index < count
+                        && self.stages[index].stage.tool_id == self.stages[start].stage.tool_id;
+                    if !same_tool {
+                        groups.push((start, index));
+                        start = index;
+                    }
+                }
+                groups
+            }
+        }
+    }
+
+    /// A copy of this preparation restricted to `self.stages[range]`, so a
+    /// bundle file containing only those stages decodes against exactly the
+    /// bridges, length-compensation and tool expectations it contains.
+    fn with_stages(&self, range: std::ops::Range<usize>) -> PreparedExecution {
+        let mut subset = self.clone();
+        subset.stages = self.stages[range].to_vec();
+        subset
+    }
+
+    /// Emit and check every ordered file of a layout (H5): each file
+    /// independently decoded and compared against the plan at its global
+    /// motion offset, the knife replay running over the concatenated
+    /// decoded stream. Precision rises through nine places until formatting
+    /// preserves every motion and the replay stays within budget; a
+    /// required move is never deleted.
+    pub fn export_bundle(
+        &self,
+        plan: &dyn TrustedSequencePlan,
+        profile: &SequenceProfile,
+        layout: OutputLayout,
+    ) -> Result<SequenceBundle> {
         let plan = plan.trusted();
         if plan.motions().is_empty() {
             return Err(error("POST_EMPTY", "no executable motions"));
@@ -547,10 +664,7 @@ impl PreparedExecution {
                 ));
             }
         }
-        // Raise precision through nine places until formatting preserves
-        // every motion segment and the independent replay of the emitted,
-        // rounded knife motions stays within its tip budget (F3b); never
-        // delete a required move.
+        let groups = self.file_groups(layout);
         let has_knife = plan
             .stages()
             .iter()
@@ -558,14 +672,32 @@ impl PreparedExecution {
         let mut places = profile.decimal_places;
         loop {
             let preserved = motions_preserved(plan, places);
-            let (gcode, _bridge_blocks) = self.emit(plan, profile, places)?;
-            let decoded = self.decode_program(plan, places, &gcode)?;
-            compare_with_plan(self, plan, &gcode, &decoded)?;
+            let mut programs = vec![];
+            let mut decoded_stream = DecodedProgram {
+                motions: vec![],
+                bridges: vec![],
+                tool_changes: vec![],
+            };
+            for &(start, end) in &groups {
+                let subset = self.with_stages(start..end);
+                let gcode = self.emit_file(plan, profile, places, start..end)?;
+                let decoded = subset.decode_program(plan, places, &gcode)?;
+                let span = subset_motion_span(&subset);
+                let expected = &plan.motions()[span.0..span.1];
+                compare_motions(&subset, plan, &gcode, &decoded, expected, span.0)?;
+                decoded_stream.motions.extend(decoded.motions);
+                decoded_stream.bridges.extend(decoded.bridges);
+                decoded_stream.tool_changes.extend(decoded.tool_changes);
+                programs.push(SequenceProgram {
+                    filename: bundle_filename(programs.len() + 1, &subset.stages[0], layout),
+                    gcode,
+                });
+            }
             let replay = if has_knife {
                 Some(crate::operations::drag_knife::evidence::replay_emitted(
                     plan,
                     self,
-                    &decoded,
+                    &decoded_stream,
                     crate::operations::drag_knife::evidence::EMITTED_REPLAY_STEP_BUDGET,
                 )?)
             } else {
@@ -575,38 +707,23 @@ impl PreparedExecution {
                 .as_ref()
                 .is_none_or(|replay| replay.outcome.status == ReplayStatus::Within);
             if preserved && replay_ok {
-                let motion_count = decoded.motions.len();
-                let program_sha256 = format!("{:x}", Sha256::digest(gcode.as_bytes()));
-                return Ok(SequenceExport {
-                    program: SequenceProgram {
-                        filename: "sequence.ngc".into(),
-                        gcode,
-                    },
-                    report: SequenceExportReport {
-                        artifact_kind: "sequence_export_report".into(),
-                        schema_version: 1,
-                        engine_version: env!("CARGO_PKG_VERSION").into(),
-                        plan_fingerprint: self.plan_fingerprint.clone(),
-                        profile_fingerprint: self.profile_fingerprint.clone(),
-                        process_fingerprint: self.process_fingerprint.clone(),
-                        output_decimal_places: places,
-                        machine_offset_mm: self.machine_offset_mm,
-                        basic_checks: self.basic_checks.clone(),
-                        program_sha256,
-                        motion_count,
-                        knife_replay: replay.map(|replay| KnifeReplaySummary {
-                            status: match replay.outcome.status {
-                                ReplayStatus::Within => KnifeReplayStatus::Within,
-                                ReplayStatus::Exceeded => KnifeReplayStatus::Exceeded,
-                                ReplayStatus::BudgetExhausted => KnifeReplayStatus::BudgetExhausted,
-                            },
-                            max_tip_deviation_mm: replay.outcome.max_tip_deviation_mm,
-                            max_heading_error_deg: replay.outcome.max_heading_error_deg,
-                            tip_budget_mm: replay.tip_budget_mm,
-                        }),
-                        diagnostics: vec![],
-                    },
-                });
+                return Ok(self.finish_bundle(
+                    plan,
+                    layout,
+                    programs,
+                    &groups,
+                    replay.map(|replay| KnifeReplaySummary {
+                        status: match replay.outcome.status {
+                            ReplayStatus::Within => KnifeReplayStatus::Within,
+                            ReplayStatus::Exceeded => KnifeReplayStatus::Exceeded,
+                            ReplayStatus::BudgetExhausted => KnifeReplayStatus::BudgetExhausted,
+                        },
+                        max_tip_deviation_mm: replay.outcome.max_tip_deviation_mm,
+                        max_heading_error_deg: replay.outcome.max_heading_error_deg,
+                        tip_budget_mm: replay.tip_budget_mm,
+                    }),
+                    places,
+                ));
             }
             if places >= 9 {
                 return Err(if !preserved {
@@ -640,12 +757,99 @@ impl PreparedExecution {
         }
     }
 
-    fn emit(
+    /// Build the manifest and aggregate report of fully checked files.
+    fn finish_bundle(
+        &self,
+        plan: &dyn SequencePlan,
+        layout: OutputLayout,
+        programs: Vec<SequenceProgram>,
+        groups: &[(usize, usize)],
+        knife_replay: Option<KnifeReplaySummary>,
+        places: usize,
+    ) -> SequenceBundle {
+        let mut entries = vec![];
+        let mut previous_names = vec![];
+        for (index, (program, &(start, end))) in programs.iter().zip(groups).enumerate() {
+            let sha256 = format!("{:x}", Sha256::digest(program.gcode.as_bytes()));
+            let stages = &self.stages[start..end];
+            entries.push(BundleManifestFile {
+                order: index + 1,
+                filename: program.filename.clone(),
+                sha256: sha256.clone(),
+                byte_length: program.gcode.len(),
+                stage_ids: stages.iter().map(|s| s.stage.stage_id.clone()).collect(),
+                tool_number: stages[0].tool_number,
+                motion_range: (
+                    stages[0].stage.motion_range.0,
+                    stages[stages.len() - 1].stage.motion_range.1,
+                ),
+                runs_after: previous_names.clone(),
+                stock_through_operation: stages[stages.len() - 1].stage.operation_id.clone(),
+            });
+            previous_names.push(program.filename.clone());
+        }
+        // The aggregate digest binds the exact bytes: a single file is its
+        // own digest (byte-identical behavior with the one-program export);
+        // several files hash their ordered per-file digests.
+        let program_sha256 = match programs.as_slice() {
+            [one] => format!("{:x}", Sha256::digest(one.gcode.as_bytes())),
+            many => {
+                let mut hash = Sha256::new();
+                for program in many {
+                    hash.update(
+                        format!("{:x}", Sha256::digest(program.gcode.as_bytes())).as_bytes(),
+                    );
+                }
+                format!("{:x}", hash.finalize())
+            }
+        };
+        let manifest = SequenceBundleManifest {
+            artifact_kind: "sequence_export_manifest".into(),
+            schema_version: 1,
+            engine_version: env!("CARGO_PKG_VERSION").into(),
+            layout,
+            plan_fingerprint: self.plan_fingerprint.clone(),
+            profile_fingerprint: self.profile_fingerprint.clone(),
+            process_fingerprint: self.process_fingerprint.clone(),
+            execution_fingerprint: plan.execution_fingerprint().to_string(),
+            output_decimal_places: places,
+            files: entries,
+        };
+        let report = SequenceExportReport {
+            artifact_kind: "sequence_export_report".into(),
+            schema_version: 1,
+            engine_version: env!("CARGO_PKG_VERSION").into(),
+            plan_fingerprint: self.plan_fingerprint.clone(),
+            profile_fingerprint: self.profile_fingerprint.clone(),
+            process_fingerprint: self.process_fingerprint.clone(),
+            output_decimal_places: places,
+            machine_offset_mm: self.machine_offset_mm,
+            basic_checks: self.basic_checks.clone(),
+            program_sha256,
+            motion_count: plan.motions().len(),
+            knife_replay,
+            diagnostics: vec![],
+        };
+        SequenceBundle {
+            layout,
+            files: programs,
+            manifest,
+            report,
+        }
+    }
+
+    /// Emit one program file covering `self.stages[range]` (H5): the shared
+    /// preamble and modal establishment, the per-stage tool/process groups in
+    /// order, and the shutdown tail. A sequential bundle file is a complete
+    /// standalone program: its first stage departs from the declared program
+    /// start exactly like the first stage of a one-program export.
+    fn emit_file(
         &self,
         plan: &dyn SequencePlan,
         profile: &SequenceProfile,
         places: usize,
-    ) -> Result<(String, Vec<usize>)> {
+        range: std::ops::Range<usize>,
+    ) -> Result<String> {
         let mut lines =
             vec![
             "(CAM sequence program; basic checks passed; detailed quality analysis is separate)"
@@ -658,12 +862,7 @@ impl PreparedExecution {
         ];
         lines.extend(modal_lines(&profile.work_offset, profile.path_control));
         let mut previous_stage_end = profile.program_start_position_mm;
-        // Per-stage count of machine-owned bridge blocks written after the
-        // M6/modal group; the decoder skips exactly these positioning moves
-        // (like the legacy contract positioning blocks, they are not planned
-        // motions and never authorize anything).
-        let mut bridge_counts: Vec<usize> = vec![];
-        for prepared in &self.stages {
+        for prepared in &self.stages[range] {
             let stage = &prepared.stage;
             lines.push(format!(
                 "(CAM Stage {}; tool {})",
@@ -722,14 +921,12 @@ impl PreparedExecution {
                 self.machine_offset_mm,
                 places,
             );
-            let stage_bridges = bridge_blocks(previous_stage_end, entry);
-            for bridge in &stage_bridges {
+            for bridge in &bridge_blocks(previous_stage_end, entry) {
                 match *bridge {
                     BridgeBlock::ZOnly(z) => lines.push(format!("G0 Z{:.p$}", z, p = places)),
                     BridgeBlock::Full(p) => lines.push(format!("G0 {}", xyz(p, places))),
                 }
             }
-            bridge_counts.push(stage_bridges.len());
             let motions = &plan.motions()[stage.motion_range.0..stage.motion_range.1];
             for motion in motions {
                 let end = machine_position(motion.end, self.machine_offset_mm, places);
@@ -758,7 +955,42 @@ impl PreparedExecution {
                 "an emitted block exceeds the 240-character limit",
             ));
         }
-        Ok((lines.join("\n") + "\n", bridge_counts))
+        Ok(lines.join("\n") + "\n")
+    }
+}
+
+/// Global `[first, end)` motion span of a (subset) preparation's stages.
+fn subset_motion_span(prepared: &PreparedExecution) -> (usize, usize) {
+    (
+        prepared
+            .stages
+            .first()
+            .expect("nonempty preparation")
+            .stage
+            .motion_range
+            .0,
+        prepared
+            .stages
+            .last()
+            .expect("nonempty preparation")
+            .stage
+            .motion_range
+            .1,
+    )
+}
+
+/// Generated filename of a bundle file: order, the role of its first stage
+/// and its tool number (plan section 14.5's `01-face-T1.ngc` family). The
+/// one-program layout keeps the traditional single name.
+fn bundle_filename(order: usize, first: &PreparedStage, layout: OutputLayout) -> String {
+    match layout {
+        OutputLayout::OneProgram => "sequence.ngc".into(),
+        OutputLayout::SequentialFiles => format!(
+            "{:02}-{}-T{}.ngc",
+            order,
+            role_name(first.stage.role).replace('_', "-"),
+            first.tool_number
+        ),
     }
 }
 
@@ -940,6 +1172,25 @@ impl PreparedExecution {
         gcode: &str,
     ) -> Result<DecodedProgram> {
         decode_program(gcode, self, &self.expected_bridges(plan, places))
+    }
+
+    /// Independently verify the exact bytes of one bundle file against the
+    /// plan: the file must contain exactly the prepared stages in
+    /// `stage_span` (global stage indices) and decode back to their slice
+    /// of the ordered motion stream. Used by export itself and by callers
+    /// that re-check retained bytes.
+    pub fn verify_program_span(
+        &self,
+        plan: &dyn TrustedSequencePlan,
+        program: &SequenceProgram,
+        stage_span: (usize, usize),
+    ) -> Result<()> {
+        let plan = plan.trusted();
+        let subset = self.with_stages(stage_span.0..stage_span.1);
+        let decoded = subset.decode_program(plan, self.output_decimal_places, &program.gcode)?;
+        let span = subset_motion_span(&subset);
+        let expected = &plan.motions()[span.0..span.1];
+        compare_motions(&subset, plan, &program.gcode, &decoded, expected, span.0)
     }
 }
 
@@ -1553,19 +1804,36 @@ fn compare_with_plan(
     gcode: &str,
     decoded: &DecodedProgram,
 ) -> Result<()> {
+    compare_motions(prepared, plan, gcode, decoded, plan.motions(), 0)
+}
+
+/// Compare decoded motions with an expected slice of the plan's motions in
+/// order: positions at output precision, interpolation, feed and per-stage
+/// tool ownership. `offset` is the global motion index the decoded stream
+/// starts at, so a sequential bundle file compares against exactly its own
+/// slice of the plan while every check stays identical.
+fn compare_motions(
+    prepared: &PreparedExecution,
+    plan: &dyn SequencePlan,
+    gcode: &str,
+    decoded: &DecodedProgram,
+    expected: &[crate::toolpath::PlannedMotion],
+    offset: usize,
+) -> Result<()> {
     let motions = &decoded.motions;
-    if motions.len() != plan.motions().len() {
+    if motions.len() != expected.len() {
         return Err(error(
             "POST_SEQUENCE_MISMATCH",
             format!(
                 "read back {} motions for {} planned (from {} bytes)",
                 motions.len(),
-                plan.motions().len(),
+                expected.len(),
                 gcode.len()
             ),
         ));
     }
-    for (index, (read, planned)) in motions.iter().zip(plan.motions().iter()).enumerate() {
+    for (index, (read, planned)) in motions.iter().zip(expected.iter()).enumerate() {
+        let global = offset + index;
         let expected_end = machine_position(
             planned.end,
             prepared.machine_offset_mm,
@@ -1575,7 +1843,7 @@ fn compare_with_plan(
             return Err(error(
                 "POST_SEQUENCE_MISMATCH",
                 format!(
-                    "motion {index} readback end {:?} differs from planned {expected_end:?}",
+                    "motion {global} readback end {:?} differs from planned {expected_end:?}",
                     read.end
                 ),
             ));
@@ -1583,7 +1851,7 @@ fn compare_with_plan(
         if read.interpolation != planned.interpolation {
             return Err(error(
                 "POST_SEQUENCE_MISMATCH",
-                format!("motion {index} interpolation differs from the plan"),
+                format!("motion {global} interpolation differs from the plan"),
             ));
         }
         // Feeds are modal words that rapids do not consume; only linear feed
@@ -1591,17 +1859,17 @@ fn compare_with_plan(
         if read.interpolation == Interpolation::LinearFeed && read.feed != planned.feed_mm_min {
             return Err(error(
                 "POST_SEQUENCE_MISMATCH",
-                format!("motion {index} feed differs from the plan"),
+                format!("motion {global} feed differs from the plan"),
             ));
         }
         let stage = plan
             .stages()
             .iter()
-            .find(|s| index >= s.motion_range.0 && index < s.motion_range.1)
+            .find(|s| global >= s.motion_range.0 && global < s.motion_range.1)
             .ok_or_else(|| {
                 error(
                     "POST_SEQUENCE_MISMATCH",
-                    format!("motion {index} outside all stages"),
+                    format!("motion {global} outside all stages"),
                 )
             })?;
         let tool_number = prepared
@@ -1614,7 +1882,7 @@ fn compare_with_plan(
             return Err(error(
                 "POST_SEQUENCE_MISMATCH",
                 format!(
-                    "motion {index} runs with T{} under stage '{}' (T{tool_number})",
+                    "motion {global} runs with T{} under stage '{}' (T{tool_number})",
                     read.tool_number, stage.stage_id
                 ),
             ));

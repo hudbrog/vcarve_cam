@@ -5,6 +5,7 @@ pub mod collection;
 pub mod document;
 pub mod export;
 pub mod inspection;
+pub mod retained;
 pub mod sequence;
 pub mod summary;
 pub mod task;

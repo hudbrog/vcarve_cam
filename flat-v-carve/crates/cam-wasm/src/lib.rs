@@ -161,10 +161,23 @@ pub fn sequence(request_json: &str, instance_id: &str) -> String {
     ))
 }
 
-/// ui-9 collection operations (H4): schema-5 artwork-collection documents,
-/// cutting-profile and machine-configuration commands, scope-aware planning
-/// and read-only inspection. Same envelope and admission rules as the HTTP
-/// collection route.
+thread_local! {
+    /// The ui-9 retained runtime owned by this worker thread (H5): plan
+    /// and bundle handles, and task records, live exactly as long as the
+    /// worker instance. Retained commands run inline to a terminal
+    /// snapshot — this adapter has no worker pool to reply ahead of.
+    static RETAINED: std::cell::RefCell<cam_service::retained::Retained> =
+        std::cell::RefCell::new(cam_service::retained::Retained::new());
+}
+
+/// ui-9 collection operations (H4/H5): schema-5 artwork-collection
+/// documents, cutting-profile and machine-configuration commands,
+/// scope-aware planning and read-only inspection — plus the retained
+/// commands, served from the worker's own runtime: a Generate or
+/// PrepareOutput runs to completion inside the call and answers with its
+/// terminal snapshot; paging, inspection and exact-byte reads reuse that
+/// retained work without replanning. Same envelope and admission rules as
+/// the HTTP collection route.
 #[wasm_bindgen]
 pub fn collection(request_json: &str, instance_id: &str) -> String {
     let request = match serde_json::from_str::<CollectionRequest>(request_json) {
@@ -186,10 +199,16 @@ pub fn collection(request_json: &str, instance_id: &str) -> String {
     ) {
         return admission_error(failure);
     }
+    // Stateless commands pass through `execute_driven` unchanged; retained
+    // task registrations run inline and answer with the terminal snapshot.
+    let data = RETAINED.with(|runtime| {
+        let mut runtime = runtime.borrow_mut();
+        runtime.execute_driven(request.command)
+    });
     ok(collection::envelope(
         &request.request_id,
         request.revision,
-        collection::execute(request.command),
+        data,
     ))
 }
 
