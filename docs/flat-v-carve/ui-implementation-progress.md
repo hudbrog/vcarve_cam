@@ -1,6 +1,6 @@
 # New UI implementation progress
 
-## GUI1 — framework experiment (in progress)
+## GUI1 — framework experiment (**complete**, framework accepted with explicit scope limits)
 
 Starting commit: `046a3340b0f10303514e2309d57c3ebe182c83d3`.
 Pre-existing untracked work: `.zcode/`, left untouched. No AGENTS.md was found.
@@ -41,8 +41,8 @@ the same Rust WASM calculation. The earlier Reconsider-the-stack outcome is
 superseded by the user's explicit removal of browser screen-reader access as a
 requirement (2026-09-11). Retain that observed limitation and comparison evidence;
 no DOM switch or accessibility bridge is required for it. Final GUI1 qualification
-remains pending, with keyboard/focus/input behavior and named controls for tests
-in scope. The user subsequently extended the screen-reader exclusion to native
+is complete inside the accepted scope, with keyboard/focus/input behavior and
+named controls for tests covered on both targets. The user subsequently extended the screen-reader exclusion to native
 targets as well; neither native nor browser screen-reader tours are required.
 
 GUI1a: input hashes, unchanged flower/small references, schema-4 service migration,
@@ -108,16 +108,30 @@ open: the real OS IME tour, real OS drag gesture, real file-dialog
 cancel/confirm, real device loss, a sustained two-minute M frame-time run and the
 non-Chromium browser rows.
 
+GUI1f (acceptance): on 2026-09-11 the user accepted the framework after reviewing
+both builds ("native build — everything works reasonably"), and the two
+browser-only defects found during that review were fixed and covered by a
+real-browser smoke test. The recorded outcome is
+[**Proceed with explicit scope limits**](ui-framework-decision.md#outcome-proceed-with-explicit-scope-limits):
+Windows x86_64 native and desktop Chromium/WebGPU are the qualified envelope,
+and the unexercised rows (Firefox, Linux, Safari/macOS, DX12 runtime), the
+remaining manual input/file tours, real device loss, sustained frame-time and
+browser-total memory are deferred to the slices named in that table.
+
 Technical checks: native and WASM release builds, fmt, warning-free clippy,
-45 passing state/behavior/file/simulation/transport/picking tests and two separately executed layout golden
-comparisons at 1280×800 and 1440×900. Precise commands and limits are in the
+48 passing state/behavior/file/simulation/transport/picking/clock tests, two separately executed layout golden
+comparisons at 1280×800 and 1440×900, and an opt-in real-browser smoke test
+(`node web/smoke-browser.mjs`). Precise commands and limits are in the
 [experiment README](../../flat-v-carve/experiments/gui1/README.md).
 
-Review readiness: **Windows/Vulkan and Chromium/WebGPU experimental prototype
-only**. Complete GUI1 technical qualification: **not achieved**. User review:
-**pending** for prototype acceptance; the native/browser screen-reader scope exclusion
-is explicit user feedback and is applied above. The initial experiment was committed
+Review readiness: **Windows/Vulkan and Chromium/WebGPU prototype accepted inside
+the recorded scope**; the application itself still labels itself experimental.
+Complete GUI1 technical qualification: **achieved** (with the deferred items
+listed above owned by later slices). User review: **accepted 2026-09-11**; the
+native/browser screen-reader scope exclusion is explicit user feedback and is applied above. The initial experiment was committed
 and pushed as `81a9fed`; the simulation continuation was pushed as `11bce97`;
 the files/input continuation was pushed as `b527f7a`; the paging/viewport
-continuation is on branch `codex/gui1-viewport-perf` (not yet pushed).
+continuation, the two fixes it needed (native worker message framing, then the
+wasm clock and canvas-focus defects) and this acceptance record are on branch
+`codex/gui1-viewport-perf` (not yet pushed).
 No backend H status was changed.

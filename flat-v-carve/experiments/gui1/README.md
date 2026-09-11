@@ -1,10 +1,12 @@
 # GUI1 candidate experiment
 
-**Current direction: continue egui/eframe evaluation.** The user removed browser
-screen-reader access, then native screen-reader support, as requirements on
-2026-09-11. Screen readers are outside scope on both targets. Keyboard/focus/IME
-behavior and named controls for framework tests remain required. Final GUI1
-qualification is still pending.
+**GUI1 is complete: the framework is accepted with explicit scope limits.** The
+user accepted it on 2026-09-11 for Windows x86_64 native and desktop
+Chromium/WebGPU; the unexercised platform rows and the deferred manual checks are
+listed in the decision. The user also removed browser, then native,
+screen-reader support as requirements on 2026-09-11, so screen readers are
+outside scope on both targets. Keyboard/focus/IME behavior and named controls for
+framework tests are covered by the native suite and the real-browser smoke test.
 See the [framework decision](../../../docs/flat-v-carve/ui-framework-decision.md).
 This is a runnable, deliberately incomplete risk experiment, not GUI2 or a new preferred application.
 

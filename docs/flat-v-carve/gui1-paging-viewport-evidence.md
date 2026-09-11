@@ -1,10 +1,13 @@
 # GUI1 paging, viewport and measurement continuation — 2026-09-11
 
-This continuation closes the largest GUI1 implementation gap: motion and stock
+This continuation closed the largest GUI1 implementation gap: motion and stock
 data no longer travel as one JSON document, the viewport has selection fill,
 a blade marker and DPI-aware display picking, and S/M/L timing, transfer and
-memory numbers now exist. GUI1 as a whole and every production milestone remain
-pending, and no H slice status changed.
+memory numbers now exist. GUI1 is now complete and the framework is accepted with
+explicit scope limits (see the
+[framework decision](ui-framework-decision.md#outcome-proceed-with-explicit-scope-limits));
+every production milestone from GUI2a onward remains unstarted, and no H slice
+status changed.
 
 Branch: `codex/gui1-viewport-perf` (worktree `D:\proj1\.worktrees\gui1-viewport-perf`),
 based on `a75568f`. All changes are inside `flat-v-carve/experiments/gui1` plus
@@ -248,6 +251,10 @@ decoded `Result<SceneMeta, String>`, so every native reference load failed with
 defined in one place and covered on both sides.
 
 ## Still unverified
+
+These are the checks GUI1 did **not** claim. The framework decision accepts them
+as deferred, each owned by the slice that first needs it, so they do not block
+GUI2a inside the accepted envelope.
 
 - Actual OS IME tour on both targets; the browser probe injects composition
   events, and the native harness injects egui IME events.
