@@ -11,8 +11,9 @@ use cam_core::{
         self, AppliedMachineConfiguration, AppliedProfile, AppliedToolMapping, ArtworkContent,
         ArtworkItemId, CamJobV5, ConfigurationOrigin, CuttingBaseline, GeometryRef,
         GeometryRefKind, LibraryOrigin, MIGRATED_ARTWORK_ITEM_ID, ReadinessScope,
+        artwork::item_catalogue,
         migrate::{migrate_json, migrate_v4},
-        references::{inspect_references, item_catalogue, planning_readiness},
+        references::{inspect_references, planning_readiness},
     },
     project::{
         CAM_JOB_SCHEMA_VERSION, CamJob, ContourAnchor, ContourSide, CutDirection, DragKnifeSpec,

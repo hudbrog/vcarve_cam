@@ -14,8 +14,8 @@
 //! feeds them resolved collection geometry, and this layer only guarantees
 //! that invalid references cannot reach planners.
 use super::{
-    AppliedMachineConfiguration, ArtworkItem, CamJobV5, ContourAnchorV5, GeometryRef,
-    GeometryRefKind, OperationSettingsV5, OperationV5, error,
+    AppliedMachineConfiguration, CamJobV5, ContourAnchorV5, GeometryRef, GeometryRefKind,
+    OperationSettingsV5, OperationV5, error,
 };
 use crate::{
     contours::ContourCatalogue, geometry::Result, operations::LocatedDiagnostic,
@@ -31,30 +31,10 @@ pub enum ReadinessScope {
     ThroughOperation { operation_id: String },
 }
 
-/// Build one item's catalogue by reassembling a temporary frozen-schema-4
-/// import job around the item's snapshot, interpretation and placement. This
-/// keeps the contour/chain ID derivation and fingerprint algorithm in one
-/// authority; H2's per-item catalogue commands grow from this boundary.
-pub fn item_catalogue(item: &ArtworkItem) -> Result<ContourCatalogue> {
-    let snapshot = match &item.content {
-        super::ArtworkContent::Svg(snapshot) => snapshot.clone(),
-    };
-    let job = crate::project::CamJob {
-        schema_version: crate::project::CAM_JOB_SCHEMA_VERSION,
-        name: String::new(),
-        source: Some(snapshot),
-        import: item.import_options(),
-        setup: Default::default(),
-        tools: vec![],
-        operations: vec![],
-        tolerances: Default::default(),
-        legacy_machine_profile: None,
-    };
-    ContourCatalogue::build(&job)
-}
-
 /// One item's resolved state: its current revision and, when its content
 /// imports cleanly, the catalogue local geometry references resolve against.
+/// Derived from the shared [`super::artwork`] resolver so inspection and the
+/// H2 commands always see the same import boundary.
 struct ItemResolution {
     revision: super::SourceRevision,
     catalogue: Option<ContourCatalogue>,
@@ -62,21 +42,17 @@ struct ItemResolution {
 }
 
 fn resolve_items(job: &CamJobV5) -> Result<BTreeMap<String, ItemResolution>> {
+    let combined = super::artwork::inspect_artwork(job)?;
     let mut items = BTreeMap::new();
-    for item in &job.artwork {
-        let resolution = match item_catalogue(item) {
-            Ok(catalogue) => ItemResolution {
-                revision: item.source_revision()?,
-                catalogue: Some(catalogue),
-                import_error: None,
+    for item in combined.items {
+        items.insert(
+            item.id.0.clone(),
+            ItemResolution {
+                revision: item.revision,
+                catalogue: item.catalogue,
+                import_error: item.import_error,
             },
-            Err(e) => ItemResolution {
-                revision: item.source_revision()?,
-                catalogue: None,
-                import_error: Some(e.message),
-            },
-        };
-        items.insert(item.id.0.clone(), resolution);
+        );
     }
     Ok(items)
 }

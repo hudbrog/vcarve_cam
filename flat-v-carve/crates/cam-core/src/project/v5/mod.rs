@@ -30,10 +30,13 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+pub mod artwork;
+pub mod commands;
 pub mod migrate;
 pub mod references;
 
-pub use references::{ReadinessScope, item_catalogue};
+pub use artwork::{CombinedCatalogue, GeometryPick, SetupBounds, inspect_artwork, item_catalogue};
+pub use references::ReadinessScope;
 
 pub const CAM_JOB_V5_SCHEMA_VERSION: u32 = 5;
 
@@ -1152,8 +1155,22 @@ impl CamJobV5 {
 
     pub fn to_json(&self) -> Result<String> {
         self.validate_structure()?;
-        serde_json::to_string_pretty(self)
+        let json = serde_json::to_string_pretty(self)
             .map(|s| s + "\n")
-            .map_err(|e| error("PROJECT_JSON", e.to_string()))
+            .map_err(|e| error("PROJECT_JSON", e.to_string()))?;
+        // The aggregate boundary is what actually protects the job: per-item
+        // content limits alone do not bound the collection (plan section
+        // 22.4). Measuring actual serialized bytes keeps JSON overhead and
+        // every item in the accounting.
+        if json.len() > MAX_JOB_BYTES {
+            return Err(error(
+                "PROJECT_RESOURCE_LIMIT",
+                format!(
+                    "the serialized job exceeds the {} byte document limit",
+                    MAX_JOB_BYTES
+                ),
+            ));
+        }
+        Ok(json)
     }
 }

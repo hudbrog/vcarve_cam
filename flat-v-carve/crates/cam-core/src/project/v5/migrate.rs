@@ -72,7 +72,7 @@ impl ReferenceMaps {
             contours: BTreeMap::new(),
             chains: BTreeMap::new(),
         };
-        let Ok(catalogue) = super::references::item_catalogue(item) else {
+        let Ok(catalogue) = super::artwork::item_catalogue(item) else {
             return Ok(maps);
         };
         let reference = |kind, local: &str| GeometryRef {
