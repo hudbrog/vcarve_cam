@@ -45,15 +45,20 @@ WebGPU is required; WebGL2, Firefox, Linux, and Safari are not qualified.
 5. **Risk probes** offers S/M/L line loads, a compute-child crash, a renderer
    visibility failure/resume, and denied-write injection. Renderer injection is
    not actual device-loss recovery. It retains the document and reports failure.
-6. Save/recover raw draft JSON. Enable denied-write injection to see an explicit
-   error and keep editing; disable it before retry. These are manual portable
-   draft files, not automatic crash recovery or real quota exhaustion.
+6. Save/recover raw draft JSON, or wait for **Recovery saved** after editing.
+   Restart/reload and choose **Restore session** to recover invalid text and the
+   exact job, with derived results recalculated. Native uses `gui1-recovery/`
+   beside the executable; browser uses IndexedDB and an offline asset cache.
+   Enable denied-write injection, attempt Save, disable it, then use **Retry
+   previous save** to retry the retained bytes. Ctrl/Cmd+O opens a job, Ctrl/Cmd+S
+   saves the raw draft, and Ctrl/Cmd+F searches settings.
 7. **Prepare checked small reference** exercises retained core plan/output checks.
    The unchanged contact-line fixture fails `M5_FLOOR_RIDGE`; expect **failed**,
    zero checked programs, and disabled Save checked bytes. No settings are relaxed
    to produce G-code. Save reference job preserves exact input bytes independently
    of the experimental raw fields. Native save success reports its byte hash;
-   browser success says only Download requested. **Prepare checked flower** uses
+   browser direct-save checks readback, while its download fallback reports only
+   Download requested. **Prepare checked flower** uses
    the unchanged real job and `real_data/machine-profile.json`; native M6 checks
    passed and retained `combined.ngc` with 22,883 motions and two tool changes.
 8. Compare the DOM page: two labelled controls, reorder, type partial text while
@@ -71,6 +76,7 @@ cargo test --locked --test interaction dense_layout -- --ignored
 node web/capture.mjs
 node web/compare-simulation.mjs
 node web/compare-wasm-simulation.mjs
+node web/capture-build.mjs
 ```
 
 The ignored image tests are opt-in GPU tests, separately executed locally at
@@ -83,6 +89,14 @@ one flower run, input hashes and five native process cancellation samples.
 Use `--capture <directory> flower export` on the executable to investigate the
 flower output contract separately; its native report is captured in the evidence.
 This establishes software checks, not a new physical machining trial.
+
+Open `/web/platform-probe.html` for real IndexedDB conflict/abort tests and
+explicitly injected browser save-handle tests. See the
+[files/input evidence](../../../docs/flat-v-carve/gui1-files-input-evidence.md)
+for native destination failures, actual dialog/restart and browser offline/drop
+checks. After a manual `wasm-pack build`, run `node web/write-offline-manifest.mjs`
+before serving; `launch.ps1 -Target web` does this automatically. Reload again
+after a new offline worker activates to use its current asset cache.
 
 ## Boundaries and remaining risks
 
@@ -101,8 +115,11 @@ This establishes software checks, not a new physical machining trial.
   browser JSON decode/transfer still require replacement/budget measurements.
 - Source/operation lists are synthetic identity probes, not an artwork collection.
   No machine settings, schema fields, or output eligibility are invented by them.
-- Real file-drop import, automatic recovery, actual quota/write failures, library
-  conflicts, keyboard-only dialogs, IME and native screen-reader behavior are unverified.
+- Session recovery and file-drop adapters are implemented and tested within the
+  bounds documented above. OS drag gestures, physical browser quota/eviction,
+  real browser destination outcomes, shared-library conflicts, OS IME and native
+  screen-reader behavior remain unverified. Local recovery is best effort and
+  can lose edits closed before its debounced write completes.
 - Browser screen-reader access is outside the required scope. Other unfinished
   probes still gate qualification. Next work continues the egui prototype and
   simulator comparison described in the decision.

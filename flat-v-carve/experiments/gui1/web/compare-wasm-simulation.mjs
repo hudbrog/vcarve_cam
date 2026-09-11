@@ -9,7 +9,7 @@ import path from 'node:path';
 const root=fileURLToPath(new URL('..',import.meta.url));
 const wasm=readFileSync(path.join(root,'pkg/cam_gui1_bg.wasm'));
 const gui=await import('../pkg/cam_gui1.js');gui.initSync({module:wasm});
-assert.equal(gui.protocol(),'gui1-spike-2');
+assert.equal(gui.protocol(),'gui1-spike-3');
 const out=path.join(root,'artifacts/simulation');const records=[];
 for(const name of ['small','flower']){
  const begin=performance.now();const result=JSON.parse(gui.compute(JSON.stringify({Reference:{flower:name==='flower',export:false}})));

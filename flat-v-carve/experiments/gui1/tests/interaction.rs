@@ -15,11 +15,13 @@ fn named_field_keeps_raw_text_when_sources_reorder() {
     h.get_by_label("Reverse artwork order").click();
     h.run();
     assert_eq!(h.state().draft.sources, vec![202, 101]);
+    assert!(h.get_by_label("Maximum depth").is_focused());
     h.get_by_label("02  Flat V-carve").click();
     h.run();
     h.get_by_label("01  Flat V-carve").click();
     h.run();
     assert_eq!(h.state().draft.raw[&key], "-");
+    assert!(h.get_by_label("Maximum depth").is_focused());
     assert_eq!(
         h.get_by_label("Maximum depth").value().as_deref(),
         Some("-")

@@ -1,6 +1,9 @@
 pub mod app;
 pub mod compute;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod file_io;
 pub mod platform;
+pub mod recovery;
 pub mod render;
 pub mod sim;
 #[cfg(not(target_arch = "wasm32"))]

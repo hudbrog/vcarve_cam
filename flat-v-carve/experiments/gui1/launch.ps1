@@ -9,6 +9,8 @@ try {
     } else {
         wasm-pack build --target web --release --out-dir pkg --out-name cam_gui1 -- --locked
         if ($LASTEXITCODE -ne 0) { throw 'Browser build failed' }
+        node web/write-offline-manifest.mjs
+        if ($LASTEXITCODE -ne 0) { throw 'Offline manifest failed' }
         Write-Host 'Review: http://127.0.0.1:5181/web/index.html'
         Write-Host 'DOM boundary comparison: http://127.0.0.1:5181/web/dom-probe.html'
         node web/serve.mjs

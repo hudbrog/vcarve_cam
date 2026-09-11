@@ -1,5 +1,6 @@
 /target/
 /pkg/
 /artifacts/
+/web/offline-manifest.js
 **/snapshots/**/*.diff.png
 **/snapshots/**/*.new.png

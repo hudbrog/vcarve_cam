@@ -1,0 +1,51 @@
+<!doctype html><meta charset="utf-8"><title>GUI1 platform qualification</title>
+<style>body{max-width:850px;margin:40px auto;background:#17212b;color:#e9eef4;font:16px system-ui}button{padding:10px}pre{white-space:pre-wrap}li{margin:8px}</style>
+<h1>GUI1 platform qualification</h1><p>Isolated IndexedDB transactions and Rust validation. Save-handle failures below are injected; they are not a real disk/quota qualification.</p>
+<button id="run">Run platform checks</button><ol id="checks"></ol><pre id="status">Ready</pre>
+<script type="module">
+import init,*as gui from '../pkg/cam_gui1.js';
+import {loadRecord,writeRecord} from './recovery-store.js';
+import {saveFile} from './ports.js';
+const status=document.querySelector('#status'),checks=document.querySelector('#checks');
+const assert=(value,message)=>{if(!value)throw new Error(message)};
+document.querySelector('#run').onclick=async()=>{
+ const name=`cam-gui1-probe-${crypto.randomUUID()}`;checks.replaceChildren();status.textContent='Running';
+ const evidence=[];const pass=message=>{evidence.push(message);const li=document.createElement('li');li.textContent=`PASS: ${message}`;checks.append(li);};
+ const originalPicker=globalThis.showSaveFilePicker;
+ try{
+  await init();let event;globalThis.GUI1={...gui,receive_event:text=>{event=JSON.parse(text)}};
+  assert(await loadRecord(name)===null,'New store must be empty');
+  const snapshot={schema:1,draft:{schema:1,sources:[101,202],selected_source:101,operation:1,raw:{'101/1/Maximum depth':'-','101/1/Tool name / IME probe':'工具 · Инструмент'}},job:null};
+  gui.validate_session(JSON.stringify({revision:1,snapshot}));
+  assert(await writeRecord(null,snapshot,name)===1,'Initial revision');
+  assert(JSON.parse(await loadRecord(name)).snapshot.draft.raw['101/1/Maximum depth']==='-','Raw recovery');
+  pass('Real IndexedDB round trip preserves invalid raw text and Unicode');
+  const next=structuredClone(snapshot);next.draft.raw['101/1/Maximum depth']='1.';
+  const writers=await Promise.allSettled([writeRecord(1,next,name),writeRecord(1,snapshot,name)]);
+  assert(writers.filter(r=>r.status==='fulfilled').length===1,'Exactly one writer must win');
+  assert(writers.filter(r=>r.status==='rejected').length===1,'Stale writer must fail');
+  const retained=await loadRecord(name);assert(JSON.parse(retained).revision===2,'Conflict must not write a third revision');
+  pass('Concurrent real transactions reject a stale revision without overwriting');
+  const oversized=structuredClone(snapshot);oversized.job='x'.repeat(9_000_001);
+  await writeRecord(2,oversized,name).then(()=>{throw new Error('Oversized write unexpectedly succeeded')},error=>assert(String(error).includes('9 MB'),'Expected byte admission failure'));
+  assert(await loadRecord(name)===retained,'Aborted transaction must preserve prior record');
+  pass('Byte-limit transaction abort preserves the previous record (not a physical quota test)');
+  const invalid=structuredClone(snapshot);invalid.draft.raw['101/1/unknown']='hidden';
+  let rejected=false;try{gui.validate_session(JSON.stringify({revision:3,snapshot:invalid}))}catch{rejected=true}
+  assert(rejected,'Rust must reject unknown field IDs');
+  pass('Rust validation rejects unsupported recovery field identities');
+  const bytes=new TextEncoder().encode('checked fixture bytes\n');
+  globalThis.showSaveFilePicker=async()=>{throw new DOMException('Injected denied destination','NotAllowedError')};
+  await saveFile(11,'probe.ngc',bytes,false);assert(event.Io.id===11&&event.Io.result.Err,'Failed direct-save event');
+  let written;
+  globalThis.showSaveFilePicker=async()=>({createWritable:async()=>({write:async b=>{written=b.slice()},close:async()=>{},abort:async()=>{}}),getFile:async()=>new Blob([written])});
+  await saveFile(12,'probe.ngc',bytes,false);
+  assert(event.Io.id===12&&event.Io.result.Ok.Saved.includes('SHA256'),'Retried write must confirm readback/hash');
+  assert(written.every((b,i)=>b===bytes[i])&&written.length===bytes.length,'Exact retry payload');
+  pass('Injected save-handle failure and retry retain exact bytes and verify readback');
+  globalThis.GUI1_PLATFORM_EVIDENCE={status:'passed',checks:evidence,userAgent:navigator.userAgent};
+  status.textContent=JSON.stringify(globalThis.GUI1_PLATFORM_EVIDENCE,null,2);
+ }catch(error){status.textContent=`FAILED: ${error.stack??error}`;}
+ finally{globalThis.showSaveFilePicker=originalPicker;indexedDB.deleteDatabase(name);}
+};
+</script>

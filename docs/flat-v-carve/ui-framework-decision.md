@@ -49,6 +49,9 @@ fields do not mutate the reference job, the two source rows are synthetic, and
 stock playback uses a labeled coarse grid and discrete motion checkpoints.
 The [simulation continuation](gui1-simulation-evidence.md) records the tested
 Rust port, full-cell comparisons, bounded GPU stock preview and remaining limits.
+The [files/input continuation](gui1-files-input-evidence.md) records automatic
+recovery, revision conflict protection, retained save retry, native modal focus,
+browser offline restart, and the distinction between real and injected failures.
 
 ## Candidate actually tested
 
@@ -61,10 +64,10 @@ Rust port, full-cell comparisons, bounded GPU stock preview and remaining limits
 | Rust | **1.95.0**, MSVC x86_64; WASM target wasm32-unknown-unknown |
 | Browser bootstrap | wasm-pack **0.15.0**, wasm-bindgen **0.2.128**, futures **0.4.78**, js-sys/web-sys **0.3.105**, Node **24.19.0** |
 | Browser baseline | WebGPU only. Explicit unavailable message if absent; no WebGL2 fallback claim |
-| Native files | rfd **0.16.0** dialogs and file work on background threads |
-| Browser files | Native HTML file picker and Blob download; download requested is not disk-write confirmation |
+| Native files | rfd **0.16.0** dialogs/background file work; atomic sibling replacement; OS-locked session recovery |
+| Browser files | HTML picker, direct-save handle/readback where available, Blob fallback; IndexedDB revision transactions and offline asset cache |
 | Execution | Native child process with kill/wait; browser disposable module Worker; request generation gates results; no shared-memory threads |
-| Protocol | Private `gui1-spike-2`; worker handshake checks version; same WASM module contains compute and UI entry points |
+| Protocol | Private `gui1-spike-3`; worker handshake checks version; same WASM module contains compute and UI entry points |
 | CAM | Existing cam-core/cam-service **0.7.7**, legacy combined planning and retained-receipt checked export; no new machining API |
 
 0.33.3 was a bounded, explicitly pinned API baseline, not a claim to be the latest
@@ -162,7 +165,8 @@ CPU/WASM/JS/GPU peak memory counters remain unknown; vertex bytes are not total 
 
 Executed: `cargo fmt --all -- --check`, native release build, wasm-pack release
 build, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`,
-and the two opt-in GPU image comparisons. Three behavior/state tests pass; two
+and the two opt-in GPU image comparisons. The current experiment has 17 passing
+behavior/state/file/simulation tests; two
 layout goldens pass at 1280×800 and 1440×900. The UI harness finds controls by
 accessible label and asserts draft identity after actual button actions. Its
 negative assertion control is detected. Image baseline generation was followed
@@ -174,15 +178,18 @@ custom viewport correctness was visually smoke-tested, not pixel-qualified.
 The earlier browser screen-reader blocker interrupted the GUI1 checklist before
 completion. With that requirement removed, resume the following open checks:
 
-- Full IME composition and keyboard-only dialog/focus restoration on both targets,
-  plus actual native screen-reader tours. Browser screen-reader tours are out of scope.
+- Actual OS IME tours, browser keyboard-only dialog completion/cancellation, and
+  native screen-reader tours. Native Ctrl+O/Escape focus restoration and harness
+  IME/Tab/reorder focus now pass. Browser screen-reader tours are out of scope.
 - Translucent selected fills, blade glyph, display picking across DPI values.
 - Paged motion/tile transport, arbitrary interactive stock seeks and S/M/L budgets.
   Bounded stock checkpoints, native replay and a stock box now have simulation evidence.
 - Actual device loss/recreation. The control only injects a visibly unavailable renderer
   and resumes the same retained scene; it is not a driver/device-loss test.
-- Real file drop, automatic/offline recovery, real quota/destination failures, revision
-  conflicts and successful failed-save retry of the flower's checked bytes on both targets.
+- OS drag gestures, physical browser quota/eviction and destination outcomes,
+  shared-library revision conflicts, and full browser checked-flower save/retry.
+  Session revision conflicts, actual native failure/retry, automatic recovery,
+  browser offline reopen and synthetic browser drop events now have bounded evidence.
 - Whole-process allocation accounting, sustained performance, all required browser rows,
   installable packaging and full asset/license distribution checks.
 

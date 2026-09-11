@@ -100,6 +100,21 @@ impl Draft {
         {
             return Err("Unsupported recovery identity/schema".into());
         }
+        for (key, text) in &draft.raw {
+            let parts: Vec<_> = key.splitn(3, '/').collect();
+            if parts.len() != 3
+                || !matches!(parts[0], "101" | "202")
+                || parts[1]
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|v| (1..=1000).contains(v))
+                    .is_none()
+                || !FIELDS.contains(&parts[2])
+                || text.chars().count() > 4096
+            {
+                return Err("Unsupported recovery field identity or text limit".into());
+            }
+        }
         Ok(draft)
     }
 }

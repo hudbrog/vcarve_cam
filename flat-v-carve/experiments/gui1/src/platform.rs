@@ -1,3 +1,4 @@
+use crate::recovery::{Snapshot, Stored};
 use crate::{
     compute::{Request, Scene},
     state::Draft,
@@ -5,7 +6,16 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
+pub enum IoValue {
+    Job(String),
+    Draft(Draft),
+    Saved(String),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Event {
+    Notice(String),
+    OfflineStatus(String),
     Computed {
         id: u64,
         elapsed_ms: f64,
@@ -15,16 +25,21 @@ pub enum Event {
         id: u64,
         stop_ms: f64,
     },
-    Opened(Result<String, String>),
-    Recovered(Result<Draft, String>),
-    Saved(Result<String, String>),
+    Io {
+        id: u64,
+        result: Result<IoValue, String>,
+    },
+    RecoveryLoaded(Result<Option<Stored>, String>),
+    RecoverySaved {
+        edit: u64,
+        result: Result<u64, String>,
+    },
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use super::*;
     use std::{
-        io::Read,
         sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -147,7 +162,7 @@ mod native {
             });
             self.workers.push(worker);
         }
-        pub fn open(&self, recovery: bool, ctx: egui::Context) {
+        pub fn open(&self, id: u64, recovery: bool, ctx: egui::Context) {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let value = (|| -> Result<String, String> {
@@ -155,27 +170,18 @@ mod native {
                         .add_filter("JSON", &["json"])
                         .pick_file()
                         .ok_or("Open cancelled")?;
-                    let mut text = String::new();
-                    std::fs::File::open(path)
-                        .map_err(|e| e.to_string())?
-                        .take(8_000_001)
-                        .read_to_string(&mut text)
-                        .map_err(|e| e.to_string())?;
-                    if text.len() > 8_000_000 {
-                        return Err("Input exceeds 8 MB spike limit".into());
-                    }
-                    Ok(text)
+                    crate::file_io::read_text(&path, 8_000_000)
                 })();
-                let event = if recovery {
-                    Event::Recovered(value.and_then(|v| Draft::recover(&v)))
+                let result = if recovery {
+                    value.and_then(|v| Draft::recover(&v)).map(IoValue::Draft)
                 } else {
-                    Event::Opened(value)
+                    value.map(IoValue::Job)
                 };
-                let _ = tx.send(event);
+                let _ = tx.send(Event::Io { id, result });
                 ctx.request_repaint();
             });
         }
-        pub fn save(&self, name: String, bytes: Vec<u8>, deny: bool, ctx: egui::Context) {
+        pub fn save(&self, id: u64, name: String, bytes: Vec<u8>, deny: bool, ctx: egui::Context) {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let result = (|| -> Result<String, String> {
@@ -186,14 +192,61 @@ mod native {
                         .set_file_name(&name)
                         .save_file()
                         .ok_or("Save cancelled; bytes retained")?;
-                    std::fs::write(path, &bytes).map_err(|e| e.to_string())?;
+                    crate::file_io::atomic_write(&path, &bytes)?;
                     Ok(format!(
                         "Saved {} exact bytes; SHA256 {}",
                         bytes.len(),
                         crate::compute::hash(&bytes)
                     ))
                 })();
-                let _ = tx.send(Event::Saved(result));
+                let _ = tx.send(Event::Io {
+                    id,
+                    result: result.map(IoValue::Saved),
+                });
+                ctx.request_repaint();
+            });
+        }
+        pub fn drop_file(&self, id: u64, file: egui::DroppedFile, ctx: egui::Context) {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let result = if let Some(path) = file.path {
+                    crate::file_io::read_text(&path, 8_000_000)
+                } else if let Some(bytes) = file.bytes {
+                    if bytes.len() > 8_000_000 {
+                        Err("Drop exceeds 8 MB".into())
+                    } else {
+                        String::from_utf8(bytes.to_vec()).map_err(|e| e.to_string())
+                    }
+                } else {
+                    Err("Dropped file is unavailable".into())
+                };
+                let _ = tx.send(Event::Io {
+                    id,
+                    result: result.map(IoValue::Job),
+                });
+                ctx.request_repaint();
+            });
+        }
+        pub fn load_recovery(&self, ctx: egui::Context) {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let result = crate::file_io::Store::default_location().and_then(|s| s.load());
+                let _ = tx.send(Event::RecoveryLoaded(result));
+                ctx.request_repaint();
+            });
+        }
+        pub fn save_recovery(
+            &self,
+            edit: u64,
+            expected: Option<u64>,
+            snapshot: Snapshot,
+            ctx: egui::Context,
+        ) {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let result = crate::file_io::Store::default_location()
+                    .and_then(|s| s.save(expected, snapshot));
+                let _ = tx.send(Event::RecoverySaved { edit, result });
                 ctx.request_repaint();
             });
         }
@@ -215,13 +268,15 @@ mod browser {
     extern "C" {
         fn startWorker(id: f64, request: &str);
         fn cancelWorker();
-        fn openFile(recovery: bool);
-        fn saveFile(name: &str, bytes: &[u8], deny: bool);
+        fn openFile(id: f64, recovery: bool);
+        fn saveFile(id: f64, name: &str, bytes: &[u8], deny: bool);
+        fn loadRecovery();
+        fn saveRecovery(edit: f64, expected: &str, snapshot: &str);
     }
     #[wasm_bindgen]
     pub fn receive_event(text: &str) {
         let event = serde_json::from_str(text)
-            .unwrap_or_else(|e| Event::Saved(Err(format!("Invalid platform event: {e}"))));
+            .unwrap_or_else(|e| Event::RecoveryLoaded(Err(format!("Invalid platform event: {e}"))));
         EVENTS.with(|q| q.borrow_mut().push_back(event));
         CONTEXT.with(|c| {
             if let Some(ctx) = c.borrow().as_ref() {
@@ -245,13 +300,47 @@ mod browser {
                 &serde_json::to_string(&request).expect("request serializes"),
             );
         }
-        pub fn open(&self, recovery: bool, ctx: egui::Context) {
+        pub fn open(&self, id: u64, recovery: bool, ctx: egui::Context) {
             CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
-            openFile(recovery);
+            openFile(id as f64, recovery);
         }
-        pub fn save(&self, name: String, bytes: Vec<u8>, deny: bool, ctx: egui::Context) {
+        pub fn save(&self, id: u64, name: String, bytes: Vec<u8>, deny: bool, ctx: egui::Context) {
             CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
-            saveFile(&name, &bytes, deny);
+            saveFile(id as f64, &name, &bytes, deny);
+        }
+        pub fn drop_file(&self, id: u64, file: egui::DroppedFile, ctx: egui::Context) {
+            CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
+            let result = file
+                .bytes
+                .ok_or_else(|| "Dropped file bytes unavailable".into())
+                .and_then(|b| {
+                    if b.len() > 8_000_000 {
+                        return Err("Drop exceeds 8 MB".into());
+                    }
+                    std::str::from_utf8(&b)
+                        .map(str::to_owned)
+                        .map_err(|e| e.to_string())
+                })
+                .map(IoValue::Job);
+            EVENTS.with(|q| q.borrow_mut().push_back(Event::Io { id, result }));
+        }
+        pub fn load_recovery(&self, ctx: egui::Context) {
+            CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
+            loadRecovery();
+        }
+        pub fn save_recovery(
+            &self,
+            edit: u64,
+            expected: Option<u64>,
+            snapshot: Snapshot,
+            ctx: egui::Context,
+        ) {
+            CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
+            saveRecovery(
+                edit as f64,
+                &serde_json::to_string(&expected).unwrap(),
+                &serde_json::to_string(&snapshot).unwrap(),
+            );
         }
     }
 }

@@ -56,11 +56,15 @@ on both targets, with bounded stock removal checkpoints and explicit display
 resolution. No claim of machining edits, picking, or artwork collection support.
 
 GUI1c: same core calculation in disposable native process and browser Worker;
-real native cancellation/typing smoke and five process-stop samples. Portable
-draft/save and injected failures implemented but not comprehensively qualified.
-Browser screen-reader access is an accepted exclusion; IME/native assistive technology, Firefox, device loss,
-actual persistence failure/retry, arbitrary interactive stock seeks and sustained
-S/M/L tests remain open. Full-reference native stock and native/WASM preview
+real native cancellation/typing smoke and five process-stop samples. Automatic
+session recovery, revision conflicts, native atomic save/retry, browser direct-save
+and download adapters, and file-drop paths now have bounded
+[files/input evidence](gui1-files-input-evidence.md). Native real dialog cancellation
+restores field focus; browser offline reload restores raw text. Browser
+screen-reader access is an accepted exclusion; OS IME/native assistive technology,
+Firefox, renderer recovery, real browser quota/destination outcomes,
+arbitrary interactive stock seeks and sustained S/M/L tests remain open.
+Full-reference native stock and native/WASM preview
 comparisons pass; a 20 MiB checkpoint cap bounds the interactive display preset.
 
 GUI1d: decision updated for the user-approved scope; earlier DOM comparison,
@@ -69,7 +73,7 @@ Continue the egui simulation/input/runtime qualification within GUI1 before
 promoting the shell into production.
 
 Technical checks: native and WASM release builds, fmt, warning-free clippy,
-nine passing state/behavior/simulation tests and two separately executed layout golden
+17 passing state/behavior/file/simulation tests and two separately executed layout golden
 comparisons at 1280×800 and 1440×900. Precise commands and limits are in the
 [experiment README](../../flat-v-carve/experiments/gui1/README.md).
 
@@ -77,5 +81,6 @@ Review readiness: **Windows/Vulkan and Chromium/WebGPU experimental prototype
 only**. Complete GUI1 technical qualification: **not achieved**. User review:
 **pending** for prototype acceptance; the browser screen-reader scope exclusion
 is explicit user feedback and is applied above. The initial experiment was committed
-and pushed as `81a9fed`; the simulation continuation is subsequent workspace work.
+and pushed as `81a9fed`; the simulation continuation was pushed as `11bce97`.
+The files/input continuation is subsequent workspace work.
 No backend H status was changed.

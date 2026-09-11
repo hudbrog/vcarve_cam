@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub const PROTOCOL: &str = "gui1-spike-2";
+pub const PROTOCOL: &str = "gui1-spike-3";
 pub const SMALL: &str = include_str!("../../../fixtures/m4/contact-line.json");
 pub const FLOWER: &str = include_str!("../../../../real_data/flower_box-svg.job-real.json");
 pub const PROFILE: &str = include_str!("../../../../real_data/machine-profile.json");

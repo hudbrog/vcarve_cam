@@ -1,0 +1,38 @@
+{
+  "date": "2026-09-11",
+  "protocol": "gui1-spike-3",
+  "captureMethod": "Recorded from native test output and observed native/browser UI; see gui1-files-input-evidence.md for reproduction and limits",
+  "native": {
+    "testsPassed": 17,
+    "separatelyExecutedLayoutComparisonsPassed": 2,
+    "clippyWarnings": 0,
+    "realLockedDestinationPreservedPreviousBytes": true,
+    "checkedFlowerRetrySha256": "c190feced004bb42e67a5da97e1c108b4897a750132a8008551bc1ce05d3997e",
+    "keyboardOpenEscapeRestoredFocus": "Maximum depth",
+    "rawValueAfterDialogAndRestart": "-",
+    "dropAdapterMotions": 37
+  },
+  "browser": {
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+    "platformProbeStatus": "passed",
+    "platformProbeChecks": [
+      "Real IndexedDB round trip preserves invalid raw text and Unicode",
+      "Concurrent real transactions reject a stale revision without overwriting",
+      "Byte-limit transaction abort preserves the previous record (not a physical quota test)",
+      "Rust validation rejects unsupported recovery field identities",
+      "Injected save-handle failure and retry retain exact bytes and verify readback"
+    ],
+    "offlineRawValueRestored": "-",
+    "offlineSavedJobWorkerResult": {"vertices": 82, "motions": 37, "outputPrograms": 0},
+    "networkingRestoredAfterProbe": true,
+    "syntheticMultiFileDropRejected": true,
+    "syntheticSingleFileDropWorkerVertices": 82
+  },
+  "notEstablished": [
+    "Actual OS IME tours or native screen-reader usability",
+    "Physical browser quota exhaustion, eviction or real direct-save disk outcomes",
+    "OS drag gestures on either target",
+    "Shared-library revision conflicts",
+    "Complete GUI1 framework qualification"
+  ]
+}

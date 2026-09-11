@@ -37,3 +37,9 @@ pub fn validate_recovery(text: &str) -> Result<String, JsValue> {
     let draft = crate::state::Draft::recover(text).map_err(|e| JsValue::from_str(&e))?;
     serde_json::to_string(&draft).map_err(|e| JsValue::from_str(&e.to_string()))
 }
+
+#[wasm_bindgen]
+pub fn validate_session(text: &str) -> Result<String, JsValue> {
+    let record = crate::recovery::Stored::decode(text).map_err(|e| JsValue::from_str(&e))?;
+    serde_json::to_string(&record).map_err(|e| JsValue::from_str(&e.to_string()))
+}
