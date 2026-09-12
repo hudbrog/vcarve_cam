@@ -4,6 +4,15 @@ This review covers the closed milling Profile and its tabs, radial finishing
 and start/entry controls. Findings here are software observations; no machine
 is controlled and no surface-quality claim is made.
 
+What is new: a fourth first-release operation that cuts selected closed
+contours on an explicit side, with depth passes, held-in-stock tabs, a radial
+finishing pass and explicit starts, entries and leads. What is limited: the
+limits listed at the end of this recipe. What still works: every earlier
+workflow is unchanged in this build — the Flat V-carve loop with its combined
+endmill/V-bit stages, the artwork collection and placement, the tool library
+and machine configuration, the passive drag knife and facing with ordered
+preparation (GUI2–GUI7).
+
 ## Launch
 
 Native (recommended first):

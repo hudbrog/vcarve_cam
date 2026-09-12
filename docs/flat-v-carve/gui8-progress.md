@@ -380,3 +380,9 @@ document. `App::accept` now adopts them, and
 `app::inspector::profile_ui::tests::a_profile_selection_reply_is_adopted_not_reported_as_unknown`
 pins that path. Failed tasks also report their code and message
 (`HEIGHT_RANGE_INVALID: …`) instead of a raw diagnostic JSON.
+
+Native status for the same slice: the release package builds and every native
+integration test passes, including the real worker process, the canonical
+carving parity test and the eight profile tests. No scripted native window
+interaction was performed for this review; the trained native tour in the
+recipe above is part of the user review.
