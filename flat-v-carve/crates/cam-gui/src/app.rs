@@ -1,6 +1,7 @@
 //! First usable Flat V-carve workspace. Document edits and raw text are
 //! independent of derived executions; every asynchronous completion is bound
 //! to the exact request and edit revision that submitted it.
+use crate::session::{GenerateScope, OperationKind};
 use crate::{
     compute::{Request, SceneMeta},
     platform::{Event, IoValue, Port},
@@ -48,77 +49,112 @@ fn button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
 
 /// The geometry the current operation owns. Every operation keeps its own
 /// explicit selection; artwork never assigns geometry on its own.
-pub fn operation_selection(job: &CamJobV5) -> Vec<cam_core::project::v5::GeometryRef> {
-    if let Some(knife) = crate::knife::settings(job) {
-        return knife.chains.clone();
+pub fn operation_selection(
+    job: &CamJobV5,
+    operation_id: &str,
+) -> Vec<cam_core::project::v5::GeometryRef> {
+    match &crate::session::operation(job, operation_id).map(|op| &op.settings) {
+        Some(OperationSettingsV5::DragKnife(settings)) => settings.chains.clone(),
+        Some(OperationSettingsV5::FlatVcarve(settings)) => settings.components.clone(),
+        Some(OperationSettingsV5::Profile(settings)) => settings
+            .contours
+            .iter()
+            .map(|c| c.geometry.clone())
+            .collect(),
+        _ => vec![],
     }
-    crate::session::carving(job)
-        .map(|settings| settings.components.clone())
-        .unwrap_or_default()
 }
 
 /// Stable field IDs use the same recovery keys as the qualified input binder.
 pub const LIVE_FIELDS: [usize; 10] = [0, 1, 2, 3, 4, 5, 6, 8, 9, 10];
-pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
-    if job.operations.is_empty() {
-        return if field == 6 {
-            job.setup.stock.thickness_mm
-        } else {
-            crate::authoring::value(job, field)
-        };
-    }
-    if crate::knife::settings(job).is_some() {
-        return crate::knife::value(job, field);
-    }
-    let s = engine::settings(job);
-    match field {
-        0 => s.max_depth_mm,
-        1 => s.wall_allowance_mm,
-        2 => s.endmill.cutting_feed_mm_min,
-        3 => s.vbit.cutting_feed_mm_min,
-        4 => s.max_floor_ridge_mm,
-        5 => s.max_detail_residual_mm,
-        6 => job.setup.stock.thickness_mm,
-        8 => s.endmill.max_stepdown_mm,
-        9 => s.endmill.stepover_mm,
-        10 => s.endmill.plunge_feed_mm_min,
-        _ => crate::authoring::value(job, field),
+
+fn kind_name(kind: OperationKind) -> &'static str {
+    match kind {
+        OperationKind::FlatVcarve => "flat_vcarve",
+        OperationKind::Face => "face",
+        OperationKind::Profile => "profile",
+        OperationKind::DragKnife => "drag_knife",
     }
 }
-pub fn set_value(job: &CamJobV5, field: usize, value: Option<f64>) -> Result<CamJobV5, String> {
+/// The value one field shows for one explicit operation. The operation's kind
+/// decides which settings own the field; everything shared (setup, machine,
+/// placement, tool geometry) resolves through the shared authoring layer.
+pub fn value(job: &CamJobV5, operation_id: &str, field: usize) -> Option<f64> {
+    match engine::kind(job, operation_id) {
+        None => crate::authoring::value_in(job, operation_id, field),
+        Some(OperationKind::Face) => crate::face::value(job, operation_id, field),
+        Some(OperationKind::DragKnife) => crate::knife::value_in(job, operation_id, field),
+        Some(OperationKind::FlatVcarve) => {
+            let s = engine::settings_in(job, operation_id)?;
+            match field {
+                0 => s.max_depth_mm,
+                1 => s.wall_allowance_mm,
+                2 => s.endmill.cutting_feed_mm_min,
+                3 => s.vbit.cutting_feed_mm_min,
+                4 => s.max_floor_ridge_mm,
+                5 => s.max_detail_residual_mm,
+                6 => job.setup.stock.thickness_mm,
+                8 => s.endmill.max_stepdown_mm,
+                9 => s.endmill.stepover_mm,
+                10 => s.endmill.plunge_feed_mm_min,
+                _ => crate::authoring::value_in(job, operation_id, field),
+            }
+        }
+        Some(OperationKind::Profile) => crate::authoring::value_in(job, operation_id, field),
+    }
+}
+
+pub fn set_value(
+    job: &CamJobV5,
+    operation_id: &str,
+    field: usize,
+    value: Option<f64>,
+) -> Result<CamJobV5, String> {
     let mut job = job.clone();
     if job.operations.is_empty() {
-        if !crate::authoring::active(&job, field) {
+        if !crate::authoring::active_in(&job, "", field) {
             return Err("Add an operation before editing cutting fields".into());
         }
         if field == 6 {
             job.setup.stock.thickness_mm = value;
         } else {
-            crate::authoring::set(&mut job, field, value)?;
+            crate::authoring::set_in(&mut job, "", field, value)?;
         }
         job.validate_structure().map_err(|e| e.to_string())?;
         return Ok(job);
     }
-    if crate::knife::settings(&job).is_some() {
-        crate::knife::set(&mut job, field, value)?;
-        job.validate_structure().map_err(|e| e.to_string())?;
-        return Ok(job);
-    }
-    let OperationSettingsV5::FlatVcarve(s) = &mut job.operations[0].settings else {
-        return Err("Unsupported operation".into());
-    };
-    match field {
-        0 => s.max_depth_mm = value,
-        1 => s.wall_allowance_mm = value,
-        2 => s.endmill.cutting_feed_mm_min = value,
-        3 => s.vbit.cutting_feed_mm_min = value,
-        4 => s.max_floor_ridge_mm = value,
-        5 => s.max_detail_residual_mm = value,
-        6 => job.setup.stock.thickness_mm = value,
-        8 => s.endmill.max_stepdown_mm = value,
-        9 => s.endmill.stepover_mm = value,
-        10 => s.endmill.plunge_feed_mm_min = value,
-        _ => crate::authoring::set(&mut job, field, value)?,
+    match engine::kind(&job, operation_id) {
+        Some(OperationKind::Face) => crate::face::set(&mut job, operation_id, field, value)?,
+        Some(OperationKind::DragKnife) => {
+            crate::knife::set_in(&mut job, operation_id, field, value)?;
+        }
+        Some(OperationKind::FlatVcarve) => {
+            if field == 6 {
+                job.setup.stock.thickness_mm = value;
+            } else if matches!(field, 0 | 1 | 2 | 3 | 4 | 5 | 8 | 9 | 10) {
+                let OperationSettingsV5::FlatVcarve(s) =
+                    &mut engine::operation_mut(&mut job, operation_id)
+                        .ok_or("Unsupported operation")?
+                        .settings
+                else {
+                    return Err("Unsupported operation".into());
+                };
+                match field {
+                    0 => s.max_depth_mm = value,
+                    1 => s.wall_allowance_mm = value,
+                    2 => s.endmill.cutting_feed_mm_min = value,
+                    3 => s.vbit.cutting_feed_mm_min = value,
+                    4 => s.max_floor_ridge_mm = value,
+                    5 => s.max_detail_residual_mm = value,
+                    8 => s.endmill.max_stepdown_mm = value,
+                    9 => s.endmill.stepover_mm = value,
+                    _ => s.endmill.plunge_feed_mm_min = value,
+                }
+            } else {
+                crate::authoring::set_in(&mut job, operation_id, field, value)?;
+            }
+        }
+        _ => crate::authoring::set_in(&mut job, operation_id, field, value)?,
     }
     job.validate_structure().map_err(|e| e.to_string())?;
     Ok(job)
@@ -144,6 +180,30 @@ impl Document {
         }
         self.raw.artwork_item = id.into();
         true
+    }
+    /// The operation this editor session addresses.
+    pub fn active_operation(&self) -> Option<&cam_core::project::v5::OperationV5> {
+        crate::session::operation(&self.job, &self.raw.operation)
+    }
+    pub fn select_operation(&mut self, id: &str) -> bool {
+        if !self.job.operations.iter().any(|op| op.id == id) {
+            return false;
+        }
+        self.raw.operation = id.into();
+        true
+    }
+    /// Keep the operation selection attached to a live operation after edits
+    /// that add, delete or reorder them.
+    pub fn sync_operation(&mut self) {
+        if self.active_operation().is_some() {
+            return;
+        }
+        self.raw.operation = self
+            .job
+            .operations
+            .first()
+            .map(|op| op.id.clone())
+            .unwrap_or_default();
     }
     pub fn sync_artwork(&mut self) {
         if self.active_artwork().is_none() {
@@ -171,7 +231,7 @@ impl Document {
                 _ => p.scale,
             })
         } else {
-            value(&self.job, field)
+            value(&self.job, &self.raw.operation, field)
         }
     }
     pub fn new(job: CamJobV5) -> Self {
@@ -194,6 +254,8 @@ impl Document {
     }
     pub fn edit(&mut self, field: usize, text: String) -> Result<(), String> {
         let group = crate::authoring::group(field);
+        let face_group = crate::face::group(field);
+        let group = if group.is_empty() { face_group } else { group };
         for &member in group {
             let previous = self.text(member);
             self.raw.raw.entry(self.raw.key(member)).or_insert(previous);
@@ -201,7 +263,9 @@ impl Document {
         self.raw.raw.insert(self.raw.key(field), text.clone());
         let number = Draft::parse(&text).map_err(str::to_string)?;
         // Inactive entry fields are an editor draft until the explicit Ramp action.
-        if matches!(field, 14 | 51) && !crate::authoring::active(&self.job, field) {
+        if matches!(field, 14 | 51)
+            && !crate::authoring::active_in(&self.job, &self.raw.operation, field)
+        {
             return Ok(());
         }
         if matches!(field, 26..=29) {
@@ -221,7 +285,7 @@ impl Document {
             candidate.validate_structure().map_err(|e| e.to_string())?;
             self.job = candidate;
         } else if group.is_empty() {
-            self.job = set_value(&self.job, field, number)?;
+            self.job = set_value(&self.job, &self.raw.operation, field, number)?;
         } else {
             let values = group
                 .iter()
@@ -232,7 +296,7 @@ impl Document {
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             let mut candidate = self.job.clone();
-            crate::authoring::set_group(&mut candidate, field, &values)?;
+            crate::authoring::set_group_in(&mut candidate, &self.raw.operation, field, &values)?;
             candidate.validate_structure().map_err(|e| e.to_string())?;
             self.job = candidate;
         }
@@ -241,10 +305,13 @@ impl Document {
     pub fn pending(&self) -> bool {
         let scalar_pending = crate::authoring::FIELDS
             .iter()
-            .filter(|&&f| !matches!(f, 26..=29) && crate::authoring::active(&self.job, f))
+            .filter(|&&f| {
+                !matches!(f, 26..=29)
+                    && crate::authoring::active_in(&self.job, &self.raw.operation, f)
+            })
             .any(|&field| {
                 let text = self.text(field);
-                Draft::parse(&text).ok() != Some(value(&self.job, field))
+                Draft::parse(&text).ok() != Some(value(&self.job, &self.raw.operation, field))
             });
         scalar_pending
             || self.job.artwork.iter().any(|item| {
@@ -291,6 +358,7 @@ pub struct App {
     next: u64,
     active: Option<(u64, u64)>,
     plan: Option<(String, u64)>,
+    plan_scope: Option<GenerateScope>,
     prepared: Option<(Value, u64)>,
     export_dialog: Option<export_ui::ExportDialog>,
     pub status: String,
@@ -306,6 +374,7 @@ pub struct App {
     inspector_tab: usize,
     operation_tab: usize,
     operation_picker: Option<usize>,
+    operation_rename: Option<(String, String)>,
     operation_scroll: [f32; 3],
     operation_ramp_draft: bool,
     preview_dirty: bool,
@@ -359,6 +428,7 @@ impl Default for App {
             next: 0,
             active: None,
             plan: None,
+            plan_scope: None,
             prepared: None,
             export_dialog: None,
             status: "Open a portable Flat V-carve project, or import SVG artwork to start.".into(),
@@ -374,6 +444,7 @@ impl Default for App {
             inspector_tab: 2,
             operation_tab: 0,
             operation_picker: None,
+            operation_rename: None,
             operation_scroll: [0.; 3],
             operation_ramp_draft: false,
             preview_dirty: false,
@@ -410,6 +481,18 @@ impl App {
     fn id(&mut self) -> u64 {
         self.next += 1;
         self.next
+    }
+    /// The selected operation ID (empty when the job has no operations).
+    pub(super) fn operation_id(&self) -> String {
+        self.document
+            .as_ref()
+            .map(|d| d.raw.operation.clone())
+            .unwrap_or_default()
+    }
+    /// The selected operation's kind.
+    pub(super) fn operation_kind(&self) -> Option<OperationKind> {
+        let doc = self.document.as_ref()?;
+        engine::kind(&doc.job, &doc.raw.operation)
     }
     fn changed(&mut self, ctx: &egui::Context) {
         self.revision += 1;
@@ -465,7 +548,109 @@ impl App {
             }
         }
         .into();
-        self.port.start(id, Request::Gui2(command), ctx.clone());
+        self.port
+            .start(id, Request::Gui2(Box::new(command)), ctx.clone());
+    }
+
+    /// Generate the whole enabled list, or the prefix ending at one operation.
+    /// A prefix plan is what the retained service later prepares and exports:
+    /// the GUI never re-plans a subset at export time.
+    pub(super) fn generate(&mut self, scope: GenerateScope, ctx: &egui::Context) {
+        let Some(doc) = &self.document else {
+            self.status = "Open or create a job before generating.".into();
+            return;
+        };
+        if doc.job.operations.is_empty() {
+            self.status = "Add an operation before generating.".into();
+            return;
+        }
+        let job = doc.job.to_json().unwrap();
+        self.submit(Command::Generate { job, scope }, ctx);
+    }
+
+    /// The scope the retained plan was generated for, if one is current.
+    pub(super) fn plan_scope(&self) -> Option<&GenerateScope> {
+        self.plan_scope.as_ref()
+    }
+
+    /// Read-only browser probe of the current document. It publishes the
+    /// ordered operation list plus the selected operation's own settings, and
+    /// never touches machining state.
+    fn job_probe(&self, d: &Document) -> Value {
+        let operations: Vec<Value> = d
+            .job
+            .operations
+            .iter()
+            .map(|operation| {
+                json!({
+                    "id": operation.id,
+                    "name": operation.name,
+                    "enabled": operation.enabled,
+                    "kind": engine::kind(&d.job, &operation.id).map(kind_name),
+                })
+            })
+            .collect();
+        let selected = d.raw.operation.clone();
+        let base = json!({
+            "name": d.job.name,
+            "tools": d.job.tools,
+            "stock": d.job.setup.stock,
+            "machineSnapshot": d.job.machine_configuration,
+            "workZero": d.job.setup.work_zero,
+            "activeArtwork": d.raw.artwork_item,
+            "artworks": d.job.artwork,
+            "operations": operations,
+            "selectedOperation": selected,
+        });
+        let mut probe = match engine::kind(&d.job, &selected) {
+            None => json!({"kind": "empty"}),
+            Some(OperationKind::DragKnife) => json!({
+                "kind": "drag_knife",
+                "knife": crate::knife::settings_in(&d.job, &selected),
+            }),
+            Some(OperationKind::Face) => {
+                let settings = crate::session::face(&d.job, &selected);
+                json!({
+                    "kind": "face",
+                    "face": settings,
+                    "stepdown": settings.and_then(|s| s.stepdown_mm),
+                    "stepover": settings.and_then(|s| s.stepover_mm),
+                    "passAngle": settings.and_then(|s| s.pass_angle_deg),
+                    "topOffset": settings.map(|s| s.top.offset_mm),
+                    "bottomOffset": settings.map(|s| s.bottom.offset_mm),
+                    "rawStepdown": d.text(8),
+                    "rawBottomOffset": d.text(87),
+                    "machine": d.job.machine_configuration.is_some(),
+                })
+            }
+            Some(kind) => {
+                let carving = engine::settings_in(&d.job, &selected);
+                let mut probe = json!({
+                    "depth": carving.and_then(|s| s.max_depth_mm),
+                    "feed": carving.and_then(|s| s.endmill.cutting_feed_mm_min),
+                    "machine": d.job.machine_configuration.is_some(),
+                    "rawDepth": d.text(0),
+                    "rawFeed": d.text(2),
+                    "components": carving.map(|s| s.components.len()).unwrap_or(0),
+                    "mode": carving.map(|s| s.mode),
+                    "placement": d.active_artwork().map(|i| &i.placement),
+                    "assignment": carving.map(|s| &s.components),
+                    "endmillGeometry": crate::authoring::tool_in(&d.job, &selected, false)
+                        .and_then(|t| t.geometry.clone()),
+                    "vbitGeometry": crate::authoring::tool_in(&d.job, &selected, true)
+                        .and_then(|t| t.geometry.clone()),
+                    "profileStatuses": cam_core::project::v5::resources::assignment_statuses(&d.job),
+                });
+                probe["kind"] = json!(kind_name(kind));
+                probe
+            }
+        };
+        if let (Some(target), Some(source)) = (probe.as_object_mut(), base.as_object()) {
+            for (key, value) in source {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+        probe
     }
     fn open(&mut self, kind: IoKind, ctx: &egui::Context) {
         self.resource_import_stamp = matches!(kind, IoKind::LibraryImport | IoKind::MachineImport)
@@ -523,6 +708,7 @@ impl App {
             self.submit(
                 Command::Artwork {
                     job: doc.job.to_json().unwrap(),
+                    operation_id: doc.raw.operation.clone(),
                     action,
                 },
                 ctx,
@@ -597,6 +783,7 @@ impl App {
                 self.export_dialog.as_mut().unwrap().error = Some(self.status.clone());
             }
             self.plan = None;
+            self.plan_scope = None;
             return;
         }
         match reply["kind"].as_str() {
@@ -624,7 +811,7 @@ impl App {
             }
             Some("operation") => match CamJobV5::from_json(&meta.job) {
                 Ok(job) => {
-                    self.adopt_operation(job, ctx);
+                    self.adopt_operation(job, reply["activeOperation"].as_str(), ctx);
                     self.view.load_scene(Ok((meta, payload)));
                 }
                 Err(error) => self.status = error.to_string(),
@@ -767,6 +954,7 @@ impl App {
                     self.operation_ramp_draft = false;
                     self.artwork_rejections.clear();
                     self.plan = None;
+                    self.plan_scope = None;
                 }
                 self.preview_dirty = self.plan.is_some();
                 self.adopt_artwork(reply);
@@ -805,6 +993,9 @@ impl App {
                 self.adopt_artwork(reply);
                 self.preview_dirty = false;
                 if let Some(handle) = reply["handle"].as_str() {
+                    self.plan_scope = serde_json::from_value(reply["scope"].clone())
+                        .ok()
+                        .or_else(|| self.plan_scope.clone());
                     self.plan = Some((handle.into(), self.revision));
                     self.plan_fingerprint =
                         reply["executionFingerprint"].as_str().map(str::to_owned);
@@ -1035,7 +1226,7 @@ impl App {
                     .map(|i| (i.id.0.clone(), i.placement.clone()))
                     .collect(),
                 self.components.clone(),
-                operation_selection(&doc.job),
+                operation_selection(&doc.job, &doc.raw.operation),
             );
         }
     }
@@ -1095,6 +1286,7 @@ impl App {
                 Some((handle, _)) => Command::ValidatePlan {
                     job,
                     handle: handle.clone(),
+                    scope: self.plan_scope.clone().unwrap_or(GenerateScope::AllEnabled),
                 },
                 None => Command::Preview { job },
             };
@@ -1102,6 +1294,8 @@ impl App {
         }
         self.view.stock_loading = self.active.is_some() || self.export_dialog.is_some();
         self.view.result_current = self.current();
+        self.view
+            .set_knife_selected(self.operation_kind() == Some(OperationKind::DragKnife));
         if let Some(doc) = &self.document {
             self.view.select_artwork(&doc.raw.artwork_item);
         }
@@ -1222,7 +1416,7 @@ impl App {
             });
         }
         let resources_probe = json!({"open":self.resources.open,"jobsOpen":self.resources.jobs_open,"ready":self.resources.ready,"busy":self.resources.busy,"dirty":self.resources.dirty,"status":self.resources.status,"revision":self.resources.base.as_ref().map(|s|s.revision),"catalog":self.resources.draft,"selectedTool":self.resources.tool,"selectedProfile":self.resources.preset,"role":self.resources.role,"conflictRevision":self.resources.conflict.as_ref().map(|s|s.revision)});
-        let job_probe = self.document.as_ref().map(|d| if d.job.operations.is_empty() { json!({"kind":"empty","name":d.job.name,"stock":d.job.setup.stock,"machineSnapshot":d.job.machine_configuration,"artworks":d.job.artwork,"tools":d.job.tools}) } else if let Some(knife) = crate::knife::settings(&d.job) { json!({"kind":"drag_knife","name":d.job.name,"knife":knife,"tools":d.job.tools,"stock":d.job.setup.stock,"machineSnapshot":d.job.machine_configuration,"workZero":d.job.setup.work_zero,"activeArtwork":d.raw.artwork_item,"artworks":d.job.artwork}) } else {json!({"tools":d.job.tools,"profileStatuses":cam_core::project::v5::resources::assignment_statuses(&d.job),"machineSnapshot":d.job.machine_configuration,"name":d.job.name,"depth":engine::settings(&d.job).max_depth_mm,"feed":engine::settings(&d.job).endmill.cutting_feed_mm_min,"machine":d.job.machine_configuration.is_some(),"rawDepth":d.text(0),"rawFeed":d.text(2),"components":engine::settings(&d.job).components.len(),"mode":engine::settings(&d.job).mode,"stock":d.job.setup.stock,"placement":d.active_artwork().map(|i| &i.placement),"activeArtwork":d.raw.artwork_item,"artworks":d.job.artwork.iter().map(|i|json!({"id":i.id,"name":i.name,"placement":i.placement})).collect::<Vec<_>>(),"assignment":engine::settings(&d.job).components,"workZero":d.job.setup.work_zero,"endmillGeometry":crate::authoring::tool(&d.job,false).and_then(|t|t.geometry.clone()),"vbitGeometry":crate::authoring::tool(&d.job,true).and_then(|t|t.geometry.clone())})});
+        let job_probe = self.document.as_ref().map(|d| self.job_probe(d));
         crate::viewport::probe::publish(json!({"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
     }
     fn save_output(&mut self, ctx: &egui::Context) {

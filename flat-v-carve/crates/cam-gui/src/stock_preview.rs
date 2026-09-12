@@ -48,12 +48,27 @@ pub struct Preview {
 }
 
 pub fn build(input: &Input, rough: usize) -> Result<Preview, String> {
-    build_with(input, rough, CHECKPOINTS, MAX_PREVIEW_BYTES)
+    build_with_marks(input, &[rough], CHECKPOINTS, MAX_PREVIEW_BYTES)
 }
 
 pub fn build_with(
     input: &Input,
     rough: usize,
+    checkpoints: usize,
+    budget: usize,
+) -> Result<Preview, String> {
+    build_with_marks(input, &[rough], checkpoints, budget)
+}
+
+/// Build the display preset with explicit checkpoint prefixes. Every mark is
+/// an operation or stage boundary the timeline must be able to seek to;
+/// evenly spaced frames fill the rest of the budget. Marks that no longer fit
+/// are dropped (nearest to the end first) instead of failing a usable job,
+/// because the interactive replay can still reach any prefix between
+/// checkpoints.
+pub fn build_with_marks(
+    input: &Input,
+    marks: &[usize],
     checkpoints: usize,
     budget: usize,
 ) -> Result<Preview, String> {
@@ -67,14 +82,35 @@ pub fn build_with(
         .cell_mm
         .max(width.max(height) / MAX_SIDE as f64);
     let mut field = Field::new(input.stock, &input.tools, cell)?;
+    let per_frame = field
+        .versions
+        .len()
+        .max(1)
+        .saturating_mul(crate::sim::TILE * crate::sim::TILE * 4);
+    let mut marks: Vec<usize> = marks
+        .iter()
+        .copied()
+        .filter(|prefix| *prefix <= input.motions.len())
+        .collect();
+    marks.sort_unstable();
+    marks.dedup();
+    // Keep the checkpoint count inside the byte budget before integrating
+    // anything: a stage boundary the budget cannot hold is dropped explicitly.
+    let mut checkpoints = checkpoints;
+    while checkpoints > 3 && per_frame.saturating_mul(checkpoints) > budget {
+        checkpoints -= 1;
+    }
+    while marks.len() + 1 > checkpoints && marks.len() > 1 {
+        marks.remove(0);
+    }
     // Evenly spaced prefixes including the initial and the final state, plus
-    // the roughing/finishing boundary when it is a distinct prefix. The spacing
-    // matches the qualification fixture's checkpoint scheme.
+    // every named stage boundary. The spacing matches the qualification
+    // fixture's checkpoint scheme.
     let spans = checkpoints - 2;
     let mut prefixes: Vec<_> = (0..=spans)
         .map(|i| input.motions.len() * i / spans)
         .collect();
-    prefixes.push(rough.min(input.motions.len()));
+    prefixes.extend(marks.iter().copied());
     prefixes.sort_unstable();
     prefixes.dedup();
     let retained_bytes =

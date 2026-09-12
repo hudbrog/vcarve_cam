@@ -40,10 +40,30 @@ edit the two job tools and cutting assignments. New machining values are unset.
 The inspector filter and its scroll position help navigate longer forms. See the full
 [authoring and recovery recipe](../../../docs/flat-v-carve/gui2bc-progress.md).
 
-Admission is intentionally limited to schema-5 jobs with one SVG and one
-Flat V-carve operation, plus schema-2 machine profiles. There is no old-file
-migration in the application. The fixture regeneration example is test-data
-preparation only. Multi-operation authoring and resource editors are later slices.
+Admission is limited to schema-5 jobs with SVG artwork and up to twelve ordered
+Flat V-carve, Face or Drag knife operations, plus schema-2 machine profiles.
+Older documents are refused; there is no old-file migration in the application.
+The fixture regeneration example is test-data preparation only. Profiles, tabs
+and entries are later slices.
+
+## Facing and ordered preparation (GUI7)
+
+**File → New face job** starts a source-free Face job: set stock in Setup, then
+the coverage, height, tool and cutting values in Cutting. Passes run at 0° or
+90°, coverage is the whole stock or a rectangle with per-side margins, and the
+entry/exit overrun is travel beyond the requested coverage. A newly created
+operation leaves every machining value unset.
+
+The Operations list is the only execution order: add, rename, enable/disable,
+move and delete operations there. **Generate** plans the whole enabled list;
+**Generate through here** (or **Generate through <operation>**) plans the
+enabled prefix and is the scope that **Export…** later prepares — a prefix is
+never widened by export. In a Face → carving sequence the carving's top can be
+bound to the plane the face published (**Cutting → Top: <face> face result**);
+reordering or disabling that face leaves a saveable unresolved reference with a
+located issue until the order is repaired. **Simulate** reports one entry per
+executed stage, so **After face** shows the stock before the carving cuts
+anything, and hiding earlier paths never rewinds the removal.
 
 `app` owns edits, Undo/Redo, freshness and save snapshots; `session` calls
 cam-service's retained runtime; `worker`/`platform` provide process or browser
@@ -57,6 +77,7 @@ cargo test -p cam-gui --release --locked
 # After the browser build, with the development server running:
 node crates/cam-gui/web/smoke.mjs
 node crates/cam-gui/web/smoke.mjs --authoring
+node crates/cam-gui/web/smoke.mjs --gui7
 ```
 
 `experiments/gui1` is frozen framework qualification evidence. The incumbent

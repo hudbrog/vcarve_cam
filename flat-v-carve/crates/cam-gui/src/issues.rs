@@ -13,10 +13,49 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
         };
         return Some((tab, label.into()));
     }
-    let operation = job.operations.first().map(|o| o.id.as_str()).unwrap_or("");
+    // Address the operation the path actually names, not just the first one.
+    let operation = job
+        .operations
+        .iter()
+        .map(|o| o.id.as_str())
+        .find(|id| path.starts_with(&format!("operations[{id}].")))
+        .or_else(|| job.operations.first().map(|o| o.id.as_str()))
+        .unwrap_or("");
     let local = path
         .strip_prefix(&format!("operations[{operation}]."))
         .unwrap_or(path);
+    if path == format!("operations[{operation}]") {
+        // The whole-operation requirement (for example an XY work-zero
+        // selection that needs physical stock dimensions) lives in Setup.
+        return Some((1, "Stock width".into()));
+    }
+    if crate::session::kind(job, operation) == Some(crate::session::OperationKind::Face) {
+        return match local {
+            "stepdown_mm" => Some((2, "Stepdown".into())),
+            "stepover_mm" => Some((2, "Stepover".into())),
+            "pass_angle_deg" => Some((2, "Face pass angle".into())),
+            "entry_overrun_mm" => Some((2, "Face entry overrun".into())),
+            "exit_overrun_mm" => Some((2, "Face exit overrun".into())),
+            "margins.min_x_mm" => Some((2, "Face margin min X".into())),
+            "margins.max_x_mm" => Some((2, "Face margin max X".into())),
+            "margins.min_y_mm" => Some((2, "Face margin min Y".into())),
+            "margins.max_y_mm" => Some((2, "Face margin max Y".into())),
+            "top.offset_mm" => Some((2, "Face top offset".into())),
+            "bottom.offset_mm" => Some((2, "Face bottom offset".into())),
+            "assignment.cutting_feed_mm_min" => Some((2, "Roughing feed".into())),
+            "assignment.plunge_feed_mm_min" => Some((2, "Plunge feed".into())),
+            "assignment.spindle_rpm" => Some((2, "Spindle speed".into())),
+            "assignment.max_stepdown_mm" => Some((2, "Tool stepdown limit".into())),
+            // The assignment's tool geometry is entered in the Face tool group.
+            "assignment.tool" | "assignment.tool_id" => Some((2, "Endmill diameter".into())),
+            "setup.stock.thickness_mm" => Some((1, "Stock thickness".into())),
+            "setup.clearance_above_stock_mm" => Some((1, "Clearance".into())),
+            "setup.stock.xy" => Some((1, "Stock width".into())),
+            "tolerances.motion_tolerance_mm" => Some((7, "Motion tolerance".into())),
+            "tolerances.verification_tolerance_mm" => Some((7, "Verification tolerance".into())),
+            _ => None,
+        };
+    }
     if local.starts_with("chains[") {
         return Some((2, "Unresolved knife selections".into()));
     }
@@ -182,5 +221,34 @@ mod tests {
             target(&job, &format!("operations[{operation}].artwork")),
             Some((2, "Select all knife chains".into()))
         );
+    }
+
+    #[test]
+    fn face_planner_fields_route_to_the_face_editor() {
+        let empty = crate::operation_authoring::empty_job();
+        let job = crate::operation_authoring::apply(
+            &empty,
+            crate::operation_authoring::add(crate::operation_authoring::Kind::Face, &empty),
+        )
+        .unwrap();
+        let id = job.operations[0].id.clone();
+        let issues = cam_core::project::v5::inspection::inspect_face_fields(&job, &id).unwrap();
+        assert!(issues.len() > 5, "{issues:?}");
+        for issue in issues {
+            let path = issue.field_path.as_deref().unwrap();
+            let (tab, label) = target(&job, path)
+                .unwrap_or_else(|| panic!("no destination for {path} ({})", issue.message));
+            assert!(
+                matches!(
+                    label.as_str(),
+                    "Stock thickness"
+                        | "Clearance"
+                        | "Stock width"
+                        | "Motion tolerance"
+                        | "Verification tolerance"
+                ) || FIELDS.contains(&label.as_str()),
+                "{path} → {label} (tab {tab})"
+            );
+        }
     }
 }

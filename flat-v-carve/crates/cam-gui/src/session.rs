@@ -1,8 +1,8 @@
 //! GUI2's bounded adapter over the released ui-9 service. Lives only in the
 //! persistent compute process/Worker; neither a serialized plan nor a client
 //! receipt can enter the retained service.
-use crate::compute::{Package, SceneMeta, SimPackage, package, vertex};
-use crate::sim::{Input, Motion, Stock, ToolSpec};
+use crate::compute::{Package, SceneMeta, package};
+use crate::sim::Motion;
 use cam_core::project::v5::{self, CamJobV5, OperationSettingsV5};
 use cam_service::collection::{CollectionCommand as C, CollectionScope};
 use cam_service::retained::Retained;
@@ -14,6 +14,8 @@ pub const PROTOCOL: &str = "gui2-retained-5";
 pub const FLOWER: &str = include_str!("../../../fixtures/gui2/flower.job.json");
 pub const PROFILE: &str = include_str!("../../../fixtures/gui2/machine.json");
 pub const MOTION_LIMIT: usize = 100_000;
+/// Bound on the timeline's visible path groups (one per executed stage).
+pub const MAX_DISPLAY_GROUPS: usize = 32;
 thread_local! { static SERVICE: RefCell<Retained> = RefCell::new(Retained::new()); }
 thread_local! { static DISPLAY: RefCell<Option<Display>> = const { RefCell::new(None) }; }
 struct Display {
@@ -39,6 +41,9 @@ pub enum Command {
     },
     Artwork {
         job: String,
+        /// The operation whose selection this command edits. Geometry belongs
+        /// to one operation, so the command never guesses from document order.
+        operation_id: String,
         action: ArtworkCommand,
     },
     Resource {
@@ -51,6 +56,7 @@ pub enum Command {
     ValidatePlan {
         job: String,
         handle: String,
+        scope: GenerateScope,
     },
     Seek {
         handle: String,
@@ -68,11 +74,74 @@ pub enum Command {
     },
     Generate {
         job: String,
+        scope: GenerateScope,
     },
     Prepare {
         job: String,
         handle: String,
     },
+}
+
+/// The executed prefix a generation request covers. `ThroughOperation` is the
+/// plan scope GUI7 exports from: the retained plan binds it, so preparation can
+/// never widen it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum GenerateScope {
+    AllEnabled,
+    ThroughOperation { operation_id: String },
+}
+
+impl GenerateScope {
+    pub fn wire(&self) -> CollectionScope {
+        match self {
+            Self::AllEnabled => CollectionScope::AllEnabled,
+            Self::ThroughOperation { operation_id } => CollectionScope::ThroughOperation {
+                operation_id: operation_id.clone(),
+            },
+        }
+    }
+    pub fn readiness(&self) -> v5::ReadinessScope {
+        match self {
+            Self::AllEnabled => v5::ReadinessScope::AllEnabled,
+            Self::ThroughOperation { operation_id } => v5::ReadinessScope::ThroughOperation {
+                operation_id: operation_id.clone(),
+            },
+        }
+    }
+}
+
+impl Command {
+    /// Generate every enabled operation. Scoped generation is an explicit
+    /// [`GenerateScope`] so a prefix is never inferred from document order.
+    pub fn generate(job: impl Into<String>) -> Self {
+        Command::Generate {
+            job: job.into(),
+            scope: GenerateScope::AllEnabled,
+        }
+    }
+    /// An artwork command for the whole job (the operation-scoped selection
+    /// commands name their target operation explicitly).
+    pub fn artwork(job: impl Into<String>, action: ArtworkCommand) -> Self {
+        Command::Artwork {
+            job: job.into(),
+            operation_id: String::new(),
+            action,
+        }
+    }
+    /// Revalidate a retained plan against the whole enabled list.
+    pub fn validate_plan(job: impl Into<String>, handle: impl Into<String>) -> Self {
+        Command::ValidatePlan {
+            job: job.into(),
+            handle: handle.into(),
+            scope: GenerateScope::AllEnabled,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -118,18 +187,35 @@ pub enum ArtworkCommand {
     },
 }
 
-fn artwork_command(job: &CamJobV5, action: ArtworkCommand) -> Result<(CamJobV5, Value), String> {
+fn artwork_command(
+    job: &CamJobV5,
+    operation_id: &str,
+    action: ArtworkCommand,
+) -> Result<(CamJobV5, Value), String> {
     use v5::commands;
-    let interpretation = if crate::knife::settings(job).is_some() {
+    let knife_target = if operation_id.is_empty() {
+        crate::knife::settings(job).is_some()
+    } else {
+        crate::knife::settings_in(job, operation_id).is_some()
+    };
+    let interpretation = if knife_target {
         crate::knife::interpretation()
     } else {
         Default::default()
     };
+    let target = if operation_id.is_empty() {
+        job.operations
+            .first()
+            .map(|operation| operation.id.clone())
+            .unwrap_or_default()
+    } else {
+        operation_id.to_owned()
+    };
     let mut rejected = Vec::new();
     let (outcome, selected) = match action {
         ArtworkCommand::CarveSelection { references } => {
-            if job.operations.is_empty() {
-                return Err("Add a Flat V-carve operation before selecting its geometry".into());
+            if crate::session::settings_in(job, &target).is_none() {
+                return Err("Select a Flat V-carve operation before selecting its geometry".into());
             }
             // Only the displayed catalogue's exact references are accepted:
             // a reference from a replaced source is reattached deliberately,
@@ -144,7 +230,7 @@ fn artwork_command(job: &CamJobV5, action: ArtworkCommand) -> Result<(CamJobV5, 
             }
             let outcome = commands::set_component_selection(
                 job,
-                &job.operations[0].id,
+                &target,
                 &crate::authoring::picks(&references),
             )
             .map_err(|e| e.to_string())?;
@@ -166,13 +252,13 @@ fn artwork_command(job: &CamJobV5, action: ArtworkCommand) -> Result<(CamJobV5, 
             fraction,
         } => {
             return Ok((
-                crate::knife::set_start(job, reference.as_ref(), fraction)?,
+                crate::knife::set_start_in(job, &target, reference.as_ref(), fraction)?,
                 json!({"kind":"knife_start"}),
             ));
         }
         ArtworkCommand::KnifeSelection { references } => {
             return Ok((
-                crate::knife::select(job, &references)?,
+                crate::knife::select_in(job, &target, &references)?,
                 json!({"kind":"knife_selection"}),
             ));
         }
@@ -261,8 +347,8 @@ fn artwork_command(job: &CamJobV5, action: ArtworkCommand) -> Result<(CamJobV5, 
             expected,
             replacement,
         } => {
-            if job.operations.is_empty() {
-                return Err("Add an operation before repairing its selection".into());
+            if crate::session::operation(job, &target).is_none() {
+                return Err("Select an operation before repairing its selection".into());
             }
             // Reject a target picked from an obsolete displayed catalogue.
             let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
@@ -275,7 +361,7 @@ fn artwork_command(job: &CamJobV5, action: ArtworkCommand) -> Result<(CamJobV5, 
             (
                 commands::replace_component_reference(
                     job,
-                    &job.operations[0].id,
+                    &target,
                     &expected,
                     &v5::artwork::GeometryPick {
                         artwork_item_id: replacement.artwork_item_id.clone(),
@@ -298,11 +384,13 @@ pub fn open(text: &str) -> Result<CamJobV5, String> {
         return Err("GUI2 supports jobs up to 8 MB".into());
     }
     let job = CamJobV5::from_json(text).map_err(|e| e.to_string())?;
-    if job.operations.len() > 1
-        || job.operations.first().is_some_and(|op| {
+    if job.operations.len() > crate::operation_authoring::MAX_OPERATIONS
+        || job.operations.iter().any(|op| {
             !matches!(
                 op.settings,
-                OperationSettingsV5::FlatVcarve(_) | OperationSettingsV5::DragKnife(_)
+                OperationSettingsV5::FlatVcarve(_)
+                    | OperationSettingsV5::Face(_)
+                    | OperationSettingsV5::DragKnife(_)
             )
         })
         || job
@@ -310,26 +398,85 @@ pub fn open(text: &str) -> Result<CamJobV5, String> {
             .iter()
             .any(|item| !matches!(item.content, v5::ArtworkContent::Svg(_)))
     {
-        return Err(
-            "This workspace supports SVG artwork and at most one Flat V-carve or Drag knife operation; current document retained"
-                .into(),
-        );
+        return Err(format!(
+            "This workspace supports SVG artwork and up to {} ordered Flat V-carve, Face or Drag knife operations; the current document was retained",
+            crate::operation_authoring::MAX_OPERATIONS
+        ));
     }
     Ok(job)
 }
 
+/// The operation with this stable ID, if the document still carries it.
+pub fn operation<'a>(job: &'a CamJobV5, id: &str) -> Option<&'a v5::OperationV5> {
+    job.operations.iter().find(|op| op.id == id)
+}
+
+pub fn operation_mut<'a>(job: &'a mut CamJobV5, id: &str) -> Option<&'a mut v5::OperationV5> {
+    job.operations.iter_mut().find(|op| op.id == id)
+}
+
+/// The selected operation's kind, or None when the job has no operations.
+pub fn kind(job: &CamJobV5, id: &str) -> Option<OperationKind> {
+    Some(match &operation(job, id)?.settings {
+        OperationSettingsV5::FlatVcarve(_) => OperationKind::FlatVcarve,
+        OperationSettingsV5::Face(_) => OperationKind::Face,
+        OperationSettingsV5::Profile(_) => OperationKind::Profile,
+        OperationSettingsV5::DragKnife(_) => OperationKind::DragKnife,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationKind {
+    FlatVcarve,
+    Face,
+    Profile,
+    DragKnife,
+}
+
+/// Display name of one operation's kind.
+pub fn kind_label(job: &CamJobV5, id: &str) -> &'static str {
+    match kind(job, id) {
+        Some(OperationKind::Face) => "Face",
+        Some(OperationKind::FlatVcarve) => "Flat V-carve",
+        Some(OperationKind::DragKnife) => "Drag knife",
+        Some(OperationKind::Profile) => "Profile",
+        None => "Operation",
+    }
+}
+
+pub fn face<'a>(job: &'a CamJobV5, id: &str) -> Option<&'a v5::FaceSettingsV5> {
+    match &operation(job, id)?.settings {
+        OperationSettingsV5::Face(settings) => Some(settings),
+        _ => None,
+    }
+}
+
+pub fn face_mut<'a>(job: &'a mut CamJobV5, id: &str) -> Option<&'a mut v5::FaceSettingsV5> {
+    match &mut operation_mut(job, id)?.settings {
+        OperationSettingsV5::Face(settings) => Some(settings),
+        _ => None,
+    }
+}
+
+/// The Flat V-carve settings of the first Flat V-carve operation. Kept for the
+/// GUI2–GUI6 call sites that still address the established carving workflow;
+/// new code addresses an explicit operation ID.
 pub fn settings(job: &CamJobV5) -> &v5::FlatVcarveSettingsV5 {
-    let OperationSettingsV5::FlatVcarve(settings) = &job.operations[0].settings else {
-        unreachable!()
-    };
-    settings
+    carving(job).expect("operation is a Flat V-carve")
+}
+
+pub fn settings_in<'a>(job: &'a CamJobV5, id: &str) -> Option<&'a v5::FlatVcarveSettingsV5> {
+    match &operation(job, id)?.settings {
+        OperationSettingsV5::FlatVcarve(settings) => Some(settings),
+        _ => None,
+    }
 }
 
 pub fn carving(job: &CamJobV5) -> Option<&v5::FlatVcarveSettingsV5> {
-    match &job.operations.first()?.settings {
+    job.operations.iter().find_map(|op| match &op.settings {
         OperationSettingsV5::FlatVcarve(s) => Some(s),
         _ => None,
-    }
+    })
 }
 
 pub fn run(command: Command) -> Result<(SceneMeta, Vec<u8>), String> {
@@ -341,6 +488,30 @@ fn terminal(reply: &Value) -> Result<(), String> {
         return Ok(());
     }
     Err(format!("{}", reply["task"]["diagnostic"]))
+}
+
+/// Enabled operations inside a scope, in document order. A prefix scope that
+/// names an unknown operation is an error, never a silent whole-job plan.
+fn scoped_operations<'a>(
+    job: &'a CamJobV5,
+    scope: &v5::ReadinessScope,
+) -> Result<Vec<&'a v5::OperationV5>, String> {
+    match scope {
+        v5::ReadinessScope::AllEnabled => {
+            Ok(job.operations.iter().filter(|op| op.enabled).collect())
+        }
+        v5::ReadinessScope::ThroughOperation { operation_id } => {
+            let Some(end) = job.operations.iter().position(|op| op.id == *operation_id) else {
+                return Err(format!(
+                    "The selected operation '{operation_id}' is no longer in this job"
+                ));
+            };
+            Ok(job.operations[..=end]
+                .iter()
+                .filter(|op| op.enabled)
+                .collect())
+        }
+    }
 }
 
 pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, Vec<u8>), String> {
@@ -364,15 +535,30 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             crate::knife::import_svg(filename, svg)?,
             json!({"kind":"imported"}),
         ),
-        Command::Operation { job, action } => (
-            crate::operation_authoring::apply(&open(&job)?, action)?,
-            json!({"kind":"operation"}),
-        ),
+        Command::Operation { job, action } => {
+            // Adding an operation selects it so its unset inputs are what the
+            // editor addresses next; every other edit keeps the current
+            // selection unless it no longer exists.
+            let active = match &action {
+                crate::operation_authoring::Action::Add { operation_id, .. } => {
+                    Some(operation_id.clone())
+                }
+                _ => None,
+            };
+            (
+                crate::operation_authoring::apply(&open(&job)?, action)?,
+                json!({"kind":"operation","activeOperation":active}),
+            )
+        }
         Command::ImportSvg { filename, svg } => (
             crate::authoring::import_svg(filename, svg)?,
             json!({"kind":"imported"}),
         ),
-        Command::Artwork { job, action } => artwork_command(&open(&job)?, action)?,
+        Command::Artwork {
+            job,
+            operation_id,
+            action,
+        } => artwork_command(&open(&job)?, &operation_id, action)?,
         Command::Resource { job, action } => {
             let job = open(&job)?;
             let clear = action.clear_fields(&job);
@@ -382,14 +568,12 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             )
         }
         Command::Preview { job } => (open(&job)?, json!({"kind":"preview"})),
-        Command::ValidatePlan { job, handle } => {
+        Command::ValidatePlan { job, handle, scope } => {
             let job = open(&job)?;
             let retained = service.generated_plan(&handle).ok();
-            let identity = cam_core::sequence::OperationPlanV5::machining_identity(
-                &job,
-                &v5::references::ReadinessScope::AllEnabled,
-            )
-            .ok();
+            let identity =
+                cam_core::sequence::OperationPlanV5::machining_identity(&job, &scope.readiness())
+                    .ok();
             if let Some(retained) =
                 retained.filter(|p| Some(&p.machining_identity) == identity.as_ref())
             {
@@ -397,7 +581,7 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 return scene(
                     &job,
                     plan,
-                    json!({"kind":"revalidated","handle":handle,"executionFingerprint":plan.execution_fingerprint,"checks":retained.checks,"generationIssues":plan.generation_diagnostics}),
+                    json!({"kind":"revalidated","handle":handle,"scope":scope,"executionFingerprint":plan.execution_fingerprint,"checks":retained.checks,"generationIssues":plan.generation_diagnostics}),
                 );
             }
             return outline(&job, json!({"kind":"stale"}));
@@ -423,25 +607,23 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             job.setup.clearance_above_stock_mm = Some(machine.clearance_z_mm);
             (job, json!({"kind":"profile"}))
         }
-        Command::Generate { job } => {
+        Command::Generate { job, scope } => {
             let job = open(&job)?;
             if job.operations.is_empty() {
                 return Err("Add an operation before generating".into());
             }
-            let mut issues = if crate::knife::settings(&job).is_some() {
-                v5::inspection::inspect_knife_fields(&job, &job.operations[0].id)
-                    .map_err(|e| e.to_string())?
-            } else {
-                v5::inspection::inspect_flat_vcarve_fields(&job, &job.operations[0].id)
-                    .map_err(|e| e.to_string())?
-            };
+            let readiness = scope.readiness();
+            let mut issues = Vec::new();
+            for operation in scoped_operations(&job, &readiness)? {
+                issues.extend(
+                    v5::inspection::inspect_operation_fields(&job, &operation.id)
+                        .map_err(|e| e.to_string())?,
+                );
+            }
             issues.extend(
-                v5::references::planning_readiness(
-                    &job,
-                    &v5::references::ReadinessScope::AllEnabled,
-                )
-                .map_err(|e| e.to_string())?
-                .blockers(),
+                v5::references::planning_readiness(&job, &readiness)
+                    .map_err(|e| e.to_string())?
+                    .blockers(),
             );
             if !issues.is_empty() {
                 return outline(&job, json!({"kind":"issues", "issues":issues}));
@@ -449,7 +631,7 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             let reply = service
                 .execute_driven(C::Generate {
                     job: json!(job),
-                    scope: CollectionScope::AllEnabled,
+                    scope: scope.wire(),
                 })
                 .map_err(|e| e.to_string())?;
             terminal(&reply)?;
@@ -464,15 +646,19 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             let result = scene(
                 &job,
                 plan,
-                json!({"kind":"generated", "handle":handle,
+                json!({"kind":"generated", "handle":handle, "scope":scope,
                 "checks":retained.checks, "generationIssues":plan.generation_diagnostics, "executionFingerprint":plan.execution_fingerprint, "retained":reply["retained"]}),
             )?;
             let scene = crate::compute::Scene {
                 meta: result.0.clone(),
                 payload: std::sync::Arc::new(result.1.clone()),
             };
-            let input = scene.sim_input()?.ok_or("Missing display input")?;
-            let meta = scene.meta.stock.as_ref().ok_or("Missing display stock")?;
+            // An incomplete plan has no executed stage: the scene carries the
+            // inspection and reasons, and there is nothing to seed playback
+            // with. Everything else keeps its stock preview.
+            let (Some(input), Some(meta)) = (scene.sim_input()?, scene.meta.stock.as_ref()) else {
+                return Ok(result);
+            };
             let mut seed = Vec::new();
             for (index, frame) in meta.frames.iter().enumerate() {
                 let field = crate::sim::Field::from_packed(
@@ -541,297 +727,14 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
     outline(&job, report)
 }
 
-fn outline(job: &CamJobV5, mut report: Value) -> Result<(SceneMeta, Vec<u8>), String> {
-    if crate::knife::settings(job).is_some() {
-        return crate::knife::scene(job, None, report);
-    }
-    let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
-    let components = crate::authoring::catalogue_components(&catalogue);
-    let mut points = Vec::new();
-    let mut spans = Vec::new();
-    let mut bounds = [0., 0., 1., 1.];
-    for item in &catalogue.items {
-        let start = points.len();
-        if let Some(error) = &item.import_error {
-            report["artworkIssue"] = json!(error);
-        }
-        if let Some(catalogue) = &item.catalogue {
-            for contour in catalogue.contours.iter().chain(&catalogue.open_chains) {
-                let selected = item.entries.iter().any(|entry| {
-                    entry.reference.local_geometry_id == contour.component_id
-                        && entry.kind == v5::GeometryRefKind::FilledComponent
-                        && carving(job).is_some_and(|s| s.components.contains(&entry.reference))
-                });
-                let color = if selected {
-                    [0.25, 0.8, 0.85, 1.]
-                } else {
-                    [0.5, 0.55, 0.6, 1.]
-                };
-                for i in 0..contour
-                    .vertices
-                    .len()
-                    .saturating_sub(usize::from(!contour.closed))
-                {
-                    for p in [
-                        contour.vertices[i],
-                        contour.vertices[(i + 1) % contour.vertices.len()],
-                    ] {
-                        points.push(([p.x, p.y, 0.02], color));
-                    }
-                }
-            }
-        }
-        spans.push(json!([item.id, start, points.len()]));
-    }
-    if !points.is_empty() {
-        bounds = [
-            f64::INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NEG_INFINITY,
-        ];
-        for (p, _) in &points {
-            bounds[0] = bounds[0].min(p[0]);
-            bounds[1] = bounds[1].min(p[1]);
-            bounds[2] = bounds[2].max(p[0]);
-            bounds[3] = bounds[3].max(p[1]);
-        }
-    }
-    let stock_start = points.len();
-    if let Some(xy) = job.setup.stock.xy {
-        report["stockRect"] = json!([
-            xy.min_x_mm,
-            xy.min_y_mm,
-            xy.width_mm,
-            xy.length_mm,
-            job.setup.stock.thickness_mm.unwrap_or(0.)
-        ]);
-        bounds = [
-            bounds[0].min(xy.min_x_mm),
-            bounds[1].min(xy.min_y_mm),
-            bounds[2].max(xy.min_x_mm + xy.width_mm),
-            bounds[3].max(xy.min_y_mm + xy.length_mm),
-        ];
-        let corners = [
-            [xy.min_x_mm, xy.min_y_mm],
-            [xy.min_x_mm + xy.width_mm, xy.min_y_mm],
-            [xy.min_x_mm + xy.width_mm, xy.min_y_mm + xy.length_mm],
-            [xy.min_x_mm, xy.min_y_mm + xy.length_mm],
-        ];
-        for i in 0..4 {
-            for z in [0., -job.setup.stock.thickness_mm.unwrap_or(0.)] {
-                for p in [corners[i], corners[(i + 1) % 4]] {
-                    points.push(([p[0], p[1], z], [0.35, 0.5, 0.65, 1.]));
-                }
-            }
-        }
-    }
-    spans.push(json!(["", stock_start, points.len()]));
-    report["artworkSpans"] = json!(spans);
-    bounds = [
-        bounds[0] - 2.,
-        bounds[1] - 2.,
-        bounds[2] + 2.,
-        bounds[3] + 2.,
-    ];
-    let vertices = points
-        .into_iter()
-        .map(|(p, c)| vertex(p, bounds, c))
-        .collect::<Vec<_>>();
-    report["components"] = json!(components);
-    if report["issues"].is_null() {
-        report["issues"] = json!(
-            v5::references::inspect_references(job)
-                .map_err(|e| e.to_string())?
-                .issues
-        );
-    }
-    package(Package {
-        name: job.name.clone(),
-        job: job.to_json().map_err(|e| e.to_string())?,
-        report: json!({"gui2":report, "protocol":PROTOCOL}),
-        programs: vec![],
-        bounds,
-        contour_vertices: vertices.len(),
-        rough_vertices: 0,
-        vertices,
-        preview: None,
-        sim: None,
-    })
+fn outline(job: &CamJobV5, report: Value) -> Result<(SceneMeta, Vec<u8>), String> {
+    crate::scene::build(job, None, report)
 }
 
 pub fn scene(
     job: &CamJobV5,
     plan: &cam_core::sequence::OperationPlanV5,
-    mut report: Value,
+    report: Value,
 ) -> Result<(SceneMeta, Vec<u8>), String> {
-    if crate::knife::settings(job).is_some() {
-        return crate::knife::scene(job, Some(plan), report);
-    }
-    let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
-    report["components"] = json!(crate::authoring::catalogue_components(&catalogue));
-    report["inspection"] = json!(v5::inspection::inspect_plan(plan).map_err(|e| e.to_string())?);
-    report["detailResidual"] = json!(settings(job).max_detail_residual_mm);
-    let region =
-        v5::resolve::resolve_vcarve_region(job, &job.operations[0].id, settings(job), &catalogue)
-            .map_err(|e| e.to_string())?;
-    let bounds = region.bounds.ok_or("No selected artwork")?;
-    let mut ids = Vec::new();
-    let mut tools = Vec::new();
-    for tool in &job.tools {
-        if !plan.stages.iter().any(|stage| stage.tool_id == tool.id) {
-            continue;
-        }
-        let geometry = tool.geometry.as_ref().ok_or("Missing tool geometry")?;
-        tools.push(match geometry {
-            cam_core::project::ToolGeometry::Endmill(t) => ToolSpec::Endmill {
-                diameter: t.diameter_mm,
-            },
-            cam_core::project::ToolGeometry::Vbit(t) => ToolSpec::Vbit {
-                angle: t.included_angle_deg,
-                tip: t.tip_diameter_mm,
-                diameter: t.max_cutting_diameter_mm,
-                height: t.cutting_height_mm,
-            },
-            _ => return Err("Unsupported GUI2 tool geometry".into()),
-        });
-        ids.push(tool.id.clone());
-    }
-    let motions = plan
-        .motions
-        .iter()
-        .map(|m| {
-            Ok(Motion {
-                kind: if m.is_cutting() { "cut" } else { "rapid_xy" }.into(),
-                tool: ids
-                    .iter()
-                    .position(|id| id == &m.tool_id)
-                    .ok_or("Unmapped simulation tool")?,
-                x0: m.start.x,
-                y0: m.start.y,
-                z0: m.start.z,
-                x1: m.end.x,
-                y1: m.end.y,
-                z1: m.end.z,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let mut radius = 0_f64;
-    let mut detail = f64::INFINITY;
-    for t in &tools {
-        match *t {
-            ToolSpec::Knife { .. } => unreachable!("knife uses its own scene adapter"),
-            ToolSpec::Endmill { diameter } => {
-                radius = radius.max(diameter / 2.);
-                detail = detail.min(diameter);
-            }
-            ToolSpec::Vbit { tip, diameter, .. } => {
-                radius = radius.max(tip.max(diameter) / 2.);
-                detail = detail.min(tip);
-            }
-        }
-    }
-    let resolution = crate::sim::choose_resolution(
-        bounds.max.x - bounds.min.x,
-        bounds.max.y - bounds.min.y,
-        detail,
-        8192.,
-        64_000_000.,
-    )?;
-    let cell = resolution.cell_mm;
-    let cols = ((bounds.max.x - bounds.min.x + 2. * (radius + 1.)) / cell).ceil();
-    let rows = ((bounds.max.y - bounds.min.y + 2. * (radius + 1.)) / cell).ceil();
-    let x0 = (bounds.min.x + bounds.max.x - cols * cell) / 2.;
-    let y0 = (bounds.min.y + bounds.max.y - rows * cell) / 2.;
-    let mut stock = Stock {
-        x0,
-        y0,
-        x1: x0 + cols * cell,
-        y1: y0 + rows * cell,
-        thickness_mm: job
-            .setup
-            .stock
-            .thickness_mm
-            .ok_or("Missing stock thickness")?,
-    };
-    if let Some(xy) = job.setup.stock.xy {
-        stock.x0 = xy.min_x_mm;
-        stock.y0 = xy.min_y_mm;
-        stock.x1 = xy.min_x_mm + xy.width_mm;
-        stock.y1 = xy.min_y_mm + xy.length_mm;
-    }
-    let components = crate::authoring::catalogue_components(&catalogue);
-    let mut b = [stock.x0, stock.y0, stock.x1, stock.y1];
-    for c in &components {
-        b[0] = b[0].min(c.bounds[0]);
-        b[1] = b[1].min(c.bounds[1]);
-        b[2] = b[2].max(c.bounds[2]);
-        b[3] = b[3].max(c.bounds[3]);
-    }
-    let mut vertices = Vec::new();
-    let mut spans = Vec::new();
-    for component in &components {
-        let start = vertices.len();
-        let color = if settings(job).components.contains(&component.reference) {
-            [0.25, 0.8, 0.85, 1.]
-        } else {
-            [0.5, 0.55, 0.6, 1.]
-        };
-        for ring in &component.rings {
-            for i in 0..ring.len() {
-                for p in [ring[i], ring[(i + 1) % ring.len()]] {
-                    vertices.push(vertex([p[0], p[1], 0.02], b, color));
-                }
-            }
-        }
-        spans.push(json!([
-            component.reference.artwork_item_id,
-            start,
-            vertices.len()
-        ]));
-    }
-    report["artworkSpans"] = json!(spans);
-    let contour_vertices = vertices.len();
-    let rough = plan
-        .stages
-        .iter()
-        .find(|s| s.role == cam_core::sequence::StageRole::VcarveRough)
-        .map_or(0, |s| s.motion_range.1);
-    for (i, m) in plan.motions.iter().enumerate() {
-        let color = if !m.is_cutting() {
-            [0.3, 0.36, 0.44, 0.45]
-        } else if i < rough {
-            [0.19, 0.72, 0.81, 1.]
-        } else {
-            [1., 0.62, 0.2, 1.]
-        };
-        vertices.push(vertex([m.start.x, m.start.y, m.start.z], b, color));
-        vertices.push(vertex([m.end.x, m.end.y, m.end.z], b, color));
-    }
-    let input = Input {
-        stock,
-        tools: tools.clone(),
-        resolution,
-        motions: motions.clone(),
-        prefixes: vec![],
-    };
-    let preview = crate::stock_preview::build(&input, rough)?;
-    package(Package {
-        name: job.name.clone(),
-        job: job.to_json().map_err(|e| e.to_string())?,
-        report: json!({"gui2":report,"protocol":PROTOCOL,"roughingMotions":rough,"finishingMotions":motions.len()-rough,
-            "inferredStockXY":job.setup.stock.xy.is_none()}),
-        programs: vec![],
-        bounds: b,
-        contour_vertices,
-        rough_vertices: rough * 2,
-        vertices,
-        preview: Some(preview),
-        sim: Some(SimPackage {
-            stock,
-            tools,
-            resolution,
-            motions,
-        }),
-    })
+    crate::scene::build(job, Some(plan), report)
 }

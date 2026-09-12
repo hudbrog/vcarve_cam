@@ -11,10 +11,26 @@ impl Viewport {
     pub fn knife_chains(&self) -> Arc<Vec<crate::knife::Chain>> {
         self.knife_chains.clone()
     }
+    /// The operation being edited is a drag knife. Picking follows the
+    /// selected operation, so a mixed Face → knife sequence still assigns
+    /// filled regions to the face and knife chains to the knife.
     pub fn is_knife(&self) -> bool {
-        self.scene
-            .as_ref()
-            .is_some_and(|s| s.meta.report["gui2"]["knife"] == true)
+        self.knife_selected
+    }
+    pub fn set_knife_selected(&mut self, knife: bool) {
+        if self.knife_selected != knife {
+            self.knife_selected = knife;
+            self.overlay_signature = None;
+        }
+    }
+
+    /// Detail for one motion of the ordered plan, addressed by its global
+    /// motion index (knife detail travels only for knife moves).
+    fn knife_motion_at(report: &Value, index: usize) -> Option<&Value> {
+        report["knifeMotions"]
+            .as_array()?
+            .iter()
+            .find(|motion| motion["index"].as_u64() == Some(index as u64))
     }
     pub fn stale_knife_evidence(&mut self) {
         if let Some(s) = &mut self.scene {
@@ -54,8 +70,13 @@ impl Viewport {
             .selection
             .map(|p| p.motion as usize)
             .unwrap_or(self.playhead.saturating_sub(1))
-            .min(motions.len().saturating_sub(1));
-        let motion = &motions[index];
+            .min(self.playhead.saturating_sub(1));
+        let Some(motion) = Self::knife_motion_at(report, index) else {
+            ui.label(format!(
+                "Motion {index} belongs to an earlier operation. Knife inspection follows the knife stage of this sequence."
+            ));
+            return;
+        };
         ui.label(format!(
             "Motion {} · {} · pass {} · layer {}",
             index + 1,
@@ -78,23 +99,25 @@ impl Viewport {
         ));
         let next = motions
             .iter()
-            .enumerate()
-            .skip(index + 1)
-            .find(|(_, m)| m["purpose"] != motion["purpose"])
-            .map(|(i, _)| i);
-        let previous = (0..index)
+            .filter(|m| m["index"].as_u64().is_some_and(|i| i as usize > index))
+            .find(|m| m["purpose"] != motion["purpose"])
+            .and_then(|m| m["index"].as_u64().map(|i| i as usize + 1));
+        let previous = motions
+            .iter()
             .rev()
-            .find(|&i| motions[i]["purpose"] != motion["purpose"]);
+            .filter(|m| m["index"].as_u64().is_some_and(|i| (i as usize) < index))
+            .find(|m| m["purpose"] != motion["purpose"])
+            .and_then(|m| m["index"].as_u64().map(|i| i as usize + 1));
         let mut seek = None;
         let previous_button = ui.button("Previous corner / entry");
         crate::app::observe_control("Previous corner / entry", previous_button.rect);
         if previous_button.clicked() {
-            seek = previous.map(|i| i + 1);
+            seek = previous;
         }
         let next_button = ui.button("Next corner / entry");
         crate::app::observe_control("Next corner / entry", next_button.rect);
         if next_button.clicked() {
-            seek = next.map(|i| i + 1);
+            seek = next;
         }
         ui.small("Tip overlay shows up to the latest 2,048 motions at the playhead. Pivot paths use the complete paged execution.");
         let e = &report["knifeEvidence"];
@@ -182,8 +205,19 @@ impl Viewport {
             out.lines
                 .extend([Vertex { position: a, color }, Vertex { position: b, color }]);
         };
-        let end = self.playhead.min(motions.len());
-        for m in &motions[end.saturating_sub(2_048)..end] {
+        let end = self.playhead.min(scene.motion_count());
+        let start = end.saturating_sub(2_048);
+        let visible: Vec<&Value> = motions
+            .iter()
+            .filter(|motion| {
+                motion["index"].as_u64().is_some_and(|index| {
+                    let index = index as usize;
+                    index >= start && index < end
+                })
+            })
+            .collect();
+        for m in &visible {
+            let m = *m;
             let pivot = |p: &Value| -> Option<[f32; 3]> {
                 Some(
                     crate::compute::vertex(
@@ -219,7 +253,10 @@ impl Viewport {
                 line(a, b, [0.2, 0.95, 1., 1.]);
             }
         }
-        if let Some(m) = end.checked_sub(1).and_then(|i| motions.get(i)) {
+        if let Some(m) = end
+            .checked_sub(1)
+            .and_then(|index| Self::knife_motion_at(report, index))
+        {
             let p = &m["end"];
             if let (Some(x), Some(y), Some(z), Some(tip)) = (
                 p[0].as_f64(),
@@ -252,7 +289,7 @@ impl Viewport {
                 {
                     continue;
                 }
-                let Some(m) = motions.get(index) else {
+                let Some(m) = Self::knife_motion_at(report, index) else {
                     continue;
                 };
                 if m["contact"] != true {
@@ -278,7 +315,7 @@ mod tests {
         let job = include_str!("../../../fixtures/gui6/knife.job.json").to_owned();
         let mut service = cam_service::retained::Retained::new();
         let (meta, payload) =
-            session::execute(&mut service, Command::Generate { job: job.clone() }).unwrap();
+            session::execute(&mut service, Command::generate(job.clone())).unwrap();
         let handle = meta.report["gui2"]["handle"].as_str().unwrap().to_owned();
         let mut view = Viewport::default();
         view.load_scene(Ok((meta, payload)));

@@ -116,6 +116,7 @@ impl App {
                 self.port.cancel();
                 self.active = None;
                 self.plan = None;
+                self.plan_scope = None;
                 self.prepared = None;
                 self.status = "Export cancelled. Generate again before exporting.".into();
             }

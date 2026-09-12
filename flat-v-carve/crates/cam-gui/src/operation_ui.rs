@@ -32,34 +32,55 @@ pub(super) fn tab_for_control(label: &str) -> usize {
 }
 
 impl App {
+    /// The selected operation's Flat V-carve settings. Only called after the
+    /// panel has established that the operation is a Flat V-carve.
+    pub(super) fn flat_vcarve(&self) -> &cam_core::project::v5::FlatVcarveSettingsV5 {
+        let doc = self.document.as_ref().expect("document present");
+        engine::settings_in(&doc.job, &doc.raw.operation).expect("operation is a Flat V-carve")
+    }
+
     pub(super) fn operation_header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         if self.document.as_ref().unwrap().job.operations.is_empty() {
             ui.heading("No operations");
             return;
         }
-        if crate::knife::settings(&self.document.as_ref().unwrap().job).is_some() {
-            ui.heading("Drag knife");
-            ui.small("Passive XYZ · spindle and coolant off");
-            ui.separator();
-            return;
+        match self.operation_kind() {
+            Some(crate::session::OperationKind::Face) => return self.face_header(ui, ctx),
+            Some(crate::session::OperationKind::DragKnife) => {
+                let name = self
+                    .document
+                    .as_ref()
+                    .and_then(|d| d.active_operation())
+                    .map(|op| op.name.clone())
+                    .unwrap_or_else(|| "Drag knife".into());
+                ui.heading(name);
+                ui.small("Passive XYZ · spindle and coolant off");
+                ui.separator();
+                return;
+            }
+            _ => {}
         }
         if let Some(label) = &self.issue_focus {
             self.operation_tab = tab_for_control(label);
         }
-        ui.heading("Flat V-carve");
+        let name = self
+            .document
+            .as_ref()
+            .and_then(|d| d.active_operation())
+            .map(|op| op.name.clone())
+            .unwrap_or_else(|| "Flat V-carve".into());
+        ui.heading(name);
         ui.horizontal(|ui| {
             for (label, mode) in [
                 ("Endmill only", FlatVcarveMode::EndmillOnly),
                 ("Combined", FlatVcarveMode::Combined),
             ] {
-                let response = ui.selectable_label(
-                    engine::settings(&self.document.as_ref().unwrap().job).mode == mode,
-                    label,
-                );
+                let response = ui.selectable_label(self.flat_vcarve().mode == mode, label);
                 observe_control(label, response.rect);
                 if response.clicked() {
-                    self.edit_job(ctx, &[], |job| {
-                        authoring::set_mode(job, mode);
+                    let id = self.operation_id();
+                    self.edit_job(ctx, &[], move |job| {
+                        authoring::set_mode_in(job, &id, mode);
                         Ok(())
                     });
                 }
@@ -91,7 +112,7 @@ impl App {
         ui.separator();
     }
 
-    fn operation_group(
+    pub(super) fn operation_group(
         &mut self,
         ui: &mut egui::Ui,
         title: &str,
@@ -122,7 +143,12 @@ impl App {
         ui.add_space(4.);
     }
 
-    fn operation_numbers(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, fields: &[usize]) {
+    pub(super) fn operation_numbers(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        fields: &[usize],
+    ) {
         if ui.available_width() >= 370. {
             for row in fields.chunks(2) {
                 ui.columns(2, |columns| {
@@ -137,33 +163,55 @@ impl App {
     }
 
     pub(super) fn cutting_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        match self.operation_kind() {
+            Some(crate::session::OperationKind::Face) => return self.face_panel(ui, ctx),
+            Some(crate::session::OperationKind::DragKnife) => return self.knife_panel(ui, ctx),
+            _ => {}
+        }
         match self.operation_tab {
             0 => {
                 self.carving_geometry(ui, ctx);
                 self.operation_group(ui, "Height & depth", true, |app, ui| {
                     help::label(ui, "Operation top");
                     ui.horizontal_wrapped(|ui| {
-                        for (label, reference) in [
+                        let mut choices: Vec<(String, cam_core::project::HeightReference)> = vec![
                             (
-                                "Top: stock top",
+                                "Top: stock top".to_string(),
                                 cam_core::project::HeightReference::StockTop,
                             ),
                             (
-                                "Top: stock bottom",
+                                "Top: stock bottom".to_string(),
                                 cam_core::project::HeightReference::StockBottom,
                             ),
-                        ] {
+                        ];
+                        // A preceding Face operation publishes a plane this
+                        // carve may start from; reordering or disabling it
+                        // leaves the reference unresolved with a located issue.
+                        for face_id in crate::face::published_faces(
+                            &app.document.as_ref().unwrap().job,
+                            &app.operation_id(),
+                        ) {
+                            choices.push((
+                                format!("Top: {face_id} face result"),
+                                cam_core::project::HeightReference::FaceResult {
+                                    operation_id: face_id,
+                                },
+                            ));
+                        }
+                        for (label, reference) in choices {
                             let response = ui.selectable_label(
-                                engine::settings(&app.document.as_ref().unwrap().job)
-                                    .top
-                                    .reference
-                                    == reference,
-                                label,
+                                app.flat_vcarve().top.reference == reference,
+                                &label,
                             );
-                            observe_control(label, response.rect);
+                            observe_control(&label, response.rect);
                             if response.clicked() {
-                                app.edit_job(ctx, &[], |job| {
-                                    settings_mut(job).top.reference = reference;
+                                let id = app.operation_id();
+                                let reference = reference.clone();
+                                app.edit_job(ctx, &[], move |job| {
+                                    crate::authoring::settings_mut_in(job, &id)
+                                        .ok_or("This operation is not a Flat V-carve")?
+                                        .top
+                                        .reference = reference;
                                     Ok(())
                                 });
                             }
@@ -178,9 +226,7 @@ impl App {
             }
             index => {
                 let finish = index == 2;
-                let target_only = finish
-                    && engine::settings(&self.document.as_ref().unwrap().job).mode
-                        == FlatVcarveMode::EndmillOnly;
+                let target_only = finish && self.flat_vcarve().mode == FlatVcarveMode::EndmillOnly;
                 if target_only {
                     ui.colored_label(
                         Color32::from_rgb(31, 105, 116),
@@ -200,9 +246,12 @@ impl App {
                         app.operation_tool(ui, ctx, finish, !target_only);
                     },
                 );
-                let missing_geometry =
-                    authoring::tool(&self.document.as_ref().unwrap().job, finish)
-                        .is_none_or(|t| t.geometry.is_none());
+                let missing_geometry = authoring::tool_in(
+                    &self.document.as_ref().unwrap().job,
+                    &self.operation_id(),
+                    finish,
+                )
+                .is_none_or(|t| t.geometry.is_none());
                 self.operation_group(
                     ui,
                     "Geometry & capabilities",
@@ -235,11 +284,7 @@ impl App {
                         app.operation_strategy(ui, ctx);
                     }
                 });
-                if !finish
-                    && engine::settings(&self.document.as_ref().unwrap().job)
-                        .rough
-                        .is_some()
-                {
+                if !finish && self.flat_vcarve().rough.is_some() {
                     self.operation_group(ui, "Entry", true, |app, ui| app.entry_panel(ui, ctx));
                 }
                 self.operation_group(ui, "Advanced", false, |app, ui| {
@@ -267,7 +312,10 @@ impl App {
     /// assignment; the viewport assigns through the same command.
     fn carving_geometry(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let job = &self.document.as_ref().unwrap().job;
-        let selected = engine::settings(job).components.clone();
+        let operation_id = self.document.as_ref().unwrap().raw.operation.clone();
+        let selected = engine::settings_in(job, &operation_id)
+            .map(|settings| settings.components.clone())
+            .unwrap_or_default();
         let components = self.components.clone();
         let artwork = job
             .artwork
@@ -415,7 +463,10 @@ impl App {
                         .clicked()
                         {
                             app.edit_job(ctx, &[], |job| {
-                                settings_mut(job).components.retain(|r| r != reference);
+                                crate::authoring::settings_mut_in(job, &operation_id)
+                                    .ok_or("This operation is not a Flat V-carve")?
+                                    .components
+                                    .retain(|r| r != reference);
                                 Ok(())
                             });
                         }
@@ -443,7 +494,11 @@ impl App {
         } else {
             cam_core::project::v5::resources::AssignmentRole::Endmill
         };
-        if let Some(tool) = authoring::tool(&self.document.as_ref().unwrap().job, finish) {
+        if let Some(tool) = authoring::tool_in(
+            &self.document.as_ref().unwrap().job,
+            &self.operation_id(),
+            finish,
+        ) {
             ui.strong(&tool.name);
         }
         let index = usize::from(finish);
@@ -498,7 +553,11 @@ impl App {
             } else {
                 "Endmill can plunge"
             };
-            let tool = authoring::tool(&self.document.as_ref().unwrap().job, finish);
+            let tool = authoring::tool_in(
+                &self.document.as_ref().unwrap().job,
+                &self.operation_id(),
+                finish,
+            );
             let mut value = tool.and_then(|t| {
                 if ramp {
                     t.capabilities.ramp_capable
@@ -522,8 +581,9 @@ impl App {
                 }
             });
             if before != value {
-                self.edit_job(ctx, &[], |job| {
-                    let tool = authoring::tool_mut(job, finish)?;
+                let id = self.operation_id();
+                self.edit_job(ctx, &[], move |job| {
+                    let tool = authoring::tool_mut_in(job, &id, finish)?;
                     if ramp {
                         tool.capabilities.ramp_capable = value;
                     } else {
@@ -537,10 +597,7 @@ impl App {
 
     fn operation_strategy(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         help::label(ui, "Clearing strategy");
-        let selected = engine::settings(&self.document.as_ref().unwrap().job)
-            .rough
-            .as_ref()
-            .map(|r| r.strategy);
+        let selected = self.flat_vcarve().rough.as_ref().map(|r| r.strategy);
         let response = egui::ComboBox::from_id_salt("operation-strategy")
             .width(ui.available_width())
             .selected_text(match selected {
@@ -564,8 +621,10 @@ impl App {
                     let response = ui.selectable_label(selected == Some(strategy), name);
                     observe_control(name, response.rect);
                     if response.clicked() {
-                        self.edit_job(ctx, &[], |job| {
-                            settings_mut(job)
+                        let id = self.operation_id();
+                        self.edit_job(ctx, &[], move |job| {
+                            crate::authoring::settings_mut_in(job, &id)
+                                .ok_or("This operation is not a Flat V-carve")?
                                 .rough
                                 .get_or_insert_with(Default::default)
                                 .strategy = strategy;
@@ -693,7 +752,7 @@ mod tests {
         let ctx = egui::Context::default();
         app.operation_ramp_draft = true;
         let job = app.document.as_ref().unwrap().job.to_json().unwrap();
-        app.submit(Command::Generate { job: job.clone() }, &ctx);
+        app.submit(Command::generate(job.clone()), &ctx);
         assert!(app.active.is_none());
         app.submit(
             Command::Prepare {

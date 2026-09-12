@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const FIELDS: [&str; 75] = [
+pub const FIELDS: [&str; 89] = [
     "Maximum depth",
     "Wall allowance",
     "Roughing feed",
@@ -77,6 +77,20 @@ pub const FIELDS: [&str; 75] = [
     "Initial heading",
     "Knife top offset",
     "Knife bottom offset",
+    "Face pass angle",
+    "Face entry overrun",
+    "Face exit overrun",
+    "Face margin min X",
+    "Face margin max X",
+    "Face margin min Y",
+    "Face margin max Y",
+    "Face area min X",
+    "Face area min Y",
+    "Face area width",
+    "Face area length",
+    "Face top offset",
+    "Face bottom offset",
+    "Tool stepdown limit",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -121,7 +135,12 @@ impl Draft {
         )
     }
     pub fn validate_job(&self, job: &cam_core::project::v5::CamJobV5) -> Result<(), String> {
-        if self.operation != job.operations.first().map(|o| o.id.as_str()).unwrap_or("")
+        // The selected operation is editor state: it must be a valid ID, and
+        // keys may keep drafts for operations this document no longer carries
+        // (a deleted operation's incomplete text stays recoverable until the
+        // user discards it). Placement drafts are stricter: they must belong
+        // to artwork that exists right now.
+        if (!self.operation.is_empty() && !cam_core::preview::valid_id(&self.operation))
             || (!self.artwork_item.is_empty()
                 && !job.artwork.iter().any(|i| i.id.0 == self.artwork_item))
         {
@@ -134,7 +153,9 @@ impl Draft {
             }
             let placement = FIELDS[26..=29].contains(&parts[2]);
             if (placement && !job.artwork.iter().any(|i| i.id.0 == parts[0]))
-                || (!placement && parts[0] != "job")
+                || (!placement
+                    && (parts[0] != "job"
+                        || (!parts[1].is_empty() && !cam_core::preview::valid_id(parts[1]))))
             {
                 return Err("Draft field belongs to another artwork item".into());
             }
@@ -170,7 +191,7 @@ impl Draft {
             let parts: Vec<_> = key.splitn(3, '/').collect();
             if parts.len() != 3
                 || !cam_core::preview::valid_id(parts[0])
-                || parts[1] != draft.operation
+                || (!parts[1].is_empty() && !cam_core::preview::valid_id(parts[1]))
                 || !FIELDS.contains(&parts[2])
                 || text.chars().count() > 4096
             {
@@ -191,7 +212,11 @@ mod tests {
         draft.raw.insert(draft.key(0), "-".into());
         let recovered = Draft::recover(&serde_json::to_string(&draft).unwrap()).unwrap();
         assert_eq!(recovered, draft);
+        // A draft may outlive the operation it belongs to (deleting an
+        // operation keeps its recoverable text), but never a malformed ID.
         draft.operation = "another-operation".into();
+        assert!(Draft::recover(&serde_json::to_string(&draft).unwrap()).is_ok());
+        draft.operation = "not a valid id".into();
         assert!(Draft::recover(&serde_json::to_string(&draft).unwrap()).is_err());
         for text in ["-", "1.", "invalid", "NaN", "inf"] {
             assert!(Draft::parse(text).is_err());

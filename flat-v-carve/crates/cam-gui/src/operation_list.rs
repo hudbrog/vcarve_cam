@@ -1,5 +1,12 @@
+//! Operations list: the workspace's sole execution order.
+//!
+//! Every row is one stable operation ID: enable/disable, move, rename and
+//! delete all go through the shared schema-5 operation commands, so a
+//! reordering that breaks a height dependency stays a saveable unresolved
+//! draft with a located issue instead of silently changing anything else.
 use super::*;
-use crate::operation_authoring::{self, Action};
+use crate::operation_authoring::{self, Action, Kind};
+use crate::session::GenerateScope;
 
 impl App {
     pub(super) fn operation_command(&mut self, action: Action, ctx: &egui::Context) {
@@ -16,56 +23,261 @@ impl App {
             ctx,
         );
     }
+
+    /// Select the operation the inspector edits. Selection is workspace state:
+    /// it never changes the document or the machining order.
+    pub(super) fn select_operation(&mut self, id: &str, ctx: &egui::Context) {
+        if self
+            .document
+            .as_mut()
+            .is_some_and(|d| d.select_operation(id))
+        {
+            self.edit_group = None;
+            self.search.clear();
+            self.operation_scroll = [0.; 3];
+            self.operation_ramp_draft = false;
+            self.navigate(2);
+            self.recovery.changed(ctx.input(|i| i.time));
+        }
+    }
+
     pub(super) fn operation_actions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let idle = self.active.is_none() && self.io.is_none();
-        let has_operation = self
+        let operations: Vec<(String, String, bool, bool)> = self
             .document
             .as_ref()
-            .is_some_and(|d| !d.job.operations.is_empty());
+            .map(|d| {
+                d.job
+                    .operations
+                    .iter()
+                    .map(|op| {
+                        (
+                            op.id.clone(),
+                            op.name.clone(),
+                            op.enabled,
+                            matches!(
+                                op.settings,
+                                cam_core::project::v5::OperationSettingsV5::Face(_)
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let selected = self
+            .document
+            .as_ref()
+            .map(|d| d.raw.operation.clone())
+            .unwrap_or_default();
+        let count = operations.len();
+        for (index, (id, name, enabled, _)) in operations.iter().enumerate() {
+            let label = format!("{:02}  {name}", index + 1);
+            ui.horizontal(|ui| {
+                let response = ui.add_sized(
+                    [ui.available_width() - 26., 32.],
+                    egui::Button::selectable(selected == *id, label).truncate(),
+                );
+                observe_control(&format!("Operation row {id}"), response.rect);
+                if response.clicked() {
+                    self.select_operation(id, ctx);
+                }
+                let mut on = *enabled;
+                let toggle = ui
+                    .add_enabled(idle, egui::Checkbox::without_text(&mut on))
+                    .on_hover_text(if on {
+                        "Enabled: included in every generation scope"
+                    } else {
+                        "Disabled: excluded from every scope; dependents see missing outputs"
+                    });
+                observe_control(&format!("Operation enabled {id}"), toggle.rect);
+                if toggle.changed() {
+                    self.operation_command(
+                        Action::SetEnabled {
+                            operation_id: id.clone(),
+                            enabled: on,
+                        },
+                        ctx,
+                    );
+                }
+            });
+        }
+        if let Some((rename_id, rename_text)) = self.operation_rename.clone() {
+            let mut text = rename_text;
+            ui.horizontal(|ui| {
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut text)
+                        .id(egui::Id::new(("operation-rename", &rename_id)))
+                        .hint_text("Operation name"),
+                );
+                observe_control("Rename operation", edit.rect);
+                if edit.changed() {
+                    self.operation_rename = Some((rename_id.clone(), text.clone()));
+                }
+                if button(ui, "Apply name", idle && !text.trim().is_empty()).clicked() {
+                    self.operation_command(
+                        Action::Rename {
+                            operation_id: rename_id.clone(),
+                            name: text.clone(),
+                        },
+                        ctx,
+                    );
+                    self.operation_rename = None;
+                }
+                if button(ui, "Cancel rename", true).clicked() {
+                    self.operation_rename = None;
+                }
+            });
+        }
+        if let Some((id, name, _, _)) = operations.iter().find(|(id, ..)| *id == selected).cloned()
+        {
+            let index = operations
+                .iter()
+                .position(|(candidate, ..)| *candidate == id)
+                .unwrap_or(0);
+            ui.horizontal_wrapped(|ui| {
+                if button(ui, "Move earlier", idle && index > 0).clicked() {
+                    self.operation_command(
+                        Action::Move {
+                            operation_id: id.clone(),
+                            to_index: index - 1,
+                        },
+                        ctx,
+                    );
+                }
+                if button(ui, "Move later", idle && index + 1 < count).clicked() {
+                    self.operation_command(
+                        Action::Move {
+                            operation_id: id.clone(),
+                            to_index: index + 1,
+                        },
+                        ctx,
+                    );
+                }
+                if button(ui, "Rename", idle).clicked() {
+                    self.operation_rename = Some((id.clone(), name.clone()));
+                }
+                if button(ui, "Delete operation", idle).clicked() {
+                    self.operation_command(
+                        Action::Delete {
+                            operation_id: id.clone(),
+                        },
+                        ctx,
+                    );
+                }
+            });
+            let ready = !self.operation_ramp_draft
+                && self
+                    .document
+                    .as_ref()
+                    .is_some_and(|d| !d.pending() && !d.job.operations.is_empty());
+            let through = button(ui, &format!("Generate through {name}"), idle && ready);
+            observe_control("Generate through operation", through.rect);
+            if through.clicked() {
+                self.generate(
+                    GenerateScope::ThroughOperation {
+                        operation_id: id.clone(),
+                    },
+                    ctx,
+                );
+            }
+            ui.small(
+                "A prefix generation binds this operation and every enabled operation before it; export then prepares exactly that scope.",
+            );
+        }
+        let job = self.current_job();
         let menu = ui.menu_button("+ Add operation", |ui| {
-            if has_operation { ui.label("Delete the current operation first. Multiple-operation sequences are not available yet."); }
-            for (label, action) in [("Add Flat V-carve", Action::AddVcarve), ("Add drag knife", Action::AddKnife)] {
-                if button(ui, label, idle && !has_operation).clicked() { self.operation_command(action, ctx); ui.close(); }
+            for (label, kind) in [
+                ("Add Face", Kind::Face),
+                ("Add Flat V-carve", Kind::FlatVcarve),
+                ("Add drag knife", Kind::DragKnife),
+            ] {
+                let label = format!("{label} — {}", operation_authoring::next_id(&job, kind));
+                if button(
+                    ui,
+                    &label,
+                    idle && count < operation_authoring::MAX_OPERATIONS,
+                )
+                .clicked()
+                {
+                    self.operation_command(operation_authoring::add(kind, &job), ctx);
+                    ui.close();
+                }
             }
         });
         observe_control("Add operation", menu.response.rect);
-        if has_operation && button(ui, "Delete operation", idle).clicked() {
-            self.operation_command(Action::Delete, ctx);
-        }
     }
-    pub(super) fn adopt_operation(&mut self, job: CamJobV5, ctx: &egui::Context) {
+
+    fn current_job(&self) -> CamJobV5 {
+        self.document
+            .as_ref()
+            .map(|d| d.job.clone())
+            .unwrap_or_else(operation_authoring::empty_job)
+    }
+
+    pub(super) fn adopt_operation(
+        &mut self,
+        job: CamJobV5,
+        active: Option<&str>,
+        ctx: &egui::Context,
+    ) {
+        let previous = self
+            .document
+            .as_ref()
+            .map(|d| d.raw.operation.clone())
+            .unwrap_or_default();
+        let previous_job = self.document.as_ref().map(|d| d.job.clone());
         if self.document.is_none() {
             self.document = Some(Document::new(operation_authoring::empty_job()));
         }
         self.remember();
         let mut next = Document::new(job);
         if let Some(old) = &self.document {
-            for field in [6, 7, 23, 25, 30, 31, 34, 35, 36, 40, 41, 42, 43, 44, 45] {
-                if let Some(text) = old.raw.raw.get(&old.raw.key(field)) {
-                    next.raw.raw.insert(next.raw.key(field), text.clone());
-                }
-            }
-            for item in &next.job.artwork {
-                for field in 26..=29 {
-                    if let Some(text) = old.raw.raw.get(&old.raw.key_for(&item.id.0, field)) {
-                        next.raw
-                            .raw
-                            .insert(next.raw.key_for(&item.id.0, field), text.clone());
-                    }
-                }
-            }
-            if next
-                .job
-                .artwork
-                .iter()
-                .any(|i| i.id.0 == old.raw.artwork_item)
-            {
-                next.raw.artwork_item = old.raw.artwork_item.clone();
-            }
+            // Raw text is keyed by stable operation/artwork identity, so it
+            // follows its own entity through add, delete and reorder.
+            next.raw.raw = old.raw.raw.clone();
+            next.raw.artwork_item = old.raw.artwork_item.clone();
         }
+        next.sync_artwork();
+        next.raw.operation = active
+            .map(str::to_owned)
+            .filter(|id| {
+                next.job
+                    .operations
+                    .iter()
+                    .any(|operation| &operation.id == id)
+            })
+            .or_else(|| {
+                Some(previous.clone()).filter(|id| {
+                    !id.is_empty()
+                        && next
+                            .job
+                            .operations
+                            .iter()
+                            .any(|operation| &operation.id == id)
+                })
+            })
+            .or_else(|| {
+                // A document that replaced its operations (a fresh job, or an
+                // add into an empty one) selects whatever is present.
+                let added = next.job.operations.iter().find(|operation| {
+                    previous_job
+                        .as_ref()
+                        .is_none_or(|job| !job.operations.iter().any(|old| old.id == operation.id))
+                });
+                added.map(|operation| operation.id.clone())
+            })
+            .unwrap_or_else(|| {
+                next.job
+                    .operations
+                    .first()
+                    .map(|operation| operation.id.clone())
+                    .unwrap_or_default()
+            });
+        let empty = next.job.operations.is_empty();
         self.document = Some(next);
         self.edit_group = None;
         self.plan = None;
+        self.plan_scope = None;
         self.plan_fingerprint = None;
         self.prepared = None;
         self.export_dialog = None;
@@ -80,98 +292,10 @@ impl App {
         self.search.clear();
         self.simulate = false;
         self.changed(ctx);
-        self.status = if self.document.as_ref().unwrap().job.operations.is_empty() { "Operation deleted. Artwork, stock, tools and machine retained. Add an operation or Undo." } else { "Operation added. Select its geometry and configure its tool and cutting values." }.into();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn operation_changes_preserve_shared_drafts_and_recoverable_undo() {
-        let original = crate::authoring::import_svg(
-            "letters.svg".into(),
-            include_str!("../../../fixtures/gui3/lettering.svg").into(),
-        )
-        .unwrap();
-        let mut app = App {
-            document: Some(Document::new(original.clone())),
-            ..Default::default()
+        self.status = if empty {
+            "Operation deleted. Artwork, stock, tools and machine retained. Add an operation or Undo.".into()
+        } else {
+            "Operations updated. Select a row to edit it; Generate a prefix to inspect one operation's result.".into()
         };
-        let ctx = egui::Context::default();
-        app.document
-            .as_mut()
-            .unwrap()
-            .edit(6, "-".into())
-            .unwrap_err();
-        app.document
-            .as_mut()
-            .unwrap()
-            .edit(26, "3.".into())
-            .unwrap_err();
-        app.edit_group = Some(26);
-        app.adopt_operation(
-            operation_authoring::apply(&original, Action::Delete).unwrap(),
-            &ctx,
-        );
-        let empty = app.document.as_ref().unwrap();
-        assert!(app.edit_group.is_none());
-        assert!(empty.job.operations.is_empty());
-        assert_eq!(empty.raw.raw[&empty.raw.key(6)], "-");
-        assert_eq!(empty.raw.raw[&empty.raw.key(26)], "3.");
-        app.recovery_snapshot().unwrap().validate().unwrap();
-        app.adopt_operation(
-            operation_authoring::apply(&empty.job, Action::AddKnife).unwrap(),
-            &ctx,
-        );
-        assert!(app.document.as_ref().unwrap().pending());
-        assert!(app.plan.is_none() && app.prepared.is_none());
-        app.undo(&ctx);
-        assert!(app.document.as_ref().unwrap().job.operations.is_empty());
-        app.undo(&ctx);
-        assert_eq!(app.document.as_ref().unwrap().job, original);
-        app.redo(&ctx);
-        app.redo(&ctx);
-        assert!(crate::knife::settings(&app.document.as_ref().unwrap().job).is_some());
-        app.recovery_snapshot().unwrap().validate().unwrap();
-    }
-
-    #[test]
-    fn empty_job_and_new_knife_render_all_panels() {
-        for job in [
-            operation_authoring::empty_job(),
-            operation_authoring::apply(&operation_authoring::empty_job(), Action::AddKnife)
-                .unwrap(),
-        ] {
-            let mut app = App {
-                document: Some(Document::new(job.clone())),
-                ..Default::default()
-            };
-            app.resources.ready = true;
-            app.view.load_scene(engine::run(Command::Preview {
-                job: job.to_json().unwrap(),
-            }));
-            let ctx = egui::Context::default();
-            for tab in 0..8 {
-                app.inspector_tab = tab;
-                app.resources.open = tab == 3;
-                let _ = ctx.run(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(1280., 800.),
-                        )),
-                        ..Default::default()
-                    },
-                    |ctx| {
-                        app.navigator(ctx);
-                        app.inspector(ctx);
-                        app.resource_windows(ctx);
-                    },
-                );
-            }
-            app.document.unwrap().validate().unwrap();
-        }
     }
 }

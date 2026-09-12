@@ -47,7 +47,10 @@ fn gui3_policy_fields_preserve_siblings_and_portable_inactive_finish() {
         (60, 16.),
     ] {
         doc.edit(f, n.to_string()).unwrap();
-        assert_eq!(cam_gui_runtime::app::value(&doc.job, f), Some(n));
+        assert_eq!(
+            cam_gui_runtime::app::value(&doc.job, &doc.raw.operation, f),
+            Some(n)
+        );
         let previous = doc.job.clone();
         for invalid in ["", "-", "NaN"] {
             assert!(doc.edit(f, invalid.into()).is_err());
@@ -227,9 +230,7 @@ fn gui3_readiness_keeps_output_only_reference_repairs_out_of_generation() {
     );
     let (scene, _) = session::execute(
         &mut Retained::new(),
-        Command::Generate {
-            job: doc.job.to_json().unwrap(),
-        },
+        Command::generate(doc.job.to_json().unwrap()),
     )
     .unwrap();
     assert_eq!(scene.report["gui2"]["kind"], "generated");
@@ -295,11 +296,17 @@ fn configured() -> Document {
         "{:?}",
         authoring::FIELDS
             .iter()
-            .filter(|&&f| authoring::active(&doc.job, f))
+            .filter(|&&f| authoring::active_in(&doc.job, &doc.raw.operation, f))
             .filter_map(|&f| {
                 let parsed = cam_gui_runtime::state::Draft::parse(&doc.text(f));
-                (parsed.ok() != Some(cam_gui_runtime::app::value(&doc.job, f)))
-                    .then(|| (f, doc.text(f), cam_gui_runtime::app::value(&doc.job, f)))
+                (parsed.ok() != Some(cam_gui_runtime::app::value(&doc.job, &doc.raw.operation, f)))
+                    .then(|| {
+                        (
+                            f,
+                            doc.text(f),
+                            cam_gui_runtime::app::value(&doc.job, &doc.raw.operation, f),
+                        )
+                    })
             })
             .collect::<Vec<_>>()
     );
@@ -430,13 +437,8 @@ fn both_modes_generate_and_export_with_one_datum_and_explicit_mappings() {
     assert!(doc.edit(3, "-".into()).is_err());
     assert!(!doc.pending());
     let mut retained = Retained::new();
-    let (rough, _) = session::execute(
-        &mut retained,
-        Command::Generate {
-            job: doc.job.to_json().unwrap(),
-        },
-    )
-    .unwrap();
+    let (rough, _) =
+        session::execute(&mut retained, Command::generate(doc.job.to_json().unwrap())).unwrap();
     assert!(rough.motions > 0);
     assert_eq!(rough.rough_vertices / 2, rough.motions);
     let handle = rough.report["gui2"]["handle"].as_str().unwrap().to_owned();
@@ -476,13 +478,8 @@ fn both_modes_generate_and_export_with_one_datum_and_explicit_mappings() {
         .capabilities
         .plunge_capable = Some(true);
     assert!(!doc.pending());
-    let (combined, _) = session::execute(
-        &mut retained,
-        Command::Generate {
-            job: doc.job.to_json().unwrap(),
-        },
-    )
-    .unwrap();
+    let (combined, _) =
+        session::execute(&mut retained, Command::generate(doc.job.to_json().unwrap())).unwrap();
     assert!(combined.motions > combined.rough_vertices / 2);
     let handle = combined.report["gui2"]["handle"]
         .as_str()

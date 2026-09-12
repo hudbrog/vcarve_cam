@@ -99,6 +99,7 @@ impl App {
         self.active = None;
         self.cancelled_id = None;
         self.plan = None;
+        self.plan_scope = None;
         self.prepared = None;
         self.export_dialog = None;
         self.retained_save = None;
@@ -281,6 +282,11 @@ mod tests {
             &mut cam_service::retained::Retained::new(),
             Command::Artwork {
                 job: before,
+                operation_id: app
+                    .document
+                    .as_ref()
+                    .map(|d| d.raw.operation.clone())
+                    .unwrap_or_default(),
                 action: engine::ArtworkCommand::Add {
                     filename: "second.svg".into(),
                     svg: include_str!("../../../fixtures/gui4/second.svg").into(),

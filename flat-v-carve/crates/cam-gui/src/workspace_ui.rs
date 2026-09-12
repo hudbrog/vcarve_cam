@@ -66,12 +66,21 @@ impl App {
                         .color(Color32::WHITE),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let prefix = matches!(
+                            self.plan_scope(),
+                            Some(crate::session::GenerateScope::ThroughOperation { .. })
+                        );
                         let export = button(
                             ui,
-                            "Export…",
+                            if prefix {
+                                "Export prefix…"
+                            } else {
+                                "Export…"
+                            },
                             idle && self.current() && self.view.export_ready(),
                         );
                         observe_control("Prepare checked output", export.rect);
+                        observe_control("Export…", export.rect);
                         if export.clicked() {
                             self.submit(
                                 Command::Prepare {
@@ -92,12 +101,7 @@ impl App {
                         );
                         observe_control("Generate", generate.rect);
                         if generate.clicked() {
-                            self.submit(
-                                Command::Generate {
-                                    job: self.document.as_ref().unwrap().job.to_json().unwrap(),
-                                },
-                                ctx,
-                            );
+                            self.generate(crate::session::GenerateScope::AllEnabled, ctx);
                         }
                         for (label, simulate) in [("Simulate", true), ("Prepare", false)] {
                             let fill = if self.simulate == simulate {
@@ -125,6 +129,19 @@ impl App {
                 let menu = ui.menu_button("File", |ui| {
                     if button(ui, "New drag knife from SVG", idle).clicked() {
                         self.open(IoKind::KnifeSvg, ctx);
+                        ui.close();
+                    }
+                    if button(ui, "New face job", idle).clicked() {
+                        // Source-free facing: stock, tool and cutting values
+                        // only. Nothing is invented; Setup and the Face panel
+                        // report every value that is still missing.
+                        self.operation_command(
+                            crate::operation_authoring::add(
+                                crate::operation_authoring::Kind::Face,
+                                &crate::operation_authoring::empty_job(),
+                            ),
+                            ctx,
+                        );
                         ui.close();
                     }
                     if button(ui, "New from SVG", idle).clicked() {
@@ -175,6 +192,7 @@ impl App {
                         self.port.cancel();
                         self.active = None;
                         self.plan = None;
+                        self.plan_scope = None;
                         self.prepared = None;
                         self.status = "Compute cancelled. Draft retained.".into();
                     }
@@ -371,34 +389,41 @@ impl App {
                     ui.add_space(8.);
                     ui.separator();
                     ui.strong("OPERATIONS");
-                    let has_operation = self
+                    let selected = self
                         .document
                         .as_ref()
-                        .is_some_and(|d| !d.job.operations.is_empty());
-                    let knife = self
-                        .document
-                        .as_ref()
-                        .is_some_and(|d| crate::knife::settings(&d.job).is_some());
+                        .and_then(|d| d.active_operation())
+                        .map(|op| (op.id.clone(), op.name.clone()));
+                    let has_operation = selected.is_some();
+                    let kind = self.operation_kind();
+                    let knife = kind == Some(crate::session::OperationKind::DragKnife);
                     if has_operation {
-                        self.nav_item(
-                            ui,
-                            if knife {
-                                "01  Drag knife"
-                            } else {
-                                "01  Flat V-carve"
-                            },
-                            "Cutting",
-                            2,
+                        let index =
+                            self.document
+                                .as_ref()
+                                .and_then(|d| {
+                                    d.job.operations.iter().position(|op| {
+                                        Some(&op.id) == selected.as_ref().map(|s| &s.0)
+                                    })
+                                })
+                                .unwrap_or(0);
+                        let label = format!(
+                            "{:02}  {}",
+                            index + 1,
+                            selected.as_ref().map(|s| s.1.clone()).unwrap_or_default()
                         );
+                        self.nav_item(ui, &label, "Cutting", 2);
                         self.nav_item(ui, "Inspect result", "Inspect result", 6);
                     } else {
                         ui.label("No operations");
                     }
                     self.operation_actions(ui, ctx);
                     if let Some(doc) = &self.document {
-                        if let Some(s) = crate::knife::settings(&doc.job) {
+                        ui.small(format!("{} ordered operation(s)", doc.job.operations.len()));
+                        let id = doc.raw.operation.clone();
+                        if let Some(s) = crate::knife::settings_in(&doc.job, &id) {
                             ui.small(format!("{} knife chains", s.chains.len()));
-                        } else if let Some(s) = engine::carving(&doc.job) {
+                        } else if let Some(s) = engine::settings_in(&doc.job, &id) {
                             ui.small(format!("{} filled components", s.components.len()));
                         }
                     }
@@ -412,7 +437,9 @@ impl App {
                         self.nav_item(ui, "Drag knife", "Knife tool", 4);
                     } else if has_operation {
                         self.nav_item(ui, "Endmill", "Endmill tool", 4);
-                        self.nav_item(ui, "V-bit", "V-bit tool", 5);
+                        if kind == Some(crate::session::OperationKind::FlatVcarve) {
+                            self.nav_item(ui, "V-bit", "V-bit tool", 5);
+                        }
                     }
                     ui.small("Geometry belongs to this job.");
                     if ui.link("Controller mapping in Machine").clicked() {

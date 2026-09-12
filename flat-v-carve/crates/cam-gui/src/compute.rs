@@ -16,7 +16,9 @@ use std::sync::Arc;
 pub const PROTOCOL: &str = "cam-gui-retained-5";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Request {
-    Gui2(crate::session::Command),
+    /// Boxed so the request envelope stays small; the serialized frame is
+    /// unchanged.
+    Gui2(Box<crate::session::Command>),
     Busy,
 }
 #[repr(C)]
@@ -144,7 +146,7 @@ pub fn hash(bytes: &[u8]) -> String {
 
 pub fn run(request: Request) -> Result<(SceneMeta, Vec<u8>), String> {
     match request {
-        Request::Gui2(command) => crate::session::run(command),
+        Request::Gui2(command) => crate::session::run(*command),
         Request::Busy => {
             // Deliberately non-yielding CPU work. Only the supervising process/Worker can stop it.
             let mut seed = 0x5eed_u64;

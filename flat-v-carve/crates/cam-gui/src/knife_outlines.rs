@@ -78,10 +78,18 @@ mod tests {
         let mut job =
             crate::session::open(include_str!("../../../fixtures/gui4/lettering.job.json"))
                 .unwrap();
+        // A knife operation for this artwork: the helper requires one before it
+        // copies filled boundaries as stroked paths.
+        let empty = crate::operation_authoring::apply(
+            &job,
+            crate::operation_authoring::Action::Delete {
+                operation_id: job.operations[0].id.clone(),
+            },
+        )
+        .unwrap();
         job = crate::operation_authoring::apply(
-            &crate::operation_authoring::apply(&job, crate::operation_authoring::Action::Delete)
-                .unwrap(),
-            crate::operation_authoring::Action::AddKnife,
+            &empty,
+            crate::operation_authoring::add(crate::operation_authoring::Kind::DragKnife, &empty),
         )
         .unwrap();
         job.artwork[0].placement.rotation_deg = 30.;

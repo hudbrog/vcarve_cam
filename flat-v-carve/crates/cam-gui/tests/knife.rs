@@ -22,13 +22,8 @@ fn knife_start_uses_qualified_source_anchor_and_core_planning() {
         knife::settings(&job).unwrap().start
     );
     let mut service = Retained::new();
-    let (meta, _) = session::execute(
-        &mut service,
-        Command::Generate {
-            job: anchored.to_json().unwrap(),
-        },
-    )
-    .unwrap();
+    let (meta, _) =
+        session::execute(&mut service, Command::generate(anchored.to_json().unwrap())).unwrap();
     assert_eq!(meta.report["gui2"]["checks"]["exportReady"], true);
     let open = chains.iter().find(|c| !c.closed).unwrap();
     assert!(knife::set_start(&job, Some(&open.reference), 0.5).is_err());
@@ -49,13 +44,8 @@ fn filled_regions_require_explicit_centerline_source() {
             .unwrap();
     assert_eq!(knife::settings(&flower).unwrap().chains.len(), 1);
     let mut service = Retained::new();
-    let (meta, _) = session::execute(
-        &mut service,
-        Command::Generate {
-            job: flower.to_json().unwrap(),
-        },
-    )
-    .unwrap();
+    let (meta, _) =
+        session::execute(&mut service, Command::generate(flower.to_json().unwrap())).unwrap();
     assert_eq!(meta.motions, 813);
     assert_eq!(meta.report["gui2"]["checks"]["exportReady"], true);
     assert!(
@@ -76,6 +66,7 @@ fn knife_cross_source_selection_does_not_rebind_after_replacement() {
         &mut service,
         Command::Artwork {
             job: original.to_json().unwrap(),
+            operation_id: "knife".into(),
             action: session::ArtworkCommand::Add {
                 filename: "second.svg".into(),
                 svg: SVG.into(),
@@ -100,6 +91,7 @@ fn knife_cross_source_selection_does_not_rebind_after_replacement() {
         &mut service,
         Command::Artwork {
             job: assigned.to_json().unwrap(),
+            operation_id: "knife".into(),
             action: session::ArtworkCommand::Replace {
                 item: original.artwork[0].id.clone(),
                 filename: "changed.svg".into(),
@@ -191,7 +183,7 @@ fn knife_execution_preserves_stock_and_replays_exact_checked_bytes() {
     let text = job.to_json().unwrap();
     let mut service = Retained::new();
     let (meta, payload) =
-        session::execute(&mut service, Command::Generate { job: text.clone() }).unwrap();
+        session::execute(&mut service, session::Command::generate(text.clone())).unwrap();
     assert!(meta.motions > 10, "{}", meta.report);
     assert_eq!(meta.report["gui2"]["checks"]["exportReady"], true);
     assert!(

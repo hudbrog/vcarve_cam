@@ -1,4 +1,6 @@
 use super::*;
+#[path = "face_ui.rs"]
+mod face_ui;
 #[path = "knife_ui.rs"]
 mod knife_ui;
 #[path = "operation_ui.rs"]
@@ -146,14 +148,10 @@ impl App {
                         self.issues = vec![cam_core::operations::LocatedDiagnostic {
                             code: "EDITOR_VALUE".into(),
                             message: error.clone(),
-                            operation_id: self
-                                .document
-                                .as_ref()
-                                .unwrap()
-                                .job
-                                .operations
-                                .first()
-                                .map(|o| o.id.clone()),
+                            operation_id: {
+                                let selected = &self.document.as_ref().unwrap().raw.operation;
+                                (!selected.is_empty()).then(|| selected.clone())
+                            },
                             tool_id: None,
                             field_path: Some(format!("editor.fields.{}", FIELDS[field])),
                         }];
@@ -193,19 +191,11 @@ impl App {
                         7 => self.job_settings_panel(ui,ctx),
                         _ => { ui.heading("No operations"); ui.label("Add an operation from the Operations list. Your artwork, stock, tools and machine settings are retained."); if self.inspector_tab == 0 {self.numbers(ui,ctx,&[26,27,28,29]);} }
                     }
-                } else if crate::knife::settings(&self.document.as_ref().unwrap().job).is_some() && matches!(self.inspector_tab,0|2|4|5|6) {
+                } else if self.operation_kind() == Some(crate::session::OperationKind::DragKnife) && matches!(self.inspector_tab,0|2|4|5|6) {
                     self.knife_panel(ui,ctx);
                 } else { match self.inspector_tab {0=>self.artwork_panel(ui,ctx),1=>self.setup_panel(ui,ctx),2=>self.cutting_panel(ui,ctx),3=>self.machine_panel(ui,ctx),6=>self.view.inspection_controls(ui),7=>self.job_settings_panel(ui,ctx),index=>{
                     let finish=index==5;
-                    ui.heading(if finish {"V-bit geometry"}else{"Endmill geometry"});
-                    self.numbers(ui,ctx,if finish {&[16,17,18,19]}else{&[12,13]});
-                    if button(ui, if finish {"Unset V-bit geometry"} else {"Unset endmill geometry"}, true).clicked() {
-                        self.edit_job(ctx, if finish {&[16,17,18,19]} else {&[12,13]}, |job| { authoring::tool_mut(job, finish)?.geometry = None; Ok(()) });
-                    }
-                    ui.separator();ui.label("Used by Flat V-carve");
-                    ui.small(if finish {"Defines the V-shaped target in both modes; executes finishing in Combined mode."}else{"Endmill clearing stage"});
-                    if button(ui,"Edit cutting assignment",true).clicked(){self.navigate(2);}
-                    if button(ui,"Edit controller mapping",true).clicked(){self.navigate(3);}
+                    self.job_tool_panel(ui, ctx, finish);
                 }}}
                 if let Some(label) = self.issue_focus.clone() {
                     let rect = CONTROLS.with(|c| c.borrow().get(&label).copied());
@@ -223,13 +213,76 @@ impl App {
                     let generate = ui.add_enabled(ready && self.active.is_none() && self.io.is_none(),egui::Button::new("Generate").fill(Color32::from_rgb(49,190,195)));
                     observe_control("Generate operation",generate.rect);
                     if generate.clicked() {
-                        self.submit(Command::Generate {job:self.document.as_ref().unwrap().job.to_json().unwrap()},ctx);
+                        self.generate(crate::session::GenerateScope::AllEnabled, ctx);
+                    }
+                    let id = self.operation_id();
+                    let through = ui.add_enabled(ready && self.active.is_none() && self.io.is_none(), egui::Button::new("Generate through here"));
+                    observe_control("Generate through here", through.rect);
+                    if through.clicked() && !id.is_empty() {
+                        self.generate(crate::session::GenerateScope::ThroughOperation { operation_id: id }, ctx);
                     }
                 });
             } else { self.scroll[self.inspector_tab]=area.state.offset.y; }
         });
         self.inspector_width = panel.response.rect.width();
     }
+    /// The geometry tab of one job tool. The assignment belongs to an
+    /// operation, so the panel names the operation that uses it and edits only
+    /// that operation's tool snapshot.
+    fn job_tool_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, finish: bool) {
+        let id = self.operation_id();
+        let kind = self.operation_kind();
+        let label = crate::session::kind_label(&self.document.as_ref().unwrap().job, &id);
+        if finish && kind != Some(crate::session::OperationKind::FlatVcarve) {
+            ui.heading("V-bit geometry");
+            self.numbers(ui, ctx, &[16, 17, 18, 19]);
+            ui.separator();
+            ui.label(format!("{label} does not use a V-bit."));
+            return;
+        }
+        ui.heading(if finish {
+            "V-bit geometry"
+        } else {
+            "Endmill geometry"
+        });
+        self.numbers(ui, ctx, if finish { &[16, 17, 18, 19] } else { &[12, 13] });
+        if button(
+            ui,
+            if finish {
+                "Unset V-bit geometry"
+            } else {
+                "Unset endmill geometry"
+            },
+            true,
+        )
+        .clicked()
+        {
+            self.edit_job(
+                ctx,
+                if finish { &[16, 17, 18, 19] } else { &[12, 13] },
+                move |job| {
+                    authoring::tool_mut_in(job, &id, finish)?.geometry = None;
+                    Ok(())
+                },
+            );
+        }
+        ui.separator();
+        ui.label(format!("Used by {label}"));
+        ui.small(if finish {
+            "Defines the V-shaped target in both modes; executes finishing in Combined mode."
+        } else if kind == Some(crate::session::OperationKind::DragKnife) {
+            "Passive blade geometry: offset and maximum cutting depth."
+        } else {
+            "Clearing and facing cutter"
+        });
+        if button(ui, "Edit cutting assignment", true).clicked() {
+            self.navigate(2);
+        }
+        if button(ui, "Edit controller mapping", true).clicked() {
+            self.navigate(3);
+        }
+    }
+
     fn artwork_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Artwork & placement");
         for rejection in &self.artwork_rejections {
@@ -668,16 +721,24 @@ impl App {
                 machine.length_compensation == Some(cam_core::post::LengthCompensation::ToolTable);
             self.numbers(ui, ctx, &[7]);
             let job = &self.document.as_ref().unwrap().job;
-            let tool_id = crate::knife::settings(job)
+            let operation_id = self
+                .document
+                .as_ref()
+                .map(|d| d.raw.operation.clone())
+                .unwrap_or_default();
+            // The mapping shown belongs to the selected operation's own tool,
+            // whatever kind that operation is.
+            let tool_id = crate::knife::settings_in(job, &operation_id)
                 .map(|s| &s.assignment.tool_id)
-                .unwrap_or_else(|| &engine::settings(job).endmill.tool_id);
+                .or_else(|| {
+                    crate::authoring::tool_in(job, &operation_id, false).map(|tool| &tool.id)
+                });
             ui.label(format!(
                 "Tool: {}",
-                job.tools
-                    .iter()
-                    .find(|t| &t.id == tool_id)
-                    .map(|t| t.name.as_str())
-                    .unwrap_or(tool_id)
+                tool_id
+                    .and_then(|id| job.tools.iter().find(|t| &t.id == id))
+                    .map(|t| format!("{} · {}", t.name, t.id))
+                    .unwrap_or_else(|| "no cutter assigned".into())
             ));
             self.numbers(ui, ctx, if table { &[32, 33] } else { &[32] });
             if engine::carving(&self.document.as_ref().unwrap().job)

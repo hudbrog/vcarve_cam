@@ -17,7 +17,7 @@ struct Worker {
 fn native_knife_execution_seek_and_exact_output_evidence() {
     let worker = Worker::new();
     let job = include_str!("../../../fixtures/gui6/knife.job.json").to_owned();
-    let (generated, _) = worker.request(Command::Generate { job: job.clone() });
+    let (generated, _) = worker.request(Command::generate(job.clone()));
     let handle = generated.report["gui2"]["handle"]
         .as_str()
         .unwrap()
@@ -66,7 +66,7 @@ impl Worker {
         std::fs::rename(self.folder.join("pending"), self.folder.join("request")).unwrap();
     }
     fn request(&self, command: Command) -> (SceneMeta, Vec<u8>) {
-        self.send(Request::Gui2(command));
+        self.send(Request::Gui2(Box::new(command)));
         let start = Instant::now();
         let response = self.folder.join("response");
         while !response.exists() {
@@ -114,7 +114,7 @@ fn native_resource_commands_copy_profiles_generate_and_prepare() {
     let mut doc = gui::open(&job).unwrap();
     cam_gui_runtime::authoring::set_mode(&mut doc, cam_core::project::FlatVcarveMode::Combined);
     job = doc.to_json().unwrap();
-    let (generated, _) = worker.request(Command::Generate { job: job.clone() });
+    let (generated, _) = worker.request(Command::generate(job.clone()));
     let handle = generated.report["gui2"]["handle"]
         .as_str()
         .unwrap()
@@ -136,6 +136,7 @@ fn native_collection_commands_generate_seek_prepare_and_reopen() {
     });
     let (added, _) = worker.request(Command::Artwork {
         job: opened.job,
+        operation_id: String::new(),
         action: gui::ArtworkCommand::Add {
             filename: "second.svg".into(),
             svg: include_str!("../../../fixtures/gui4/second.svg").into(),
@@ -152,9 +153,7 @@ fn native_collection_commands_generate_seek_prepare_and_reopen() {
         .collect();
     authoring::set_mode(&mut job, cam_core::project::FlatVcarveMode::Combined);
     let portable = job.to_json().unwrap();
-    let (generated, _) = worker.request(Command::Generate {
-        job: portable.clone(),
-    });
+    let (generated, _) = worker.request(Command::generate(portable.clone()));
     assert_eq!(generated.report["gui2"]["checks"]["exportReady"], true);
     let handle = generated.report["gui2"]["handle"]
         .as_str()
@@ -225,15 +224,14 @@ fn persistent_native_process_open_edit_generate_seek_prepare_save_reopen_and_sto
         json: gui::FLOWER.into(),
     });
     assert!(opened.contour_vertices > 0);
-    let job =
-        cam_gui_runtime::app::set_value(&gui::open(&opened.job).unwrap(), 2, Some(1900.)).unwrap();
+    let job = gui::open(&opened.job).unwrap();
+    let operation = job.operations[0].id.clone();
+    let job = cam_gui_runtime::app::set_value(&job, &operation, 2, Some(1900.)).unwrap();
     let (applied, _) = worker.request(Command::ApplyProfile {
         job: job.to_json().unwrap(),
         json: gui::PROFILE.into(),
     });
-    let (generated, _) = worker.request(Command::Generate {
-        job: applied.job.clone(),
-    });
+    let (generated, _) = worker.request(Command::generate(applied.job.clone()));
     let handle = generated.report["gui2"]["handle"]
         .as_str()
         .unwrap()

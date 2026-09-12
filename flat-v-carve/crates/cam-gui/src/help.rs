@@ -178,7 +178,7 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
     })
 }
 
-const FIELD_HELP: [&str; 75] = [
+const FIELD_HELP: [&str; 89] = [
     "Total carving depth below the operation top, in millimeters. Stepdown controls how much is removed in each pass.",
     "Material left on walls by roughing, in millimeters, for a later finishing pass. Zero requests no extra allowance.",
     "Endmill cutting speed along the path, in mm/min. Choose for your cutter, material and machine; it is not spindle RPM.",
@@ -254,6 +254,20 @@ const FIELD_HELP: [&str; 75] = [
     "Explicit initial blade heading in degrees counterclockwise from +X, pointing from pivot toward tip. It must match the physical blade alignment.",
     "Signed height offset in millimeters from the selected knife top reference. Positive is upward, negative is downward.",
     "Signed height offset in millimeters from the selected knife bottom reference. A negative stock-top offset sets a cut below stock top.",
+    "Facing pass angle in degrees. Only 0 (rows along X) and 90 (rows along Y) ship in this milestone; another angle is rejected with a located reason.",
+    "Travel beyond the requested face coverage at each pass entry, in millimeters. This is allowed overhang, not a claim that material outside the request is faced.",
+    "Travel beyond the requested face coverage at each pass exit, in millimeters. This is allowed overhang, not a claim that material outside the request is faced.",
+    "Coverage expansion past the requested area's minimum X edge, in millimeters. Positive values extend outward and must be nonnegative.",
+    "Coverage expansion past the requested area's maximum X edge, in millimeters. Positive values extend outward and must be nonnegative.",
+    "Coverage expansion past the requested area's minimum Y edge, in millimeters. Positive values extend outward and must be nonnegative.",
+    "Coverage expansion past the requested area's maximum Y edge, in millimeters. Positive values extend outward and must be nonnegative.",
+    "Left edge of the requested face rectangle in setup millimeters. The rectangle must have positive width and length.",
+    "Bottom edge of the requested face rectangle in setup millimeters. The rectangle must have positive width and length.",
+    "Requested face rectangle extent along setup X in millimeters. Coverage beyond this comes only from the margins.",
+    "Requested face rectangle extent along setup Y in millimeters. Coverage beyond this comes only from the margins.",
+    "Signed height offset in millimeters from the selected face top reference. Positive is upward; the facing depth starts at this adjusted top.",
+    "Signed height offset in millimeters from the selected face bottom reference. A negative stock-top offset sets how deeply the face removes material.",
+    "Maximum depth increment allowed by this tool assignment. The requested face stepdown is clamped to this tool limit.",
 ];
 
 #[cfg(test)]

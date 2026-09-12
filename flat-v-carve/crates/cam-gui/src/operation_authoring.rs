@@ -1,12 +1,69 @@
-//! Operation lifecycle for the current single-operation workspace.
-use cam_core::project::v5::*;
+//! Operation lifecycle for the ordered workspace.
+//!
+//! The edits themselves live in the shared schema-5 document commands
+//! ([`cam_core::project::v5::commands`]), so the UI applies operation
+//! ordering, enablement and creation exactly like any other document command
+//! and never keeps a second validator. This module only binds the GUI's
+//! intent (which kind to add, under which stable ID) to those commands.
+use cam_core::project::v5::{self, CamJobV5};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+/// Bound on the ordered operation list this workspace edits. The planner has
+/// its own stage/motion budget; this limit keeps the navigator and one
+/// generated prefix inside the reviewed display envelope.
+pub const MAX_OPERATIONS: usize = 12;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    Face,
+    FlatVcarve,
+    DragKnife,
+}
+
+impl Kind {
+    pub fn new_operation_kind(self) -> v5::commands::NewOperationKind {
+        match self {
+            Self::Face => v5::commands::NewOperationKind::Face,
+            Self::FlatVcarve => v5::commands::NewOperationKind::FlatVcarve,
+            Self::DragKnife => v5::commands::NewOperationKind::DragKnife,
+        }
+    }
+    pub fn id_prefix(self) -> &'static str {
+        match self {
+            Self::Face => "face",
+            Self::FlatVcarve => "carving",
+            Self::DragKnife => "knife",
+        }
+    }
+    pub fn default_name(self) -> &'static str {
+        self.new_operation_kind().default_name()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
-    Delete,
-    AddKnife,
-    AddVcarve,
+    Add {
+        kind: Kind,
+        operation_id: String,
+        name: String,
+    },
+    Delete {
+        operation_id: String,
+    },
+    SetEnabled {
+        operation_id: String,
+        enabled: bool,
+    },
+    Move {
+        operation_id: String,
+        to_index: usize,
+    },
+    Rename {
+        operation_id: String,
+        name: String,
+    },
 }
 
 pub fn empty_job() -> CamJobV5 {
@@ -26,106 +83,66 @@ pub fn empty_job() -> CamJobV5 {
     }
 }
 
-fn new_tool(job: &mut CamJobV5, prefix: &str, name: &str) -> String {
-    let mut id = prefix.to_owned();
-    let mut n = 2;
-    while job.tools.iter().any(|t| t.id == id) {
-        id = format!("{prefix}-{n}");
-        n += 1;
+/// A stable, unused operation ID for one new operation.
+pub fn next_id(job: &CamJobV5, kind: Kind) -> String {
+    let prefix = kind.id_prefix();
+    let mut index = 1;
+    loop {
+        let candidate = format!("{prefix}-{index}");
+        if !job
+            .operations
+            .iter()
+            .any(|operation| operation.id == candidate)
+        {
+            return candidate;
+        }
+        index += 1;
     }
-    job.tools.push(JobToolV5 {
-        id: id.clone(),
-        name: name.into(),
-        geometry: None,
-        capabilities: Default::default(),
-        library_origin: None,
-    });
-    id
 }
 
-pub fn apply(job: &CamJobV5, action: Action) -> Result<CamJobV5, String> {
-    let mut job = job.clone();
-    if matches!(action, Action::Delete) {
-        if job.operations.len() != 1 {
-            return Err("Select an operation to delete".into());
-        }
-        job.operations.clear();
-    } else {
-        if !job.operations.is_empty() {
-            return Err("Delete the current operation before adding another. Multiple-operation sequences are not supported in this workspace yet.".into());
-        }
-        let (id, name, settings) = match action {
-            Action::AddKnife => {
-                let tool_id = new_tool(&mut job, "knife-tool", "Drag knife");
-                // This adds support for strokes; filled source bytes remain fills.
-                for item in &mut job.artwork {
-                    item.import_settings.mode = cam_core::svg::ImportMode::Centerline;
-                }
-                (
-                    "knife",
-                    "Drag knife",
-                    OperationSettingsV5::DragKnife(DragKnifeSettingsV5 {
-                        chains: vec![],
-                        assignment: KnifeAssignmentV5 {
-                            tool_id,
-                            cutting_feed_mm_min: None,
-                            plunge_feed_mm_min: None,
-                            swivel_feed_mm_min: None,
-                            max_stepdown_mm: None,
-                            applied_profile: None,
-                        },
-                        top: Default::default(),
-                        bottom: Default::default(),
-                        stepdown_mm: None,
-                        swivel_depth_mm: None,
-                        corner_threshold_deg: None,
-                        through_cut_allowance_mm: None,
-                        start: Default::default(),
-                        closure_overlap_mm: None,
-                        alignment: Default::default(),
-                    }),
-                )
-            }
-            Action::AddVcarve => {
-                let assignment = |tool_id| MillingAssignmentV5 {
-                    tool_id,
-                    spindle_rpm: None,
-                    spindle_direction: None,
-                    cutting_feed_mm_min: None,
-                    plunge_feed_mm_min: None,
-                    max_stepdown_mm: None,
-                    stepover_mm: None,
-                    applied_profile: None,
-                };
-                let endmill = assignment(new_tool(&mut job, "endmill", "Endmill"));
-                let vbit = assignment(new_tool(&mut job, "vbit", "V-bit target"));
-                (
-                    "carving",
-                    "Flat V-carve",
-                    OperationSettingsV5::FlatVcarve(FlatVcarveSettingsV5 {
-                        components: vec![],
-                        mode: cam_core::project::FlatVcarveMode::EndmillOnly,
-                        endmill,
-                        vbit,
-                        top: Default::default(),
-                        max_depth_mm: None,
-                        wall_allowance_mm: None,
-                        max_floor_ridge_mm: None,
-                        max_detail_residual_mm: None,
-                        rough: None,
-                        finish: None,
-                    }),
-                )
-            }
-            Action::Delete => unreachable!(),
-        };
-        job.operations.push(OperationV5 {
-            id: id.into(),
-            name: name.into(),
-            enabled: true,
-            settings,
-        });
+/// The add action for one kind, with the next free ID and the canonical name.
+pub fn add(kind: Kind, job: &CamJobV5) -> Action {
+    Action::Add {
+        kind,
+        operation_id: next_id(job, kind),
+        name: kind.default_name().into(),
     }
-    job.validate_structure().map_err(|e| e.to_string())?;
-    Ok(job)
+}
+
+/// Apply one operation-list edit. Every returned document is structurally
+/// valid; a rejected edit leaves the caller's document untouched.
+pub fn apply(job: &CamJobV5, action: Action) -> Result<CamJobV5, String> {
+    fn message(error: cam_core::geometry::Diagnostic) -> String {
+        error.to_string()
+    }
+    let outcome = match action {
+        Action::Add {
+            kind,
+            operation_id,
+            name,
+        } => {
+            if job.operations.len() >= MAX_OPERATIONS {
+                return Err(format!(
+                    "This workspace orders up to {MAX_OPERATIONS} operations; delete one before adding another"
+                ));
+            }
+            v5::commands::add_operation(job, kind.new_operation_kind(), &operation_id, &name)
+                .map_err(message)?
+        }
+        Action::Delete { operation_id } => {
+            v5::commands::remove_operation(job, &operation_id).map_err(message)?
+        }
+        Action::SetEnabled {
+            operation_id,
+            enabled,
+        } => v5::commands::set_operation_enabled(job, &operation_id, enabled).map_err(message)?,
+        Action::Move {
+            operation_id,
+            to_index,
+        } => v5::commands::move_operation(job, &operation_id, to_index).map_err(message)?,
+        Action::Rename { operation_id, name } => {
+            v5::commands::rename_operation(job, &operation_id, &name).map_err(message)?
+        }
+    };
+    Ok(outcome.job)
 }

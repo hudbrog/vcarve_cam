@@ -59,6 +59,19 @@ struct StockView {
     prefix: usize,
 }
 
+/// One visible path range of the timeline. `index` is the stage's simulation
+/// tool so the overlay can draw the right cutter glyph.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DisplayGroup {
+    pub label: String,
+    pub jump: String,
+    pub start: usize,
+    pub end: usize,
+    pub tool: usize,
+    pub operation: String,
+    pub role: String,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ViewSettings {
@@ -92,7 +105,7 @@ impl ViewSettings {
             || !self.zoom.is_finite()
             || !(0.5..=3.).contains(&self.zoom)
             || !self.yaw.is_finite()
-            || self.stage > 2
+            || self.stage > crate::session::MAX_DISPLAY_GROUPS
             || self.prefix > crate::session::MOTION_LIMIT
         {
             return Err("Invalid saved viewport".into());
@@ -103,6 +116,11 @@ impl ViewSettings {
 
 pub struct Viewport {
     knife_chains: Arc<Vec<crate::knife::Chain>>,
+    /// One timeline entry per executed stage (or operation), in plan order.
+    groups: Arc<Vec<DisplayGroup>>,
+    /// Whether the operation the user is editing is a drag knife. Picking
+    /// behavior follows the operation, not the whole scene.
+    knife_selected: bool,
     pub artwork: ArtworkInteraction,
     pub stock_loading: bool,
     pub result_current: bool,
@@ -149,6 +167,8 @@ impl Default for Viewport {
     fn default() -> Self {
         Self {
             knife_chains: Arc::new(Vec::new()),
+            groups: Arc::new(Vec::new()),
+            knife_selected: false,
             artwork: ArtworkInteraction::default(),
             stock_loading: false,
             result_current: false,
@@ -226,7 +246,10 @@ impl Viewport {
         self.knife_chains = Arc::new(
             serde_json::from_value(scene.meta.report["gui2"]["chains"].clone()).unwrap_or_default(),
         );
-        if scene.meta.report["gui2"]["knife"] == true {
+        self.groups = Arc::new(
+            serde_json::from_value(scene.meta.report["gui2"]["groups"].clone()).unwrap_or_default(),
+        );
+        if self.stage > self.groups.len() {
             self.stage = 0;
         }
         self.playhead = scene.motion_count();
@@ -564,21 +587,32 @@ impl Viewport {
             ui.horizontal_wrapped(|ui| {
                 let play=ui.button(if self.playing {"Pause"} else {"Play"});crate::app::observe_control(if self.playing {"Pause"} else {"Play"},play.rect);if play.clicked() { self.playing = !self.playing; if self.playing && self.stock_prefix==self.motion_count(){self.stock_seek(0);} }
                 let start=ui.button("Start");crate::app::observe_control("Start",start.rect);if start.clicked() {self.playing=false;self.stock_seek(0);}
-                if self.is_knife() {
-                    let end=ui.button("After knife");crate::app::observe_control("After knife",end.rect);if end.clicked(){self.playing=false;self.stock_seek(self.motion_count());}
-                    ui.label("Knife pivot paths");
-                } else {
-                let rough=ui.button("After endmill");crate::app::observe_control("After endmill",rough.rect);if rough.clicked() {self.playing=false;
-                    let prefix=self.scene.as_ref().map_or(0,|s|s.meta.rough_vertices/2);
-                    self.stock_seek(prefix);
+                let groups = self.groups.clone();
+                for (index, group) in groups.iter().enumerate() {
+                    let target = group.end;
+                    let response = ui.button(&group.jump);
+                    crate::app::observe_control(&group.jump, response.rect);
+                    if response.clicked() {
+                        self.playing = false;
+                        self.stock_seek(target);
+                    }
+                    let _ = index;
                 }
-                let finish=ui.button("After V-bit");crate::app::observe_control("After V-bit",finish.rect);if finish.clicked(){self.playing=false;self.stock_seek(self.motion_count());}
-                egui::ComboBox::from_id_salt("visible-path-stage").selected_text(["All paths","Endmill paths","V-bit paths"][self.stage]).show_ui(ui,|ui| {
-                    ui.selectable_value(&mut self.stage,0,"All paths");
-                    ui.selectable_value(&mut self.stage,1,"Endmill paths");
-                    ui.selectable_value(&mut self.stage,2,"V-bit paths");
-                });
+                if self.knife_selected {
+                    ui.label("Knife traces keep the preceding stock; pivot paths are paged.");
                 }
+                let selected = groups
+                    .get(self.stage.wrapping_sub(1))
+                    .map(|group| group.label.clone())
+                    .unwrap_or_else(|| "All paths".into());
+                egui::ComboBox::from_id_salt("visible-path-stage")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.stage, 0, "All paths");
+                        for (index, group) in groups.iter().enumerate() {
+                            ui.selectable_value(&mut self.stage, index + 1, &group.label);
+                        }
+                    });
             });
             ui.horizontal(|ui| {
                 ui.spacing_mut().slider_width=(ui.available_width()-160.).max(80.);
@@ -648,7 +682,7 @@ impl Viewport {
             return Vec::new();
         }
         let playhead = self.playhead.min(table.motions);
-        let range = visible_range(scene, self.stage, self.playhead);
+        let range = visible_range(scene, &self.groups, self.stage, self.playhead);
         let (start, end) = (range.start, range.end);
         if end <= start {
             return Vec::new();
@@ -663,7 +697,7 @@ impl Viewport {
 
     pub fn visible_motion_range(&self) -> std::ops::Range<usize> {
         self.scene.as_ref().map_or(0..0, |scene| {
-            visible_range(scene, self.stage, self.playhead)
+            visible_range(scene, &self.groups, self.stage, self.playhead)
         })
     }
 
@@ -775,12 +809,12 @@ impl Viewport {
                 let picker = self.picker.as_ref()?;
                 let index = (self.playhead - 1).min(picker.motion_count().saturating_sub(1));
                 let points = picker.endpoints(index as u32)?;
-                let motion_tool = scene
-                    .meta
-                    .report
-                    .get("roughingMotions")
-                    .and_then(|v| v.as_u64())
-                    .map_or(0, |rough| if index < rough as usize { 0 } else { 1 });
+                // The cutter glyph follows the stage that owns this motion.
+                let motion_tool = self
+                    .groups
+                    .iter()
+                    .find(|group| index >= group.start && index < group.end)
+                    .map_or(0, |group| group.tool);
                 let tool = sim.tools.get(motion_tool).copied()?;
                 let tip = [points[1][0], points[1][1], points[1][2]];
                 Some(match tool {
@@ -858,12 +892,22 @@ fn page_table(scene: &Scene) -> pages::PageTable {
     })
 }
 
-fn visible_range(scene: &Scene, stage: usize, prefix: usize) -> std::ops::Range<usize> {
-    let rough = scene.meta.rough_vertices / 2;
+/// The motion span the selected path group shows, clipped to the playhead.
+/// Hiding a group's paths never rewinds the stock: the removal at the current
+/// playhead is preserved because the stock field is independent of this range.
+fn visible_range(
+    scene: &Scene,
+    groups: &[DisplayGroup],
+    stage: usize,
+    prefix: usize,
+) -> std::ops::Range<usize> {
     let end = prefix.min(scene.motion_count());
-    match stage {
-        1 => 0..end.min(rough),
-        2 => rough.min(end)..end,
-        _ => 0..end,
+    if stage == 0 {
+        return 0..end;
     }
+    let Some(group) = groups.get(stage - 1) else {
+        return 0..end;
+    };
+    let start = group.start.min(end);
+    start..group.end.clamp(start, end)
 }

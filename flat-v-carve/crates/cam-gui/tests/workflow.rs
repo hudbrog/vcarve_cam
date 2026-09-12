@@ -25,8 +25,7 @@ fn profile(job: &str) -> String {
 fn canonical_flower_retains_exact_execution_and_prepares_without_replanning() {
     let input = profile(gui::FLOWER);
     let mut service = Retained::new();
-    let (scene, payload) =
-        gui::execute(&mut service, Command::Generate { job: input.clone() }).unwrap();
+    let (scene, payload) = gui::execute(&mut service, Command::generate(input.clone())).unwrap();
     assert_eq!(scene.motions, 22_883);
     assert_eq!(scene.rough_vertices / 2, 7_048);
     assert!(scene.stock.is_some());
@@ -132,7 +131,8 @@ fn canonical_flower_retains_exact_execution_and_prepares_without_replanning() {
     assert_eq!(reread["file"], output["file"]);
     let reopened = gui::open(&prepared.job).unwrap();
     assert_eq!(reopened, gui::open(&input).unwrap());
-    let changed = set_value(&reopened, 2, Some(710.)).unwrap();
+    let operation = reopened.operations[0].id.clone();
+    let changed = set_value(&reopened, &operation, 2, Some(710.)).unwrap();
     let stale = gui::execute(
         &mut service,
         Command::Prepare {
@@ -176,10 +176,21 @@ fn real_edits_pending_text_recovery_and_unsupported_documents() {
     let mut extra = collection.operations[0].clone();
     extra.id = "extra".into();
     collection.operations.push(extra);
+    // GUI7 orders multiple supported operations; the envelope is the kind and
+    // count of operations, not "exactly one".
+    let ordered = gui::open(&collection.to_json().unwrap()).unwrap();
+    assert_eq!(ordered.operations.len(), 2);
+    let mut beyond = collection.clone();
+    beyond.operations.truncate(1);
+    while beyond.operations.len() <= cam_gui_runtime::operation_authoring::MAX_OPERATIONS {
+        let mut duplicate = beyond.operations[0].clone();
+        duplicate.id = format!("op-{}", beyond.operations.len());
+        beyond.operations.push(duplicate);
+    }
     assert!(
-        gui::open(&collection.to_json().unwrap())
+        gui::open(&beyond.to_json().unwrap())
             .unwrap_err()
-            .contains("one Flat V-carve")
+            .contains("up to")
     );
     let mut future = json!(original);
     future["schema_version"] = json!(6);

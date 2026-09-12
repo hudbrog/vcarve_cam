@@ -325,13 +325,8 @@ fn real_resource_values_generate_simulate_export_and_machine_edits_revalidate() 
     );
     authoring::set_mode(&mut job, cam_core::project::FlatVcarveMode::Combined);
     let mut service = Retained::new();
-    let (generated, _) = session::execute(
-        &mut service,
-        Command::Generate {
-            job: job.to_json().unwrap(),
-        },
-    )
-    .unwrap();
+    let (generated, _) =
+        session::execute(&mut service, Command::generate(job.to_json().unwrap())).unwrap();
     assert_eq!(generated.report["gui2"]["kind"], "generated");
     let handle = generated.report["gui2"]["handle"]
         .as_str()
@@ -353,10 +348,7 @@ fn real_resource_values_generate_simulate_export_and_machine_edits_revalidate() 
     job = R::Machine { profile: machine }.execute(&job).unwrap();
     let (check, _) = session::execute(
         &mut service,
-        Command::ValidatePlan {
-            job: job.to_json().unwrap(),
-            handle: handle.clone(),
-        },
+        Command::validate_plan(job.to_json().unwrap(), handle.clone()),
     )
     .unwrap();
     assert_eq!(check.report["gui2"]["kind"], "revalidated");

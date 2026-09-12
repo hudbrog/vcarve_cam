@@ -275,15 +275,24 @@ impl ResourceCommand {
             _ => vec![],
         };
         if matches!(self, Self::UseTool { .. } | Self::EditTool { .. }) {
+            // The assignment's tool ids come from the operation that owns the
+            // action; a job without a Flat V-carve operation has no V-bit
+            // assignment to address here.
+            let Some(carving) = crate::session::carving(job) else {
+                // A source-free Face operation carries its own cutter geometry
+                // and tool stepdown limit; the raw drafts of those values are
+                // stale after a resource edit.
+                fields.extend([12, 13, 88]);
+                return fields;
+            };
             for (finish, extra) in [
                 (false, &[12, 13, 32, 33][..]),
                 (true, &[16, 17, 18, 19, 38, 39][..]),
             ] {
-                let s = crate::session::settings(job);
                 let target = if finish {
-                    &s.vbit.tool_id
+                    &carving.vbit.tool_id
                 } else {
-                    &s.endmill.tool_id
+                    &carving.endmill.tool_id
                 };
                 let affected = match self {
                     Self::EditTool { tool } => &tool.id == target,

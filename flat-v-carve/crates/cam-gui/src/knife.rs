@@ -7,11 +7,41 @@ use cam_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub fn settings(job: &CamJobV5) -> Option<&DragKnifeSettingsV5> {
-    match &job.operations.first()?.settings {
+/// The drag-knife settings of one explicit operation.
+pub fn settings_in<'a>(job: &'a CamJobV5, operation_id: &str) -> Option<&'a DragKnifeSettingsV5> {
+    match &crate::session::operation(job, operation_id)?.settings {
         OperationSettingsV5::DragKnife(s) => Some(s),
         _ => None,
     }
+}
+
+pub fn settings_in_mut<'a>(
+    job: &'a mut CamJobV5,
+    operation_id: &str,
+) -> Option<&'a mut DragKnifeSettingsV5> {
+    match &mut crate::session::operation_mut(job, operation_id)?.settings {
+        OperationSettingsV5::DragKnife(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// The first drag-knife operation. Knife-only workflows (one knife operation)
+/// address it through this; ordered sequences address an explicit ID.
+pub fn settings(job: &CamJobV5) -> Option<&DragKnifeSettingsV5> {
+    job.operations
+        .iter()
+        .find_map(|operation| match &operation.settings {
+            OperationSettingsV5::DragKnife(s) => Some(s),
+            _ => None,
+        })
+}
+
+fn first_knife_id(job: &CamJobV5) -> String {
+    job.operations
+        .iter()
+        .find(|operation| matches!(operation.settings, OperationSettingsV5::DragKnife(_)))
+        .map(|operation| operation.id.clone())
+        .unwrap_or_default()
 }
 
 pub fn interpretation() -> SvgInterpretation {
@@ -22,7 +52,11 @@ pub fn interpretation() -> SvgInterpretation {
 }
 
 pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
-    let s = settings(job)?;
+    value_in(job, &first_knife_id(job), field)
+}
+
+pub fn value_in(job: &CamJobV5, operation_id: &str, field: usize) -> Option<f64> {
+    let s = settings_in(job, operation_id)?;
     let a = &s.assignment;
     match field {
         6 => job.setup.stock.thickness_mm,
@@ -102,21 +136,28 @@ pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
         72 => s.alignment.initial_heading_deg,
         73 => Some(s.top.offset_mm),
         74 => Some(s.bottom.offset_mm),
-        _ => None,
+        _ => crate::authoring::value_in(job, operation_id, field),
     }
 }
 
 pub fn set(job: &mut CamJobV5, field: usize, value: Option<f64>) -> Result<(), String> {
+    set_in(job, &first_knife_id(job), field, value)
+}
+
+pub fn set_in(
+    job: &mut CamJobV5,
+    operation_id: &str,
+    field: usize,
+    value: Option<f64>,
+) -> Result<(), String> {
     if field == 6 {
         job.setup.stock.thickness_mm = value;
         return Ok(());
     }
     if field < 61 {
-        return crate::authoring::set(job, field, value);
+        return crate::authoring::set_in(job, operation_id, field, value);
     }
-    let OperationSettingsV5::DragKnife(s) = &mut job.operations[0].settings else {
-        return Err("Expected knife operation".into());
-    };
+    let s = settings_in_mut(job, operation_id).ok_or("Expected knife operation")?;
     let a = &mut s.assignment;
     match field {
         61 | 62 => return Err("Complete both blade dimensions".into()),
@@ -134,6 +175,46 @@ pub fn set(job: &mut CamJobV5, field: usize, value: Option<f64>) -> Result<(), S
         74 => s.bottom.offset_mm = value.ok_or("Bottom offset cannot be unset")?,
         _ => return Err("Unknown knife field".into()),
     }
+    Ok(())
+}
+
+/// Clear one knife assignment's copied cutting values without touching the
+/// geometry, source selection or explicit heading.
+pub fn clear_assignment_in(job: &mut CamJobV5, operation_id: &str) {
+    let Some(s) = settings_in_mut(job, operation_id) else {
+        return;
+    };
+    s.assignment.cutting_feed_mm_min = None;
+    s.assignment.plunge_feed_mm_min = None;
+    s.assignment.swivel_feed_mm_min = None;
+    s.assignment.max_stepdown_mm = None;
+    s.assignment.applied_profile = None;
+}
+
+/// Bind a different job tool to one knife assignment. The new tool's geometry
+/// is not fabricated: an unset geometry stays unset and the planner reports it.
+pub fn assign_tool_in(job: &mut CamJobV5, operation_id: &str, id: &str) -> Result<(), String> {
+    let tool = job
+        .tools
+        .iter()
+        .find(|tool| tool.id == id)
+        .ok_or("Unknown job tool")?;
+    if !matches!(
+        &tool.geometry,
+        None | Some(cam_core::project::ToolGeometry::DragKnife(_))
+    ) {
+        return Err("Tool geometry does not match a drag-knife assignment".into());
+    }
+    let s = settings_in_mut(job, operation_id).ok_or("Expected knife operation")?;
+    if s.assignment.tool_id == id {
+        return Ok(());
+    }
+    s.assignment.tool_id = id.into();
+    s.assignment.cutting_feed_mm_min = None;
+    s.assignment.plunge_feed_mm_min = None;
+    s.assignment.swivel_feed_mm_min = None;
+    s.assignment.max_stepdown_mm = None;
+    s.assignment.applied_profile = None;
     Ok(())
 }
 
@@ -252,7 +333,15 @@ pub fn chains(job: &CamJobV5) -> Result<Vec<Chain>, String> {
 
 /// No selection is inferred from imports; bind only the explicit current picks.
 pub fn select(job: &CamJobV5, references: &[GeometryRef]) -> Result<CamJobV5, String> {
-    settings(job).ok_or("Add a knife operation before selecting chains")?;
+    select_in(job, &first_knife_id(job), references)
+}
+
+pub fn select_in(
+    job: &CamJobV5,
+    operation_id: &str,
+    references: &[GeometryRef],
+) -> Result<CamJobV5, String> {
+    settings_in(job, operation_id).ok_or("Add a knife operation before selecting chains")?;
     let available = chains(job)?;
     if references
         .iter()
@@ -260,13 +349,9 @@ pub fn select(job: &CamJobV5, references: &[GeometryRef]) -> Result<CamJobV5, St
     {
         return Err("Artwork changed; select the knife chain again".into());
     }
-    commands::set_chain_selection(
-        job,
-        &job.operations[0].id,
-        &crate::authoring::picks(references),
-    )
-    .map(|o| o.job)
-    .map_err(|e| e.to_string())
+    commands::set_chain_selection(job, operation_id, &crate::authoring::picks(references))
+        .map(|o| o.job)
+        .map_err(|e| e.to_string())
 }
 
 /// Bind a source-length start anchor using the current core catalogue.
@@ -275,7 +360,16 @@ pub fn set_start(
     reference: Option<&GeometryRef>,
     fraction: f64,
 ) -> Result<CamJobV5, String> {
-    let s = settings(job).ok_or("Expected knife operation")?;
+    set_start_in(job, &first_knife_id(job), reference, fraction)
+}
+
+pub fn set_start_in(
+    job: &CamJobV5,
+    operation_id: &str,
+    reference: Option<&GeometryRef>,
+    fraction: f64,
+) -> Result<CamJobV5, String> {
+    let s = settings_in(job, operation_id).ok_or("Expected knife operation")?;
     let start = if let Some(reference) = reference {
         if !s.chains.contains(reference) {
             return Err("Choose a selected knife chain for the start".into());
@@ -306,16 +400,20 @@ pub fn set_start(
         StartSelectionV5::Automatic
     };
     let mut candidate = job.clone();
-    let OperationSettingsV5::DragKnife(s) = &mut candidate.operations[0].settings else {
-        unreachable!()
-    };
-    s.start = start;
+    settings_in_mut(&mut candidate, operation_id)
+        .ok_or("Expected knife operation")?
+        .start = start;
     candidate.validate_structure().map_err(|e| e.to_string())?;
     Ok(candidate)
 }
 
-/// Display geometry uses core chain vertices and modeled headings. Emitted
-/// replay arrives separately from the exact checked output bundle.
+/// Knife-only display geometry from core chain vertices and modeled headings.
+///
+/// GUI7's ordered workspace projects every scene through
+/// [`crate::scene::build`], which also covers sequences that begin with a
+/// milling operation; this knife-only entry remains for callers that hold a
+/// single-knife document. Emitted replay arrives separately from the exact
+/// checked output bundle.
 pub fn scene(
     job: &CamJobV5,
     plan: Option<&cam_core::sequence::OperationPlanV5>,

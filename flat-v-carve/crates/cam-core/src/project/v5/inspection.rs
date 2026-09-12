@@ -155,6 +155,50 @@ pub fn inspect_knife_fields(
     ))
 }
 
+/// Face editor diagnostics: the face planner's required-but-unset fields for
+/// one operation (stock, clearance, tolerances, stepdown/stepover and the
+/// complete milling assignment).
+pub fn inspect_face_fields(
+    job: &CamJobV5,
+    operation_id: &str,
+) -> Result<Vec<crate::operations::LocatedDiagnostic>> {
+    let operation = job
+        .operations
+        .iter()
+        .find(|op| op.id == operation_id)
+        .ok_or_else(|| super::error("OPERATION_NOT_FOUND", "Unknown operation"))?;
+    let OperationSettingsV5::Face(settings) = &operation.settings else {
+        return Err(super::error("OPERATION_KIND", "Expected Face"));
+    };
+    Ok(crate::operations::face::missing_fields_ctx(
+        &crate::operations::PlanContext::from_v5(job),
+        operation_id,
+        &super::resolve::to_face_settings(settings),
+    ))
+}
+
+/// Planner-owned required fields for one operation, dispatched by kind. Every
+/// editor and the generation pre-check use this single entry so a new
+/// operation kind cannot silently skip its own requirement list.
+pub fn inspect_operation_fields(
+    job: &CamJobV5,
+    operation_id: &str,
+) -> Result<Vec<crate::operations::LocatedDiagnostic>> {
+    let operation = job
+        .operations
+        .iter()
+        .find(|op| op.id == operation_id)
+        .ok_or_else(|| super::error("OPERATION_NOT_FOUND", "Unknown operation"))?;
+    match &operation.settings {
+        OperationSettingsV5::FlatVcarve(_) => inspect_flat_vcarve_fields(job, operation_id),
+        OperationSettingsV5::Face(_) => inspect_face_fields(job, operation_id),
+        OperationSettingsV5::DragKnife(_) => inspect_knife_fields(job, operation_id),
+        // Profile editors arrive with their own milestone; its requirement
+        // list stays the planner's until then.
+        OperationSettingsV5::Profile(_) => Ok(vec![]),
+    }
+}
+
 fn operation_kind(settings: &OperationSettingsV5) -> &'static str {
     match settings {
         OperationSettingsV5::FlatVcarve(_) => "flat_vcarve",

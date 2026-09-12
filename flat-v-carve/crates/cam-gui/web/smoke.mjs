@@ -125,7 +125,9 @@ const control = async label => {
     };
     const dropdown=['Library rotation','Library plunge','Library ramp','Copied plunge','Copied ramp','Work offset','Length compensation','Coolant','Path control','M6 return'].find(prefix=>label.startsWith(prefix+' '));
     if(!rect){
-      if(current.workspace?.inspector===2&&!current.resources?.open&&!current.resources?.jobsOpen){
+      // A Face operation publishes its own inspector without the carving tabs,
+      // so the carving-only tab routing must not run for it.
+      if(current.workspace?.inspector===2&&!current.resources?.open&&!current.resources?.jobsOpen&&current.job?.kind!=='face'){
         const tab=operationTarget(label)??geometryTarget(label);
         if(tab!==null&&current.workspace.operation_tab!==tab){await control(['Operation Shape & depth','Operation Endmill','Operation V-bit'][tab]);continue;}
         if(['Depth-dependent clearing','Deepest-region clearing'].includes(label)){await control('Operation clearing strategy');continue;}
@@ -159,7 +161,7 @@ const control = async label => {
 };
 const edit = async(label,text)=>{
   const current=await state(),tab=operationTarget(label);
-  if(current.workspace?.inspector===2&&tab!==null&&current.workspace.operation_tab!==tab)await control(['Operation Shape & depth','Operation Endmill','Operation V-bit'][tab]);
+  if(current.workspace?.inspector===2&&current.job?.kind!=='face'&&tab!==null&&current.workspace.operation_tab!==tab)await control(['Operation Shape & depth','Operation Endmill','Operation V-bit'][tab]);
   await control('Filter fields');await pressKey('a','KeyA',2);await send('Input.insertText',{text:label});await sleep(160);
   await control(label);await pressKey('a','KeyA',2);
   if(text==='')await pressKey('Backspace','Backspace');else await send('Input.insertText',{text});await sleep(100);
@@ -199,6 +201,9 @@ try {
   } else if(process.argv.includes('--operation')) {
     const {operationScenario}=await import('./operation-scenario.mjs');
     await operationScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out});
+  } else if(process.argv.includes('--gui7')) {
+    const {gui7Scenario}=await import('./gui7-scenario.mjs');
+    await gui7Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,path,out});
   } else if(process.argv.includes('--gui5')) {
     const {gui5Scenario}=await import('./gui5-scenario.mjs');
     await gui5Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out,chooseFile});

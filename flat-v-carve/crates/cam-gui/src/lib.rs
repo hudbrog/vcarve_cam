@@ -3,6 +3,7 @@ pub mod artwork_view;
 pub mod authoring;
 pub mod clock;
 pub mod compute;
+pub mod face;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod file_io;
 pub mod knife;
@@ -17,6 +18,7 @@ pub mod platform;
 pub mod recovery;
 pub mod render;
 pub mod resources;
+pub mod scene;
 pub mod session;
 pub mod sim;
 pub mod state;

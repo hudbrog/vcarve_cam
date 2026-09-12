@@ -746,10 +746,14 @@ impl App {
     }
 
     fn library_capture_tool(&mut self) {
-        let Some(job) = self.document.as_ref().map(|d| &d.job) else {
+        let Some(doc) = &self.document else {
             return;
         };
-        let Some(source) = crate::authoring::tool(job, self.resources.role == Role::Vbit) else {
+        let Some(source) = crate::authoring::tool_in(
+            &doc.job,
+            &doc.raw.operation,
+            self.resources.role == Role::Vbit,
+        ) else {
             return;
         };
         let id = unique(

@@ -112,10 +112,7 @@ fn explicit_migration_and_applied_profile_produce_one_portable_project() {
 fn edit(job: &CamJobV5, action: ArtworkCommand) -> (CamJobV5, serde_json::Value) {
     let (scene, _) = session::execute(
         &mut Retained::new(),
-        Command::Artwork {
-            job: job.to_json().unwrap(),
-            action,
-        },
+        Command::artwork(job.to_json().unwrap(), action),
     )
     .unwrap();
     (
@@ -214,6 +211,7 @@ fn operation_owns_its_geometry_selection_and_binds_current_revisions() {
             &mut Retained::new(),
             Command::Artwork {
                 job: replaced.to_json().unwrap(),
+                operation_id: "carving".into(),
                 action: ArtworkCommand::CarveSelection {
                     references: picked.clone()
                 }
@@ -260,9 +258,7 @@ fn replaced_and_deleted_sources_stay_unresolved_until_explicit_repair() {
     let reopened = session::open(&replaced.to_json().unwrap()).unwrap();
     let (blocked, _) = session::execute(
         &mut Retained::new(),
-        Command::Generate {
-            job: reopened.to_json().unwrap(),
-        },
+        Command::generate(reopened.to_json().unwrap()),
     )
     .unwrap();
     assert_eq!(blocked.report["gui2"]["kind"], "issues");
@@ -291,6 +287,7 @@ fn replaced_and_deleted_sources_stay_unresolved_until_explicit_repair() {
             &mut Retained::new(),
             Command::Artwork {
                 job: repaired.to_json().unwrap(),
+                operation_id: "carving".into(),
                 action: ArtworkCommand::Repair {
                     expected: refs[0].clone(),
                     replacement: refs[1].clone()
@@ -334,6 +331,7 @@ fn replaced_and_deleted_sources_stay_unresolved_until_explicit_repair() {
             &mut Retained::new(),
             Command::Artwork {
                 job: before.clone(),
+                operation_id: String::new(),
                 action: ArtworkCommand::Replace {
                     item: job.artwork[0].id.clone(),
                     filename: "bad.svg".into(),
@@ -359,13 +357,8 @@ fn cross_source_retained_simulation_checked_output_and_portable_reopen() {
     let portable = job.to_json().unwrap();
     assert_eq!(session::open(&portable).unwrap(), job);
     let mut worker = Retained::new();
-    let (scene, payload) = session::execute(
-        &mut worker,
-        Command::Generate {
-            job: portable.clone(),
-        },
-    )
-    .unwrap();
+    let (scene, payload) =
+        session::execute(&mut worker, Command::generate(portable.clone())).unwrap();
     assert_eq!(scene.report["gui2"]["checks"]["exportReady"], true);
     assert_eq!(
         scene.report["gui2"]["components"].as_array().unwrap().len(),
@@ -412,13 +405,8 @@ fn cross_source_retained_simulation_checked_output_and_portable_reopen() {
 fn retained_plan_reuse_uses_core_machining_identity_not_document_revision() {
     let job = session::open(JOB).unwrap();
     let mut worker = Retained::new();
-    let (generated, _) = session::execute(
-        &mut worker,
-        Command::Generate {
-            job: job.to_json().unwrap(),
-        },
-    )
-    .unwrap();
+    let (generated, _) =
+        session::execute(&mut worker, Command::generate(job.to_json().unwrap())).unwrap();
     let handle = generated.report["gui2"]["handle"]
         .as_str()
         .unwrap()
@@ -427,6 +415,7 @@ fn retained_plan_reuse_uses_core_machining_identity_not_document_revision() {
         &mut worker,
         Command::Artwork {
             job: job.to_json().unwrap(),
+            operation_id: String::new(),
             action: ArtworkCommand::Add {
                 filename: "unused.svg".into(),
                 svg: SVG.into(),
@@ -440,10 +429,7 @@ fn retained_plan_reuse_uses_core_machining_identity_not_document_revision() {
     candidate.artwork.reverse();
     let (reused, _) = session::execute(
         &mut worker,
-        Command::ValidatePlan {
-            job: candidate.to_json().unwrap(),
-            handle: handle.clone(),
-        },
+        Command::validate_plan(candidate.to_json().unwrap(), handle.clone()),
     )
     .unwrap();
     assert_eq!(reused.report["gui2"]["kind"], "revalidated");
@@ -464,10 +450,7 @@ fn retained_plan_reuse_uses_core_machining_identity_not_document_revision() {
     candidate.artwork[1].placement.origin_mm.x -= 1.;
     let (stale, _) = session::execute(
         &mut worker,
-        Command::ValidatePlan {
-            job: candidate.to_json().unwrap(),
-            handle,
-        },
+        Command::validate_plan(candidate.to_json().unwrap(), handle),
     )
     .unwrap();
     assert_eq!(stale.report["gui2"]["kind"], "stale");

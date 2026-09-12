@@ -807,3 +807,234 @@ pub fn apply_stock_rectangle(job: &CamJobV5, rect: RectXY) -> Result<CommandOutc
     candidate.setup.stock.xy = Some(rect);
     CommandOutcome::commit(candidate, vec![AffectedEntity::Setup])
 }
+
+// ---------------------------------------------------------------------------
+// Operation-list commands (plan section 22.4 order edits and the GUI7c
+// ordered-preparation slice). These are the single shared implementation of
+// operation ordering, enablement and creation: the UI applies them like any
+// other document command instead of maintaining its own validator.
+// ---------------------------------------------------------------------------
+
+/// Operation kinds this slice can create. Geometry-bearing kinds (profile,
+/// tabs, entries) arrive with their own milestone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewOperationKind {
+    FlatVcarve,
+    Face,
+    DragKnife,
+}
+
+impl NewOperationKind {
+    pub fn default_name(self) -> &'static str {
+        match self {
+            Self::FlatVcarve => "Flat V-carve",
+            Self::Face => "Face",
+            Self::DragKnife => "Drag knife",
+        }
+    }
+}
+
+/// Append an independent job-tool snapshot, never reusing or overwriting an
+/// existing tool.
+fn push_job_tool(job: &mut CamJobV5, prefix: &str, name: &str) -> String {
+    let mut id = prefix.to_owned();
+    let mut suffix = 2;
+    while job.tools.iter().any(|tool| tool.id == id) {
+        id = format!("{prefix}-{suffix}");
+        suffix += 1;
+    }
+    job.tools.push(super::JobToolV5 {
+        id: id.clone(),
+        name: name.into(),
+        geometry: None,
+        capabilities: Default::default(),
+        library_origin: None,
+    });
+    id
+}
+
+/// Unset milling values shared by the created assignments: nothing about the
+/// cutter's cutting data is invented, only the tool reference is bound.
+fn new_milling_assignment(tool_id: String) -> super::MillingAssignmentV5 {
+    super::MillingAssignmentV5 {
+        tool_id,
+        spindle_rpm: None,
+        spindle_direction: None,
+        cutting_feed_mm_min: None,
+        plunge_feed_mm_min: None,
+        max_stepdown_mm: None,
+        stepover_mm: None,
+        applied_profile: None,
+    }
+}
+
+/// Append one operation with its own job-tool snapshot(s) (canonical defaults
+/// mirrored from the ui-8 sequence surface: heights rest at their zero-offset
+/// references and every machining value stays unset until edited).
+///
+/// Adding a drag-knife operation also interprets the existing artwork as
+/// centerlines: filled source bytes stay filled, and the operation's own
+/// selection starts empty, so nothing is assigned implicitly.
+pub fn add_operation(
+    job: &CamJobV5,
+    kind: NewOperationKind,
+    id: &str,
+    name: &str,
+) -> Result<CommandOutcome> {
+    if job.operations.iter().any(|operation| operation.id == id) {
+        return Err(command_error(format!(
+            "operation ID '{id}' is already in use"
+        )));
+    }
+    let mut candidate = job.clone();
+    let mut affected = vec![];
+    let zero_top = crate::project::HeightRef {
+        reference: crate::project::HeightReference::StockTop,
+        offset_mm: 0.,
+    };
+    let settings = match kind {
+        NewOperationKind::Face => {
+            let tool = push_job_tool(&mut candidate, "endmill", "Endmill");
+            affected.push(AffectedEntity::JobTool(tool.clone()));
+            OperationSettingsV5::Face(super::FaceSettingsV5 {
+                area: crate::project::FaceArea::EntireStock,
+                margins: Default::default(),
+                entry_overrun_mm: None,
+                exit_overrun_mm: None,
+                top: zero_top.clone(),
+                bottom: zero_top.clone(),
+                stepdown_mm: None,
+                stepover_mm: None,
+                pass_angle_deg: None,
+                pattern: Default::default(),
+                assignment: new_milling_assignment(tool),
+            })
+        }
+        NewOperationKind::FlatVcarve => {
+            let endmill = push_job_tool(&mut candidate, "endmill", "Endmill");
+            let vbit = push_job_tool(&mut candidate, "vbit", "V-bit target");
+            affected.push(AffectedEntity::JobTool(endmill.clone()));
+            affected.push(AffectedEntity::JobTool(vbit.clone()));
+            OperationSettingsV5::FlatVcarve(super::FlatVcarveSettingsV5 {
+                components: vec![],
+                mode: crate::project::FlatVcarveMode::EndmillOnly,
+                endmill: new_milling_assignment(endmill),
+                vbit: new_milling_assignment(vbit),
+                top: Default::default(),
+                max_depth_mm: None,
+                wall_allowance_mm: None,
+                max_floor_ridge_mm: None,
+                max_detail_residual_mm: None,
+                rough: None,
+                finish: None,
+            })
+        }
+        NewOperationKind::DragKnife => {
+            let tool = push_job_tool(&mut candidate, "knife-tool", "Drag knife");
+            affected.push(AffectedEntity::JobTool(tool.clone()));
+            for item in &mut candidate.artwork {
+                item.import_settings.mode = crate::svg::ImportMode::Centerline;
+            }
+            OperationSettingsV5::DragKnife(super::DragKnifeSettingsV5 {
+                chains: vec![],
+                assignment: super::KnifeAssignmentV5 {
+                    tool_id: tool,
+                    cutting_feed_mm_min: None,
+                    plunge_feed_mm_min: None,
+                    swivel_feed_mm_min: None,
+                    max_stepdown_mm: None,
+                    applied_profile: None,
+                },
+                top: Default::default(),
+                bottom: Default::default(),
+                stepdown_mm: None,
+                swivel_depth_mm: None,
+                corner_threshold_deg: None,
+                through_cut_allowance_mm: None,
+                start: Default::default(),
+                closure_overlap_mm: None,
+                alignment: Default::default(),
+            })
+        }
+    };
+    candidate.operations.push(super::OperationV5 {
+        id: id.into(),
+        name: name.into(),
+        enabled: true,
+        settings,
+    });
+    affected.push(AffectedEntity::Operation(id.into()));
+    CommandOutcome::commit(candidate, affected)
+}
+
+/// Remove one operation. Artwork, stock, tools and machine settings are
+/// untouched: the job stays saveable with no operation, and the retained
+/// tools become reusable snapshots rather than silently deleted data.
+pub fn remove_operation(job: &CamJobV5, id: &str) -> Result<CommandOutcome> {
+    let index = operation_index(job, id)?;
+    let mut candidate = job.clone();
+    candidate.operations.remove(index);
+    CommandOutcome::commit(candidate, vec![AffectedEntity::Operation(id.into())])
+}
+
+/// Enable or disable one operation without changing any other field. A
+/// disabled operation is excluded from every scope; its dependents then see
+/// the missing published outputs.
+pub fn set_operation_enabled(job: &CamJobV5, id: &str, enabled: bool) -> Result<CommandOutcome> {
+    let index = operation_index(job, id)?;
+    let mut candidate = job.clone();
+    candidate.operations[index].enabled = enabled;
+    CommandOutcome::commit(candidate, vec![AffectedEntity::Operation(id.into())])
+}
+
+/// Move one operation to an explicit zero-based position. No other operation
+/// moves, and the caller decides how to repair a reordered dependency.
+pub fn move_operation(job: &CamJobV5, id: &str, to_index: usize) -> Result<CommandOutcome> {
+    let index = operation_index(job, id)?;
+    if to_index >= job.operations.len() {
+        return Err(command_error(format!(
+            "cannot move '{id}' to position {to_index}; the document has {} operations",
+            job.operations.len()
+        )));
+    }
+    if index == to_index {
+        return CommandOutcome::commit(job.clone(), vec![AffectedEntity::Operation(id.into())]);
+    }
+    let mut candidate = job.clone();
+    let moved = candidate.operations.remove(index);
+    candidate.operations.insert(to_index, moved);
+    CommandOutcome::commit(candidate, vec![AffectedEntity::Operation(id.into())])
+}
+
+/// Rename one operation. Display names never enter a machining identity, so
+/// this cannot stale a generated plan by itself.
+pub fn rename_operation(job: &CamJobV5, id: &str, name: &str) -> Result<CommandOutcome> {
+    let index = operation_index(job, id)?;
+    let mut candidate = job.clone();
+    candidate.operations[index].name = name.into();
+    CommandOutcome::commit(candidate, vec![AffectedEntity::Operation(id.into())])
+}
+
+/// Duplicate one operation, and only the tool snapshots it still refers to.
+/// The copy is inserted directly after its source and starts with the same
+/// settings; the caller bounds how many operations a document may carry.
+pub fn duplicate_operation(job: &CamJobV5, id: &str, new_id: &str) -> Result<CommandOutcome> {
+    if job
+        .operations
+        .iter()
+        .any(|operation| operation.id == new_id)
+    {
+        return Err(command_error(format!(
+            "operation ID '{new_id}' is already in use"
+        )));
+    }
+    let index = operation_index(job, id)?;
+    let mut candidate = job.clone();
+    let mut copy = candidate.operations[index].clone();
+    copy.id = new_id.into();
+    copy.name = format!("{} copy", candidate.operations[index].name);
+    // The copy keeps referring to the same job-tool snapshots: duplicating an
+    // operation is not a tool-library edit.
+    candidate.operations.insert(index + 1, copy);
+    CommandOutcome::commit(candidate, vec![AffectedEntity::Operation(new_id.into())])
+}
