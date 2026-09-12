@@ -474,6 +474,8 @@ pub fn capture_assignment(
 
 /// Editing state is deliberately outside Document and job Undo/recovery.
 pub struct Editor {
+    pub search: [String; 2],
+    pub error: Option<String>,
     pub new_machine_id: String,
     pub machines_view: bool,
     pub picker_loaded: bool,
@@ -517,6 +519,8 @@ impl Default for Editor {
             (js_sys::Math::random() * 1e15) as u64
         );
         Self {
+            search: Default::default(),
+            error: None,
             new_machine_id: "my-machine".into(),
             machines_view: false,
             picker_loaded: false,

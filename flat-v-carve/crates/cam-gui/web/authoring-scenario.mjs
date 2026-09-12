@@ -36,6 +36,7 @@ export async function authoringScenario({control,edit,state,waitFor,send,evaluat
   await control('Generate');const endmill=await waitFor(s=>s.current&&!s.active&&s.motions>0,'new endmill-only execution',120);record('new endmill-only execution',endmill);
   await control('Prepare checked output');await waitFor(s=>s.prepared&&!s.active,'endmill-only checked export',120);
   await screenshot('new-endmill-export.png');
+  await control('Close export');
   await control('Cutting');await control('Combined');
   for(const [label,value] of [['Finishing feed','1000'],['Finish plunge','300'],['Finish stepdown','1'],['Finish stepover','1'],['Finish spindle','12000'],['Detail residual','0.1']])await edit(label,value);
   await control('V-bit CW');await control('V-bit plunge yes');
@@ -46,6 +47,7 @@ export async function authoringScenario({control,edit,state,waitFor,send,evaluat
   await control('After V-bit');await waitFor(s=>!s.active&&s.stockPrefix===s.motions,'new combined final stock');
   record('new combined stock crosses stages',rough.stockPrefix);
   await control('Prepare checked output');await waitFor(s=>s.prepared&&!s.active,'new combined checked export',120);await screenshot('new-combined.png');
+  await control('Close export');
   await control('Cutting');await edit('Maximum depth','1.2');await edit('Roughing feed','1300');
   await control('Undo');await waitFor(s=>s.job?.feed===1200,'undo feed transaction');
   await control('Undo');await waitFor(s=>s.job?.depth===1,'undo depth transaction');

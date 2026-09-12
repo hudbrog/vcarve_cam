@@ -7,6 +7,7 @@ pub const MAX_BYTES: usize = 9_000_000;
 pub struct Workspace {
     pub inspector: usize,
     pub inspector_width: f32,
+    #[serde(deserialize_with = "read_scroll_positions")]
     pub scroll: [f32; 8],
     pub search: String,
     pub simulate: bool,
@@ -21,6 +22,21 @@ pub struct Workspace {
     pub hidden_artwork: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub locked_artwork: std::collections::BTreeSet<String>,
+}
+// Scroll positions are presentation state. Adding a tab must not disable
+// recovery of the editable job or its undo history.
+fn read_scroll_positions<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<[f32; 8], D::Error> {
+    let saved = Vec::<f32>::deserialize(deserializer)?;
+    if saved.len() > 8 {
+        return Err(serde::de::Error::custom(
+            "Too many saved tab scroll positions",
+        ));
+    }
+    let mut scroll = [0.; 8];
+    scroll[..saved.len()].copy_from_slice(&saved);
+    Ok(scroll)
 }
 impl Default for Workspace {
     fn default() -> Self {

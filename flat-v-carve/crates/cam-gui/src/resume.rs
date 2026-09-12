@@ -97,6 +97,7 @@ impl App {
         self.cancelled_id = None;
         self.plan = None;
         self.prepared = None;
+        self.export_dialog = None;
         self.retained_save = None;
         self.retry = false;
         self.saved_revision = None;
@@ -144,6 +145,36 @@ mod tests {
             document: Some(Document::new(engine::open(engine::FLOWER).unwrap())),
             ..Default::default()
         }
+    }
+    #[test]
+    fn seven_tab_recovery_keeps_job_history_and_defaults_the_added_tab() {
+        let mut app = app();
+        app.remember();
+        app.document
+            .as_mut()
+            .unwrap()
+            .edit(0, "-".into())
+            .unwrap_err();
+        let mut value = json!({"revision": 7, "snapshot": app.recovery_snapshot().unwrap()});
+        value["snapshot"]["workspace"]["scroll"] = json!([42., 0., 0., 0., 0., 0., 12.]);
+        // The browser receives the same snapshot inside a platform event.
+        assert!(
+            serde_json::from_value::<Event>(json!({"RecoveryLoaded": {"Ok": value.clone()}}))
+                .is_ok()
+        );
+        let stored = crate::recovery::Stored::decode(&value.to_string()).unwrap();
+        assert_eq!(stored.revision, 7);
+        assert_eq!(
+            stored.snapshot.workspace.scroll,
+            [42., 0., 0., 0., 0., 0., 12., 0.]
+        );
+        let mut restored = App::default();
+        restored.restore(stored.snapshot, &egui::Context::default());
+        assert_eq!(restored.document.as_ref().unwrap().text(0), "-");
+        assert_eq!(restored.undo.len(), 1);
+        assert!(restored.plan.is_none() && restored.prepared.is_none());
+        value["snapshot"]["workspace"]["scroll"][0] = json!(-1.);
+        assert!(crate::recovery::Stored::decode(&value.to_string()).is_err());
     }
     #[test]
     fn recovery_keeps_raw_text_navigation_history_and_no_artifact_authority() {

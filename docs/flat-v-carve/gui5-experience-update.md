@@ -91,3 +91,76 @@ Final browser build: `440b08f32efe`. The final native package is
 The standard native path was updated with the functional fixes, then opened
 by the user; the last circular-button styling build is packaged separately
 because Windows locks the running executable. No running sessions were closed.
+
+## Library composition redesign
+
+The user-approved list-and-editor concept is now implemented in the production
+GUI. **Library** has prominent **Tools & profiles / Machines** tabs, a persistent
+searchable item list, and an independently scrolling detail editor. The list
+shows the selected item, cutter summary or machine work offset, and incomplete
+machine/tool status. Creation is a full-width **New** action; the machine ID
+entry appears only when creating a profile.
+
+Machine settings are grouped into **General**, **Tool change & compensation**,
+**Motion & coolant**, and **Program start & tool mappings**. Tool geometry,
+capabilities and cutting profiles use grouped forms with paired fields and
+explicit units. Help buttons remain available. Item duplication and geometry
+capture/add actions are secondary menus; applied-job overrides are in a
+collapsed section. Applying a tool and profile from the fixed footer uses the
+same atomic copy command as the operation picker.
+
+The footer keeps **Save changes** and **Use machine / Use tool & profile / Use
+tool** visible. The tool target assignment is explicit. Save commits the library;
+Use copies the selected saved item into the job. Pending edits disable Use.
+Closing the window preserves the edit buffer. Loading occurs automatically;
+**Reload saved library**, import/export and revision comparison live under
+**Library actions**. Reload and whole-library replacement are disabled while
+edits are pending. Import, save and conflict errors are shown within the library;
+routine revision and unrelated job-status lines no longer occupy its header.
+
+The browser regression now covers search, closing/reopening with unsaved edits,
+the fixed footer, applying the selected tool/profile and undoing it as one
+transaction, plus a 900×700 viewport. Existing coverage still exercises library
+creation/import/export, profile edits, saved revision conflicts, machine creation,
+job mappings, simulation, exact checked G-code and portable reopening without
+the library. A focused native test checks that file-import errors remain visible
+and leave the library buffer unchanged.
+
+Final verification: 71 GUI tests passed; Clippy with warnings denied,
+formatting and diff checks passed. The final browser build `ad9f60f7aa38`
+passed the complete GUI5 workflow with no console errors; evidence and
+reviewed normal/compact layout screenshots are in
+`flat-v-carve/artifacts/gui/browser-smoke/2026-09-12T10-31-00.603Z`.
+The standard native package was refreshed at
+`flat-v-carve/artifacts/gui/native/cam-gui.exe`, SHA-256
+`52a24305538cca1a2b3727b228ed132c3000b546f31c2a647ee4e9460ba4ad85`.
+
+## Export dialog and session recovery
+
+Export now immediately opens a modal with a spinner while the worker prepares
+and validates G-code. It keeps the current inspector tab. On success the dialog
+shows the filename, size, toolpath checks, accepted machine/tool settings, and
+G-code readback result. The fixed **Save as…** action opens the destination picker
+only after preparation completes. Technical reports and hashes are expandable.
+The old Machine inspector export section has been removed.
+
+Preparation errors appear in the dialog. Cancelled or failed saves keep the
+validated bytes available for another **Save as…** attempt; successful saves close
+the dialog. Editing shortcuts, dropped files, background preview and playback
+requests are suspended while the dialog is open. Export cancellation terminates
+the worker and expires its retained plan, so generation is required again.
+Revision checks still reject stale results and stale output.
+
+The reported seven-versus-eight array error was confirmed in the native recovery
+snapshot's tab scroll positions. Shorter scroll arrays now default added tabs to
+zero without changing the job or undo history; invalid scroll values are still
+rejected. Recovery-load failures now explain that automatic recovery is paused
+while editing and explicit job saves remain available.
+
+Verification: 75 GUI tests passed, including new export failure/stale-result/save
+retry and seven-tab recovery regressions. Clippy, formatting and diff checks
+passed. Browser build `25c49bb13164` was exercised with real progress, unchanged
+navigation, normal/900×700 layouts, a denied destination, and SHA-256 comparison
+of the downloaded program against the validated bytes. Screenshots/evidence:
+`flat-v-carve/artifacts/gui/browser-smoke/2026-09-12T11-01-04.402Z`.
+The native package was rebuilt at `flat-v-carve/artifacts/gui/native/cam-gui.exe`.

@@ -206,13 +206,27 @@ impl TryFrom<VBitSpec> for VBit {
         let top_radius = tip_radius.mm() + spec.cutting_height_mm * angle.slope();
         let reserve = 32.0 * f64::EPSILON * max_cutting_radius.mm();
         if !top_radius.is_finite()
-            || top_radius > max_cutting_radius.mm() + reserve
             || max_cutting_radius.mm() == 0.0
             || (spec.tip_diameter_mm > 0.0 && tip_radius.mm() == 0.0)
         {
             return Err(invalid(
                 "INCONSISTENT_VBIT",
-                "angle, tip, cutting diameter and height do not describe a usable cutting cone",
+                "V-bit dimensions are too large or too small to calculate a usable cutting cone; check the angle and dimensions in millimetres",
+            ));
+        }
+        if top_radius > max_cutting_radius.mm() + reserve {
+            let max_height = (max_cutting_radius.mm() - tip_radius.mm()) / angle.slope();
+            return Err(invalid(
+                "INCONSISTENT_VBIT",
+                &format!(
+                    "At {} mm cutting height, a {}° V-bit with a {} mm tip diameter would be {:.3} mm wide, exceeding the configured {} mm cutting diameter. Maximum compatible cutting height: approximately {:.3} mm. Height is measured from the actual flat tip, not an imaginary sharp point; tip size is a diameter, not a radius.",
+                    spec.cutting_height_mm,
+                    spec.included_angle_deg,
+                    spec.tip_diameter_mm,
+                    top_radius * 2.0,
+                    spec.max_cutting_diameter_mm,
+                    max_height,
+                ),
             ));
         }
         Ok(Self {

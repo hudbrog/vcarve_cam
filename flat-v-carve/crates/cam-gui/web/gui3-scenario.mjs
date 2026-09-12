@@ -95,7 +95,7 @@ export async function gui3Scenario({control,edit,state,waitFor,send,evaluate,sle
   record('detail edit stale regenerate and equivalent stage comparison',{before:original.inspection,after:(await state()).inspection});
   await screenshot('gui3-lettering-comparison.png');
   await control('Prepare checked output');await waitFor(s=>s.prepared&&!s.active,'lettering checked output',120);
-  await evaluate('globalThis.showSaveFilePicker=undefined');await control('Save checked bytes');await waitFor(s=>s.status.includes('Download requested'),'lettering export download');
+  await evaluate('globalThis.showSaveFilePicker=undefined');await control('Save as…');await waitFor(s=>s.status.includes('Download requested'),'lettering export download');
   const prepared=(await state()).preparedSha256;
   await sleep(1000);const outputs=readdirSync(out).filter(name=>/\.(nc|ngc|gcode|tap)$/.test(name));
   if(outputs.length!==1 || createHash('sha256').update(readFileSync(path.join(out,outputs[0]))).digest('hex')!==prepared)throw new Error('Downloaded lettering output differs from checked bytes');

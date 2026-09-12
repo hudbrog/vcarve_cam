@@ -73,7 +73,6 @@ impl App {
                         );
                         observe_control("Prepare checked output", export.rect);
                         if export.clicked() {
-                            self.navigate(3);
                             self.submit(
                                 Command::Prepare {
                                     job: self.document.as_ref().unwrap().job.to_json().unwrap(),

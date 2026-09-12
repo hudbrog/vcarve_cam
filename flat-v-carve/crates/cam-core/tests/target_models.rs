@@ -184,6 +184,30 @@ fn cutter_dimensions_and_usable_height_are_validated() {
 }
 
 #[test]
+fn inconsistent_vbit_explains_the_dimensions_and_compatible_height() {
+    let mut spec = VBitSpec {
+        included_angle_deg: 90.0,
+        tip_diameter_mm: 0.1,
+        max_cutting_diameter_mm: 12.0,
+        cutting_height_mm: 6.0,
+    };
+    let error = VBit::try_from(spec.clone()).unwrap_err();
+    assert_eq!(error.code, "INCONSISTENT_VBIT");
+    assert!(error.message.contains("At 6 mm cutting height"));
+    assert!(
+        error
+            .message
+            .contains("90° V-bit with a 0.1 mm tip diameter")
+    );
+    assert!(error.message.contains("12.100 mm wide"));
+    assert!(error.message.contains("configured 12 mm cutting diameter"));
+    assert!(error.message.contains("approximately 5.950 mm"));
+    assert!(error.message.contains("actual flat tip"));
+    spec.cutting_height_mm = 5.95;
+    assert!(VBit::try_from(spec).is_ok());
+}
+
+#[test]
 fn cutter_removal_uses_the_physical_tip_plane_and_finite_footprint() {
     let tool = bit(1.0, 90.0);
     for (r, removed) in [

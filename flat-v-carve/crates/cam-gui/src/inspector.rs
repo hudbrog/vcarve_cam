@@ -939,37 +939,5 @@ impl App {
                 "Create or choose a machine profile before checked export.",
             );
         }
-        ui.separator();
-        ui.heading("Export");
-        if button(
-            ui,
-            "Save checked bytes",
-            self.active.is_none()
-                && self.io.is_none()
-                && self
-                    .prepared
-                    .as_ref()
-                    .is_some_and(|(_, r)| *r == self.revision),
-        )
-        .clicked()
-        {
-            self.save_output(ctx);
-        }
-        if let Some((prepared, revision)) = &self.prepared
-            && *revision == self.revision
-        {
-            ui.label(format!(
-                "{} · {} bytes",
-                prepared["file"]["filename"].as_str().unwrap_or(""),
-                prepared["file"]["byteLength"]
-            ));
-            ui.small(format!(
-                "SHA256 {}",
-                prepared["file"]["sha256"].as_str().unwrap_or("")
-            ));
-            ui.collapsing("Process and check report", |ui| {
-                ui.monospace(serde_json::to_string_pretty(&prepared["bundle"]["report"]).unwrap());
-            });
-        }
     }
 }

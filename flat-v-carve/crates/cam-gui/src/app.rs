@@ -12,6 +12,8 @@ use crate::{
 use cam_core::project::v5::{CamJobV5, OperationSettingsV5};
 use egui::{Color32, RichText};
 use serde_json::{Value, json};
+#[path = "export_ui.rs"]
+mod export_ui;
 #[path = "help.rs"]
 mod help;
 #[path = "inspector.rs"]
@@ -250,6 +252,7 @@ pub struct App {
     active: Option<(u64, u64)>,
     plan: Option<(String, u64)>,
     prepared: Option<(Value, u64)>,
+    export_dialog: Option<export_ui::ExportDialog>,
     pub status: String,
     io: Option<(u64, IoKind)>,
     retained_save: Option<(String, Vec<u8>, Option<u64>)>,
@@ -312,6 +315,7 @@ impl Default for App {
             active: None,
             plan: None,
             prepared: None,
+            export_dialog: None,
             status: "Open a portable Flat V-carve project, or import SVG artwork to start.".into(),
             io: None,
             retained_save: None,
@@ -379,6 +383,13 @@ impl App {
         let id = self.id();
         self.active = Some((id, self.revision));
         self.cancelled_id = None;
+        if matches!(command, Command::Prepare { .. }) {
+            self.prepared = None;
+            self.export_dialog = Some(export_ui::ExportDialog {
+                request: Some(id),
+                ..Default::default()
+            });
+        }
         self.status = match command {
             Command::ImportSvg { .. } => "Importing SVG…",
             Command::Artwork { .. } => "Updating artwork collection…",
@@ -492,14 +503,27 @@ impl App {
             return;
         }
         self.active = None;
+        let exporting = self
+            .export_dialog
+            .as_ref()
+            .is_some_and(|d| d.request == Some(id));
+        if exporting {
+            self.export_dialog.as_mut().unwrap().request = None;
+        }
         if revision != self.revision {
             self.status =
                 "Discarded a result for an older edit; generate the current draft.".into();
+            if exporting {
+                self.export_dialog.as_mut().unwrap().error = Some(self.status.clone());
+            }
             return;
         }
         let (meta, payload) = match result {
             Ok(v) => v,
             Err(error) => {
+                if exporting {
+                    self.export_dialog.as_mut().unwrap().error = Some(error.clone());
+                }
                 self.status = error;
                 return;
             }
@@ -507,6 +531,9 @@ impl App {
         let reply = &meta.report["gui2"];
         if meta.report["protocol"] != engine::PROTOCOL {
             self.status = "GUI2 UI/worker version mismatch; reload matching assets.".into();
+            if exporting {
+                self.export_dialog.as_mut().unwrap().error = Some(self.status.clone());
+            }
             self.plan = None;
             return;
         }
@@ -763,6 +790,17 @@ impl App {
                     return;
                 }
                 self.io = None;
+                if self.export_dialog.as_ref().is_some_and(|d| d.saving) {
+                    match &result {
+                        Ok(IoValue::Saved(_)) => self.export_dialog = None,
+                        Err(error) => {
+                            let dialog = self.export_dialog.as_mut().unwrap();
+                            dialog.saving = false;
+                            dialog.error = Some(error.clone());
+                        }
+                        _ => {}
+                    }
+                }
                 if let Some(focus) = self.focus.take() {
                     ctx.memory_mut(|m| m.request_focus(focus));
                 }
@@ -795,6 +833,7 @@ impl App {
                                 != Some(self.resource_stamp().as_str())
                             {
                                 self.resources.status="Library changed while choosing a file. Your edits are preserved; import again.".into();
+                                self.resources.error = Some(self.resources.status.clone());
                             } else if matches!(kind, IoKind::LibraryImport) {
                                 self.import_resources(&json);
                             } else {
@@ -834,6 +873,10 @@ impl App {
                         self.retry = false;
                     }
                     Err(error) => {
+                        if matches!(kind, IoKind::LibraryImport | IoKind::MachineImport) {
+                            self.resources.status = error.clone();
+                            self.resources.error = Some(error.clone());
+                        }
                         self.status = error;
                         if matches!(kind, IoKind::Save(_)) {
                             self.retry = true;
@@ -851,7 +894,9 @@ impl App {
                 }
                 Err(e) => {
                     self.recovery.failed = true;
-                    self.recovery.status = e;
+                    self.recovery.status = format!(
+                        "Session recovery could not be loaded; automatic recovery is paused. You can still edit and save the job. Details: {e}"
+                    );
                 }
             },
             Event::RecoverySaved { edit, result } => self.recovery.written(edit, result),
@@ -915,7 +960,12 @@ impl App {
                 }
             }
         });
-        if self.io.is_none() && !self.ime && !self.resources.open && !self.resources.jobs_open {
+        if self.io.is_none()
+            && !self.ime
+            && !self.resources.open
+            && !self.resources.jobs_open
+            && self.export_dialog.is_none()
+        {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
                 self.undo(ctx);
             }
@@ -943,6 +993,7 @@ impl App {
         if self.preview_dirty
             && self.active.is_none()
             && self.io.is_none()
+            && self.export_dialog.is_none()
             && ctx.input(|i| i.time) - self.recovery.last_edit > 0.3
             && let Some(doc) = &self.document
         {
@@ -956,7 +1007,7 @@ impl App {
             };
             self.submit(command, ctx);
         }
-        self.view.stock_loading = self.active.is_some();
+        self.view.stock_loading = self.active.is_some() || self.export_dialog.is_some();
         self.view.result_current = self.current();
         if let Some(doc) = &self.document {
             self.view.select_artwork(&doc.raw.artwork_item);
@@ -1005,6 +1056,7 @@ impl App {
             }
         }
         if self.active.is_none()
+            && self.export_dialog.is_none()
             && let Some(prefix) = self.view.take_stock_request()
             && let Some((handle, _)) = &self.plan
         {
@@ -1017,7 +1069,7 @@ impl App {
             );
         }
         let files = ctx.input(|i| i.raw.dropped_files.clone());
-        if !files.is_empty() {
+        if !files.is_empty() && self.export_dialog.is_none() {
             if files.len() != 1 || self.io.is_some() || self.active.is_some() {
                 self.status = "Drop one SVG or JSON job when the current action finishes.".into();
             } else {
@@ -1059,7 +1111,8 @@ impl App {
         if self.recovery.edit != self.recovery.saved_edit && !self.recovery.failed {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
-        if self.io.is_some() {
+        self.export_window(ctx);
+        if self.io.is_some() && self.export_dialog.is_none() {
             egui::Modal::new(egui::Id::new("gui2-file")).show(ctx, |ui| {
                 ui.heading("File action");
                 ui.label("Finish or cancel the file picker to return.");

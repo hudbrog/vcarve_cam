@@ -40,7 +40,7 @@ export async function gui4Scenario({control,edit,state,waitFor,send,evaluate,sle
   await control('After V-bit');await waitFor(s=>!s.active&&s.stockPrefix===s.motions,'collection final stock');
   await control('Inspect result');await screenshot('gui4-simulation.png');
   await control('Prepare checked output');await waitFor(s=>s.prepared&&!s.active,'collection checked output',120);
-  await evaluate('globalThis.showSaveFilePicker=undefined');await control('Save checked bytes');await waitFor(s=>s.status.includes('Download requested'),'collection program download');
+  await evaluate('globalThis.showSaveFilePicker=undefined');await control('Save as…');await waitFor(s=>s.status.includes('Download requested'),'collection program download');
   await sleep(700);const outputs=readdirSync(out).filter(n=>n.endsWith('.ngc'));
   if(outputs.length!==1||createHash('sha256').update(readFileSync(path.join(out,outputs[0]))).digest('hex')!==(await state()).preparedSha256)throw new Error('Collection output bytes differ from prepared');
   await control('Save job');await waitFor(s=>s.status.includes('Download requested'),'collection job download');await sleep(700);

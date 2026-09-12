@@ -99,20 +99,36 @@ const click = async (x, y) => {
 };
 const pressKey = async (key, code, modifiers = 0) => {
   for (const type of ['keyDown', 'keyUp']) {
-    await send('Input.dispatchKeyEvent', {type, key, code, windowsVirtualKeyCode: key==='Escape'?27:key.toUpperCase().charCodeAt(0), nativeVirtualKeyCode: key==='Escape'?27:key.toUpperCase().charCodeAt(0), modifiers});
+    const keyCode=({Escape:27,Backspace:8,Enter:13,Tab:9})[key]??key.toUpperCase().charCodeAt(0);
+    await send('Input.dispatchKeyEvent', {type, key, code, windowsVirtualKeyCode:keyCode, nativeVirtualKeyCode:keyCode, modifiers});
   }
 };
 
 const control = async label => {
   for(let attempt=0;attempt<12;attempt++) {
     const current=await state(); const rect=current.controls?.[label];
-    if(!rect)throw new Error(`Missing control ${label}`);
+    const libraryMenus={
+      'Import library':'Library actions','Export library':'Library actions','Import machine configuration':'Library actions',
+      'Load library':'Library actions','Compare stored revision':'Library actions','Reload stored library':'Library actions','Overwrite reviewed revision':'Library actions',
+      'Duplicate library tool':'Library item actions','Duplicate machine configuration':'Library item actions','Add geometry to job':'Library item actions',
+      'New endmill':'New tool','New V-bit':'New tool','Capture job geometry':'New tool',
+      'New machine profile':'New machine','New machine ID':'New machine','Capture applied machine':'New machine'
+    };
+    const dropdown=['Library rotation','Library plunge','Library ramp','Copied plunge','Copied ramp','Work offset','Length compensation','Coolant','Path control','M6 return'].find(prefix=>label.startsWith(prefix+' '));
+    if(!rect){
+      if(current.resources?.open&&libraryMenus[label]){await control(libraryMenus[label]);continue;}
+      if((current.resources?.open||current.resources?.jobsOpen)&&dropdown){await control(dropdown);continue;}
+      if(current.resources?.open&&['Path control','Coolant','Configuration blend tolerance','Configuration naive CAM tolerance'].includes(label)){await control('Motion & coolant');continue;}
+      if(current.resources?.open&&['Reapply reviewed profile','Reset assignment overrides'].includes(label)){await control('Applied job values');continue;}
+      throw new Error(`Missing control ${label}`);
+    }
     const nav=label.startsWith('Artwork ') || ['Setup','Machine','Job settings','Artwork','Cutting','Inspect result','Endmill tool','V-bit tool','+ Import artwork','Tool library','Job tools'].includes(label);
     const resource=!nav&&current.resources?.open,jobTools=!nav&&current.resources?.jobsOpen;
-    const clip=current.controls?.[nav?'Navigator viewport':resource?'Resource viewport':jobTools?'Job tools viewport':'Inspector viewport'];
-    const bottom=clip?.[3]??await evaluate('innerHeight-65');
-    const top=clip?.[1]??150;
-    if(rect[1]>=top && rect[3]<=bottom || !nav && !resource && !jobTools && rect[0]<(clip?.[0]??850) || ['Tools & profiles','Machines','Close library','Load library','Save library','Compare stored revision','Reload stored library','Overwrite reviewed revision','Import library','Export library','Import machine configuration','Close job tools','Roughing assignment','Finishing assignment','Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
+    const list=resource&&label!=='Library tool name'&&(label.startsWith('Library tool ')||label.startsWith('Library machine '));
+    const clip=current.controls?.[nav?'Navigator viewport':list?'Resource list viewport':resource?'Resource viewport':jobTools?'Job tools viewport':'Inspector viewport'];
+    const bottom=(clip?.[3]??await evaluate('innerHeight-65'))+1;
+    const top=(clip?.[1]??150)-1;
+    if(rect[1]>=top && rect[3]<=bottom || !nav && !resource && !jobTools && rect[0]<(clip?.[0]??850) || libraryMenus[label] || dropdown && (resource||jobTools) || ['Library actions','Library search','New tool','New machine','Use machine','Use tool','Use tool & profile','Apply reviewed machine','Tools & profiles','Machines','Close library','Load library','Save library','Compare stored revision','Reload stored library','Overwrite reviewed revision','Import library','Export library','Import machine configuration','Close job tools','Roughing assignment','Finishing assignment','Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
       await click((rect[0]+rect[2])/2,(rect[1]+rect[3])/2); await sleep(120);return;
     }
     const x=nav?100:clip?(clip[0]+clip[2])/2:1100,y=(top+bottom)/2;
@@ -173,17 +189,28 @@ try {
   await control('Start');await waitFor(s=>!s.active&&s.stockPrefix===0,'pristine stock');
   await control('Play');const played=await waitFor(s=>s.stockPrefix>rough.stockPrefix,'play through both stages',120);record('playback crosses into V-bit',played.stockPrefix);
   const live=await state();if(live.controls.Pause)await control('Pause');await waitFor(s=>!s.active,'playback request finishes');
-  await control('Prepare checked output');const prepared=await waitFor(s=>s.prepared&&!s.active,'checked retained output',120);record('checked output',prepared.preparedSha256);
+  const exportTab=(await state()).workspace.inspector;
+  await control('Prepare checked output');
+  if(!(await state()).controls['Export dialog'])throw new Error('Export did not immediately open a dialog');
+  await screenshot('export-progress.png');
+  const prepared=await waitFor(s=>s.prepared&&!s.active,'checked retained output',120);record('checked output',prepared.preparedSha256);
+  if(prepared.workspace.inspector!==exportTab)throw new Error('Export changed the inspector');
+  await screenshot('export-ready.png');
+  await send('Emulation.setDeviceMetricsOverride',{width:900,height:700,deviceScaleFactor:1,mobile:false});await sleep(700);
+  const exportControls=(await state()).controls;
+  if(exportControls['Export dialog'][3]>700||exportControls['Save as…'][3]>700)throw new Error('Export actions do not fit a compact window');
+  await screenshot('export-compact.png');await send('Emulation.clearDeviceMetricsOverride');await sleep(700);
   await evaluate('globalThis.showSaveFilePicker=async()=>{throw new Error("GUI2 injected denied destination")}');
-  await control('Save checked bytes');await waitFor(s=>s.status.includes('denied destination'),'failed destination');
-  await evaluate('globalThis.showSaveFilePicker=undefined');await control('Retry previous save');await waitFor(s=>s.status.includes('Download requested'),'exact-byte retry download');
+  await control('Save as…');await waitFor(s=>s.status.includes('denied destination'),'failed destination');
+  await screenshot('export-save-error.png');
+  await evaluate('globalThis.showSaveFilePicker=undefined');await control('Save as…');await waitFor(s=>s.status.includes('Download requested'),'exact-byte retry download');
   for(let i=0;i<100&&!existsSync(path.join(out,'sequence.ngc'));i++)await sleep(100);
   const gcode=readFileSync(path.join(out,'sequence.ngc'));if(createHash('sha256').update(gcode).digest('hex')!==prepared.preparedSha256)throw new Error('Downloaded program differs from checked bytes');record('downloaded exact checked bytes after failed save',gcode.length);
   await control('Save job');await waitFor(s=>s.status.includes('Download requested'),'job download');
   for(let i=0;i<100&&!existsSync(path.join(out,'carving.gui2.job.json'));i++)await sleep(100);
   const saved=readFileSync(path.join(out,'carving.gui2.job.json'),'utf8');const job=JSON.parse(saved);
   if(job.schema_version!==5||!job.machine_configuration||job.operations[0].settings.settings.endmill.cutting_feed_mm_min!==1900)throw new Error('Invalid saved job');
-  const screenshot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(path.join(out,'workspace.png'),Buffer.from(screenshot.data,'base64'));
+  await screenshot('workspace.png');
   await control('Cutting');await edit('Maximum depth','-');await waitFor(s=>s.pending&&!s.current,'pending text invalidates output');
   await sleep(1600);await send('Page.reload');await waitFor(s=>s.controls?.['Restore draft'],'recoverable draft');
   await control('Restore draft');await waitFor(s=>s.pending&&s.job?.rawDepth==='-','raw draft restored');record('restart recovers partial input without artifact trust',await state());

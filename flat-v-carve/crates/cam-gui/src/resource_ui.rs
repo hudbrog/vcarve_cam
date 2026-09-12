@@ -1,4 +1,6 @@
 use super::*;
+#[path = "library_modal.rs"]
+mod library_modal;
 use crate::resources::{Catalog, ResourceCommand as R, StoredCatalog};
 use cam_core::{
     project::v5::resources::{self as core, AssignmentRole as Role},
@@ -13,22 +15,111 @@ fn unique(base: &str, used: impl Iterator<Item = String>) -> String {
         .unwrap()
 }
 fn text(ui: &mut egui::Ui, label: &str, value: &mut String) -> bool {
-    ui.horizontal(|ui| {
-        ui.label(if label == "Contract reference" {
-            "Tool-change notes / reference"
-        } else {
-            label
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(field_label(label));
+            help::icon(ui, label);
         });
         let r = ui.add(
             egui::TextEdit::singleline(value)
-                .desired_width(240.)
+                .desired_width(ui.available_width())
                 .char_limit(1000),
         );
         observe_control(label, r.rect);
-        help::icon(ui, label);
         r.changed()
     })
     .inner
+}
+fn field_label(label: &str) -> &str {
+    let short = label
+        .strip_prefix("Library ")
+        .or_else(|| label.strip_prefix("Copied "))
+        .or_else(|| label.strip_prefix("Profile "))
+        .unwrap_or(label);
+    match short {
+        "tool name" | "name" => "Name",
+        "diameter" => "Diameter (mm)",
+        "cutting length" => "Cutting length (mm)",
+        "V-bit angle" => "Included angle (°)",
+        "tip diameter" => "Tip diameter (mm)",
+        "cutting diameter" => "Cutting diameter (mm)",
+        "cutting height" => "Cutting height (mm)",
+        "blade offset" => "Blade offset (mm)",
+        "cut depth" => "Cut depth (mm)",
+        "plunge" => "Can plunge",
+        "ramp" => "Can ramp",
+        "rotation" => "Rotation",
+        "material" => "Material",
+        "machine context" => "Machine context",
+        "spindle RPM" => "Spindle speed (RPM)",
+        "cutting feed" => "Cutting feed (mm/min)",
+        "plunge feed" => "Plunge feed (mm/min)",
+        "stepdown" => "Stepdown (mm)",
+        "stepover" => "Stepover (mm)",
+        "New machine ID" => "Machine name / ID",
+        "Contract reference" => "Tool-change notes / reference",
+        "Configuration clearance" => "Clearance (mm)",
+        "Configuration precision" => "Output precision (decimals)",
+        "Configuration spinup seconds" => "Spindle spin-up (s)",
+        "Configuration blend tolerance" => "Blend tolerance · G64 P (mm)",
+        "Configuration naive CAM tolerance" => "Line simplification · G64 Q (mm)",
+        _ => short,
+    }
+}
+
+fn section(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    title: &str,
+    open: bool,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
+    egui::Frame::new()
+        .fill(Color32::from_rgb(245, 248, 250))
+        .stroke(egui::Stroke::new(1., Color32::from_rgb(209, 219, 225)))
+        .corner_radius(5)
+        .inner_margin(12.)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            let r = egui::CollapsingHeader::new(RichText::new(title).size(16.).strong())
+                .id_salt(id)
+                .default_open(open)
+                .show(ui, |ui| {
+                    ui.add_space(6.);
+                    contents(ui);
+                });
+            observe_control(title, r.header_response.rect);
+        });
+    ui.add_space(4.);
+}
+
+fn select<T: PartialEq + Clone>(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut T,
+    options: &[(&str, T)],
+) -> bool {
+    let before = value.clone();
+    ui.horizontal(|ui| {
+        ui.label(field_label(label));
+        help::icon(ui, label);
+    });
+    let name = options
+        .iter()
+        .find(|(_, v)| v == value)
+        .map(|(name, _)| *name)
+        .unwrap_or("Unset");
+    let r = egui::ComboBox::from_id_salt(label)
+        .selected_text(name)
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for (name, v) in options {
+                let r = ui.selectable_value(value, v.clone(), *name);
+                observe_control(&format!("{label} {name}"), r.rect);
+            }
+        });
+    observe_control(label, r.response.rect);
+    before != *value
 }
 fn number(
     ui: &mut egui::Ui,
@@ -73,18 +164,6 @@ fn required(
         *value = v;
     }
 }
-fn capability(ui: &mut egui::Ui, label: &str, value: &mut Option<bool>) -> bool {
-    let before = *value;
-    ui.horizontal(|ui| {
-        ui.label(label);
-        help::icon(ui, label);
-        for (name, v) in [("Unset", None), ("Yes", Some(true)), ("No", Some(false))] {
-            let r = ui.selectable_value(value, v, name);
-            observe_control(&format!("{label} {name}"), r.rect);
-        }
-    });
-    before != *value
-}
 fn tool_form(
     ui: &mut egui::Ui,
     tool: &mut LibraryTool,
@@ -93,17 +172,17 @@ fn tool_form(
 ) {
     e.dirty |= text(ui, &format!("{prefix} tool name"), &mut tool.name);
     let key = tool.id.clone();
-    match &mut tool.geometry {
+    ui.columns(2, |cols| match &mut tool.geometry {
         LibraryGeometry::Endmill(g) => {
             required(
-                ui,
+                &mut cols[0],
                 &format!("{prefix} diameter"),
                 &format!("{key}/diameter"),
                 &mut g.diameter_mm,
                 e,
             );
             required(
-                ui,
+                &mut cols[1],
                 &format!("{prefix} cutting length"),
                 &format!("{key}/length"),
                 &mut g.cutting_length_mm,
@@ -112,28 +191,28 @@ fn tool_form(
         }
         LibraryGeometry::Vbit(g) => {
             required(
-                ui,
+                &mut cols[0],
                 &format!("{prefix} V-bit angle"),
                 &format!("{key}/angle"),
                 &mut g.included_angle_deg,
                 e,
             );
             required(
-                ui,
+                &mut cols[1],
                 &format!("{prefix} tip diameter"),
                 &format!("{key}/tip"),
                 &mut g.tip_diameter_mm,
                 e,
             );
             required(
-                ui,
+                &mut cols[0],
                 &format!("{prefix} cutting diameter"),
                 &format!("{key}/diameter"),
                 &mut g.max_cutting_diameter_mm,
                 e,
             );
             required(
-                ui,
+                &mut cols[1],
                 &format!("{prefix} cutting height"),
                 &format!("{key}/height"),
                 &mut g.cutting_height_mm,
@@ -142,31 +221,43 @@ fn tool_form(
         }
         LibraryGeometry::DragKnife(g) => {
             required(
-                ui,
+                &mut cols[0],
                 &format!("{prefix} blade offset"),
                 &format!("{key}/offset"),
                 &mut g.blade_offset_mm,
                 e,
             );
             required(
-                ui,
+                &mut cols[1],
                 &format!("{prefix} cut depth"),
                 &format!("{key}/depth"),
                 &mut g.max_cut_depth_mm,
                 e,
             );
         }
-    }
-    e.dirty |= capability(ui, &format!("{prefix} plunge"), &mut tool.plunge_capable);
+    });
+    ui.columns(2, |cols| {
+        e.dirty |= select(
+            &mut cols[0],
+            &format!("{prefix} plunge"),
+            &mut tool.plunge_capable,
+            &[("Unset", None), ("Yes", Some(true)), ("No", Some(false))],
+        );
+        e.dirty |= select(
+            &mut cols[1],
+            &format!("{prefix} ramp"),
+            &mut tool.ramp_capable,
+            &[("Unset", None), ("Yes", Some(true)), ("No", Some(false))],
+        );
+    });
     if let LibraryGeometry::Endmill(g) = &mut tool.geometry
         && let Some(plunge) = tool.plunge_capable
     {
         g.plunge_capable = plunge;
     }
-    e.dirty |= capability(ui, &format!("{prefix} ramp"), &mut tool.ramp_capable);
     if prefix == "Library" && !matches!(tool.geometry, LibraryGeometry::DragKnife(_)) {
         use cam_core::project::SpindleDirection::{Clockwise, Counterclockwise};
-        e.dirty |= choice(
+        e.dirty |= select(
             ui,
             &format!("{prefix} rotation"),
             &mut tool.spindle_direction,
@@ -185,17 +276,22 @@ fn preset_form(
     e: &mut crate::resources::Editor,
 ) {
     e.dirty |= text(ui, "Profile name", &mut preset.name);
-    for (label, slot) in [
-        ("Profile material", &mut preset.material),
-        ("Profile machine context", &mut preset.machine),
-    ] {
-        let mut value = slot.clone().unwrap_or_default();
-        if text(ui, label, &mut value) {
-            *slot = (!value.is_empty()).then_some(value);
-            e.dirty = true;
+    ui.columns(2, |cols| {
+        for (i, (label, slot)) in [
+            ("Profile material", &mut preset.material),
+            ("Profile machine context", &mut preset.machine),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut value = slot.clone().unwrap_or_default();
+            if text(&mut cols[i], label, &mut value) {
+                *slot = (!value.is_empty()).then_some(value);
+                e.dirty = true;
+            }
         }
-    }
-    for (label, field, value) in [
+    });
+    let mut fields = [
         ("Profile spindle RPM", "rpm", &mut preset.spindle_rpm),
         (
             "Profile cutting feed",
@@ -209,15 +305,20 @@ fn preset_form(
         ),
         ("Profile stepdown", "stepdown", &mut preset.max_stepdown_mm),
         ("Profile stepover", "stepover", &mut preset.stepover_mm),
-    ] {
-        number(
-            ui,
-            label,
-            &format!("{tool}/{}/{field}", preset.id),
-            value,
-            false,
-            e,
-        );
+    ];
+    for row in fields.chunks_mut(2) {
+        ui.columns(2, |cols| {
+            for (i, (label, field, value)) in row.iter_mut().enumerate() {
+                number(
+                    &mut cols[i],
+                    label,
+                    &format!("{tool}/{}/{field}", preset.id),
+                    value,
+                    false,
+                    e,
+                );
+            }
+        });
     }
 }
 impl App {
@@ -241,13 +342,16 @@ impl App {
         if self.resources.busy {
             return;
         }
+        self.resources.error = None;
         let save = if matches!(intent, ResourceIntent::Save) {
             if !self.resources.invalid.is_empty() {
                 self.resources.status = "Complete partial library fields before Save.".into();
+                self.resources.error = Some(self.resources.status.clone());
                 return;
             }
             if let Err(e) = self.resources.draft.validate() {
-                self.resources.status = e;
+                self.resources.status = e.clone();
+                self.resources.error = Some(e);
                 return;
             }
             Some((
@@ -282,13 +386,18 @@ impl App {
             Ok(s)
         });
         match result {
-            Err(e) => self.resources.status = format!("{e} Your library edits are preserved."),
+            Err(e) => {
+                self.resources.status = format!("{e} Your library edits are preserved.");
+                self.resources.error = Some(self.resources.status.clone());
+            }
             Ok(stored) if matches!(intent, ResourceIntent::Compare) => {
+                self.resources.error = None;
                 self.resources.conflict = stored;
                 self.resources.status =
                     "Stored revision loaded for comparison; your edits are unchanged.".into();
             }
             Ok(stored) => {
+                self.resources.error = None;
                 if let Some(s) = &stored {
                     self.resources.draft = s.snapshot.clone();
                 }
@@ -310,6 +419,7 @@ impl App {
     pub(super) fn import_resources(&mut self, json: &str) {
         match Catalog::decode(json) {
             Ok(mut catalog) => {
+                self.resources.error = None;
                 // Imported content is only a buffer until explicit conditional Save.
                 catalog.library.revision = self.resources.base.as_ref().map_or(0, |s| s.revision);
                 self.resources.draft = catalog;
@@ -319,12 +429,16 @@ impl App {
                 self.resources.status =
                     "Imported into the edit buffer. Review and Save library explicitly.".into();
             }
-            Err(e) => self.resources.status = e,
+            Err(e) => {
+                self.resources.status = e.clone();
+                self.resources.error = Some(e);
+            }
         }
     }
     pub(super) fn import_machine(&mut self, json: &str) {
         match cam_core::post::sequence::SequenceProfile::from_json(json) {
             Ok(mut machine) => {
+                self.resources.error = None;
                 if self
                     .resources
                     .draft
@@ -343,244 +457,21 @@ impl App {
                 self.resources.status =
                     "Machine imported into library buffer. Review and Save library.".into();
             }
-            Err(e) => self.resources.status = e.to_string(),
+            Err(e) => {
+                self.resources.status = e.to_string();
+                self.resources.error = Some(e.to_string());
+            }
         }
     }
     pub(super) fn resource_windows(&mut self, ctx: &egui::Context) {
         if self.resources.open {
-            let mut open = true;
-            egui::Window::new("Tool library & machine configurations")
-                .id(egui::Id::new("resource-editor"))
-                .open(&mut open)
-                .default_width(650.)
-                .default_height(530.)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                    ui.horizontal_wrapped(|ui| {
-                        if button(ui, "Close library", true).clicked() {
-                            self.resources.open = false;
-                        }
-                        if button(
-                            ui,
-                            "Load library",
-                            !self.resources.busy && !self.resources.dirty,
-                        )
-                        .clicked()
-                        {
-                            self.request_resources(ResourceIntent::Load, ctx);
-                        }
-                        if button(
-                            ui,
-                            "Save library",
-                            self.resources.ready && !self.resources.busy && self.resources.dirty,
-                        )
-                        .clicked()
-                        {
-                            self.request_resources(ResourceIntent::Save, ctx);
-                        }
-                        if button(
-                            ui,
-                            "Compare stored revision",
-                            self.resources.ready && !self.resources.busy,
-                        )
-                        .clicked()
-                        {
-                            self.request_resources(ResourceIntent::Compare, ctx);
-                        }
-                    });
-                    ui.label(&self.resources.status);
-                    if self.document.is_some() {
-                        ui.small(format!("Job: {}", self.status));
-                    }
-                    ui.small(format!(
-                        "Revision {} · {}",
-                        self.resources.base.as_ref().map_or(0, |s| s.revision),
-                        if self.resources.dirty {
-                            "Library has unsaved edits"
-                        } else {
-                            "Library unchanged"
-                        }
-                    ));
-                    ui.horizontal(|ui| {
-                        let r = ui.selectable_value(
-                            &mut self.resources.machines_view,
-                            false,
-                            "Tools & profiles",
-                        );
-                        observe_control("Tools & profiles", r.rect);
-                        let r = ui.selectable_value(
-                            &mut self.resources.machines_view,
-                            true,
-                            "Machines",
-                        );
-                        observe_control("Machines", r.rect);
-                    });
-                    if !self.resources.machines_view {
-                        self.resource_role(ui);
-                    }
-                    if let Some(other) = self.resources.conflict.clone() {
-                        ui.collapsing(
-                            format!("Compare with stored revision {}", other.revision),
-                            |ui| {
-                                ui.label("Stored content");
-                                ui.monospace(
-                                    serde_json::to_string_pretty(&other.snapshot).unwrap(),
-                                );
-                                ui.label("Your edit buffer");
-                                ui.monospace(
-                                    serde_json::to_string_pretty(&self.resources.draft).unwrap(),
-                                );
-                            },
-                        );
-                        ui.horizontal_wrapped(|ui| {
-                            if button(ui, "Reload stored library", !self.resources.busy).clicked() {
-                                self.resources.draft = other.snapshot.clone();
-                                self.resources.base = Some(other.clone());
-                                self.resources.dirty = false;
-                                self.resources.raw.clear();
-                                self.resources.invalid.clear();
-                                self.resources.conflict = None;
-                            }
-                            if button(ui, "Overwrite reviewed revision", !self.resources.busy)
-                                .clicked()
-                            {
-                                self.resources.base = Some(other);
-                                self.request_resources(ResourceIntent::Save, ctx);
-                            }
-                        });
-                    }
-                    if !self.resources.ready {
-                        ui.label("Load the local library before editing or importing.");
-                        return;
-                    }
-                    ui.add_enabled_ui(!self.resources.busy, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            if button(ui, "Import library", self.io.is_none()).clicked() {
-                                self.open(IoKind::LibraryImport, ctx);
-                            }
-                            if button(
-                                ui,
-                                "Export library",
-                                self.io.is_none() && self.resources.invalid.is_empty(),
-                            )
-                            .clicked()
-                            {
-                                match self.resources.draft.validate() {
-                                    Ok(()) => self.save(
-                                        "cam-library.json".into(),
-                                        serde_json::to_vec_pretty(&self.resources.draft).unwrap(),
-                                        None,
-                                        ctx,
-                                    ),
-                                    Err(e) => self.resources.status = e,
-                                }
-                            }
-                            if button(ui, "Import machine configuration", self.io.is_none())
-                                .clicked()
-                            {
-                                self.open(IoKind::MachineImport, ctx);
-                            }
-                        });
-                        let area = egui::ScrollArea::vertical()
-                            .id_salt("resources-content")
-                            .max_height(430.)
-                            .show(ui, |ui| {
-                                if self.resources.machines_view {
-                                    self.library_machines(ui, ctx);
-                                } else {
-                                    self.library_tools(ui, ctx);
-                                }
-                            });
-                        observe_control("Resource viewport", area.inner_rect);
-                    });
-                });
-            self.resources.open &= open;
+            self.library_window(ctx);
         }
         if self.resources.jobs_open {
             self.job_tools_window(ctx);
         }
     }
     fn library_tools(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.heading("Library tools");
-        let tools: Vec<_> = self
-            .resources
-            .draft
-            .library
-            .tools
-            .iter()
-            .map(|t| (t.id.clone(), t.name.clone()))
-            .collect();
-        ui.horizontal_wrapped(|ui| {
-            for (id, name) in tools {
-                let r = ui.selectable_value(&mut self.resources.tool, id.clone(), name);
-                observe_control(&format!("Library tool {id}"), r.rect);
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            for (label, finish) in [("New endmill", false), ("New V-bit", true)] {
-                if button(ui, label, true).clicked() {
-                    let id = unique(
-                        "tool",
-                        self.resources
-                            .draft
-                            .library
-                            .tools
-                            .iter()
-                            .map(|t| t.id.clone()),
-                    );
-                    let geometry = if finish {
-                        LibraryGeometry::Vbit(cam_core::model::VBitSpec {
-                            included_angle_deg: 0.,
-                            tip_diameter_mm: 0.,
-                            max_cutting_diameter_mm: 0.,
-                            cutting_height_mm: 0.,
-                        })
-                    } else {
-                        LibraryGeometry::Endmill(cam_core::model::EndmillSpec {
-                            diameter_mm: 0.,
-                            cutting_length_mm: 0.,
-                            plunge_capable: false,
-                        })
-                    };
-                    self.resources.draft.library.tools.push(LibraryTool {
-                        spindle_direction: Some(cam_core::project::SpindleDirection::Clockwise),
-                        id: id.clone(),
-                        name: label.into(),
-                        geometry,
-                        ramp_capable: None,
-                        plunge_capable: None,
-                        cutting_presets: vec![],
-                        knife_cutting_presets: vec![],
-                    });
-                    self.resources.tool = id;
-                    self.resources.dirty = true;
-                }
-            }
-            if button(ui, "Capture job geometry", self.document.is_some()).clicked() {
-                let job = &self.document.as_ref().unwrap().job;
-                let source = crate::authoring::tool(job, self.resources.role == Role::Vbit);
-                if let Some(source) = source {
-                    let id = unique(
-                        "tool",
-                        self.resources
-                            .draft
-                            .library
-                            .tools
-                            .iter()
-                            .map(|t| t.id.clone()),
-                    );
-                    match crate::resources::capture_tool(source, id.clone(), source.name.clone()) {
-                        Ok(tool) => {
-                            self.resources.draft.library.tools.push(tool);
-                            self.resources.tool = id;
-                            self.resources.dirty = true;
-                        }
-                        Err(e) => self.resources.status = e,
-                    }
-                }
-            }
-        });
         let Some(index) = self
             .resources
             .draft
@@ -592,191 +483,169 @@ impl App {
             return;
         };
         let mut tool = self.resources.draft.library.tools[index].clone();
-        ui.push_id(tool.id.clone(), |ui| {
-            tool_form(ui, &mut tool, &mut self.resources, "Library");
-        });
+        section(
+            ui,
+            (tool.id.clone(), "geometry"),
+            "Geometry & capabilities",
+            true,
+            |ui| {
+                tool_form(ui, &mut tool, &mut self.resources, "Library");
+            },
+        );
         self.resources.draft.library.tools[index] = tool.clone();
-        if button(ui, "Duplicate library tool", true).clicked() {
-            let mut copy = tool.clone();
-            copy.id = unique(
-                "tool",
-                self.resources
-                    .draft
-                    .library
-                    .tools
-                    .iter()
-                    .map(|t| t.id.clone()),
-            );
-            copy.name.push_str(" copy");
-            self.resources.tool = copy.id.clone();
-            self.resources.draft.library.tools.push(copy);
-            self.resources.dirty = true;
-        }
         let reviewed = self
             .resources
             .base
             .as_ref()
             .filter(|_| !self.resources.dirty && self.resources.invalid.is_empty())
             .map(|s| s.snapshot.clone());
-        if button(
+        section(
             ui,
-            "Add geometry to job",
-            reviewed.is_some() && self.document.is_some() && self.active.is_none(),
-        )
-        .clicked()
-        {
-            self.resource_command(
-                R::AddTool {
-                    catalog: reviewed.clone().unwrap(),
-                    tool: tool.id.clone(),
-                },
-                ctx,
-            );
-        }
-        ui.small(
-            "Add geometry copies a physical tool. Choose its assignment separately in Job tools.",
-        );
-        ui.separator();
-        ui.heading("Cutting profiles");
-        ui.horizontal_wrapped(|ui| {
-            for p in &tool.cutting_presets {
-                let r = ui.selectable_value(&mut self.resources.preset, p.id.clone(), &p.name);
-                observe_control(&format!("Library profile {}", p.id), r.rect);
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            if button(
-                ui,
-                "New cutting profile",
-                !matches!(tool.geometry, LibraryGeometry::DragKnife(_)),
-            )
-            .clicked()
-            {
-                let id = unique("profile", tool.cutting_presets.iter().map(|p| p.id.clone()));
-                tool.cutting_presets.push(CuttingPreset {
-                    id: id.clone(),
-                    name: "New profile".into(),
-                    material: None,
-                    machine: None,
-                    spindle_rpm: None,
-                    cutting_feed_mm_min: None,
-                    plunge_feed_mm_min: None,
-                    max_stepdown_mm: None,
-                    stepover_mm: None,
+            (tool.id.clone(), "profiles"),
+            "Cutting profiles",
+            true,
+            |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let r =
+                        ui.selectable_value(&mut self.resources.preset, String::new(), "Tool only");
+                    observe_control("Library profile none", r.rect);
+                    for p in &tool.cutting_presets {
+                        let r =
+                            ui.selectable_value(&mut self.resources.preset, p.id.clone(), &p.name);
+                        observe_control(&format!("Library profile {}", p.id), r.rect);
+                    }
                 });
-                self.resources.preset = id;
-                self.resources.dirty = true;
-            }
-            if button(
-                ui,
-                "Capture assignment as profile",
-                self.document.is_some() && !matches!(tool.geometry, LibraryGeometry::DragKnife(_)),
-            )
-            .clicked()
-            {
-                let id = unique("profile", tool.cutting_presets.iter().map(|p| p.id.clone()));
-                match crate::resources::capture_assignment(
-                    &self.document.as_ref().unwrap().job,
-                    self.resources.role,
-                    id.clone(),
-                    "Captured cutting values".into(),
-                ) {
-                    Ok(p) => {
-                        tool.cutting_presets.push(p);
+                ui.horizontal_wrapped(|ui| {
+                    if button(
+                        ui,
+                        "New cutting profile",
+                        !matches!(tool.geometry, LibraryGeometry::DragKnife(_)),
+                    )
+                    .clicked()
+                    {
+                        let id =
+                            unique("profile", tool.cutting_presets.iter().map(|p| p.id.clone()));
+                        tool.cutting_presets.push(CuttingPreset {
+                            id: id.clone(),
+                            name: "New profile".into(),
+                            material: None,
+                            machine: None,
+                            spindle_rpm: None,
+                            cutting_feed_mm_min: None,
+                            plunge_feed_mm_min: None,
+                            max_stepdown_mm: None,
+                            stepover_mm: None,
+                        });
                         self.resources.preset = id;
                         self.resources.dirty = true;
                     }
-                    Err(e) => self.resources.status = e,
+                    if button(
+                        ui,
+                        "Capture assignment as profile",
+                        self.document.is_some()
+                            && !matches!(tool.geometry, LibraryGeometry::DragKnife(_)),
+                    )
+                    .clicked()
+                    {
+                        let id =
+                            unique("profile", tool.cutting_presets.iter().map(|p| p.id.clone()));
+                        match crate::resources::capture_assignment(
+                            &self.document.as_ref().unwrap().job,
+                            self.resources.role,
+                            id.clone(),
+                            "Captured cutting values".into(),
+                        ) {
+                            Ok(p) => {
+                                tool.cutting_presets.push(p);
+                                self.resources.preset = id;
+                                self.resources.dirty = true;
+                            }
+                            Err(e) => self.resources.status = e,
+                        }
+                    }
+                });
+                if let Some(pindex) = tool
+                    .cutting_presets
+                    .iter()
+                    .position(|p| p.id == self.resources.preset)
+                {
+                    let p = &mut tool.cutting_presets[pindex];
+                    ui.push_id((tool.id.clone(), p.id.clone()), |ui| {
+                        preset_form(ui, &tool.id, p, &mut self.resources)
+                    });
+                    if button(ui, "Duplicate cutting profile", true).clicked() {
+                        let mut copy = tool.cutting_presets[pindex].clone();
+                        copy.id =
+                            unique("profile", tool.cutting_presets.iter().map(|p| p.id.clone()));
+                        copy.name.push_str(" copy");
+                        self.resources.preset = copy.id.clone();
+                        tool.cutting_presets.push(copy);
+                        self.resources.dirty = true;
+                    }
                 }
-            }
-        });
-        if let Some(pindex) = tool
-            .cutting_presets
-            .iter()
-            .position(|p| p.id == self.resources.preset)
-        {
-            let p = &mut tool.cutting_presets[pindex];
-            ui.push_id((tool.id.clone(), p.id.clone()), |ui| {
-                preset_form(ui, &tool.id, p, &mut self.resources)
-            });
-            if button(ui, "Duplicate cutting profile", true).clicked() {
-                let mut copy = tool.cutting_presets[pindex].clone();
-                copy.id = unique("profile", tool.cutting_presets.iter().map(|p| p.id.clone()));
-                copy.name.push_str(" copy");
-                self.resources.preset = copy.id.clone();
-                tool.cutting_presets.push(copy);
-                self.resources.dirty = true;
-            }
-            let usable = reviewed.is_some()
-                && !self.resources.dirty
-                && self.document.is_some()
-                && self.active.is_none();
-            if button(ui, "Apply cutting profile", usable).clicked() {
-                self.resource_command(
-                    R::Apply {
-                        operation: self.document.as_ref().unwrap().job.operations[0].id.clone(),
-                        role: self.resources.role,
-                        catalog: reviewed.clone().unwrap(),
-                        tool: tool.id.clone(),
-                        preset: self.resources.preset.clone(),
-                    },
-                    ctx,
-                );
-            }
-        }
+            },
+        );
         self.resources.draft.library.tools[index] = tool;
-        if let Some(doc) = &self.document {
-            let status = core::assignment_statuses(&doc.job)
-                .into_iter()
-                .find(|s| s.role == self.resources.role)
-                .unwrap();
-            ui.label(format!(
-                "Selected assignment: {:?} · {:?}",
-                status.role, status.status
-            ));
-            if let Some(applied) = status.applied {
-                ui.small(format!(
-                    "{} · copied revision {}",
-                    applied.name_at_application, applied.revision_at_application
-                ));
-            }
-            let operation = doc.job.operations[0].id.clone();
-            ui.horizontal_wrapped(|ui| {
-                if button(
-                    ui,
-                    "Reset assignment overrides",
-                    status.status != core::ProfileStatus::Custom && self.active.is_none(),
-                )
-                .clicked()
-                {
-                    self.resource_command(
-                        R::Reset {
-                            operation: operation.clone(),
-                            role: self.resources.role,
-                        },
-                        ctx,
-                    );
+        section(
+            ui,
+            ("library-job-assignment", self.resources.role == Role::Vbit),
+            "Applied job values",
+            false,
+            |ui| {
+                if let Some(doc) = &self.document {
+                    let status = core::assignment_statuses(&doc.job)
+                        .into_iter()
+                        .find(|s| s.role == self.resources.role)
+                        .unwrap();
+                    ui.label(format!(
+                        "Selected assignment: {:?} · {:?}",
+                        status.role, status.status
+                    ));
+                    if let Some(applied) = status.applied {
+                        ui.small(format!(
+                            "{} · copied revision {}",
+                            applied.name_at_application, applied.revision_at_application
+                        ));
+                    }
+                    let operation = doc.job.operations[0].id.clone();
+                    ui.horizontal_wrapped(|ui| {
+                        if button(
+                            ui,
+                            "Reset assignment overrides",
+                            status.status != core::ProfileStatus::Custom && self.active.is_none(),
+                        )
+                        .clicked()
+                        {
+                            self.resource_command(
+                                R::Reset {
+                                    operation: operation.clone(),
+                                    role: self.resources.role,
+                                },
+                                ctx,
+                            );
+                        }
+                        if button(
+                            ui,
+                            "Reapply reviewed profile",
+                            reviewed.is_some()
+                                && self.active.is_none()
+                                && status.status != core::ProfileStatus::Custom,
+                        )
+                        .clicked()
+                        {
+                            self.resource_command(
+                                R::Reapply {
+                                    operation,
+                                    role: self.resources.role,
+                                    catalog: reviewed.unwrap(),
+                                },
+                                ctx,
+                            );
+                        }
+                    });
                 }
-                if button(
-                    ui,
-                    "Reapply reviewed profile",
-                    reviewed.is_some()
-                        && self.active.is_none()
-                        && status.status != core::ProfileStatus::Custom,
-                )
-                .clicked()
-                {
-                    self.resource_command(
-                        R::Reapply {
-                            operation,
-                            role: self.resources.role,
-                            catalog: reviewed.unwrap(),
-                        },
-                        ctx,
-                    );
-                }
-            });
-        }
+            },
+        );
     }
     fn resource_role(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
@@ -816,318 +685,286 @@ fn machine_form(
 ) {
     use cam_core::post::{Coolant, LengthCompensation, M6Return, PathControl};
     let key = format!("machine/{}", m.id);
-    ui.label(format!("Configuration ID: {}", m.id));
-    e.dirty |= choice(
-        ui,
-        "Work offset",
-        &mut m.work_offset,
-        &[
-            ("G54", "G54".into()),
-            ("G55", "G55".into()),
-            ("G56", "G56".into()),
-            ("G57", "G57".into()),
-            ("G58", "G58".into()),
-            ("G59", "G59".into()),
-            ("G59.1", "G59.1".into()),
-            ("G59.2", "G59.2".into()),
-            ("G59.3", "G59.3".into()),
-        ],
-    );
-    required(
-        ui,
-        "Configuration clearance",
-        &format!("{key}/clearance"),
-        &mut m.clearance_z_mm,
-        e,
-    );
-    let mut precision = m.decimal_places as f64;
-    required(
-        ui,
-        "Configuration precision",
-        &format!("{key}/precision"),
-        &mut precision,
-        e,
-    );
-    if precision.fract() == 0. && (0.0..=9.).contains(&precision) {
-        m.decimal_places = precision as usize;
-    } else {
-        e.invalid.insert(format!("{key}/precision"));
-    }
-    required(
-        ui,
-        "Configuration spinup seconds",
-        &format!("{key}/spinup"),
-        &mut m.spindle_spinup_seconds,
-        e,
-    );
-    let compensation_changed = choice(
-        ui,
-        "Length compensation",
-        &mut m.length_compensation,
-        &[
-            ("Macro managed", LengthCompensation::MacroManaged),
-            ("Tool table", LengthCompensation::ToolTable),
-        ],
-    );
-    e.dirty |= compensation_changed;
-    if compensation_changed && m.length_compensation == LengthCompensation::MacroManaged {
-        for row in &mut m.tools {
-            row.length_offset_number = None;
-            e.raw.remove(&format!("{key}/H/{}", row.tool_id));
-            e.invalid.remove(&format!("{key}/H/{}", row.tool_id));
-        }
-    }
-    e.dirty |= choice(
-        ui,
-        "Coolant",
-        &mut m.coolant,
-        &[
-            ("Off", Coolant::Off),
-            ("Flood", Coolant::Flood),
-            ("Mist", Coolant::Mist),
-        ],
-    );
-    let mut blend = matches!(m.path_control, PathControl::Blend { .. });
-    if choice(
-        ui,
-        "Path control",
-        &mut blend,
-        &[("Exact path", false), ("Blend", true)],
-    ) {
-        m.path_control = if blend {
-            PathControl::Blend {
-                tolerance_mm: 0.,
-                naive_cam_tolerance_mm: None,
-            }
-        } else {
-            PathControl::ExactPath
-        };
-        e.dirty = true;
-    }
-    if let PathControl::Blend {
-        tolerance_mm,
-        naive_cam_tolerance_mm,
-    } = &mut m.path_control
-    {
-        required(
-            ui,
-            "Configuration blend tolerance",
-            &format!("{key}/blend"),
-            tolerance_mm,
-            e,
-        );
-        number(
-            ui,
-            "Configuration naive CAM tolerance",
-            &format!("{key}/naive"),
-            naive_cam_tolerance_mm,
-            false,
-            e,
-        );
-    }
-    let mut startup = m.program_start_position_mm.is_some();
-    if ui
-        .horizontal(|ui| {
-            let r = ui.checkbox(&mut startup, "Explicit program start position");
-            observe_control("Explicit program start position", r.rect);
-            help::icon(ui, "Explicit program start position");
-            r.changed()
-        })
-        .inner
-    {
-        m.program_start_position_mm = startup.then_some(cam_core::motion::Position {
-            x: 0.,
-            y: 0.,
-            z: 0.,
+    section(ui, (&key, "general"), "General", true, |ui| {
+        ui.columns(2, |cols| {
+            e.dirty |= select(
+                &mut cols[0],
+                "Work offset",
+                &mut m.work_offset,
+                &[
+                    ("G54", "G54".into()),
+                    ("G55", "G55".into()),
+                    ("G56", "G56".into()),
+                    ("G57", "G57".into()),
+                    ("G58", "G58".into()),
+                    ("G59", "G59".into()),
+                    ("G59.1", "G59.1".into()),
+                    ("G59.2", "G59.2".into()),
+                    ("G59.3", "G59.3".into()),
+                ],
+            );
+            required(
+                &mut cols[1],
+                "Configuration clearance",
+                &format!("{key}/clearance"),
+                &mut m.clearance_z_mm,
+                e,
+            );
         });
-        e.dirty = true;
-    }
-    if let Some(p) = &mut m.program_start_position_mm {
-        for (label, field, v) in [
-            ("Program start X", "start-x", &mut p.x),
-            ("Program start Y", "start-y", &mut p.y),
-            ("Program start Z", "start-z", &mut p.z),
-        ] {
-            required(ui, label, &format!("{key}/{field}"), v, e);
-        }
-    }
-    ui.separator();
-    help::label(ui, "M6 contract");
-    ui.label("Tool-change behavior: describe what your controller or manual change procedure guarantees after changing and compensating the tool.");
-    ui.small("Reference = your notes, manual section, or macro filename/revision. Review the guarantees below against that procedure.");
-    e.dirty |= text(ui, "Contract reference", &mut m.m6.reference);
-    for (label, value) in [
-        ("Contract reviewed", &mut m.m6.reviewed),
-        ("Preserves work datum", &mut m.m6.preserves_work_datum),
-        ("Local offsets unused", &mut m.m6.local_offsets_unused),
-        ("Z-only tool offsets", &mut m.m6.tool_offsets_z_only),
-    ] {
-        e.dirty |= ui
-            .horizontal(|ui| {
-                let r = ui.checkbox(value, label);
-                observe_control(label, r.rect);
-                help::icon(ui, label);
-                r.changed()
-            })
-            .inner;
-    }
-    let mut mode = match m.m6.return_position {
-        M6Return::CallerPosition => 0,
-        M6Return::FixedPosition { .. } => 1,
-        M6Return::SafeRetract { .. } => 2,
-    };
-    if choice(
+        ui.columns(2, |cols| {
+            let mut precision = m.decimal_places as f64;
+            required(
+                &mut cols[0],
+                "Configuration precision",
+                &format!("{key}/precision"),
+                &mut precision,
+                e,
+            );
+            if precision.fract() == 0. && (0.0..=9.).contains(&precision) {
+                m.decimal_places = precision as usize;
+            } else {
+                e.invalid.insert(format!("{key}/precision"));
+            }
+            required(
+                &mut cols[1],
+                "Configuration spinup seconds",
+                &format!("{key}/spinup"),
+                &mut m.spindle_spinup_seconds,
+                e,
+            );
+        });
+    });
+    section(
         ui,
-        "M6 return",
-        &mut mode,
-        &[("Caller", 0), ("Fixed", 1), ("Safe retract", 2)],
-    ) {
-        m.m6.return_position = match mode {
-            0 => M6Return::CallerPosition,
-            1 => M6Return::FixedPosition {
-                position_mm: cam_core::motion::Position {
-                    x: 0.,
-                    y: 0.,
-                    z: 0.,
-                },
-            },
-            _ => M6Return::SafeRetract {
-                z_mm: 0.,
-                transit_xy_mm: cam_core::geometry::Point::new(0., 0.),
-            },
-        };
-        e.dirty = true;
-    }
-    match &mut m.m6.return_position {
-        M6Return::CallerPosition => {}
-        M6Return::FixedPosition { position_mm: p } => {
-            for (label, field, v) in [
-                ("M6 fixed X", "return-x", &mut p.x),
-                ("M6 fixed Y", "return-y", &mut p.y),
-                ("M6 fixed Z", "return-z", &mut p.z),
-            ] {
-                required(ui, label, &format!("{key}/{field}"), v, e);
+        (&key, "tool-change"),
+        "Tool change & compensation",
+        true,
+        |ui| {
+            let compensation_changed = select(
+                ui,
+                "Length compensation",
+                &mut m.length_compensation,
+                &[
+                    ("Macro managed", LengthCompensation::MacroManaged),
+                    ("Tool table", LengthCompensation::ToolTable),
+                ],
+            );
+            e.dirty |= compensation_changed;
+            if compensation_changed && m.length_compensation == LengthCompensation::MacroManaged {
+                for row in &mut m.tools {
+                    row.length_offset_number = None;
+                    e.raw.remove(&format!("{key}/H/{}", row.tool_id));
+                    e.invalid.remove(&format!("{key}/H/{}", row.tool_id));
+                }
             }
-        }
-        M6Return::SafeRetract {
-            z_mm,
-            transit_xy_mm: p,
-        } => {
-            for (label, field, v) in [
-                ("M6 retract Z", "return-z", z_mm),
-                ("M6 transit X", "return-x", &mut p.x),
-                ("M6 transit Y", "return-y", &mut p.y),
-            ] {
-                required(ui, label, &format!("{key}/{field}"), v, e);
+
+            if m.m6.reviewed
+                && m.m6.preserves_work_datum
+                && m.m6.local_offsets_unused
+                && m.m6.tool_offsets_z_only
+                && !m.m6.reference.trim().is_empty()
+            {
+                ui.colored_label(Color32::from_rgb(38, 125, 90), "Reviewed");
             }
-        }
-    }
-    ui.small("Mappings below identify job tool IDs explicitly. Only existing IDs are copied when applied.");
-    for row in &mut m.tools {
-        ui.label(format!("Mapping {}", row.tool_id));
-        let mut t = Some(row.tool_number as f64);
-        let mut h = row.length_offset_number.map(|v| v as f64);
-        number(
+            help::label(ui, "M6 contract");
+            ui.label("Tool-change behavior: describe what your controller or manual change procedure guarantees after changing and compensating the tool.");
+            ui.small("Reference = your notes, manual section, or macro filename/revision. Review the guarantees below against that procedure.");
+            e.dirty |= text(ui, "Contract reference", &mut m.m6.reference);
+            for (label, value) in [
+                ("Contract reviewed", &mut m.m6.reviewed),
+                ("Preserves work datum", &mut m.m6.preserves_work_datum),
+                ("Local offsets unused", &mut m.m6.local_offsets_unused),
+                ("Z-only tool offsets", &mut m.m6.tool_offsets_z_only),
+            ] {
+                e.dirty |= ui
+                    .horizontal(|ui| {
+                        let r = ui.checkbox(value, label);
+                        observe_control(label, r.rect);
+                        help::icon(ui, label);
+                        r.changed()
+                    })
+                    .inner;
+            }
+            let mut mode = match m.m6.return_position {
+                M6Return::CallerPosition => 0,
+                M6Return::FixedPosition { .. } => 1,
+                M6Return::SafeRetract { .. } => 2,
+            };
+            if select(
+                ui,
+                "M6 return",
+                &mut mode,
+                &[("Caller", 0), ("Fixed", 1), ("Safe retract", 2)],
+            ) {
+                m.m6.return_position = match mode {
+                    0 => M6Return::CallerPosition,
+                    1 => M6Return::FixedPosition {
+                        position_mm: cam_core::motion::Position {
+                            x: 0.,
+                            y: 0.,
+                            z: 0.,
+                        },
+                    },
+                    _ => M6Return::SafeRetract {
+                        z_mm: 0.,
+                        transit_xy_mm: cam_core::geometry::Point::new(0., 0.),
+                    },
+                };
+                e.dirty = true;
+            }
+            match &mut m.m6.return_position {
+                M6Return::CallerPosition => {}
+                M6Return::FixedPosition { position_mm: p } => {
+                    for (label, field, v) in [
+                        ("M6 fixed X", "return-x", &mut p.x),
+                        ("M6 fixed Y", "return-y", &mut p.y),
+                        ("M6 fixed Z", "return-z", &mut p.z),
+                    ] {
+                        required(ui, label, &format!("{key}/{field}"), v, e);
+                    }
+                }
+                M6Return::SafeRetract {
+                    z_mm,
+                    transit_xy_mm: p,
+                } => {
+                    for (label, field, v) in [
+                        ("M6 retract Z", "return-z", z_mm),
+                        ("M6 transit X", "return-x", &mut p.x),
+                        ("M6 transit Y", "return-y", &mut p.y),
+                    ] {
+                        required(ui, label, &format!("{key}/{field}"), v, e);
+                    }
+                }
+            }
+        },
+    );
+    section(ui, (&key, "motion"), "Motion & coolant", false, |ui| {
+        e.dirty |= select(
             ui,
-            &format!("Configuration T {}", row.tool_id),
-            &format!("{key}/T/{}", row.tool_id),
-            &mut t,
-            true,
-            e,
+            "Coolant",
+            &mut m.coolant,
+            &[
+                ("Off", Coolant::Off),
+                ("Flood", Coolant::Flood),
+                ("Mist", Coolant::Mist),
+            ],
         );
-        if m.length_compensation == LengthCompensation::ToolTable {
+        let mut blend = matches!(m.path_control, PathControl::Blend { .. });
+        if select(
+            ui,
+            "Path control",
+            &mut blend,
+            &[("Exact path", false), ("Blend", true)],
+        ) {
+            m.path_control = if blend {
+                PathControl::Blend {
+                    tolerance_mm: 0.,
+                    naive_cam_tolerance_mm: None,
+                }
+            } else {
+                PathControl::ExactPath
+            };
+            e.dirty = true;
+        }
+        if let PathControl::Blend {
+            tolerance_mm,
+            naive_cam_tolerance_mm,
+        } = &mut m.path_control
+        {
+            required(
+                ui,
+                "Configuration blend tolerance",
+                &format!("{key}/blend"),
+                tolerance_mm,
+                e,
+            );
             number(
                 ui,
-                &format!("Configuration H {}", row.tool_id),
-                &format!("{key}/H/{}", row.tool_id),
-                &mut h,
+                "Configuration naive CAM tolerance",
+                &format!("{key}/naive"),
+                naive_cam_tolerance_mm,
                 false,
                 e,
             );
         }
-        if let Some(t) = t {
-            if t.fract() == 0. && t > 0. && t <= u32::MAX as f64 {
-                row.tool_number = t as u32;
-            } else {
-                e.invalid.insert(format!("{key}/T/{}", row.tool_id));
+    });
+    section(
+        ui,
+        (&key, "advanced"),
+        "Program start & tool mappings",
+        false,
+        |ui| {
+            let mut startup = m.program_start_position_mm.is_some();
+            if ui
+                .horizontal(|ui| {
+                    let r = ui.checkbox(&mut startup, "Explicit program start position");
+                    observe_control("Explicit program start position", r.rect);
+                    help::icon(ui, "Explicit program start position");
+                    r.changed()
+                })
+                .inner
+            {
+                m.program_start_position_mm = startup.then_some(cam_core::motion::Position {
+                    x: 0.,
+                    y: 0.,
+                    z: 0.,
+                });
+                e.dirty = true;
             }
-        }
-        if h.is_none_or(|h| h.fract() == 0. && h >= 0. && h <= u32::MAX as f64) {
-            row.length_offset_number = h.map(|h| h as u32);
-        } else {
-            e.invalid.insert(format!("{key}/H/{}", row.tool_id));
-        }
-    }
+            if let Some(p) = &mut m.program_start_position_mm {
+                for (label, field, v) in [
+                    ("Program start X", "start-x", &mut p.x),
+                    ("Program start Y", "start-y", &mut p.y),
+                    ("Program start Z", "start-z", &mut p.z),
+                ] {
+                    required(ui, label, &format!("{key}/{field}"), v, e);
+                }
+            }
+
+            ui.small("Mappings below identify job tool IDs explicitly. Only existing IDs are copied when applied.");
+            for row in &mut m.tools {
+                ui.label(format!("Mapping {}", row.tool_id));
+                let mut t = Some(row.tool_number as f64);
+                let mut h = row.length_offset_number.map(|v| v as f64);
+                number(
+                    ui,
+                    &format!("Configuration T {}", row.tool_id),
+                    &format!("{key}/T/{}", row.tool_id),
+                    &mut t,
+                    true,
+                    e,
+                );
+                if m.length_compensation == LengthCompensation::ToolTable {
+                    number(
+                        ui,
+                        &format!("Configuration H {}", row.tool_id),
+                        &format!("{key}/H/{}", row.tool_id),
+                        &mut h,
+                        false,
+                        e,
+                    );
+                }
+                if let Some(t) = t {
+                    if t.fract() == 0. && t > 0. && t <= u32::MAX as f64 {
+                        row.tool_number = t as u32;
+                    } else {
+                        e.invalid.insert(format!("{key}/T/{}", row.tool_id));
+                    }
+                }
+                if h.is_none_or(|h| h.fract() == 0. && h >= 0. && h <= u32::MAX as f64) {
+                    row.length_offset_number = h.map(|h| h as u32);
+                } else {
+                    e.invalid.insert(format!("{key}/H/{}", row.tool_id));
+                }
+            }
+            if m.tools.is_empty() {
+                ui.small("Set tool numbers for the job's selected cutters in the job Machine panel after applying this profile.");
+            }
+        },
+    );
 }
 impl App {
-    fn library_machines(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.heading("Machine configurations");
-        text(ui, "New machine ID", &mut self.resources.new_machine_id);
-        let valid_id = cam_core::preview::valid_id(&self.resources.new_machine_id);
-        if !valid_id {
-            ui.small("Use letters, numbers, hyphens or underscores for the profile ID.");
-        }
-        if button(
-            ui,
-            "New machine profile",
-            valid_id && self.resources.draft.machines.len() < 100,
-        )
-        .clicked()
-        {
-            let requested = self.resources.new_machine_id.clone();
-            let id = if self
-                .resources
-                .draft
-                .machines
-                .iter()
-                .any(|m| m.id == requested)
-            {
-                unique(
-                    &requested,
-                    self.resources.draft.machines.iter().map(|m| m.id.clone()),
-                )
-            } else {
-                requested
-            };
-            self.resources.machine = id.clone();
-            self.resources
-                .draft
-                .machines
-                .push(crate::resources::new_machine(id));
-            self.resources.dirty = true;
-        }
-        ui.small("Create a profile, describe your machine's M6/tool-change behavior below, then Save library and Apply reviewed machine. Set each used tool's T/H mapping in the job's Machine panel.");
-        ui.horizontal_wrapped(|ui| {
-            for m in &self.resources.draft.machines {
-                let r = ui.selectable_value(&mut self.resources.machine, m.id.clone(), &m.id);
-                observe_control(&format!("Library machine {}", m.id), r.rect);
-            }
-        });
-        if button(
-            ui,
-            "Capture applied machine",
-            self.document
-                .as_ref()
-                .is_some_and(|d| d.job.machine_configuration.is_some()),
-        )
-        .clicked()
-        {
-            match cam_core::project::v5::machine::resolve_sequence_profile(
-                &self.document.as_ref().unwrap().job,
-                &cam_core::project::v5::ReadinessScope::AllEnabled,
-            ) {
-                Ok(mut m) => {
-                    m.id = unique(
-                        "machine",
-                        self.resources.draft.machines.iter().map(|m| m.id.clone()),
-                    );
-                    self.resources.machine = m.id.clone();
-                    self.resources.draft.machines.push(m);
-                    self.resources.dirty = true;
-                }
-                Err(e) => self.resources.status = e.to_string(),
-            }
-        }
+    fn library_machines(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         let Some(index) = self
             .resources
             .draft
@@ -1144,22 +981,6 @@ impl App {
         }
         self.resources.machine = machine.id.clone();
         self.resources.draft.machines[index] = machine.clone();
-        if button(ui, "Duplicate machine configuration", true).clicked() {
-            machine.id = unique(
-                "machine",
-                self.resources.draft.machines.iter().map(|m| m.id.clone()),
-            );
-            self.resources.machine = machine.id.clone();
-            self.resources.draft.machines.push(machine.clone());
-            self.resources.dirty = true;
-        }
-        let ready = !self.resources.dirty
-            && self.resources.invalid.is_empty()
-            && self.document.is_some()
-            && self.active.is_none();
-        if button(ui, "Apply reviewed machine", ready).clicked() {
-            self.resource_command(R::Machine { profile: machine }, ctx);
-        }
     }
     fn job_tools_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
@@ -1418,6 +1239,28 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn import_failure_is_visible_in_the_library_and_preserves_its_buffer() {
+        let ctx = egui::Context::default();
+        let mut a = app();
+        a.resources.draft = catalog();
+        a.resources.dirty = true;
+        let before = a.resource_stamp();
+        a.io = Some((7, IoKind::LibraryImport));
+        a.event(
+            Event::Io {
+                id: 7,
+                result: Err("Cannot read library file".into()),
+            },
+            &ctx,
+        );
+        assert_eq!(
+            a.resources.error.as_deref(),
+            Some("Cannot read library file")
+        );
+        assert_eq!(a.resource_stamp(), before);
+        assert!(a.resources.dirty);
+    }
     #[test]
     fn combined_library_action_fills_blank_geometry_capabilities_direction_and_raw_fields_atomically()
      {
