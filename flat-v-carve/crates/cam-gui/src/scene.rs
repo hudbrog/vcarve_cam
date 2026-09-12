@@ -102,24 +102,34 @@ pub fn groups_for(plan: &OperationPlanV5) -> Result<Vec<Group>, String> {
             },
         ]);
     }
-    let mut used_labels: Vec<String> = vec![];
-    let mut used_jumps: Vec<String> = vec![];
+    // A role that repeats (a profile cuts every contour's rough and finishing
+    // work in turn) is numbered rather than renamed after its operation, so the
+    // timeline reads in execution order and each checkpoint stays distinct.
+    let mut totals: std::collections::BTreeMap<&'static str, usize> = Default::default();
+    for span in &spans {
+        *totals.entry(span.role_word()).or_default() += 1;
+    }
+    let mut seen: std::collections::BTreeMap<&'static str, usize> = Default::default();
     let mut groups = vec![];
     for span in &spans {
-        let mut label = format!("{} paths", span.role_word());
-        if used_labels.contains(&label) {
-            label = format!("{} · {}", span.operation_name, span.role_word());
-        }
-        used_labels.push(label.clone());
-        let mut jump = format!("After {}", span.role_word().to_ascii_lowercase());
-        if used_jumps.contains(&jump) {
-            jump = format!(
-                "After {} {}",
-                span.operation_name,
-                span.role_word().to_ascii_lowercase()
-            );
-        }
-        used_jumps.push(jump.clone());
+        let word = span.role_word();
+        let ordinal = {
+            let entry = seen.entry(word).or_default();
+            *entry += 1;
+            *entry
+        };
+        let total = totals[word];
+        let (label, jump) = if total > 1 {
+            (
+                format!("{word} paths ({ordinal} of {total})"),
+                format!("After {} ({ordinal} of {total})", word.to_ascii_lowercase()),
+            )
+        } else {
+            (
+                format!("{word} paths"),
+                format!("After {}", word.to_ascii_lowercase()),
+            )
+        };
         groups.push(Group {
             label,
             jump,

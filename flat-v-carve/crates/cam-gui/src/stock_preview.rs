@@ -38,6 +38,12 @@ pub struct PreviewMeta {
     pub tiles_y: usize,
     pub retained_bytes: usize,
     pub frames: Vec<FrameMeta>,
+    /// Stage boundaries the display budget could not keep as their own
+    /// checkpoint. They are still seekable: the display replays forward from
+    /// the nearest earlier checkpoint. Zero means every stage boundary is
+    /// directly seekable.
+    #[serde(default)]
+    pub dropped_stage_marks: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -94,25 +100,44 @@ pub fn build_with_marks(
         .collect();
     marks.sort_unstable();
     marks.dedup();
-    // Keep the checkpoint count inside the byte budget before integrating
-    // anything: a stage boundary the budget cannot hold is dropped explicitly.
-    let mut checkpoints = checkpoints;
-    while checkpoints > 3 && per_frame.saturating_mul(checkpoints) > budget {
-        checkpoints -= 1;
-    }
-    while marks.len() + 1 > checkpoints && marks.len() > 1 {
-        marks.remove(0);
-    }
-    // Evenly spaced prefixes including the initial and the final state, plus
+    // The preferred set is the historical evenly spaced ladder
+    // (`checkpoints - 2` divisions, including the initial and final state) plus
     // every named stage boundary. The spacing matches the qualification
     // fixture's checkpoint scheme.
+    let total = input.motions.len();
     let spans = checkpoints - 2;
-    let mut prefixes: Vec<_> = (0..=spans)
-        .map(|i| input.motions.len() * i / spans)
-        .collect();
+    let mut prefixes: Vec<_> = (0..=spans).map(|i| total * i / spans).collect();
     prefixes.extend(marks.iter().copied());
     prefixes.sort_unstable();
     prefixes.dedup();
+    // A profile with finishing publishes several stage boundaries, so the
+    // preferred set can exceed what the display budget holds. Frames are then
+    // dropped explicitly — evenly spaced frames first, oldest stage boundary
+    // next — instead of failing an otherwise usable job, because the interactive
+    // replay can still reach any prefix between checkpoints.
+    let capacity = (budget / per_frame.max(1)).max(3);
+    let mut dropped_stage_marks = 0;
+    while prefixes.len() > capacity && prefixes.len() > 3 {
+        let interior = prefixes
+            .iter()
+            .position(|prefix| *prefix != 0 && *prefix != total && !marks.contains(prefix));
+        match interior {
+            Some(index) => {
+                prefixes.remove(index);
+            }
+            None => {
+                let oldest = marks.first().copied();
+                match oldest {
+                    Some(oldest) if marks.len() > 1 => {
+                        marks.remove(0);
+                        prefixes.retain(|prefix| *prefix != oldest);
+                        dropped_stage_marks += 1;
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
     let retained_bytes =
         field.versions.len() * crate::sim::TILE * crate::sim::TILE * 4 * prefixes.len();
     if retained_bytes > budget {
@@ -154,6 +179,7 @@ pub fn build_with_marks(
             tiles_y: field.versions.len() / field.tiles_x.max(1),
             retained_bytes,
             frames,
+            dropped_stage_marks,
         },
         cells,
     })
@@ -236,6 +262,37 @@ mod tests {
             assert!(!frame.checksum.is_empty());
         }
         assert!(preview.meta.frames.iter().any(|f| !f.allocated.is_empty()));
+    }
+
+    #[test]
+    fn more_stage_boundaries_than_the_budget_holds_drop_the_oldest_marks() {
+        // A profile's rough and finishing passes publish one boundary per
+        // stage; the display keeps the frames it can hold and reports the ones
+        // it dropped instead of failing the whole job.
+        let input = input(400);
+        let marks: Vec<usize> = (1..=12).map(|i| i * 30).collect();
+        // Room for exactly three frames: the initial state, one intermediate
+        // checkpoint and the final state.
+        let budget = 3 * 1024 * 1024 + 512 * 1024;
+        let preview = build_with_marks(&input, &marks, CHECKPOINTS, budget).unwrap();
+        assert!(preview.meta.retained_bytes <= budget);
+        assert!(preview.meta.frames.len() <= 3);
+        assert!(
+            preview.meta.dropped_stage_marks > 0,
+            "dropped boundaries are reported"
+        );
+        // The frames stay ordered and the final state is still the last one.
+        assert!(
+            preview
+                .meta
+                .frames
+                .windows(2)
+                .all(|f| f[0].prefix <= f[1].prefix)
+        );
+        assert_eq!(
+            preview.meta.frames.last().unwrap().prefix,
+            input.motions.len()
+        );
     }
 
     #[test]

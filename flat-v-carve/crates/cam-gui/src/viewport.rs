@@ -656,7 +656,13 @@ impl Viewport {
                 let mut prefix=self.stock_prefix;
                 let slider=ui.add(egui::Slider::new(&mut prefix,0..=self.motion_count()).text("Stock motion"));crate::app::observe_control("Stock motion",slider.rect);if slider.changed(){self.playing=false;self.stock_seek(prefix);}
             });
-            if let Some(stock)=&self.stock {ui.label(format!("Display simulation · {:.4} mm cells (reference {:.4}) · {} / {} motions · {:.2} mm³ removed",stock.meta.cell_mm,stock.meta.reference_cell_mm,stock.prefix,self.motion_count(),stock.stats.removed_volume_mm3));}
+            if let Some(stock)=&self.stock {
+                ui.label(format!("Display simulation · {:.4} mm cells (reference {:.4}) · {} / {} motions · {:.2} mm³ removed",stock.meta.cell_mm,stock.meta.reference_cell_mm,stock.prefix,self.motion_count(),stock.stats.removed_volume_mm3));
+                if stock.meta.dropped_stage_marks > 0 {
+                    let response = ui.colored_label(Color32::from_rgb(164,83,12), format!("{} stage boundaries are beyond the display checkpoint budget; the timeline still seeks them by replaying from the nearest earlier checkpoint.", stock.meta.dropped_stage_marks));
+                    crate::app::observe_control("Dropped stage boundaries", response.rect);
+                }
+            }
         });
         } else {
             self.playing = false;

@@ -548,6 +548,175 @@ fn a_replaced_source_leaves_tab_anchors_unresolved_until_reattached() {
 }
 
 #[test]
+fn radial_finishing_adds_a_finish_pass_at_the_allowance_and_feed() {
+    let job = profile_job();
+    let id = job.operations[0].id.clone();
+    let mut service = Retained::new();
+    let mut finished = job.clone();
+    profile::set_finish_enabled(&mut finished, &id, true).unwrap();
+    for (field, value) in [(91, 0.4), (92, 150.)] {
+        finished = app::set_value(&finished, &id, field, Some(value))
+            .unwrap_or_else(|error| panic!("field {field}: {error}"));
+    }
+    // Radial finishing leaves this operation's one assignment alone: only the
+    // finishing feed is added. Feeds, speed, stepdown limit and the tool stay.
+    let settings = profile::settings_in(&finished, &id).unwrap();
+    assert_eq!(settings.assignment.cutting_feed_mm_min, Some(300.));
+    assert_eq!(settings.assignment.plunge_feed_mm_min, Some(100.));
+    assert_eq!(settings.assignment.spindle_rpm, Some(12_000.));
+    assert_eq!(settings.assignment.max_stepdown_mm, Some(1.));
+    assert_eq!(settings.finish.radial_allowance_mm, Some(0.4));
+    let meta = generate(&mut service, &finished);
+    let report = &meta.report["gui2"];
+    assert_eq!(report["checks"]["exportReady"], true, "{report}");
+    let stages = report["inspection"]["stages"].as_array().unwrap();
+    let rough: usize = stages
+        .iter()
+        .filter(|stage| stage["role"] == "profile_rough")
+        .map(|stage| stage["motionCount"].as_u64().unwrap() as usize)
+        .sum();
+    let finish: usize = stages
+        .iter()
+        .filter(|stage| stage["role"] == "profile_finish")
+        .map(|stage| stage["motionCount"].as_u64().unwrap() as usize)
+        .sum();
+    assert!(rough > 0 && finish > 0, "both passes generate: {stages:?}");
+    // The timeline states the passes in execution order, with distinct labels.
+    let groups = report["groups"].as_array().unwrap();
+    assert_eq!(groups[0]["role"], "Profile rough");
+    assert_eq!(groups[1]["role"], "Profile finish");
+    assert_eq!(groups[0]["label"], "Profile rough paths (1 of 3)");
+    assert_eq!(groups[1]["jump"], "After profile finish (1 of 3)");
+    // The first checkpoint is the stock after the first rough pass and the last
+    // is the finished stock: the finishing pass removes the allowance the rough
+    // pass left standing.
+    let preview = meta.stock.as_ref().unwrap();
+    let after_first_rough = preview.frames[1].stats.removed_volume_mm3;
+    let final_removed = preview.frames.last().unwrap().stats.removed_volume_mm3;
+    assert!(
+        final_removed > after_first_rough,
+        "the finishing pass cuts material: {after_first_rough} then {final_removed} mm³"
+    );
+    // The emitted program carries both feeds: roughing at the assignment feed
+    // and finishing at the finishing feed.
+    let handle = report["handle"].as_str().unwrap().to_owned();
+    let (prepared, _) = session::execute(
+        &mut service,
+        Command::Prepare {
+            job: finished.to_json().unwrap(),
+            handle,
+        },
+    )
+    .unwrap();
+    let gcode = prepared.report["gui2"]["file"]["gcode"].as_str().unwrap();
+    assert!(gcode.contains("F300"), "rough feed in the program");
+    assert!(gcode.contains("F150"), "finishing feed in the program");
+    // A positive allowance on an on-contour selection is refused with a
+    // located reason instead of an offset that does not exist.
+    let mut on_contour = finished.clone();
+    let rows = profile::selection(&on_contour, &id)
+        .into_iter()
+        .map(|row| profile::SelectionRow {
+            side: ContourSide::On,
+            traversal: Some(cam_core::project::TraversalDirection::Forward),
+            ..row
+        })
+        .collect::<Vec<_>>();
+    on_contour = profile::set_selection_rows(&on_contour, &id, &rows).unwrap();
+    let meta = generate(&mut service, &on_contour);
+    assert!(
+        meta.report["gui2"]["generationIssues"]
+            .as_array()
+            .is_some_and(|issues| issues
+                .iter()
+                .any(|issue| issue["code"] == "PROFILE_FINISH_ALLOWANCE")),
+        "{}",
+        meta.report["gui2"]["generationIssues"]
+    );
+}
+
+#[test]
+fn finishing_keeps_the_tabs_and_their_anchors() {
+    let job = profile_job();
+    let id = job.operations[0].id.clone();
+    let outer = profile::contours(&job)
+        .unwrap()
+        .into_iter()
+        .filter(|contour| contour.role == "outer")
+        .max_by(|a, b| a.perimeter_mm.total_cmp(&b.perimeter_mm))
+        .unwrap();
+    let outers = profile::selection(&job, &id)
+        .into_iter()
+        .filter(|row| row.reference.kind == v5::GeometryRefKind::ClosedContour)
+        .collect::<Vec<_>>();
+    let mut tabbed = profile::set_selection_rows(
+        &job,
+        &id,
+        &outers
+            .into_iter()
+            .filter(|row| {
+                profile::contours(&job)
+                    .unwrap()
+                    .iter()
+                    .any(|c| c.reference == row.reference && c.role == "outer")
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    profile::set_tabs_enabled(&mut tabbed, &id, true).unwrap();
+    profile::set_tab_placement_mode(&mut tabbed, &id, false).unwrap();
+    for (field, value) in [(93, 0.5), (94, 2.)] {
+        tabbed = app::set_value(&tabbed, &id, field, Some(value)).unwrap();
+    }
+    tabbed = profile::tab_anchor(
+        &tabbed,
+        &id,
+        &TabAnchorAction::Add {
+            wire_id: outer.wire_id.clone(),
+            fraction: 0.125,
+        },
+    )
+    .unwrap();
+    let mut service = Retained::new();
+    let plain = generate(&mut service, &tabbed);
+    assert_eq!(placements(&plain).len(), 1);
+    let plain_removed = removed(&plain);
+    // Turning finishing on keeps the tab, its anchor and the assignment.
+    profile::set_finish_enabled(&mut tabbed, &id, true).unwrap();
+    for (field, value) in [(91, 0.4), (92, 150.)] {
+        tabbed = app::set_value(&tabbed, &id, field, Some(value)).unwrap();
+    }
+    let meta = generate(&mut service, &tabbed);
+    assert_eq!(
+        meta.report["gui2"]["checks"]["exportReady"], true,
+        "{}",
+        meta.report["gui2"]["generationIssues"]
+    );
+    assert_eq!(
+        placements(&meta).len(),
+        1,
+        "the manually anchored tab survives regeneration"
+    );
+    let rows = profile::tab_rows(&tabbed, &id);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].fraction, 0.125);
+    assert_eq!(
+        profile::settings_in(&tabbed, &id)
+            .unwrap()
+            .finish
+            .radial_allowance_mm,
+        Some(0.4)
+    );
+    // The finished part removes at least as much as the same job cut in one
+    // pass, because the finishing pass clears the allowance the rough left.
+    assert!(
+        removed(&meta) >= plain_removed - 1.,
+        "finishing clears the allowance: {} vs {plain_removed} mm³",
+        removed(&meta)
+    );
+}
+
+#[test]
 fn profile_after_the_known_carving_keeps_each_operation_stock() {
     // The established carving plus a profile that cuts the same artwork after
     // it: both operations publish their own stock prefix.

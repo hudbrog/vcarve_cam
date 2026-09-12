@@ -50,6 +50,7 @@ impl App {
                 self.profile_heights(ui, ctx);
                 self.profile_order(ui, ctx);
                 self.profile_tabs(ui, ctx);
+                self.profile_finishing(ui, ctx);
                 self.profile_evidence(ui);
             }
         }
@@ -830,6 +831,52 @@ impl App {
         });
     }
 
+    /// Radial finishing (GUI8c): the rough passes leave a radial allowance and
+    /// a final pass cuts the finished wall with its own feed. The planner owns
+    /// the offsets; this group only states the values and the pass order.
+    fn profile_finishing(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let id = self.operation_id();
+        let Some(job) = self.document.as_ref().map(|d| d.job.clone()) else {
+            return;
+        };
+        let Some(settings) = profile::settings_in(&job, &id) else {
+            return;
+        };
+        let enabled = settings.finish.enabled;
+        let on_contour = settings
+            .contours
+            .iter()
+            .any(|contour| contour.side == ContourSide::On);
+        self.operation_group(ui, "Radial finishing", false, |app, ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (label, value) in [("Add radial finishing", true), ("Rough passes only", false)]
+                {
+                    let r = ui.selectable_label(enabled == value, label);
+                    observe_control(label, r.rect);
+                    if r.clicked() && enabled != value {
+                        let id = app.operation_id();
+                        app.edit_job(ctx, &[91, 92], move |job| {
+                            profile::set_finish_enabled(job, &id, value)
+                        });
+                    }
+                }
+            });
+            if !enabled {
+                ui.small("The rough passes cut straight to the finished wall in depth steps. Turning finishing on keeps a radial allowance for a final pass.");
+                return;
+            }
+            ui.small("The rough passes stand off the wall by the allowance; the finishing pass then cuts the finished wall, depth-stepped like the rough work, at the finishing feed.");
+            app.operation_numbers(ui, ctx, &[91, 92]);
+            ui.small("Zero allowance is allowed and means the finishing pass follows the same wall as the roughing; the feed still applies. Both passes use this operation's one tool assignment — only the feed differs.");
+            if on_contour {
+                ui.colored_label(
+                    Color32::from_rgb(164, 83, 12),
+                    "A zero-offset (on-contour) selection cannot carry a radial allowance; set the allowance to zero or give the contour a retained side.",
+                );
+            }
+        });
+    }
+
     /// Generated-evidence readout: resolved heights, per-stage passes and the
     /// nominal cutter-center offset. Values come from the retained plan (or the
     /// tool geometry), never from a UI-side offset computation.
@@ -878,12 +925,17 @@ impl App {
                 ));
                 if settings.finish.enabled {
                     ui.label(format!(
-                        "Finishing allowance {} mm — the finish centerline adds it to the cutter radius",
+                        "Finishing allowance {} mm at {} mm/min — the rough centerline adds the allowance to the cutter radius, the finish pass cuts at the radius",
                         settings
                             .finish
                             .radial_allowance_mm
                             .map(|v| format!("{v:.4}"))
-                            .unwrap_or_else(|| "unset".into())
+                            .unwrap_or_else(|| "unset".into()),
+                        settings
+                            .finish
+                            .feed_mm_min
+                            .map(|v| format!("{v:.1}"))
+                            .unwrap_or_else(|| "unset".into()),
                     ));
                 }
             } else {

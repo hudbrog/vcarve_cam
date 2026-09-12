@@ -1,6 +1,6 @@
 # GUI8 profiles, workholding and finish controls
 
-Status: GUI8a and GUI8b implemented and checked; GUI8c–GUI8d in progress. Starting
+Status: GUI8a–GUI8c implemented and checked; GUI8d in progress. Starting
 commit: `80e53a5` (the GUI7 worktree as committed). User review is pending for
 every letter; no physical machining claim is made anywhere in this report.
 
@@ -190,7 +190,75 @@ planner still reports them.
 
 ## GUI8c — finishing
 
-Not started.
+The profile can now leave a radial allowance and run a configured finishing
+pass: the rough passes stand off the wall by the allowance, the finishing pass
+cuts the finished wall with its own feed, both passes keep using the
+operation's one tool assignment, and the timeline states the passes in
+execution order so rough and finished stock can be compared.
+
+### Contracts and implementation
+
+The planner already owned this: `ProfileFinishSettingsV5 { enabled,
+radial_allowance_mm, feed_mm_min }`, rough loops at `radius + allowance`,
+finishing loops at `radius` with the finishing feed, one stage per
+`ProfileRough`/`ProfileFinish` run, and `PROFILE_FINISH_RANGE` /
+`PROFILE_FINISH_ALLOWANCE` for a bad allowance or a zero-offset selection. The
+slice adds the editor group (**Radial finishing** → allowance, feed, and the
+pass-order explanation), keeps `profile::set_finish_enabled` unsetting the new
+values so the planner reports exactly what is missing, and reports both feeds
+and the allowance in the evidence readout. No path is constructed in the UI.
+
+One real display consequence had to be fixed: a profile with finishing emits
+one stage boundary per contour per pass, and the display checkpoint builder
+counted its evenly spaced frames *after* fitting the budget, so a job that
+needed more frames than the display budget held was refused outright with a
+byte message. `stock_preview::build_with_marks` now reserves the initial and
+final frames, keeps as many stage boundaries as the budget allows (newest
+first), and reports the number it could not keep in
+`PreviewMeta::dropped_stage_marks`. The Simulate panel states that limit
+explicitly next to the display cell size, and the timeline can still seek every
+stage boundary by replaying forward from the nearest earlier checkpoint
+(section 10.4). Toolpaths, checks and output are unaffected: only display
+checkpoints are dropped.
+
+The timeline's repeated role labels were also corrected while adding the second
+pass: a role that occurs more than once is numbered
+(`Profile rough paths (1 of 3)`, `After profile finish (1 of 3)`) in execution
+order, instead of renaming later entries after the operation. Single-stage
+operations keep the exact labels GUI2–GUI7 published.
+
+### Evidence and acceptance audit
+
+| GUI8c requirement | Evidence |
+| --- | --- |
+| Leave a radial allowance and run the configured finish pass | `crates/cam-gui/tests/profile.rs::radial_finishing_adds_a_finish_pass_at_the_allowance_and_feed`: both stage roles generate, the first rough checkpoint removes less than the finished state, and the emitted program carries `F300` (roughing) then `F150` (finishing) |
+| Per-pass inspection | The same test reads `inspection.stages` (rough and finish motion counts), the per-stage timeline groups, and the stock frames after the first rough pass and at the end; the Result inspection panel's pin/compare uses the same stage positions |
+| Assignment preservation | The same test asserts feeds, spindle speed, stepdown limit and tool are unchanged after enabling finishing and setting the allowance, and that only the finishing feed is added |
+| Regenerate with tabs still present | `::finishing_keeps_the_tabs_and_their_anchors`: a manual tab and its anchor survive enabling finishing and regeneration, the placement count stays one, the anchor fraction is unchanged, and the finished job removes at least the same material |
+| Rejections stay located and routed | `PROFILE_FINISH_ALLOWANCE` for a positive allowance on an on-contour selection (same test), `PROFILE_FINISH_RANGE` from the planner, and `app::issues::tests::profile_planner_fields_route_to_the_profile_editor` covers the finish field paths |
+| No UI-side path construction | The editor writes only `finish.*`; the offsets, stage order, feeds and any rejection come from the retained plan |
+| Display limits stay visible | `stock_preview::tests::more_stage_boundaries_than_the_budget_holds_drop_the_oldest_marks` (it no longer fails a usable job; the drop count is reported) and the Simulate panel's explicit note |
+
+### Checks
+
+- `cargo test -p cam-gui --locked`: 65 library tests plus every integration
+  suite pass, including the eight `tests/profile.rs` tests. Log:
+  `artifacts/gui/gui8c-tests.txt`.
+- `cargo test -p cam-core -p cam-service --locked`: every suite passes. Log:
+  `artifacts/gui/gui8c-core-tests.txt`.
+- `cargo clippy ... -D warnings` and `cargo fmt --all -- --check` pass. Logs:
+  `artifacts/gui/gui8c-clippy.txt`, `artifacts/gui/gui8c-fmt.txt`.
+
+### Limits
+
+- **One finishing pass per contour.** The planner emits a single finishing
+  loop at the finished wall after each contour's rough loops; local pass/depth
+  selection inside a stage remains GUI9 work.
+- **Allowance is radial only.** It is a wall allowance; floor and depth
+  behaviour are the same as the rough passes.
+- **Display checkpoints are bounded.** A job whose stage count exceeds the
+  display budget keeps the newest boundaries and states the number of dropped
+  ones; the cut itself is never truncated.
 
 ## GUI8d — starts and entries
 

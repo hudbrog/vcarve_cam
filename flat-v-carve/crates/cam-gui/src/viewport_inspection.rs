@@ -333,6 +333,7 @@ mod tests {
             tiles_y: 2,
             retained_bytes: 0,
             frames: vec![],
+            dropped_stage_marks: 0,
         };
         let bytes = field.packed_tile_bytes();
         let cut = sample(&meta, &bytes, [27., 27.]).unwrap();
