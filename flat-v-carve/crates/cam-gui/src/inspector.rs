@@ -1,4 +1,6 @@
 use super::*;
+#[path = "operation_ui.rs"]
+mod operation_ui;
 use crate::authoring::{self, settings_mut};
 use cam_core::project::{FlatVcarveMode, SpindleDirection, WorkZeroXY, WorkZeroZ};
 
@@ -53,45 +55,74 @@ impl App {
                 return;
             };
             let mut text = doc.text(field);
+            let operation = self.inspector_tab == 2;
             let response = ui
-                .horizontal(|ui| {
-                    let label = ui.add_sized(
-                        [116., 20.],
-                        egui::Label::new(match field {
+                .with_layout(
+                    if operation {
+                        egui::Layout::top_down(egui::Align::Min)
+                    } else {
+                        egui::Layout::left_to_right(egui::Align::Center)
+                    },
+                    |ui| {
+                        let name = match field {
+                            2 | 3 if operation => "Cutting feed",
+                            21 if operation => "Plunge feed",
+                            20 if operation => "Stepdown",
+                            46 if operation => "Stepover",
+                            16 if operation => "Included angle",
                             32 => "Endmill tool (T)",
                             33 => "Length entry (H)",
                             38 => "V-bit tool (T)",
                             39 => "V-bit entry (H)",
                             _ => FIELDS[field],
-                        }),
-                    );
-                    let response = ui
-                        .add(
-                            egui::TextEdit::singleline(&mut text)
-                                .id(egui::Id::new((
-                                    "carving-field",
-                                    doc.raw.key(field),
-                                    &doc.job.operations[0].id,
-                                    field,
-                                )))
-                                .desired_width(72.)
-                                .char_limit(128)
-                                .hint_text("Unset"),
-                        )
-                        .labelled_by(label.id);
-                    ui.small(match field {
-                        2 | 3 | 10 | 21 | 51 => "mm/min",
-                        11 | 22 => "RPM",
-                        14 | 16 | 28 => "deg",
-                        29 => "×",
-                        34 | 37 => "s",
-                        35 => "digits",
-                        32 | 33 | 38 | 39 | 48..=50 | 52..=56 | 58..=60 => "",
-                        _ => "mm",
-                    });
-                    help::icon(ui, FIELDS[field]);
-                    response
-                })
+                        };
+                        let label = if operation {
+                            ui.horizontal_wrapped(|ui| {
+                                let response = ui.label(name);
+                                help::icon(ui, FIELDS[field]);
+                                response
+                            })
+                            .inner
+                        } else {
+                            ui.add_sized([116., 20.], egui::Label::new(name))
+                        };
+                        ui.horizontal(|ui| {
+                            let response = ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut text)
+                                        .id(egui::Id::new((
+                                            "carving-field",
+                                            doc.raw.key(field),
+                                            &doc.job.operations[0].id,
+                                            field,
+                                        )))
+                                        .desired_width(if operation {
+                                            (ui.available_width() - 58.).clamp(65., 160.)
+                                        } else {
+                                            72.
+                                        })
+                                        .char_limit(128)
+                                        .hint_text("Unset"),
+                                )
+                                .labelled_by(label.id);
+                            ui.small(match field {
+                                2 | 3 | 10 | 21 | 51 => "mm/min",
+                                11 | 22 => "RPM",
+                                14 | 16 | 28 => "deg",
+                                29 => "×",
+                                34 | 37 => "s",
+                                35 => "digits",
+                                32 | 33 | 38 | 39 | 48..=50 | 52..=56 | 58..=60 => "",
+                                _ => "mm",
+                            });
+                            if !operation {
+                                help::icon(ui, FIELDS[field]);
+                            }
+                            response
+                        })
+                        .inner
+                    },
+                )
                 .inner;
             observe_control(FIELDS[field], response.rect);
             if self.issue_focus.as_deref() == Some(FIELDS[field]) {
@@ -133,14 +164,20 @@ impl App {
     pub(super) fn inspector(&mut self, ctx: &egui::Context) {
         let panel=egui::SidePanel::right("gui2-inspector").default_width(self.inspector_width).width_range(300.0..=480.0).resizable(true).show(ctx,|ui|{
             ui.add_space(8.);
-            ui.strong(["ARTWORK", "STOCK & WORK ZERO", "OPERATION", "MACHINE & EXPORT", "JOB TOOL · ENDMILL", "JOB TOOL · V-BIT", "RESULT INSPECTION", "JOB SETTINGS"][self.inspector_tab]);
-            ui.separator();
+            if self.inspector_tab != 2 {
+                ui.strong(["ARTWORK", "STOCK & WORK ZERO", "OPERATION", "MACHINE", "JOB TOOL · ENDMILL", "JOB TOOL · V-BIT", "RESULT INSPECTION", "JOB SETTINGS"][self.inspector_tab]);
+                ui.separator();
+            }
+            if self.inspector_tab == 2 && self.document.is_some() { self.operation_header(ui,ctx); }
             if self.inspector_tab != 6 {
             let r=ui.add(egui::TextEdit::singleline(&mut self.search).id(egui::Id::new("gui2-search")).char_limit(512).hint_text("Filter fields"));observe_control("Filter fields",r.rect);
-            if r.changed(){self.scroll[self.inspector_tab]=0.;}
+            if r.changed(){self.scroll[self.inspector_tab]=0.;if self.inspector_tab==2 {self.operation_scroll[self.operation_tab]=0.;}}
             }
-            let area=egui::ScrollArea::vertical().id_salt(("inspector-scroll",self.inspector_tab)).vertical_scroll_offset(self.scroll[self.inspector_tab]).show(ui,|ui|{
+            let operation = self.inspector_tab == 2;
+            let offset = if operation { self.operation_scroll[self.operation_tab] } else { self.scroll[self.inspector_tab] };
+            let area=egui::ScrollArea::vertical().id_salt(("inspector-scroll",self.inspector_tab,if operation {self.operation_tab} else {0})).auto_shrink([false,!operation]).max_height(if operation { (ui.available_height()-55.).max(100.) } else {ui.available_height()}).vertical_scroll_offset(offset).show(ui,|ui|{
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                if operation { ui.spacing_mut().interact_size.y = 22.; }
                 if self.document.is_none(){ui.label("Import an SVG or open a saved job to begin.");return;}
                 match self.inspector_tab {0=>self.artwork_panel(ui,ctx),1=>self.setup_panel(ui,ctx),2=>self.cutting_panel(ui,ctx),3=>self.machine_panel(ui,ctx),6=>self.view.inspection_controls(ui),7=>self.job_settings_panel(ui,ctx),index=>{
                     let finish=index==5;
@@ -161,7 +198,19 @@ impl App {
                 if self.document.as_ref().is_some_and(Document::pending){ui.colored_label(Color32::from_rgb(164,83,12),"Complete partial fields before generation or job save. Recovery keeps the raw text.");}
             });
             observe_control("Inspector viewport",area.inner_rect);
-            self.scroll[self.inspector_tab]=area.state.offset.y;
+            if operation {
+                self.operation_scroll[self.operation_tab]=area.state.offset.y;
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.small("Changes apply to this job");
+                    let ready = !self.operation_ramp_draft && self.document.as_ref().is_some_and(|d| !d.pending());
+                    let generate = ui.add_enabled(ready && self.active.is_none() && self.io.is_none(),egui::Button::new("Generate").fill(Color32::from_rgb(49,190,195)));
+                    observe_control("Generate operation",generate.rect);
+                    if generate.clicked() {
+                        self.submit(Command::Generate {job:self.document.as_ref().unwrap().job.to_json().unwrap()},ctx);
+                    }
+                });
+            } else { self.scroll[self.inspector_tab]=area.state.offset.y; }
         });
         self.inspector_width = panel.response.rect.width();
     }
@@ -510,159 +559,6 @@ impl App {
             });
         }
     }
-    fn cutting_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.heading("Flat V-carve");
-        help::label(ui, "Carving mode");
-        ui.horizontal(|ui| {
-            for (label, mode) in [
-                ("Endmill only", FlatVcarveMode::EndmillOnly),
-                ("Combined", FlatVcarveMode::Combined),
-            ] {
-                let r = ui.selectable_label(
-                    engine::settings(&self.document.as_ref().unwrap().job).mode == mode,
-                    label,
-                );
-                observe_control(label, r.rect);
-                if r.clicked() {
-                    self.edit_job(ctx, &[], |job| {
-                        authoring::set_mode(job, mode);
-                        Ok(())
-                    });
-                }
-            }
-        });
-        help::label(ui, "Operation top");
-        ui.horizontal(|ui| {
-            for (label, reference) in [
-                (
-                    "Top: stock top",
-                    cam_core::project::HeightReference::StockTop,
-                ),
-                (
-                    "Top: stock bottom",
-                    cam_core::project::HeightReference::StockBottom,
-                ),
-            ] {
-                let r = ui.selectable_label(
-                    engine::settings(&self.document.as_ref().unwrap().job)
-                        .top
-                        .reference
-                        == reference,
-                    label,
-                );
-                observe_control(label, r.rect);
-                if r.clicked() {
-                    self.edit_job(ctx, &[], |job| {
-                        settings_mut(job).top.reference = reference;
-                        Ok(())
-                    });
-                }
-            }
-        });
-        self.numbers(ui, ctx, &[47, 0, 1, 4]);
-        ui.small(
-            "Top offset is signed, positive upward. Depth is measured below the operation top.",
-        );
-        ui.heading("Endmill assignment");
-        self.assignment_tool(ui, ctx, false);
-        ui.small("Choose the clearing strategy and confirm plunge capability explicitly.");
-        help::label(ui, "Clearing strategy");
-        ui.horizontal(|ui| {
-            for (label, strategy) in [
-                (
-                    "Depth-dependent clearing",
-                    cam_core::pocket::ClearingStrategy::DepthDependent,
-                ),
-                (
-                    "Deepest-region clearing",
-                    cam_core::pocket::ClearingStrategy::DeepestRegion,
-                ),
-            ] {
-                let selected = engine::settings(&self.document.as_ref().unwrap().job)
-                    .rough
-                    .as_ref()
-                    .is_some_and(|r| r.strategy == strategy);
-                let r = ui.selectable_label(selected, label);
-                observe_control(label, r.rect);
-                if r.clicked() {
-                    self.edit_job(ctx, &[], |job| {
-                        settings_mut(job)
-                            .rough
-                            .get_or_insert_with(Default::default)
-                            .strategy = strategy;
-                        Ok(())
-                    });
-                }
-            }
-        });
-        if engine::settings(&self.document.as_ref().unwrap().job)
-            .rough
-            .is_some()
-        {
-            self.entry_panel(ui, ctx);
-            ui.label("Rough planner limits");
-            self.numbers(ui, ctx, &[48, 49, 50]);
-            ui.small("Limits: 1–256 layers, 1–1024 loops per layer, 1–100000 motions.");
-        }
-        self.numbers(ui, ctx, &[12, 13, 2, 10, 8, 9, 11]);
-        self.direction(ui, ctx, false);
-        let mut plunge = authoring::tool(&self.document.as_ref().unwrap().job, false)
-            .and_then(|t| t.capabilities.plunge_capable);
-        let before = plunge;
-        help::label(ui, "Endmill can plunge");
-        ui.horizontal(|ui| {
-            for (label, v) in [
-                ("Plunge unset", None),
-                ("Plunge yes", Some(true)),
-                ("Plunge no", Some(false)),
-            ] {
-                let r = ui.selectable_value(&mut plunge, v, label);
-                observe_control(label, r.rect);
-            }
-        });
-        if plunge != before {
-            self.edit_job(ctx, &[], |job| {
-                authoring::tool_mut(job, false)?.capabilities.plunge_capable = plunge;
-                Ok(())
-            });
-        }
-        ui.heading("V-shaped target");
-        self.assignment_tool(ui, ctx, true);
-        ui.small(
-            "Geometry is required in both modes. Endmill-only does not execute a V-bit stage.",
-        );
-        self.numbers(ui, ctx, &[16, 17, 18, 19]);
-        if engine::settings(&self.document.as_ref().unwrap().job).mode == FlatVcarveMode::Combined {
-            ui.heading("V-bit finishing assignment");
-            self.numbers(ui, ctx, &[3, 21, 20, 46, 22, 5]);
-            self.direction(ui, ctx, true);
-            ui.label("Finish planner limits & inspection sampling");
-            self.numbers(ui, ctx, &[52, 53, 54, 55, 56, 57, 58, 59, 60]);
-            ui.small("Paths ≤65536; motions, curve segments and quality samples ≤1000000; depth passes ≤256; cleanup 0–8; reachability cells ≤100000; stock slices 1–32. Other limits start at 1. Sample spacing must be positive.");
-            let mut plunge = authoring::tool(&self.document.as_ref().unwrap().job, true)
-                .and_then(|t| t.capabilities.plunge_capable);
-            let before = plunge;
-            help::label(ui, "V-bit can plunge");
-            ui.horizontal(|ui| {
-                for (label, v) in [
-                    ("V-bit plunge unset", None),
-                    ("V-bit plunge yes", Some(true)),
-                    ("V-bit plunge no", Some(false)),
-                ] {
-                    let r = ui.selectable_value(&mut plunge, v, label);
-                    observe_control(label, r.rect);
-                }
-            });
-            if plunge != before {
-                self.edit_job(ctx, &[], |job| {
-                    authoring::tool_mut(job, true)?.capabilities.plunge_capable = plunge;
-                    Ok(())
-                });
-            }
-        } else {
-            ui.small("V-bit cutting values and controller mapping are retained but unused.");
-        }
-    }
     fn entry_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         use cam_core::pocket::EntryStrategy;
         let ramp = matches!(
@@ -673,11 +569,13 @@ impl App {
                 .entry,
             EntryStrategy::Ramp { .. }
         );
+        let showing_ramp = ramp || self.operation_ramp_draft;
         help::label(ui, "Endmill entry");
         ui.horizontal(|ui| {
-            let r = ui.selectable_label(!ramp, "Plunge entry");
+            let r = ui.selectable_label(!showing_ramp, "Plunge entry");
             observe_control("Plunge entry", r.rect);
-            if r.clicked() && ramp {
+            if r.clicked() && showing_ramp {
+                self.operation_ramp_draft = false;
                 // Keep the last ramp numbers as inactive raw fields for recovery
                 // and switching back; Plunge does not replace them with defaults.
                 let doc = self.document.as_mut().unwrap();
@@ -690,51 +588,42 @@ impl App {
                     Ok(())
                 });
             }
-            let r = ui.selectable_label(ramp, "Ramp entry");
+            let r = ui.selectable_label(showing_ramp, "Ramp entry");
             observe_control("Ramp entry", r.rect);
             if r.clicked() && !ramp {
+                self.operation_ramp_draft = true;
+                self.changed(ctx);
+            }
+        });
+        if showing_ramp || self.operation_ramp_draft {
+            self.numbers(ui, ctx, &[14, 51]);
+            if self.operation_ramp_draft {
                 let doc = self.document.as_ref().unwrap();
-                let values = [14, 51]
-                    .into_iter()
-                    .map(|f| {
-                        Draft::parse(&doc.text(f))
-                            .map_err(str::to_string)?
-                            .ok_or("Enter ramp angle and feed, then choose Ramp entry".into())
-                    })
-                    .collect::<Result<Vec<_>, String>>();
-                match values {
-                    Ok(values) => {
-                        self.edit_job(ctx, &[], |job| authoring::set_group(job, 14, &values))
+                let values = [14, 51].map(|f| Draft::parse(&doc.text(f)).ok().flatten());
+                if let [Some(angle), Some(feed)] = values {
+                    let mut candidate = doc.job.clone();
+                    match authoring::set_group(&mut candidate, 14, &[angle, feed]) {
+                        Ok(()) => {
+                            self.operation_ramp_draft = false;
+                            self.edit_job(ctx, &[], |job| {
+                                authoring::set_group(job, 14, &[angle, feed])
+                            });
+                        }
+                        Err(error) => {
+                            ui.colored_label(Color32::from_rgb(164, 83, 12), error);
+                        }
                     }
-                    Err(error) => self.status = error,
                 }
             }
-        });
-        let mut capable = authoring::tool(&self.document.as_ref().unwrap().job, false)
-            .and_then(|t| t.capabilities.ramp_capable);
-        let before = capable;
-        help::label(ui, "Endmill can ramp");
-        ui.horizontal(|ui| {
-            for (label, value) in [
-                ("Ramp unset", None),
-                ("Ramp yes", Some(true)),
-                ("Ramp no", Some(false)),
-            ] {
-                let r = ui.selectable_value(&mut capable, value, label);
-                observe_control(label, r.rect);
+            if self.operation_ramp_draft && !ramp {
+                ui.colored_label(
+                    Color32::from_rgb(164, 83, 12),
+                    "Enter ramp angle and feed to complete ramp entry.",
+                );
             }
-        });
-        if capable != before {
-            self.edit_job(ctx, &[], |job| {
-                authoring::tool_mut(job, false)?.capabilities.ramp_capable = capable;
-                Ok(())
-            });
         }
-        self.numbers(ui, ctx, &[14, 51]);
-        ui.small(if ramp { "Angle: greater than 0 and less than 90°. Feed: positive mm/min." } else { "Ramp fields are inactive. Enter both values, then choose Ramp entry. Recovery retains this draft." });
     }
     fn assignment_tool(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, finish: bool) {
-        self.assignment_profiles(ui, ctx, finish);
         help::label(ui, "Assigned job tool");
         use cam_core::project::ToolGeometry;
         let job = &self.document.as_ref().unwrap().job;

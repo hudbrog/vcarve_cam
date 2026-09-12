@@ -264,6 +264,10 @@ pub struct App {
     focus: Option<egui::Id>,
     components: Vec<crate::authoring::Component>,
     inspector_tab: usize,
+    operation_tab: usize,
+    operation_picker: Option<usize>,
+    operation_scroll: [f32; 3],
+    operation_ramp_draft: bool,
     preview_dirty: bool,
     inspector_width: f32,
     scroll: [f32; 8],
@@ -327,6 +331,10 @@ impl Default for App {
             focus: None,
             components: vec![],
             inspector_tab: 2,
+            operation_tab: 0,
+            operation_picker: None,
+            operation_scroll: [0.; 3],
+            operation_ramp_draft: false,
             preview_dirty: false,
             inspector_width: 325.,
             scroll: [0.; 8],
@@ -377,6 +385,12 @@ impl App {
         self.redo.clear();
     }
     fn submit(&mut self, command: Command, ctx: &egui::Context) {
+        if self.operation_ramp_draft
+            && matches!(command, Command::Generate { .. } | Command::Prepare { .. })
+        {
+            self.status = "Complete ramp angle and feed, or choose Plunge entry.".into();
+            return;
+        }
         if self.active.is_some() {
             return;
         }
@@ -677,6 +691,9 @@ impl App {
                 });
                 self.changed(ctx);
                 if reply["kind"] != "profile" {
+                    self.operation_tab = 0;
+                    self.operation_scroll = [0.; 3];
+                    self.operation_ramp_draft = false;
                     self.artwork_rejections.clear();
                     self.plan = None;
                 }
@@ -925,7 +942,8 @@ impl App {
         }
     }
     fn current(&self) -> bool {
-        self.plan.as_ref().is_some_and(|(_, r)| *r == self.revision)
+        !self.operation_ramp_draft
+            && self.plan.as_ref().is_some_and(|(_, r)| *r == self.revision)
             && !self.document.as_ref().is_some_and(Document::pending)
     }
     fn adopt_artwork(&mut self, reply: &Value) {
@@ -1140,6 +1158,12 @@ impl App {
         }
     }
     fn save_job(&mut self, ctx: &egui::Context) {
+        if self.operation_ramp_draft {
+            self.status =
+                "Complete ramp entry before saving the job. The entry draft remains in recovery."
+                    .into();
+            return;
+        }
         if self.io.is_some() {
             return;
         }

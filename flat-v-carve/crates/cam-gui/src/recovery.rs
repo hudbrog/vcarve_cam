@@ -6,6 +6,12 @@ pub const MAX_BYTES: usize = 9_000_000;
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
     pub inspector: usize,
+    #[serde(default)]
+    pub operation_tab: usize,
+    #[serde(default)]
+    pub operation_scroll: [f32; 3],
+    #[serde(default)]
+    pub operation_ramp_draft: bool,
     pub inspector_width: f32,
     #[serde(deserialize_with = "read_scroll_positions")]
     pub scroll: [f32; 8],
@@ -42,6 +48,9 @@ impl Default for Workspace {
     fn default() -> Self {
         Self {
             inspector: 2,
+            operation_tab: 0,
+            operation_scroll: [0.; 3],
+            operation_ramp_draft: false,
             inspector_width: 325.,
             scroll: [0.; 8],
             search: String::new(),
@@ -59,6 +68,11 @@ impl Default for Workspace {
 impl Workspace {
     pub fn validate(&self) -> Result<(), String> {
         if self.inspector > 7
+            || self.operation_tab > 2
+            || self
+                .operation_scroll
+                .iter()
+                .any(|n| !n.is_finite() || *n < 0. || *n > 100000.)
             || self
                 .hidden_artwork
                 .iter()

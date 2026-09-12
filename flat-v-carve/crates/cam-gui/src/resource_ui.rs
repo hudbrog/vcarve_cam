@@ -1033,7 +1033,6 @@ impl App {
         finish: bool,
     ) {
         let role = if finish { Role::Vbit } else { Role::Endmill };
-        self.assignment_library_picker(ui, ctx, role);
         let Some(doc) = &self.document else {
             return;
         };
@@ -1041,49 +1040,71 @@ impl App {
             .into_iter()
             .find(|s| s.role == role)
             .unwrap();
-        ui.label(format!("Cutting profile: {:?}", state.status));
         if let Some(p) = &state.applied {
-            ui.small(format!(
-                "{} · copied revision {}",
-                p.name_at_application, p.revision_at_application
-            ));
+            ui.label(format!("Profile: {}", p.name_at_application));
+            ui.small(if state.status == core::ProfileStatus::Applied {
+                "From library"
+            } else {
+                "Modified for this job"
+            });
+        } else {
+            ui.small("Custom cutting values · no profile applied");
         }
         let operation = doc.job.operations[0].id.clone();
         ui.horizontal_wrapped(|ui| {
-            if button(
-                ui,
+            let profile_button = ui.button("Change profile…");
+            observe_control(
                 if finish {
                     "Finish profiles"
                 } else {
                     "Roughing profiles"
                 },
-                true,
-            )
-            .clicked()
-            {
+                profile_button.rect,
+            );
+            if profile_button.clicked() {
                 self.resources.role = role;
+                if let Some(p) = &state.applied {
+                    self.resources.tool = p.library_tool_id.clone();
+                    self.resources.preset = p.preset_id.clone();
+                }
                 self.resources.machines_view = false;
                 self.resources.open = true;
                 if !self.resources.ready {
                     self.request_resources(ResourceIntent::Load, ctx);
                 }
             }
-            if button(
-                ui,
+            let menu = ui.menu_button("More…", |ui| {
+                if button(
+                    ui,
+                    if finish {
+                        "Reset finish overrides"
+                    } else {
+                        "Reset roughing overrides"
+                    },
+                    state.status != core::ProfileStatus::Custom && self.active.is_none(),
+                )
+                .clicked()
+                {
+                    self.resource_command(R::Reset { operation, role }, ctx);
+                    ui.close();
+                }
+            });
+            observe_control(
                 if finish {
-                    "Reset finish overrides"
+                    "Finish profile actions"
                 } else {
-                    "Reset roughing overrides"
+                    "Roughing profile actions"
                 },
-                state.status != core::ProfileStatus::Custom && self.active.is_none(),
-            )
-            .clicked()
-            {
-                self.resource_command(R::Reset { operation, role }, ctx);
-            }
+                menu.response.rect,
+            );
         });
     }
-    fn assignment_library_picker(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, role: Role) {
+    pub(super) fn assignment_library_picker(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        role: Role,
+    ) {
         if !self.resources.picker_loaded {
             self.resources.picker_loaded = true;
             if !self.resources.ready && !self.resources.busy {
@@ -1135,6 +1156,7 @@ impl App {
                         R::ApplyToolProfile { catalog: catalog.clone(), tool: tool.id.clone(), preset: preset.clone(), operation: operation.clone(), role }
                     };
                     self.resource_command(action, ctx);
+                    self.operation_picker = None;
                 }
             }
             if self.resources.dirty { ui.small("Selections use the saved library revision. Save library edits to use the new values."); }

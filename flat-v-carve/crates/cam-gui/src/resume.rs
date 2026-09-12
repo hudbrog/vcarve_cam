@@ -42,6 +42,9 @@ impl App {
         }
         Workspace {
             inspector: self.inspector_tab,
+            operation_tab: self.operation_tab,
+            operation_scroll: self.operation_scroll,
+            operation_ramp_draft: self.operation_ramp_draft,
             inspector_width: self.inspector_width,
             scroll: self.scroll,
             search: self.search.clone(),
@@ -116,6 +119,9 @@ impl App {
         self.view.artwork.hidden = workspace.hidden_artwork;
         self.view.artwork.locked = workspace.locked_artwork;
         self.inspector_tab = workspace.inspector;
+        self.operation_tab = workspace.operation_tab;
+        self.operation_scroll = workspace.operation_scroll;
+        self.operation_ramp_draft = workspace.operation_ramp_draft;
         self.inspector_width = workspace.inspector_width;
         self.scroll = workspace.scroll;
         self.search = workspace.search.clone();
@@ -189,6 +195,9 @@ mod tests {
         app.remember();
         assert!(app.document.as_mut().unwrap().edit(0, "-".into()).is_err());
         app.inspector_tab = 0;
+        app.operation_tab = 2;
+        app.operation_scroll = [0., 42., 75.];
+        app.operation_ramp_draft = true;
         app.search = "Rotation".into();
         app.scroll[0] = 42.;
         app.view.restore_settings(&crate::viewport::ViewSettings {
@@ -208,6 +217,9 @@ mod tests {
         let mut restored = App::default();
         restored.restore(serde_json::from_str(&text).unwrap(), &ctx);
         assert_eq!(restored.inspector_tab, 0);
+        assert_eq!(restored.operation_tab, 2);
+        assert_eq!(restored.operation_scroll, [0., 42., 75.]);
+        assert!(restored.operation_ramp_draft);
         assert_eq!(restored.search, "Rotation");
         assert!(restored.view.settings().isometric);
         assert_eq!(restored.view.settings().inspection_xy, Some([9., 23.]));

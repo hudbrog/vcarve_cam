@@ -81,7 +81,8 @@ impl App {
                                 ctx,
                             );
                         }
-                        let ready = self.document.as_ref().is_some_and(|d| !d.pending());
+                        let ready = !self.operation_ramp_draft
+                            && self.document.as_ref().is_some_and(|d| !d.pending());
                         let generate = ui.add_enabled(
                             idle && ready,
                             egui::Button::new("Generate").fill(Color32::from_rgb(49, 190, 195)),

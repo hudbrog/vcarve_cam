@@ -51,8 +51,8 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
         "vbit.spindle_direction" => return Some((2, "V-bit CW".into())),
         "endmill.ramp_capable" => return Some((2, "Ramp yes".into())),
         "vbit.plunge_capable" => return Some((2, "V-bit plunge yes".into())),
-        "endmill.tool_id" => return Some((2, "Endmill assignment tool".into())),
-        "vbit.tool_id" => return Some((2, "V-bit assignment tool".into())),
+        "endmill.tool_id" => return Some((2, "Change endmill tool".into())),
+        "vbit.tool_id" => return Some((2, "Change V-bit tool".into())),
         _ => return None,
     };
     let tab = if matches!(field, 23 | 25) {

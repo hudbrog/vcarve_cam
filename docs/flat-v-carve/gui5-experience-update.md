@@ -164,3 +164,40 @@ navigation, normal/900×700 layouts, a denied destination, and SHA-256 compariso
 of the downloaded program against the validated bytes. Screenshots/evidence:
 `flat-v-carve/artifacts/gui/browser-smoke/2026-09-12T11-01-04.402Z`.
 The native package was rebuilt at `flat-v-carve/artifacts/gui/native/cam-gui.exe`.
+
+## Operation inspector composition
+
+The previous library, export, recovery and diagnostic work was committed as
+`2798541` before this change. The operation inspector now uses the approved
+**Shape & depth / Endmill / V-bit** tabs. Shape & depth contains height references,
+depth, wall allowance and floor quality. All V-bit geometry stays on the V-bit
+tab; Endmill only mode labels it as a target-shape definition and hides its
+inactive cutting controls.
+
+Each tool has grouped geometry/capabilities, feeds/speeds, and cutting passes.
+Endmill entry has its own group, and planner limits live in collapsed Advanced
+sections. Change tool expands a chooser inside the card, offering library
+tool/profile selection and existing job tools; applying a library selection
+collapses the chooser. Profile names and override status remain visible, with
+reset in a secondary menu. Fields show units and help, and wider panels use
+paired numeric fields. Tabs and Generate stay outside the scrolling body.
+
+Ramp can be selected before entering its parameters. Until both values are valid,
+the pending entry choice blocks generation, export and explicit job saves;
+recovery retains it. Completing the values commits one undoable entry change.
+Choosing Plunge hides the inactive ramp fields. Operation tabs and scroll
+positions restore from session recovery; error links open the owning tool tab
+and reveal the relevant group. Search temporarily reveals fields without
+permanently expanding all sections.
+
+Verification: all 78 GUI tests passed, as did Clippy with warnings denied,
+formatting and diff checks. The focused real-browser operation workflow passed
+against build `cd32067351a8`: it applies both library tools/profiles, resets a
+cutting override, enters a ramp draft and completes it, switches carving modes,
+checks the 900×700 layout, generates from the fixed footer, simulates, saves
+bytes matching the validated SHA-256, and restores the selected V-bit tab.
+Evidence and reviewed screenshots are in
+`flat-v-carve/artifacts/gui/browser-smoke/2026-09-12T11-42-33.565Z`.
+The broader GUI3 tour stopped at its file-picker interaction before reaching
+operation controls; it is not counted as a passing check for this change.
+The standard native executable was rebuilt successfully.
