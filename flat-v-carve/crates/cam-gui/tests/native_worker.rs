@@ -14,7 +14,12 @@ struct Worker {
 }
 impl Worker {
     fn new() -> Self {
-        let folder = std::env::temp_dir().join(format!("gui2-ipc-test-{}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let folder = std::env::temp_dir().join(format!(
+            "gui2-ipc-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         std::fs::create_dir(&folder).unwrap();
         let mut command = Process::new(env!("CARGO_BIN_EXE_cam-gui"));
         command.arg("--worker").arg(&folder);
@@ -49,6 +54,59 @@ impl Worker {
         let (meta, payload) = compute::parse_worker_message(bytes).unwrap();
         (meta.unwrap(), payload)
     }
+}
+
+#[test]
+fn native_collection_commands_generate_seek_prepare_and_reopen() {
+    use cam_gui_runtime::authoring;
+    let worker = Worker::new();
+    let (opened, _) = worker.request(Command::Open {
+        json: include_str!("../../../fixtures/gui4/lettering.job.json").into(),
+    });
+    let (added, _) = worker.request(Command::Artwork {
+        job: opened.job,
+        action: gui::ArtworkCommand::Add {
+            filename: "second.svg".into(),
+            svg: include_str!("../../../fixtures/gui4/second.svg").into(),
+        },
+    });
+    let mut job = gui::open(&added.job).unwrap();
+    assert_eq!(job.artwork.len(), 2);
+    job.artwork[1].placement.origin_mm = cam_core::geometry::Point::new(-25., -3.);
+    let catalogue = cam_core::project::v5::artwork::inspect_artwork(&job).unwrap();
+    authoring::settings_mut(&mut job).components = authoring::catalogue_components(&catalogue)
+        .into_iter()
+        .filter(|c| c.reference.local_geometry_id == "letter-l::0")
+        .map(|c| c.reference)
+        .collect();
+    authoring::set_mode(&mut job, cam_core::project::FlatVcarveMode::Combined);
+    let portable = job.to_json().unwrap();
+    let (generated, _) = worker.request(Command::Generate {
+        job: portable.clone(),
+    });
+    assert_eq!(generated.report["gui2"]["checks"]["exportReady"], true);
+    let handle = generated.report["gui2"]["handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (seek, _) = worker.request(Command::Seek {
+        handle: handle.clone(),
+        prefix: generated.motions,
+    });
+    assert_eq!(seek.report["gui2"]["prefix"], generated.motions);
+    let (output, _) = worker.request(Command::Prepare {
+        job: portable.clone(),
+        handle,
+    });
+    let file = &output.report["gui2"]["file"];
+    assert_eq!(
+        compute::hash(file["gcode"].as_str().unwrap().as_bytes()),
+        file["sha256"]
+    );
+    let (reopened, _) = worker.request(Command::Open {
+        json: portable.clone(),
+    });
+    assert_eq!(reopened.job, portable);
 }
 impl Drop for Worker {
     fn drop(&mut self) {

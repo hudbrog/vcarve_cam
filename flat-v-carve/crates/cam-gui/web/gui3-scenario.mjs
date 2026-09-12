@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {readdirSync} from 'node:fs';
 // GUI3's source-interaction tour. All edits use pointer/keyboard/file controls.
-export async function gui3Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out}) {
+export async function gui3Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out,chooseFile}) {
   const source=readFileSync('fixtures/gui3/lettering.svg','utf8');
   await evaluate(`(()=>{const transfer=new DataTransfer();transfer.items.add(new File([${JSON.stringify(source)}],'lettering.svg',{type:'image/svg+xml'}));document.getElementById('cam').dispatchEvent(new DragEvent('drop',{dataTransfer:transfer,bubbles:true,cancelable:true}));})()`);
   await waitFor(s=>s.job?.name==='lettering.svg'&&!s.active,'lettering source');
@@ -17,13 +17,11 @@ export async function gui3Scenario({control,edit,state,waitFor,send,evaluate,sle
     for(const type of ['mousePressed','mouseReleased'])await send('Input.dispatchMouseEvent',{type,x:p[0],y:p[1],button:'left',clickCount:1,modifiers});
     await sleep(250);
   };
-  const overlap=readFileSync('fixtures/gui3/overlap.svg','utf8');
-  const drop=async(text,name)=>evaluate(`(()=>{const transfer=new DataTransfer();transfer.items.add(new File([${JSON.stringify(text)}],${JSON.stringify(name)},{type:'image/svg+xml'}));document.getElementById('cam').dispatchEvent(new DragEvent('drop',{dataTransfer:transfer,bubbles:true,cancelable:true}));})()`);
-  await drop(overlap,'overlap.svg');await waitFor(s=>s.job.name==='overlap.svg'&&!s.active,'overlap source');
+  await control('File');await chooseFile('New from SVG','fixtures/gui3/overlap.svg');await waitFor(s=>s.job.name==='overlap.svg'&&!s.active,'overlap source');
   await pick([15,16]);const first=await state();await control('Next overlap');const second=await state();
   if(first.picked[0].local_geometry_id===second.picked[0].local_geometry_id || first.revision!==second.revision || second.job.components!==0)throw new Error('Overlap cycle lost distinct owners or changed machining');
   record('coincident filled candidates cycle without machining changes',second.picked);
-  await drop(source,'lettering.svg');await waitFor(s=>s.job.name==='lettering.svg'&&!s.active,'lettering restored for tour');
+  await control('File');await chooseFile('New from SVG','fixtures/gui3/lettering.svg');await waitFor(s=>s.job.name==='lettering.svg'&&!s.active,'lettering restored for tour');
   let before=await state();await pick([4,20]);let picked=await state();
   if(picked.picked.length!==1 || picked.job.components!==0 || picked.revision!==before.revision)throw new Error('Ordinary artwork pick changed machining or missed the L');
   await pick([26,15]);if((await state()).picked.length!==0)throw new Error('Hole was selected as filled artwork');

@@ -1,0 +1,199 @@
+{
+  "schema_version": 5,
+  "name": "lettering.svg",
+  "setup": {
+    "stock": {
+      "thickness_mm": 10.0,
+      "xy": {
+        "min_x_mm": -10.0,
+        "min_y_mm": -10.0,
+        "width_mm": 65.0,
+        "length_mm": 50.0
+      }
+    },
+    "work_zero": {
+      "xy": {
+        "kind": "setup_origin"
+      },
+      "z": "stock_top"
+    },
+    "clearance_above_stock_mm": 5.0,
+    "start_xy_mm": {
+      "x": 0.0,
+      "y": 0.0
+    }
+  },
+  "artwork": [
+    {
+      "id": "artwork-1",
+      "name": "lettering.svg",
+      "content": {
+        "kind": "svg",
+        "filename": "lettering.svg",
+        "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40mm\" height=\"28mm\" viewBox=\"0 0 40 28\">\n  <path id=\"letter-l\" d=\"M2 4H7V17H13V22H2Z\"/>\n  <path id=\"letter-o\" fill-rule=\"evenodd\" d=\"M17 4H36V22H17Z M23 9V17H30V9Z\"/>\n</svg>\n"
+      },
+      "import_settings": {
+        "geometry_tolerance_mm": 0.001
+      },
+      "placement": {
+        "origin_mm": {
+          "x": -5.0,
+          "y": -3.0
+        },
+        "scale": 1.0,
+        "rotation_deg": 0.0
+      }
+    }
+  ],
+  "tools": [
+    {
+      "id": "endmill",
+      "name": "Endmill",
+      "geometry": {
+        "kind": "endmill",
+        "dimensions": {
+          "diameter_mm": 2.5,
+          "cutting_length_mm": 15.0
+        }
+      },
+      "capabilities": {
+        "plunge_capable": true,
+        "ramp_capable": true
+      }
+    },
+    {
+      "id": "vbit",
+      "name": "V-bit target",
+      "geometry": {
+        "kind": "vbit",
+        "dimensions": {
+          "included_angle_deg": 90.0,
+          "tip_diameter_mm": 0.1,
+          "max_cutting_diameter_mm": 12.0,
+          "cutting_height_mm": 5.0
+        }
+      },
+      "capabilities": {
+        "plunge_capable": true
+      }
+    }
+  ],
+  "operations": [
+    {
+      "id": "carving",
+      "name": "Flat V-carve",
+      "enabled": true,
+      "settings": {
+        "kind": "flat_vcarve",
+        "settings": {
+          "components": [
+            {
+              "artwork_item_id": "artwork-1",
+              "kind": "filled_component",
+              "local_geometry_id": "letter-l::0",
+              "source_revision": {
+                "content_digest": "4d6f54f599133845ec3e6a404a33a1fce14206f799a91b740be09060b6b4f733",
+                "algorithm_version": 1
+              }
+            }
+          ],
+          "mode": "endmill_only",
+          "endmill": {
+            "tool_id": "endmill",
+            "spindle_rpm": 12000.0,
+            "spindle_direction": "clockwise",
+            "cutting_feed_mm_min": 1200.0,
+            "plunge_feed_mm_min": 400.0,
+            "max_stepdown_mm": 0.5,
+            "stepover_mm": 1.0
+          },
+          "vbit": {
+            "tool_id": "vbit",
+            "spindle_rpm": 12000.0,
+            "spindle_direction": "clockwise",
+            "cutting_feed_mm_min": 1000.0,
+            "plunge_feed_mm_min": 300.0,
+            "max_stepdown_mm": 1.0,
+            "stepover_mm": 1.0
+          },
+          "top": {
+            "reference": {
+              "kind": "stock_top"
+            },
+            "offset_mm": 0.0
+          },
+          "max_depth_mm": 1.0,
+          "wall_allowance_mm": 0.0,
+          "max_floor_ridge_mm": 0.1,
+          "max_detail_residual_mm": 0.05,
+          "rough": {
+            "strategy": "depth_dependent",
+            "entry": {
+              "kind": "plunge"
+            },
+            "max_layers": 30,
+            "max_loops_per_layer": 256,
+            "max_motions": 20000
+          },
+          "finish": {
+            "max_paths": 60000,
+            "max_motions": 100000,
+            "max_curve_segments": 1000000,
+            "max_depth_passes": 256,
+            "max_cleanup_iterations": 2,
+            "quality_sample_spacing_mm": 0.5,
+            "max_quality_samples": 1000000,
+            "reachability_max_cells": 100000,
+            "stock_slices": 8
+          }
+        }
+      }
+    }
+  ],
+  "tolerances": {
+    "motion_tolerance_mm": 0.01,
+    "verification_tolerance_mm": 0.05
+  },
+  "machine_configuration": {
+    "origin": {
+      "configuration_id": "printnc",
+      "name": "printnc"
+    },
+    "work_offset": "G54",
+    "clearance_z_mm": 5.0,
+    "decimal_places": 3,
+    "length_compensation": "macro_managed",
+    "path_control": {
+      "kind": "blend",
+      "tolerance_mm": 0.05,
+      "naive_cam_tolerance_mm": 0.05
+    },
+    "spindle_spinup_seconds": 0.5,
+    "coolant": "off",
+    "m6": {
+      "reference": "hi",
+      "reviewed": true,
+      "return_position": {
+        "kind": "safe_retract",
+        "z_mm": 150.0,
+        "transit_xy_mm": {
+          "x": 0.0,
+          "y": 0.0
+        }
+      },
+      "preserves_work_datum": true,
+      "local_offsets_unused": true,
+      "tool_offsets_z_only": true
+    },
+    "tools": [
+      {
+        "job_tool_id": "endmill",
+        "tool_number": 3
+      },
+      {
+        "job_tool_id": "vbit",
+        "tool_number": 8
+      }
+    ]
+  }
+}

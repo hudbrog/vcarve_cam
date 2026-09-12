@@ -11,7 +11,7 @@ const begin = performance.now();
 try {
   if (!navigator.gpu) throw new Error('This application requires a WebGPU-capable browser.');
   await init();
-  if (gui.protocol() !== 'cam-gui-retained-3') throw new Error('UI/worker protocol mismatch; reload matching assets.');
+  if (gui.protocol() !== 'cam-gui-retained-4') throw new Error('UI/worker protocol mismatch; reload matching assets.');
   globalThis.CAM_GUI = gui;
   // Admit the whole drop before eframe asynchronously reads each File. Without
   // this guard a multi-file drop can arrive as separate one-file Rust frames.

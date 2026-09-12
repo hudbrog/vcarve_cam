@@ -179,7 +179,7 @@ fn real_edits_pending_text_recovery_and_unsupported_documents() {
     assert!(
         gui::open(&collection.to_json().unwrap())
             .unwrap_err()
-            .contains("one SVG")
+            .contains("one Flat V-carve")
     );
     let mut future = json!(original);
     future["schema_version"] = json!(6);

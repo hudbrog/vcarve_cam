@@ -17,6 +17,10 @@ pub struct Workspace {
     pub selected_artwork: Vec<cam_core::project::v5::GeometryRef>,
     #[serde(default)]
     pub gesture: crate::artwork_view::GestureMode,
+    #[serde(default)]
+    pub hidden_artwork: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub locked_artwork: std::collections::BTreeSet<String>,
 }
 impl Default for Workspace {
     fn default() -> Self {
@@ -31,12 +35,19 @@ impl Default for Workspace {
             saved_job_hash: None,
             selected_artwork: vec![],
             gesture: Default::default(),
+            hidden_artwork: Default::default(),
+            locked_artwork: Default::default(),
         }
     }
 }
 impl Workspace {
     pub fn validate(&self) -> Result<(), String> {
         if self.inspector > 6
+            || self
+                .hidden_artwork
+                .iter()
+                .chain(&self.locked_artwork)
+                .any(|id| !cam_core::preview::valid_id(id))
             || self.selected_artwork.len() > 10000
             || !self.inspector_width.is_finite()
             || !(240. ..=600.).contains(&self.inspector_width)
@@ -92,11 +103,7 @@ impl Snapshot {
                 return Err("Recovery job exceeds 8 MB".into());
             }
             let job = crate::session::open(job)?;
-            if self.draft.artwork_item != job.artwork[0].id.0
-                || self.draft.operation != job.operations[0].id
-            {
-                return Err("Recovery fields belong to another document".into());
-            }
+            self.draft.validate_job(&job)?;
         }
         self.workspace.validate()?;
         if let Some(finish) = &self.finish_draft {

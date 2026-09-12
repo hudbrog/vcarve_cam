@@ -151,6 +151,49 @@ fn used_item_ids(job: &CamJobV5) -> BTreeSet<String> {
     job.artwork.iter().map(|item| item.id.0.clone()).collect()
 }
 
+// Deleted owners remain reserved while referenced. Otherwise importing an
+// identical same-named file could silently repair a dangling assignment.
+fn reserved_item_ids(job: &CamJobV5) -> BTreeSet<String> {
+    let mut used = used_item_ids(job);
+    let mut reserve = |r: &GeometryRef| {
+        used.insert(r.artwork_item_id.0.clone());
+    };
+    for operation in &job.operations {
+        match &operation.settings {
+            OperationSettingsV5::FlatVcarve(s) => {
+                for r in &s.components {
+                    reserve(r);
+                }
+            }
+            OperationSettingsV5::Profile(s) => {
+                for c in &s.contours {
+                    reserve(&c.geometry);
+                }
+                if let StartSelectionV5::Anchor(a) = &s.start {
+                    reserve(&a.geometry);
+                }
+                if let Some(tabs) = &s.tabs
+                    && let TabPlacementV5::Manual { anchors } = &tabs.placement
+                {
+                    for a in anchors {
+                        reserve(&a.geometry);
+                    }
+                }
+            }
+            OperationSettingsV5::DragKnife(s) => {
+                for r in &s.chains {
+                    reserve(r);
+                }
+                if let StartSelectionV5::Anchor(a) = &s.start {
+                    reserve(&a.geometry);
+                }
+            }
+            OperationSettingsV5::Face(_) => {}
+        }
+    }
+    used
+}
+
 fn item_index(job: &CamJobV5, id: &ArtworkItemId) -> Result<usize> {
     job.artwork
         .iter()
@@ -166,7 +209,7 @@ fn item_index(job: &CamJobV5, id: &ArtworkItemId) -> Result<usize> {
 pub fn add_artwork(job: &CamJobV5, inputs: Vec<ArtworkInput>) -> Result<AddArtworkOutcome> {
     let mut rejected = vec![];
     let mut candidate = job.clone();
-    let mut used = used_item_ids(job);
+    let mut used = reserved_item_ids(job);
     let mut affected = vec![];
     for input in inputs {
         if input.svg.len() > MAX_SVG_BYTES {
@@ -226,7 +269,7 @@ pub fn duplicate_artwork(
 ) -> Result<CommandOutcome> {
     let index = item_index(job, id)?;
     let source = job.artwork[index].clone();
-    let mut used = used_item_ids(job);
+    let mut used = reserved_item_ids(job);
     let base = format!("{}-copy", source.id.0);
     let new_id = fresh_id(&used, &base);
     used.insert(new_id.0.clone());
@@ -432,8 +475,51 @@ pub fn set_component_selection(
     )
 }
 
-/// One row of a Profile selection: a qualified contour pick with its
-/// explicitly chosen compensation side.
+/// Replace one exact Flat V-carve reference with an explicitly chosen current
+/// component. Other unresolved references remain untouched for separate repair.
+pub fn replace_component_reference(
+    job: &CamJobV5,
+    operation_id: &str,
+    expected: &GeometryRef,
+    replacement: &artwork::GeometryPick,
+) -> Result<CommandOutcome> {
+    if replacement.kind != GeometryRefKind::FilledComponent {
+        return Err(command_error("Replacement must be a filled component"));
+    }
+    let catalogue = artwork::inspect_artwork(job)?;
+    let bound = bind_pick(&catalogue, replacement, "replacement")?.0;
+    let index = operation_index(job, operation_id)?;
+    let mut candidate = job.clone();
+    let OperationSettingsV5::FlatVcarve(settings) = &mut candidate.operations[index].settings
+    else {
+        return Err(command_error("Expected a Flat V-carve operation"));
+    };
+    if !settings.components.contains(expected) {
+        return Err(command_error(
+            "Reference changed before repair; select it again",
+        ));
+    }
+    for reference in &mut settings.components {
+        if reference == expected {
+            *reference = bound.clone();
+        }
+    }
+    let mut unique = Vec::new();
+    settings.components.retain(|r| {
+        if unique.contains(r) {
+            false
+        } else {
+            unique.push(r.clone());
+            true
+        }
+    });
+    CommandOutcome::commit(
+        candidate,
+        vec![AffectedEntity::Operation(operation_id.into())],
+    )
+}
+
+/// One row of a Profile selection with its explicit compensation side.
 #[derive(Clone, Debug)]
 pub struct ProfileContourPick {
     pub geometry: artwork::GeometryPick,

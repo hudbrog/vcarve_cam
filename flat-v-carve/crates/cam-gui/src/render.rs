@@ -248,6 +248,7 @@ pub struct Callback {
     pub visible: std::ops::Range<usize>,
     pub budget_bytes: u64,
     pub contour_vertices: usize,
+    pub contour_draw_ranges: Vec<std::ops::Range<u32>>,
     pub contour_range: std::ops::Range<usize>,
     pub revision: u64,
     pub camera: [f32; 4],
@@ -362,7 +363,9 @@ impl egui_wgpu::CallbackTrait for Callback {
             pass.set_pipeline(&r.line_pipeline);
             pass.set_bind_group(0, &r.bind, &[]);
             pass.set_vertex_buffer(0, r.scene.slice(..));
-            pass.draw(0..self.contour_vertices as u32, 0..1);
+            for range in &self.contour_draw_ranges {
+                pass.draw(range.clone(), 0..1);
+            }
         }
         pass.set_pipeline(&r.line_pipeline);
         pass.set_bind_group(0, &r.bind, &[]);

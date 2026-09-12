@@ -20,11 +20,7 @@ impl Document {
     pub fn validate(&self) -> Result<(), String> {
         engine::open(&self.job.to_json().map_err(|e| e.to_string())?)?;
         Draft::recover(&serde_json::to_string(&self.raw).map_err(|e| e.to_string())?)?;
-        if self.raw.artwork_item != self.job.artwork[0].id.0
-            || self.raw.operation != self.job.operations[0].id
-        {
-            return Err("Draft identity does not match the job".into());
-        }
+        self.raw.validate_job(&self.job)?;
         if let Some(finish) = &self.finish_draft {
             finish.validate().map_err(|e| e.to_string())?;
         }
@@ -55,6 +51,8 @@ impl App {
             saved_job_hash: self.saved_job_hash.clone(),
             selected_artwork: self.view.artwork.selected.clone(),
             gesture: self.view.artwork.mode,
+            hidden_artwork: self.view.artwork.hidden.clone(),
+            locked_artwork: self.view.artwork.locked.clone(),
         }
     }
     pub fn recovery_snapshot(&self) -> Option<Snapshot> {
@@ -114,6 +112,8 @@ impl App {
         self.saved_job_hash = workspace.saved_job_hash.clone();
         self.view.artwork.selected = workspace.selected_artwork;
         self.view.artwork.mode = workspace.gesture;
+        self.view.artwork.hidden = workspace.hidden_artwork;
+        self.view.artwork.locked = workspace.locked_artwork;
         self.inspector_tab = workspace.inspector;
         self.inspector_width = workspace.inspector_width;
         self.scroll = workspace.scroll;
@@ -227,6 +227,41 @@ mod tests {
         app.cancelled_id = Some(1);
         app.event(Event::Cancelled { id: 0, stop_ms: 1. }, &ctx);
         assert_eq!(app.status, "Current result");
+    }
+    #[test]
+    fn late_collection_completion_and_file_choice_cannot_overwrite_newer_edits() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let before = app.document.as_ref().unwrap().job.to_json().unwrap();
+        app.active = Some((31, app.revision));
+        let result = engine::execute(
+            &mut cam_service::retained::Retained::new(),
+            Command::Artwork {
+                job: before,
+                action: engine::ArtworkCommand::Add {
+                    filename: "second.svg".into(),
+                    svg: include_str!("../../../fixtures/gui4/second.svg").into(),
+                },
+            },
+        );
+        app.document
+            .as_mut()
+            .unwrap()
+            .edit(2, "777".into())
+            .unwrap();
+        app.changed(&ctx);
+        app.accept(31, result, &ctx);
+        assert_eq!(app.document.as_ref().unwrap().job.artwork.len(), 1);
+        assert_eq!(app.document.as_ref().unwrap().text(2), "777");
+        app.artwork_io = Some((0, "artwork-1".into()));
+        app.import_file(
+            IoKind::ReplaceSvg,
+            "replacement.svg".into(),
+            include_str!("../../../fixtures/gui4/replacement.svg").into(),
+            &ctx,
+        );
+        assert!(app.active.is_none());
+        assert!(app.status.contains("Document changed"));
     }
     #[test]
     fn saved_job_identity_survives_restart_but_partial_text_remains_unsaved() {

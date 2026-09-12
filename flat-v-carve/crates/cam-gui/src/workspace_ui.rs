@@ -106,6 +106,9 @@ impl App {
                             observe_control(label, response.rect);
                             if response.clicked() {
                                 self.simulate = simulate;
+                                if !simulate && !self.current() {
+                                    self.preview_dirty = true;
+                                }
                                 if simulate {
                                     self.navigate(6);
                                 }
@@ -117,12 +120,16 @@ impl App {
         egui::TopBottomPanel::top("gui2-files").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let menu = ui.menu_button("File", |ui| {
-                    if button(ui, "Import SVG", idle).clicked() {
+                    if button(ui, "New from SVG", idle).clicked() {
                         self.open(IoKind::Svg, ctx);
                         ui.close();
                     }
                     if button(ui, "Open job", idle).clicked() {
                         self.open(IoKind::Open, ctx);
+                        ui.close();
+                    }
+                    if button(ui, "Import older job", idle).clicked() {
+                        self.open(IoKind::Migrate, ctx);
                         ui.close();
                     }
                     ui.separator();
@@ -299,12 +306,38 @@ impl App {
                     ui.add_space(8.);
                     ui.separator();
                     ui.strong("ARTWORK");
-                    let name = self
+                    let items: Vec<_> = self
                         .document
                         .as_ref()
-                        .map(|d| d.job.artwork[0].name.clone())
-                        .unwrap_or("Artwork".into());
-                    self.nav_item(ui, &name, "Artwork", 0);
+                        .map(|d| {
+                            d.job
+                                .artwork
+                                .iter()
+                                .map(|i| (i.id.0.clone(), i.name.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if items.is_empty() {
+                        self.nav_item(ui, "Artwork collection", "Artwork", 0);
+                    }
+                    for (id, name) in items {
+                        let selected = self
+                            .document
+                            .as_ref()
+                            .is_some_and(|d| d.raw.artwork_item == id);
+                        let r = ui.add_sized(
+                            [ui.available_width(), 34.],
+                            egui::Button::selectable(selected && self.inspector_tab == 0, name)
+                                .truncate(),
+                        );
+                        observe_control(&format!("Artwork {id}"), r.rect);
+                        if selected {
+                            observe_control("Artwork", r.rect);
+                        }
+                        if r.clicked() {
+                            self.select_artwork(&id, ctx);
+                        }
+                    }
                     if button(
                         ui,
                         "+ Import artwork",
@@ -312,7 +345,14 @@ impl App {
                     )
                     .clicked()
                     {
-                        self.open(IoKind::Svg, ctx);
+                        self.open(
+                            if self.document.is_some() {
+                                IoKind::AddSvg
+                            } else {
+                                IoKind::Svg
+                            },
+                            ctx,
+                        );
                     }
                     ui.add_space(8.);
                     ui.separator();

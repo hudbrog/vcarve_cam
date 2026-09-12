@@ -16,6 +16,9 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
     let local = path
         .strip_prefix(&format!("operations[{operation}]."))
         .unwrap_or(path);
+    if local.starts_with("components[") {
+        return Some((0, "Unresolved assignments".into()));
+    }
     let field = match local {
         "max_depth_mm" => 0,
         "wall_allowance_mm" => 1,
@@ -74,7 +77,14 @@ impl App {
                             issue.field_path.as_deref().and_then(|p| target(&d.job, p))
                         });
                         if let Some((tab, label)) = destination {
-                            let r = ui.link(format!("{label}: {}", issue.message));
+                            let r = ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("{label}: {}", issue.message))
+                                        .color(ui.visuals().hyperlink_color),
+                                )
+                                .wrap()
+                                .sense(egui::Sense::click()),
+                            );
                             observe_control(&format!("Issue {index}"), r.rect);
                             if r.clicked() {
                                 self.navigate(tab);

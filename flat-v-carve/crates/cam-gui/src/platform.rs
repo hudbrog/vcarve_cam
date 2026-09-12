@@ -9,8 +9,14 @@ use serde::{Deserialize, Serialize};
 pub enum IoValue {
     Job(String),
     Svg { filename: String, svg: String },
+    Svgs(Vec<SvgFile>),
     Draft(Draft),
     Saved(String),
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SvgFile {
+    pub filename: String,
+    pub content: Result<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -86,10 +92,39 @@ mod native {
                 .get_or_insert_with(|| crate::worker::Session::new(self.tx.clone()))
                 .start(id, request, ctx);
         }
-        pub fn open(&self, id: u64, svg: bool, ctx: egui::Context) {
+        pub fn open(&self, id: u64, svg: bool, multiple: bool, ctx: egui::Context) {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let result = (|| -> Result<IoValue, String> {
+                    if multiple {
+                        let paths = rfd::FileDialog::new()
+                            .add_filter("SVG", &["svg"])
+                            .pick_files()
+                            .ok_or("Open cancelled")?;
+                        if paths.len() > 128 {
+                            return Err("Import at most 128 files together".into());
+                        }
+                        let mut bytes = 0;
+                        let files = paths
+                            .into_iter()
+                            .map(|path| {
+                                let content =
+                                    crate::file_io::read_text(&path, 8_000_000).and_then(|text| {
+                                        bytes += text.len();
+                                        if bytes > 8_000_000 {
+                                            Err("Batch exceeds 8 MB input budget".into())
+                                        } else {
+                                            Ok(text)
+                                        }
+                                    });
+                                SvgFile {
+                                    filename: path.file_name().unwrap().to_string_lossy().into(),
+                                    content,
+                                }
+                            })
+                            .collect();
+                        return Ok(IoValue::Svgs(files));
+                    }
                     let path = rfd::FileDialog::new()
                         .add_filter(
                             if svg { "SVG" } else { "JSON" },
@@ -205,7 +240,7 @@ mod browser {
     extern "C" {
         fn startWorker(id: f64, request: &str);
         fn cancelWorker();
-        fn openFile(id: f64, recovery: bool);
+        fn openFile(id: f64, svg: bool, multiple: bool);
         fn saveFile(id: f64, name: &str, bytes: &[u8], deny: bool);
         fn loadRecovery();
         fn saveRecovery(edit: f64, expected: &str, snapshot: &str);
@@ -274,9 +309,9 @@ mod browser {
                 &serde_json::to_string(&request).expect("request serializes"),
             );
         }
-        pub fn open(&self, id: u64, svg: bool, ctx: egui::Context) {
+        pub fn open(&self, id: u64, svg: bool, multiple: bool, ctx: egui::Context) {
             CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
-            openFile(id as f64, svg);
+            openFile(id as f64, svg, multiple);
         }
         pub fn save(&self, id: u64, name: String, bytes: Vec<u8>, deny: bool, ctx: egui::Context) {
             CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));

@@ -1,4 +1,4 @@
-//! Single-source authoring over the canonical model. No example-job defaults.
+//! Artwork and cutting authoring over the canonical model. No example-job defaults.
 use cam_core::{
     job::SourceSnapshot,
     project::{self, FlatVcarveMode, ToolGeometry, WorkZeroXY, v5::*},
@@ -296,10 +296,10 @@ pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
         46 => s.vbit.stepover_mm,
         23 => job.tolerances.motion_tolerance_mm,
         25 => job.tolerances.verification_tolerance_mm,
-        26 => Some(job.artwork[0].placement.origin_mm.x),
-        27 => Some(job.artwork[0].placement.origin_mm.y),
-        28 => Some(job.artwork[0].placement.rotation_deg),
-        29 => Some(job.artwork[0].placement.scale),
+        26 => Some(job.artwork.first()?.placement.origin_mm.x),
+        27 => Some(job.artwork.first()?.placement.origin_mm.y),
+        28 => Some(job.artwork.first()?.placement.rotation_deg),
+        29 => Some(job.artwork.first()?.placement.scale),
         30 => job.setup.start_xy_mm.map(|p| p.x),
         31 => job.setup.start_xy_mm.map(|p| p.y),
         32 | 33 | 38 | 39 => {
@@ -382,7 +382,11 @@ pub fn set(job: &mut CamJobV5, field: usize, v: Option<f64>) -> Result<(), Strin
         25 => job.tolerances.verification_tolerance_mm = v,
         26..=29 => {
             let n = v.ok_or("Placement values cannot be unset")?;
-            let p = &mut job.artwork[0].placement;
+            let p = &mut job
+                .artwork
+                .first_mut()
+                .ok_or("No artwork selected")?
+                .placement;
             match field {
                 26 => p.origin_mm.x = n,
                 27 => p.origin_mm.y = n,

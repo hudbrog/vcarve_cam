@@ -38,7 +38,6 @@ impl App {
             doc.raw.raw.remove(&doc.raw.key(field));
         }
         self.edit_group = None;
-        self.plan = None;
         self.changed(ctx);
         self.status = "Job changed. Generate to update the cutting result.".into();
     }
@@ -62,6 +61,7 @@ impl App {
                             egui::TextEdit::singleline(&mut text)
                                 .id(egui::Id::new((
                                     "carving-field",
+                                    doc.raw.key(field),
                                     &doc.job.operations[0].id,
                                     field,
                                 )))
@@ -93,9 +93,6 @@ impl App {
                     self.edit_group = Some(field);
                 }
                 let result = self.document.as_mut().unwrap().edit(field, text.clone());
-                if matches!(field,6|26..=31|40..=45) {
-                    self.plan = None;
-                }
                 self.changed(ctx);
                 self.status = match result {
                     Ok(()) => "Setting changed; generate to update simulation.".into(),
@@ -158,9 +155,90 @@ impl App {
     }
     fn artwork_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Artwork & placement");
-        ui.label(&self.document.as_ref().unwrap().job.artwork[0].name);
-        ui.small("SVG units become mm. Origin is in the SVG page: placement = scale × rotate(page − origin).");
-        self.numbers(ui, ctx, &[26, 27, 28, 29]);
+        for rejection in &self.artwork_rejections {
+            ui.colored_label(Color32::from_rgb(176, 42, 35), rejection);
+        }
+        let item = self.document.as_ref().unwrap().active_artwork().cloned();
+        let idle = self.active.is_none() && self.io.is_none();
+        ui.horizontal_wrapped(|ui| {
+            if button(ui, "Add SVG", idle).clicked() {
+                self.open(IoKind::AddSvg, ctx);
+            }
+            if button(ui, "Replace SVG", idle && item.is_some()).clicked() {
+                self.open(IoKind::ReplaceSvg, ctx);
+            }
+            if button(ui, "Delete artwork", idle && item.is_some()).clicked() {
+                self.artwork_command(
+                    engine::ArtworkCommand::Delete {
+                        item: item.as_ref().unwrap().id.clone(),
+                    },
+                    ctx,
+                );
+            }
+        });
+        if let Some(item) = item {
+            ui.horizontal_wrapped(|ui| {
+                let mut hidden = self.view.artwork.hidden.contains(&item.id.0);
+                let r = ui.checkbox(&mut hidden, "Hide artwork");
+                observe_control("Hide artwork", r.rect);
+                if r.changed() {
+                    if hidden {
+                        self.view.artwork.hidden.insert(item.id.0.clone());
+                    } else {
+                        self.view.artwork.hidden.remove(&item.id.0);
+                    }
+                }
+                let mut locked = self.view.artwork.locked.contains(&item.id.0);
+                let r = ui.checkbox(&mut locked, "Lock artwork");
+                observe_control("Lock artwork", r.rect);
+                if r.changed() {
+                    if locked {
+                        self.view.artwork.locked.insert(item.id.0.clone());
+                    } else {
+                        self.view.artwork.locked.remove(&item.id.0);
+                    }
+                }
+            });
+            ui.small("Hide/Lock affect this workspace only. Assigned hidden artwork still cuts; numeric edits remain available when locked.");
+            ui.horizontal_wrapped(|ui| {
+                if button(ui, "Duplicate artwork", idle).clicked() {
+                    self.artwork_command(
+                        engine::ArtworkCommand::Duplicate {
+                            item: item.id.clone(),
+                        },
+                        ctx,
+                    );
+                }
+                let ids: Vec<_> = self
+                    .document
+                    .as_ref()
+                    .unwrap()
+                    .job
+                    .artwork
+                    .iter()
+                    .map(|i| i.id.clone())
+                    .collect();
+                let at = ids.iter().position(|id| id == &item.id).unwrap();
+                for (label, next) in [
+                    ("Move row up", at.checked_sub(1)),
+                    ("Move row down", (at + 1 < ids.len()).then_some(at + 1)),
+                ] {
+                    if button(ui, label, idle && next.is_some()).clicked() {
+                        let mut ordered = ids.clone();
+                        ordered.swap(at, next.unwrap());
+                        self.artwork_command(
+                            engine::ArtworkCommand::Reorder { items: ordered },
+                            ctx,
+                        );
+                    }
+                }
+            });
+            ui.label(format!("{} · {}", item.name, item.id.0));
+            ui.small("SVG units become mm. Origin is in the SVG page: placement = scale × rotate(page − origin).");
+            self.numbers(ui, ctx, &[26, 27, 28, 29]);
+        } else {
+            ui.label("Add an SVG to this project. Unresolved assignments can be repaired after adding artwork or with Undo.");
+        }
         ui.separator();
         ui.label("Viewport selection");
         ui.small(format!(
@@ -227,13 +305,65 @@ impl App {
                 Ok(())
             });
         }
+        let unresolved: Vec<_> = engine::settings(&self.document.as_ref().unwrap().job)
+            .components
+            .iter()
+            .filter(|r| !self.components.iter().any(|c| &c.reference == *r))
+            .cloned()
+            .collect();
+        if !unresolved.is_empty() {
+            let response = ui.strong("Unresolved assignments");
+            observe_control("Unresolved assignments", response.rect);
+            ui.small("Pick one current component, then explicitly replace a reference. Reused local IDs do not repair changed sources.");
+            for (index, reference) in unresolved.into_iter().enumerate() {
+                ui.label(format!(
+                    "{} / {} · revision {}",
+                    reference.artwork_item_id.0,
+                    reference.local_geometry_id,
+                    &reference.source_revision.content_digest[..12]
+                ));
+                ui.horizontal_wrapped(|ui| {
+                    if button(
+                        ui,
+                        &format!("Repair reference {} with picked", index + 1),
+                        idle && self.view.artwork.selected.len() == 1,
+                    )
+                    .clicked()
+                    {
+                        self.artwork_command(
+                            engine::ArtworkCommand::Repair {
+                                expected: reference.clone(),
+                                replacement: self.view.artwork.selected[0].clone(),
+                            },
+                            ctx,
+                        );
+                    }
+                    if button(
+                        ui,
+                        &format!("Remove unresolved reference {}", index + 1),
+                        idle,
+                    )
+                    .clicked()
+                    {
+                        self.edit_job(ctx, &[], |job| {
+                            settings_mut(job).components.retain(|r| r != &reference);
+                            Ok(())
+                        });
+                    }
+                });
+            }
+        }
         for component in self.components.clone() {
             let id = &component.reference.local_geometry_id;
             let mut selected = engine::settings(&self.document.as_ref().unwrap().job)
                 .components
                 .contains(&component.reference);
-            let r = ui.checkbox(&mut selected, id);
+            let label = format!("{} / {}", component.reference.artwork_item_id.0, id);
+            let r = ui
+                .push_id(&label, |ui| ui.checkbox(&mut selected, &label))
+                .inner;
             observe_control(&format!("Component {id}"), r.rect);
+            observe_control(&format!("Component {label}"), r.rect);
             if r.changed() {
                 self.edit_job(ctx, &[], |job| {
                     let refs = &mut settings_mut(job).components;

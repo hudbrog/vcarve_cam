@@ -16,7 +16,7 @@ export function startWorker(id, request) {
   active = {worker,id};
   worker.onmessage = ({data}) => {
     if (active?.id !== id) return;
-    if (data.protocol !== 'cam-gui-retained-3' || data.gui2Protocol !== 'gui2-retained-3') {
+    if (data.protocol !== 'cam-gui-retained-4' || data.gui2Protocol !== 'gui2-retained-4') {
       cancelWorker();
       emit({Computed:{id,elapsed_ms:performance.now()-begin,result:{Err:'Worker version mismatch; reload matching assets'}}});return;
     }
@@ -29,12 +29,22 @@ export function startWorker(id, request) {
     worker.terminate();active=undefined;
     emit({Computed:{id,elapsed_ms:performance.now()-begin,result:{Err:'Compute worker failed: '+event.message}}});
   };
-  worker.postMessage({protocol:'cam-gui-retained-3',request});
+  worker.postMessage({protocol:'cam-gui-retained-4',request});
 }
-export function openFile(id,svg) {
+export function openFile(id,svg,multiple) {
   const complete=result=>emit({Io:{id,result}});
   const picker = document.createElement('input'); picker.type='file'; picker.accept=svg?'.svg':'.json';
+  picker.multiple=multiple;
   picker.onchange = async () => {
+    if(multiple) {
+      if(picker.files.length>128){complete({Err:'Import at most 128 files together'});return;}
+      const files=[];let bytes=0;
+      for(const file of picker.files){
+        try {bytes+=file.size;if(bytes>8_000_000)throw new Error('Batch exceeds 8 MB input budget');files.push({filename:file.name,content:{Ok:await file.text()}});}
+        catch(error){files.push({filename:file.name,content:{Err:String(error)}});}
+      }
+      complete({Ok:{Svgs:files}});return;
+    }
     const file=picker.files[0]; if (!file) {complete({Err:'Open cancelled'});return;}
     try {
       if (file.size > 8_000_000) throw new Error('Input exceeds 8 MB limit');

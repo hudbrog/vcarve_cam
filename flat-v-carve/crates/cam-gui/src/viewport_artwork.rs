@@ -9,12 +9,14 @@ use cam_core::{geometry::Point, project::v5::GeometryRef, svg::Placement};
 pub enum ArtworkEvent {
     Selection(Vec<GeometryRef>),
     Placement {
+        item: String,
         revision: u64,
         initial: Placement,
         value: Placement,
     },
 }
 struct Drag {
+    item: String,
     revision: u64,
     initial: Placement,
     start: Point,
@@ -26,25 +28,54 @@ pub struct ArtworkInteraction {
     pub mode: GestureMode,
     pub selected: Vec<GeometryRef>,
     pub revision: u64,
+    pub hidden: std::collections::BTreeSet<String>,
+    pub locked: std::collections::BTreeSet<String>,
     components: Vec<Component>,
     placement: Placement,
+    item: String,
+    placements: std::collections::BTreeMap<String, Placement>,
     candidates: Vec<GeometryRef>,
     candidate_index: usize,
     drag: Option<Drag>,
     events: Vec<ArtworkEvent>,
 }
 impl Viewport {
-    pub fn artwork_matches(&self, placement: &Placement) -> bool {
-        &self.artwork.placement == placement
+    pub fn artwork_matches(&self, item: &str, placement: &Placement) -> bool {
+        self.artwork.item == item && &self.artwork.placement == placement
+    }
+    pub fn select_artwork(&mut self, item: &str) {
+        if self.artwork.item != item {
+            self.artwork.drag = None;
+            self.artwork.item = item.into();
+            self.artwork.placement = self
+                .artwork
+                .placements
+                .get(item)
+                .cloned()
+                .unwrap_or_default();
+        }
     }
     pub fn update_artwork(
         &mut self,
         revision: u64,
-        placement: Placement,
+        item: String,
+        placements: std::collections::BTreeMap<String, Placement>,
         components: Vec<Component>,
     ) {
         self.artwork.revision = revision;
-        self.artwork.placement = placement;
+        self.artwork.item = item;
+        self.artwork.placement = placements
+            .get(&self.artwork.item)
+            .cloned()
+            .unwrap_or_default();
+        self.artwork.placements = placements;
+        self.artwork
+            .hidden
+            .retain(|id| self.artwork.placements.contains_key(id));
+        self.artwork
+            .locked
+            .retain(|id| self.artwork.placements.contains_key(id));
+        self.artwork.drag = None;
         self.artwork.components = components;
         self.artwork
             .candidates
@@ -58,6 +89,10 @@ impl Viewport {
         std::mem::take(&mut self.artwork.events)
     }
     pub(super) fn artwork_toolbar(&mut self, ui: &mut egui::Ui) {
+        self.artwork.candidates.retain(|r| {
+            !self.artwork.hidden.contains(&r.artwork_item_id.0)
+                && !self.artwork.locked.contains(&r.artwork_item_id.0)
+        });
         if !self.artwork.enabled {
             return;
         }
@@ -113,6 +148,10 @@ impl Viewport {
                 let point = artwork_view::setup_point(camera, bounds, rect, p);
                 self.artwork.candidates =
                     artwork_view::hit_candidates(&self.artwork.components, point);
+                self.artwork.candidates.retain(|r| {
+                    !self.artwork.hidden.contains(&r.artwork_item_id.0)
+                        && !self.artwork.locked.contains(&r.artwork_item_id.0)
+                });
                 self.artwork.candidate_index = 0;
                 let chosen = self.artwork.candidates.first().cloned();
                 if ui.input(|i| i.modifiers.shift) {
@@ -132,14 +171,23 @@ impl Viewport {
             }
             return;
         }
+        if self.artwork.hidden.contains(&self.artwork.item)
+            || self.artwork.locked.contains(&self.artwork.item)
+        {
+            self.artwork.drag = None;
+            return;
+        }
         if response.drag_started()
             && let Some(p) = ui.input(|i| i.pointer.press_origin())
         {
             let start = artwork_view::setup_point(camera, bounds, rect, p);
             if self.artwork.mode != GestureMode::Move
-                || !artwork_view::hit_candidates(&self.artwork.components, start).is_empty()
+                || artwork_view::hit_candidates(&self.artwork.components, start)
+                    .iter()
+                    .any(|r| r.artwork_item_id.0 == self.artwork.item)
             {
                 self.artwork.drag = Some(Drag {
+                    item: self.artwork.item.clone(),
                     revision: self.artwork.revision,
                     initial: self.artwork.placement.clone(),
                     candidate: self.artwork.placement.clone(),
@@ -163,6 +211,7 @@ impl Viewport {
             && drag.initial != drag.candidate
         {
             self.artwork.events.push(ArtworkEvent::Placement {
+                item: drag.item,
                 revision: drag.revision,
                 initial: drag.initial,
                 value: drag.candidate,
@@ -180,6 +229,21 @@ impl Viewport {
         let bounds = scene.meta.bounds;
         let painter = ui.painter().with_clip_rect(rect);
         for component in &self.artwork.components {
+            if self
+                .artwork
+                .hidden
+                .contains(&component.reference.artwork_item_id.0)
+            {
+                continue;
+            }
+            if self
+                .artwork
+                .drag
+                .as_ref()
+                .is_some_and(|d| component.reference.artwork_item_id.0 != d.item)
+            {
+                continue;
+            }
             if self.artwork.drag.is_none() && !self.artwork.selected.contains(&component.reference)
             {
                 continue;

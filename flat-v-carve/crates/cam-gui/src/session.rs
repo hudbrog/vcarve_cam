@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cell::RefCell;
 
-pub const PROTOCOL: &str = "gui2-retained-3";
+pub const PROTOCOL: &str = "gui2-retained-4";
 pub const FLOWER: &str = include_str!("../../../fixtures/gui2/flower.job.json");
 pub const PROFILE: &str = include_str!("../../../fixtures/gui2/machine.json");
 pub const MOTION_LIMIT: usize = 100_000;
@@ -26,12 +26,162 @@ struct Display {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Command {
     ImportSvg { filename: String, svg: String },
+    Artwork { job: String, action: ArtworkCommand },
     Preview { job: String },
+    ValidatePlan { job: String, handle: String },
     Seek { handle: String, prefix: usize },
     Open { json: String },
+    Migrate { json: String },
     ApplyProfile { job: String, json: String },
     Generate { job: String },
     Prepare { job: String, handle: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ArtworkCommand {
+    AddMany {
+        files: Vec<crate::platform::SvgFile>,
+    },
+    Duplicate {
+        item: v5::ArtworkItemId,
+    },
+    Reorder {
+        items: Vec<v5::ArtworkItemId>,
+    },
+    Add {
+        filename: String,
+        svg: String,
+    },
+    Replace {
+        item: v5::ArtworkItemId,
+        filename: String,
+        svg: String,
+    },
+    Delete {
+        item: v5::ArtworkItemId,
+    },
+    Repair {
+        expected: v5::GeometryRef,
+        replacement: v5::GeometryRef,
+    },
+}
+
+fn artwork_command(job: &CamJobV5, action: ArtworkCommand) -> Result<(CamJobV5, Value), String> {
+    use v5::commands;
+    let mut rejected = Vec::new();
+    let (outcome, selected) = match action {
+        ArtworkCommand::AddMany { files } => {
+            let inputs = files
+                .into_iter()
+                .filter_map(|file| match file.content {
+                    Ok(svg) => Some(commands::ArtworkInput {
+                        filename: file.filename,
+                        svg,
+                        interpretation: Default::default(),
+                        placement: Default::default(),
+                        name: None,
+                    }),
+                    Err(error) => {
+                        rejected.push(format!("{}: {}", file.filename, error));
+                        None
+                    }
+                })
+                .collect();
+            let result = commands::add_artwork(job, inputs).map_err(|e| e.to_string())?;
+            rejected.extend(
+                result
+                    .rejected
+                    .iter()
+                    .map(|r| format!("{}: {}", r.filename, r.error)),
+            );
+            if result.outcome.affected.is_empty() {
+                return Err(rejected.join("\n"));
+            }
+            let selected = result.outcome.job.artwork.last().map(|i| i.id.clone());
+            (result.outcome, selected)
+        }
+        ArtworkCommand::Duplicate { item } => {
+            let result =
+                commands::duplicate_artwork(job, &item, None).map_err(|e| e.to_string())?;
+            let selected = result
+                .job
+                .artwork
+                .iter()
+                .find(|i| !job.artwork.iter().any(|old| old.id == i.id))
+                .map(|i| i.id.clone());
+            (result, selected)
+        }
+        ArtworkCommand::Reorder { items } => (
+            commands::reorder_artwork(job, &items).map_err(|e| e.to_string())?,
+            None,
+        ),
+        ArtworkCommand::Add { filename, svg } => {
+            let result = commands::add_artwork(
+                job,
+                vec![commands::ArtworkInput {
+                    filename,
+                    svg,
+                    interpretation: Default::default(),
+                    placement: Default::default(),
+                    name: None,
+                }],
+            )
+            .map_err(|e| e.to_string())?;
+            if let Some(rejection) = result.rejected.first() {
+                return Err(rejection.error.to_string());
+            }
+            let selected = result.outcome.job.artwork.last().map(|i| i.id.clone());
+            (result.outcome, selected)
+        }
+        ArtworkCommand::Replace {
+            item,
+            filename,
+            svg,
+        } => (
+            commands::replace_artwork(
+                job,
+                &item,
+                cam_core::job::SourceSnapshot { filename, svg },
+                None,
+            )
+            .map_err(|e| e.to_string())?,
+            Some(item),
+        ),
+        ArtworkCommand::Delete { item } => (
+            commands::remove_artwork(job, &item).map_err(|e| e.to_string())?,
+            None,
+        ),
+        ArtworkCommand::Repair {
+            expected,
+            replacement,
+        } => {
+            // Reject a target picked from an obsolete displayed catalogue.
+            let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
+            if !crate::authoring::catalogue_components(&catalogue)
+                .iter()
+                .any(|c| c.reference == replacement)
+            {
+                return Err("Replacement source changed; pick the component again".into());
+            }
+            (
+                commands::replace_component_reference(
+                    job,
+                    &job.operations[0].id,
+                    &expected,
+                    &v5::artwork::GeometryPick {
+                        artwork_item_id: replacement.artwork_item_id.clone(),
+                        kind: replacement.kind,
+                        local_geometry_id: replacement.local_geometry_id,
+                    },
+                )
+                .map_err(|e| e.to_string())?,
+                None,
+            )
+        }
+    };
+    let report = json!({"kind":"artwork", "activeArtwork":selected, "issues":outcome.issues,"rejectedFiles":rejected});
+    let job = open(&outcome.job.to_json().map_err(|e| e.to_string())?)?;
+    Ok((job, report))
 }
 
 pub fn open(text: &str) -> Result<CamJobV5, String> {
@@ -39,16 +189,18 @@ pub fn open(text: &str) -> Result<CamJobV5, String> {
         return Err("GUI2 supports jobs up to 8 MB".into());
     }
     let job = CamJobV5::from_json(text).map_err(|e| e.to_string())?;
-    if job.artwork.len() != 1
-        || job.operations.len() != 1
+    if job.operations.len() != 1
         || !matches!(
             job.operations[0].settings,
             OperationSettingsV5::FlatVcarve(_)
         )
-        || !matches!(job.artwork[0].content, v5::ArtworkContent::Svg(_))
+        || job
+            .artwork
+            .iter()
+            .any(|item| !matches!(item.content, v5::ArtworkContent::Svg(_)))
     {
         return Err(
-            "GUI2 supports one SVG and one Flat V-carve operation; current document retained"
+            "This workspace supports SVG artwork and one Flat V-carve operation; current document retained"
                 .into(),
         );
     }
@@ -94,8 +246,39 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             crate::authoring::import_svg(filename, svg)?,
             json!({"kind":"imported"}),
         ),
+        Command::Artwork { job, action } => artwork_command(&open(&job)?, action)?,
         Command::Preview { job } => (open(&job)?, json!({"kind":"preview"})),
+        Command::ValidatePlan { job, handle } => {
+            let job = open(&job)?;
+            let retained = service.generated_plan(&handle).ok();
+            let identity = cam_core::sequence::OperationPlanV5::machining_identity(
+                &job,
+                &v5::references::ReadinessScope::AllEnabled,
+            )
+            .ok();
+            if let Some(retained) =
+                retained.filter(|p| Some(&p.machining_identity) == identity.as_ref())
+            {
+                let plan = retained.trusted.plan();
+                return scene(
+                    &job,
+                    plan,
+                    json!({"kind":"revalidated","handle":handle,"executionFingerprint":plan.execution_fingerprint,"checks":retained.checks,"generationIssues":plan.generation_diagnostics}),
+                );
+            }
+            return outline(&job, json!({"kind":"stale"}));
+        }
         Command::Open { json } => (open(&json)?, json!({"kind":"opened"})),
+        Command::Migrate { json } => {
+            if json.len() > 8_000_000 {
+                return Err("Input exceeds 8 MB limit".into());
+            }
+            let job = v5::migrate::migrate_json(&json).map_err(|e| e.to_string())?;
+            (
+                open(&job.to_json().map_err(|e| e.to_string())?)?,
+                json!({"kind":"opened","migrated":true}),
+            )
+        }
         Command::ApplyProfile { job, json } => {
             let mut job = open(&job)?;
             let machine = cam_core::post::sequence::SequenceProfile::from_json(&json)
@@ -219,44 +402,22 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
 
 fn outline(job: &CamJobV5, mut report: Value) -> Result<(SceneMeta, Vec<u8>), String> {
     let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
-    let mut components = Vec::new();
+    let components = crate::authoring::catalogue_components(&catalogue);
     let mut points = Vec::new();
+    let mut spans = Vec::new();
     let mut bounds = [0., 0., 1., 1.];
-    if let Some(item) = catalogue.items.first() {
+    for item in &catalogue.items {
+        let start = points.len();
         if let Some(error) = &item.import_error {
             report["artworkIssue"] = json!(error);
         }
-        for entry in &item.entries {
-            if entry.kind == v5::GeometryRefKind::FilledComponent {
-                components.push(crate::authoring::Component {
-                    reference: entry.reference.clone(),
-                    rings: item
-                        .catalogue
-                        .as_ref()
-                        .map(|catalogue| {
-                            catalogue
-                                .contours
-                                .iter()
-                                .filter(|c| c.component_id == entry.reference.local_geometry_id)
-                                .map(|c| c.vertices.iter().map(|p| [p.x, p.y]).collect())
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    bounds: [
-                        entry.bounds.min_x_mm,
-                        entry.bounds.min_y_mm,
-                        entry.bounds.max_x_mm,
-                        entry.bounds.max_y_mm,
-                    ],
-                });
-            }
-        }
         if let Some(catalogue) = &item.catalogue {
             for contour in &catalogue.contours {
-                let selected = settings(job)
-                    .components
-                    .iter()
-                    .any(|r| r.local_geometry_id == contour.component_id);
+                let selected = item.entries.iter().any(|entry| {
+                    entry.reference.local_geometry_id == contour.component_id
+                        && entry.kind == v5::GeometryRefKind::FilledComponent
+                        && settings(job).components.contains(&entry.reference)
+                });
                 let color = if selected {
                     [0.25, 0.8, 0.85, 1.]
                 } else {
@@ -272,6 +433,7 @@ fn outline(job: &CamJobV5, mut report: Value) -> Result<(SceneMeta, Vec<u8>), St
                 }
             }
         }
+        spans.push(json!([item.id, start, points.len()]));
     }
     if !points.is_empty() {
         bounds = [
@@ -287,6 +449,7 @@ fn outline(job: &CamJobV5, mut report: Value) -> Result<(SceneMeta, Vec<u8>), St
             bounds[3] = bounds[3].max(p[1]);
         }
     }
+    let stock_start = points.len();
     if let Some(xy) = job.setup.stock.xy {
         report["stockRect"] = json!([
             xy.min_x_mm,
@@ -315,6 +478,8 @@ fn outline(job: &CamJobV5, mut report: Value) -> Result<(SceneMeta, Vec<u8>), St
             }
         }
     }
+    spans.push(json!(["", stock_start, points.len()]));
+    report["artworkSpans"] = json!(spans);
     bounds = [
         bounds[0] - 2.,
         bounds[1] - 2.,
@@ -326,6 +491,13 @@ fn outline(job: &CamJobV5, mut report: Value) -> Result<(SceneMeta, Vec<u8>), St
         .map(|(p, c)| vertex(p, bounds, c))
         .collect::<Vec<_>>();
     report["components"] = json!(components);
+    if report["issues"].is_null() {
+        report["issues"] = json!(
+            v5::references::inspect_references(job)
+                .map_err(|e| e.to_string())?
+                .issues
+        );
+    }
     package(Package {
         name: job.name.clone(),
         job: job.to_json().map_err(|e| e.to_string())?,
@@ -436,15 +608,37 @@ pub fn scene(
         stock.x1 = xy.min_x_mm + xy.width_mm;
         stock.y1 = xy.min_y_mm + xy.length_mm;
     }
-    let b = [stock.x0, stock.y0, stock.x1, stock.y1];
+    let components = crate::authoring::catalogue_components(&catalogue);
+    let mut b = [stock.x0, stock.y0, stock.x1, stock.y1];
+    for c in &components {
+        b[0] = b[0].min(c.bounds[0]);
+        b[1] = b[1].min(c.bounds[1]);
+        b[2] = b[2].max(c.bounds[2]);
+        b[3] = b[3].max(c.bounds[3]);
+    }
     let mut vertices = Vec::new();
-    for ring in region.region.rings_mm() {
-        for i in 0..ring.len() {
-            for p in [ring[i], ring[(i + 1) % ring.len()]] {
-                vertices.push(vertex([p.x, p.y, 0.02], b, [0.85, 0.87, 0.76, 1.]));
+    let mut spans = Vec::new();
+    for component in &components {
+        let start = vertices.len();
+        let color = if settings(job).components.contains(&component.reference) {
+            [0.25, 0.8, 0.85, 1.]
+        } else {
+            [0.5, 0.55, 0.6, 1.]
+        };
+        for ring in &component.rings {
+            for i in 0..ring.len() {
+                for p in [ring[i], ring[(i + 1) % ring.len()]] {
+                    vertices.push(vertex([p[0], p[1], 0.02], b, color));
+                }
             }
         }
+        spans.push(json!([
+            component.reference.artwork_item_id,
+            start,
+            vertices.len()
+        ]));
     }
+    report["artworkSpans"] = json!(spans);
     let contour_vertices = vertices.len();
     let rough = plan
         .stages

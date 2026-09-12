@@ -107,7 +107,7 @@ const control = async label => {
   for(let attempt=0;attempt<12;attempt++) {
     const current=await state(); const rect=current.controls?.[label];
     if(!rect)throw new Error(`Missing control ${label}`);
-    const nav=['Setup','Machine','Artwork','Cutting','Inspect result','Endmill tool','V-bit tool','+ Import artwork'].includes(label);
+    const nav=label.startsWith('Artwork ') || ['Setup','Machine','Artwork','Cutting','Inspect result','Endmill tool','V-bit tool','+ Import artwork'].includes(label);
     const clip=current.controls?.[nav?'Navigator viewport':'Inspector viewport'];
     const bottom=clip?.[3]??await evaluate('innerHeight-65');
     const top=clip?.[1]??150;
@@ -129,12 +129,28 @@ const out=path.resolve('artifacts/gui/browser-smoke',new Date().toISOString().re
 const screenshot=async name=>{const shot=await send('Page.captureScreenshot',{format:'png'});const bytes=Buffer.from(shot.data,'base64');writeFileSync(path.join(out,name),bytes);return bytes;};
 const checks=[];
 const record=(label,value)=>{checks.push({label,value});console.log(label);};
+const chooseFile=async(label,filename)=>{
+  await send('Page.setInterceptFileChooserDialog',{enabled:true});
+  let listener;
+  const chosen=new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{socket.removeEventListener('message',listener);reject(new Error('No file chooser for '+label));},5000);
+    listener=event=>{const message=JSON.parse(event.data);if(message.method==='Page.fileChooserOpened'){clearTimeout(timer);socket.removeEventListener('message',listener);resolve(message.params.backendNodeId);}};
+    socket.addEventListener('message',listener);
+  });
+  await control(label);
+  const backendNodeId=await chosen;
+  await send('DOM.setFileInputFiles',{backendNodeId,files:(Array.isArray(filename)?filename:[filename]).map(name=>path.resolve(name))});
+  await send('Page.setInterceptFileChooserDialog',{enabled:false});
+};
 try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  if(process.argv.includes('--gui3')) {
+  if(process.argv.includes('--gui4')) {
+    const {gui4Scenario}=await import('./gui4-scenario.mjs');
+    await gui4Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out,chooseFile});
+  } else if(process.argv.includes('--gui3')) {
     const {gui3Scenario}=await import('./gui3-scenario.mjs');
-    await gui3Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out});
+    await gui3Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out,chooseFile});
   } else if(process.argv.includes('--authoring')) {
     const {authoringScenario}=await import('./authoring-scenario.mjs');
     await authoringScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,writeFileSync,path,out});
@@ -174,7 +190,7 @@ try {
   }
   if(problems.length)throw new Error('Browser errors: '+problems.join('\n'));
   writeFileSync(path.join(out,'evidence.json'),JSON.stringify({url:base,checks,consoleErrors:problems,note:'Real Chromium/WebGPU UI and WASM Worker. Denied save is injected; the fallback download is written and its actual bytes checked. Browser terminate call does not measure stopped CPU latency.'},null,2));
-  console.log('GUI2 browser workflow passed');
+  console.log((process.argv.includes('--gui4')?'GUI4':process.argv.includes('--gui3')?'GUI3':'GUI2')+' browser workflow passed');
 } catch(error) {const screenshot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(path.join(out,'failure.png'),Buffer.from(screenshot.data,'base64'));console.error(error);console.error(await state());console.error(problems);process.exitCode=1;}
 finally {
   await Promise.race([send('Browser.close'),sleep(1500)]);

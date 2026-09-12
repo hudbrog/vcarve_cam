@@ -77,14 +77,51 @@ pub struct Draft {
 impl Draft {
     pub fn for_job(job: &cam_core::project::v5::CamJobV5) -> Self {
         Self {
-            schema: 2,
-            artwork_item: job.artwork[0].id.0.clone(),
+            schema: 3,
+            artwork_item: job
+                .artwork
+                .first()
+                .map(|i| i.id.0.clone())
+                .unwrap_or_default(),
             operation: job.operations[0].id.clone(),
             raw: BTreeMap::new(),
         }
     }
     pub fn key(&self, field: usize) -> String {
-        format!("{}/{}/{}", self.artwork_item, self.operation, FIELDS[field])
+        self.key_for(&self.artwork_item, field)
+    }
+    pub fn key_for(&self, item: &str, field: usize) -> String {
+        format!(
+            "{}/{}/{}",
+            if matches!(field, 26..=29) {
+                item
+            } else {
+                "job"
+            },
+            self.operation,
+            FIELDS[field]
+        )
+    }
+    pub fn validate_job(&self, job: &cam_core::project::v5::CamJobV5) -> Result<(), String> {
+        if self.operation != job.operations[0].id
+            || (!self.artwork_item.is_empty()
+                && !job.artwork.iter().any(|i| i.id.0 == self.artwork_item))
+        {
+            return Err("Draft identity does not match the job".into());
+        }
+        for key in self.raw.keys() {
+            let parts: Vec<_> = key.splitn(3, '/').collect();
+            if parts.len() != 3 {
+                return Err("Invalid draft key".into());
+            }
+            let placement = FIELDS[26..=29].contains(&parts[2]);
+            if (placement && !job.artwork.iter().any(|i| i.id.0 == parts[0]))
+                || (!placement && parts[0] != "job")
+            {
+                return Err("Draft field belongs to another artwork item".into());
+            }
+        }
+        Ok(())
     }
     pub fn parse(text: &str) -> Result<Option<f64>, &'static str> {
         if text.trim().is_empty() {
@@ -105,8 +142,8 @@ impl Draft {
             return Err("Recovery exceeds 1 MB input budget".into());
         }
         let draft: Self = serde_json::from_str(text).map_err(|e| e.to_string())?;
-        if draft.schema != 2
-            || !cam_core::preview::valid_id(&draft.artwork_item)
+        if draft.schema != 3
+            || (!draft.artwork_item.is_empty() && !cam_core::preview::valid_id(&draft.artwork_item))
             || !cam_core::preview::valid_id(&draft.operation)
         {
             return Err("Unsupported recovery identity/schema".into());
@@ -114,7 +151,7 @@ impl Draft {
         for (key, text) in &draft.raw {
             let parts: Vec<_> = key.splitn(3, '/').collect();
             if parts.len() != 3
-                || parts[0] != draft.artwork_item
+                || !cam_core::preview::valid_id(parts[0])
                 || parts[1] != draft.operation
                 || !FIELDS.contains(&parts[2])
                 || text.chars().count() > 4096
