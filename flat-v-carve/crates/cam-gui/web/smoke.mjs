@@ -107,14 +107,15 @@ const control = async label => {
   for(let attempt=0;attempt<12;attempt++) {
     const current=await state(); const rect=current.controls?.[label];
     if(!rect)throw new Error(`Missing control ${label}`);
-    const nav=label.startsWith('Artwork ') || ['Setup','Machine','Artwork','Cutting','Inspect result','Endmill tool','V-bit tool','+ Import artwork'].includes(label);
-    const clip=current.controls?.[nav?'Navigator viewport':'Inspector viewport'];
+    const nav=label.startsWith('Artwork ') || ['Setup','Machine','Artwork','Cutting','Inspect result','Endmill tool','V-bit tool','+ Import artwork','Tool library','Job tools'].includes(label);
+    const resource=!nav&&current.resources?.open,jobTools=!nav&&current.resources?.jobsOpen;
+    const clip=current.controls?.[nav?'Navigator viewport':resource?'Resource viewport':jobTools?'Job tools viewport':'Inspector viewport'];
     const bottom=clip?.[3]??await evaluate('innerHeight-65');
     const top=clip?.[1]??150;
-    if(rect[1]>=top && rect[3]<=bottom || !nav && rect[0]<(clip?.[0]??850) || ['Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
+    if(rect[1]>=top && rect[3]<=bottom || !nav && !resource && !jobTools && rect[0]<(clip?.[0]??850) || ['Close library','Load library','Save library','Compare stored revision','Reload stored library','Overwrite reviewed revision','Import library','Export library','Import machine configuration','Close job tools','Roughing assignment','Finishing assignment','Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
       await click((rect[0]+rect[2])/2,(rect[1]+rect[3])/2); await sleep(120);return;
     }
-    const x=nav?100:1100,y=(top+bottom)/2;
+    const x=nav?100:clip?(clip[0]+clip[2])/2:1100,y=(top+bottom)/2;
     await send('Input.dispatchMouseEvent',{type:'mouseMoved',x,y});
     await send('Input.dispatchMouseEvent',{type:'mouseWheel',x,y,deltaX:0,deltaY:rect[1]<top?-200:200});await sleep(200);
   }
@@ -144,8 +145,12 @@ const chooseFile=async(label,filename)=>{
 };
 try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
+  if(process.argv.includes('--trace-io'))await evaluate(`(()=>{globalThis.GUI_IO_TRACE=[];const original=globalThis.CAM_GUI.receive_event;globalThis.CAM_GUI.receive_event=text=>{try{const event=JSON.parse(text);if(event.Io)globalThis.GUI_IO_TRACE.push(event.Io);}catch{}return original(text);};})()`);
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  if(process.argv.includes('--gui4')) {
+  if(process.argv.includes('--gui5')) {
+    const {gui5Scenario}=await import('./gui5-scenario.mjs');
+    await gui5Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out,chooseFile});
+  } else if(process.argv.includes('--gui4')) {
     const {gui4Scenario}=await import('./gui4-scenario.mjs');
     await gui4Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out,chooseFile});
   } else if(process.argv.includes('--gui3')) {
@@ -190,8 +195,8 @@ try {
   }
   if(problems.length)throw new Error('Browser errors: '+problems.join('\n'));
   writeFileSync(path.join(out,'evidence.json'),JSON.stringify({url:base,checks,consoleErrors:problems,note:'Real Chromium/WebGPU UI and WASM Worker. Denied save is injected; the fallback download is written and its actual bytes checked. Browser terminate call does not measure stopped CPU latency.'},null,2));
-  console.log((process.argv.includes('--gui4')?'GUI4':process.argv.includes('--gui3')?'GUI3':'GUI2')+' browser workflow passed');
-} catch(error) {const screenshot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(path.join(out,'failure.png'),Buffer.from(screenshot.data,'base64'));console.error(error);console.error(await state());console.error(problems);process.exitCode=1;}
+  console.log((process.argv.includes('--gui5')?'GUI5':process.argv.includes('--gui4')?'GUI4':process.argv.includes('--gui3')?'GUI3':'GUI2')+' browser workflow passed');
+} catch(error) {const screenshot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(path.join(out,'failure.png'),Buffer.from(screenshot.data,'base64'));writeFileSync(path.join(out,'failure-state.json'),JSON.stringify(await state(),null,2));if(process.argv.includes('--trace-io'))writeFileSync(path.join(out,'io-trace.json'),JSON.stringify(await evaluate('globalThis.GUI_IO_TRACE'),null,2));console.error(error);console.error(await state());console.error(problems);process.exitCode=1;}
 finally {
   await Promise.race([send('Browser.close'),sleep(1500)]);
   socket.close();browser.kill();await sleep(500);

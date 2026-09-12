@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "id": "gui5-lettering-library",
+  "library": {
+    "schema_version": 1,
+    "revision": 1,
+    "tools": [
+      {
+        "id": "endmill",
+        "name": "Endmill",
+        "geometry": {
+          "kind": "endmill",
+          "dimensions": {
+            "diameter_mm": 2.5,
+            "cutting_length_mm": 15,
+            "plunge_capable": true
+          }
+        },
+        "ramp_capable": true,
+        "plunge_capable": true,
+        "cutting_presets": [
+          {
+            "id": "rough",
+            "name": "Lettering rough",
+            "material": "Review fixture",
+            "machine": null,
+            "spindle_rpm": 12000,
+            "cutting_feed_mm_min": 1200,
+            "plunge_feed_mm_min": 400,
+            "max_stepdown_mm": 0.5,
+            "stepover_mm": 1
+          }
+        ],
+        "knife_cutting_presets": []
+      },
+      {
+        "id": "vbit",
+        "name": "V-bit target",
+        "geometry": {
+          "kind": "vbit",
+          "dimensions": {
+            "included_angle_deg": 90,
+            "tip_diameter_mm": 0.1,
+            "max_cutting_diameter_mm": 12,
+            "cutting_height_mm": 5
+          }
+        },
+        "ramp_capable": null,
+        "plunge_capable": true,
+        "cutting_presets": [
+          {
+            "id": "finish",
+            "name": "Lettering finish",
+            "material": "Review fixture",
+            "machine": null,
+            "spindle_rpm": 12000,
+            "cutting_feed_mm_min": 1000,
+            "plunge_feed_mm_min": 300,
+            "max_stepdown_mm": 1,
+            "stepover_mm": 1
+          }
+        ],
+        "knife_cutting_presets": []
+      }
+    ]
+  },
+  "machines": [
+    {
+      "schema_version": 2,
+      "id": "printnc",
+      "work_offset": "G54",
+      "clearance_z_mm": 5,
+      "decimal_places": 3,
+      "program_start_position_mm": null,
+      "length_compensation": "macro_managed",
+      "path_control": {
+        "kind": "blend",
+        "tolerance_mm": 0.05,
+        "naive_cam_tolerance_mm": 0.05
+      },
+      "tools": [
+        {
+          "tool_id": "endmill",
+          "tool_number": 3,
+          "length_offset_number": null
+        },
+        {
+          "tool_id": "vbit",
+          "tool_number": 8,
+          "length_offset_number": null
+        }
+      ],
+      "spindle_spinup_seconds": 0.5,
+      "coolant": "off",
+      "m6": {
+        "reference": "hi",
+        "reviewed": true,
+        "return_position": {
+          "kind": "safe_retract",
+          "z_mm": 150,
+          "transit_xy_mm": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        "preserves_work_datum": true,
+        "local_offsets_unused": true,
+        "tool_offsets_z_only": true
+      }
+    }
+  ]
+}

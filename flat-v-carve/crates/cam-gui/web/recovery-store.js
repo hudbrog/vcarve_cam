@@ -25,7 +25,7 @@ export async function writeRecord(expected,snapshot,name=DATABASE) {
     request.onsuccess=()=>{
       try {
         const current=request.result===undefined?null:JSON.parse(request.result);
-        if((current?.revision??null)!==expected)throw new Error('Revision conflict; reload recovery before choosing which draft to keep');
+        if((current?.revision??null)!==expected)throw new Error(name==='cam-gui-resources'?'Library revision conflict; compare the stored revision before choosing which edits to save':'Revision conflict; reload recovery before choosing which draft to keep');
         revision=(expected??0)+1;
         if(!Number.isSafeInteger(revision)||revision<1)throw new Error('Recovery revision limit');
         const text=JSON.stringify({revision,snapshot});

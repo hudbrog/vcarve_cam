@@ -16,7 +16,7 @@ export function startWorker(id, request) {
   active = {worker,id};
   worker.onmessage = ({data}) => {
     if (active?.id !== id) return;
-    if (data.protocol !== 'cam-gui-retained-4' || data.gui2Protocol !== 'gui2-retained-4') {
+    if (data.protocol !== 'cam-gui-retained-5' || data.gui2Protocol !== 'gui2-retained-5') {
       cancelWorker();
       emit({Computed:{id,elapsed_ms:performance.now()-begin,result:{Err:'Worker version mismatch; reload matching assets'}}});return;
     }
@@ -29,7 +29,7 @@ export function startWorker(id, request) {
     worker.terminate();active=undefined;
     emit({Computed:{id,elapsed_ms:performance.now()-begin,result:{Err:'Compute worker failed: '+event.message}}});
   };
-  worker.postMessage({protocol:'cam-gui-retained-4',request});
+  worker.postMessage({protocol:'cam-gui-retained-5',request});
 }
 export function openFile(id,svg,multiple) {
   const complete=result=>emit({Io:{id,result}});
@@ -80,6 +80,20 @@ export async function saveFile(id,name,bytes,deny) {
   }catch(error){complete({Err:String(error)});}
 }
 const recoveryStore=()=>import(new URL('recovery-store.js',document.baseURI).href);
+export async function resourceStore(id,save) {
+  try {
+    const store=await recoveryStore(), proposal=JSON.parse(save), name='cam-gui-resources';
+    if(proposal===null){
+      const text=await store.loadRecord(name);
+      emit({Resources:{id,result:{Ok:text===null?null:JSON.parse(text)}}});
+    }else{
+      const [expected,snapshot]=proposal;
+      snapshot.library.revision=(expected??0)+1;
+      const revision=await store.writeRecord(expected,snapshot,name);
+      emit({Resources:{id,result:{Ok:{revision,snapshot}}}});
+    }
+  }catch(error){emit({Resources:{id,result:{Err:String(error)}}});}
+}
 export async function loadRecovery() {
   try {
     const text=await (await recoveryStore()).loadRecord();

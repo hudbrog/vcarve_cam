@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cell::RefCell;
 
-pub const PROTOCOL: &str = "gui2-retained-4";
+pub const PROTOCOL: &str = "gui2-retained-5";
 pub const FLOWER: &str = include_str!("../../../fixtures/gui2/flower.job.json");
 pub const PROFILE: &str = include_str!("../../../fixtures/gui2/machine.json");
 pub const MOTION_LIMIT: usize = 100_000;
@@ -25,16 +25,46 @@ struct Display {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Command {
-    ImportSvg { filename: String, svg: String },
-    Artwork { job: String, action: ArtworkCommand },
-    Preview { job: String },
-    ValidatePlan { job: String, handle: String },
-    Seek { handle: String, prefix: usize },
-    Open { json: String },
-    Migrate { json: String },
-    ApplyProfile { job: String, json: String },
-    Generate { job: String },
-    Prepare { job: String, handle: String },
+    ImportSvg {
+        filename: String,
+        svg: String,
+    },
+    Artwork {
+        job: String,
+        action: ArtworkCommand,
+    },
+    Resource {
+        job: String,
+        action: Box<crate::resources::ResourceCommand>,
+    },
+    Preview {
+        job: String,
+    },
+    ValidatePlan {
+        job: String,
+        handle: String,
+    },
+    Seek {
+        handle: String,
+        prefix: usize,
+    },
+    Open {
+        json: String,
+    },
+    Migrate {
+        json: String,
+    },
+    ApplyProfile {
+        job: String,
+        json: String,
+    },
+    Generate {
+        job: String,
+    },
+    Prepare {
+        job: String,
+        handle: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -247,6 +277,14 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             json!({"kind":"imported"}),
         ),
         Command::Artwork { job, action } => artwork_command(&open(&job)?, action)?,
+        Command::Resource { job, action } => {
+            let job = open(&job)?;
+            let clear = action.clear_fields(&job);
+            (
+                (*action).execute(&job)?,
+                json!({"kind":"resource","clearFields":clear}),
+            )
+        }
         Command::Preview { job } => (open(&job)?, json!({"kind":"preview"})),
         Command::ValidatePlan { job, handle } => {
             let job = open(&job)?;

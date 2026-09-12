@@ -219,10 +219,19 @@ pub fn tool_mut(job: &mut CamJobV5, finishing: bool) -> Result<&mut JobToolV5, S
 pub const FIELDS: &[usize] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22, 23, 25, 26, 27, 28,
     29, 30, 31, 32, 33, 38, 39, 40, 41, 42, 43, 44, 45, 46, 14, 47, 48, 49, 50, 51, 52, 53, 54, 55,
-    56, 57, 58, 59, 60,
+    56, 57, 58, 59, 60, 34, 35, 36,
 ];
 pub fn active(job: &CamJobV5, field: usize) -> bool {
     let s = crate::session::settings(job);
+    if matches!(field, 34..=36) {
+        return job.machine_configuration.as_ref().is_some_and(|m| {
+            field != 36
+                || matches!(
+                    m.path_control,
+                    Some(cam_core::post::PathControl::Blend { .. })
+                )
+        });
+    }
     if matches!(field, 14 | 51) {
         return s
             .rough
@@ -317,6 +326,16 @@ pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
             }
             .map(f64::from)
         }
+        34 => job.machine_configuration.as_ref()?.spindle_spinup_seconds,
+        35 => job
+            .machine_configuration
+            .as_ref()?
+            .decimal_places
+            .map(|v| v as f64),
+        36 => match job.machine_configuration.as_ref()?.path_control? {
+            cam_core::post::PathControl::Blend { tolerance_mm, .. } => Some(tolerance_mm),
+            _ => None,
+        },
         40..=43 => job.setup.stock.xy.map(|xy| match field {
             40 => xy.min_x_mm,
             41 => xy.min_y_mm,
@@ -333,6 +352,30 @@ pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
 
 pub fn set(job: &mut CamJobV5, field: usize, v: Option<f64>) -> Result<(), String> {
     match field {
+        34..=36 => {
+            let m = job
+                .machine_configuration
+                .as_mut()
+                .ok_or("Apply a machine configuration first")?;
+            match field {
+                34 => m.spindle_spinup_seconds = v,
+                35 => {
+                    m.decimal_places = match v {
+                        None => None,
+                        Some(n) if n.fract() == 0. && (0.0..=9.).contains(&n) => Some(n as usize),
+                        _ => return Err("Precision must be an integer from 0 to 9".into()),
+                    }
+                }
+                _ => {
+                    let cam_core::post::PathControl::Blend { tolerance_mm, .. } =
+                        m.path_control.as_mut().ok_or("Choose blend path control")?
+                    else {
+                        return Err("Choose blend path control".into());
+                    };
+                    *tolerance_mm = v.ok_or("Blend tolerance cannot be unset")?;
+                }
+            }
+        }
         47 => settings_mut(job).top.offset_mm = v.ok_or("Top offset cannot be unset")?,
         48..=50 => {
             let n = whole(v)?;

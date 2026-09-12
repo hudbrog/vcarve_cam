@@ -303,6 +303,12 @@ impl App {
                     ui.strong("SETUP");
                     self.nav_item(ui, "Stock & work zero", "Setup", 1);
                     self.nav_item(ui, "Machine", "Machine", 3);
+                    if button(ui, "Tool library", true).clicked() {
+                        self.resources.open = true;
+                        if !self.resources.ready {
+                            self.request_resources(ResourceIntent::Load, ctx);
+                        }
+                    }
                     ui.add_space(8.);
                     ui.separator();
                     ui.strong("ARTWORK");
@@ -368,6 +374,9 @@ impl App {
                     ui.add_space(16.);
                     ui.separator();
                     ui.strong("ASSIGNED TOOLS");
+                    if button(ui, "Job tools", self.document.is_some()).clicked() {
+                        self.resources.jobs_open = true;
+                    }
                     self.nav_item(ui, "Endmill", "Endmill tool", 4);
                     self.nav_item(ui, "V-bit", "V-bit tool", 5);
                     ui.small("Geometry belongs to this job.");

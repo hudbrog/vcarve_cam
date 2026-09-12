@@ -41,6 +41,10 @@ pub enum Event {
         result: Result<IoValue, String>,
     },
     RecoveryLoaded(Result<Option<Stored>, String>),
+    Resources {
+        id: u64,
+        result: Result<Option<crate::resources::StoredCatalog>, String>,
+    },
     RecoverySaved {
         edit: u64,
         result: Result<u64, String>,
@@ -206,6 +210,22 @@ mod native {
                 ctx.request_repaint();
             });
         }
+        pub fn resources(
+            &self,
+            id: u64,
+            save: Option<(Option<u64>, crate::resources::Catalog)>,
+            ctx: egui::Context,
+        ) {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let result = crate::file_io::Store::resources_location().and_then(|s| match save {
+                    Some((expected, draft)) => s.save_resources(expected, draft).map(Some),
+                    None => s.load_resources(),
+                });
+                let _ = tx.send(Event::Resources { id, result });
+                ctx.request_repaint();
+            });
+        }
         pub fn save_recovery(
             &self,
             edit: u64,
@@ -244,6 +264,7 @@ mod browser {
         fn saveFile(id: f64, name: &str, bytes: &[u8], deny: bool);
         fn loadRecovery();
         fn saveRecovery(edit: f64, expected: &str, snapshot: &str);
+        fn resourceStore(id: f64, save: &str);
     }
     /// Binary scene payload for the next computed event. The worker transfers
     /// an `ArrayBuffer`, so the heavy part never becomes a JSON string.
@@ -296,6 +317,15 @@ mod browser {
     #[derive(Default)]
     pub struct Port;
     impl Port {
+        pub fn resources(
+            &self,
+            id: u64,
+            save: Option<(Option<u64>, crate::resources::Catalog)>,
+            ctx: egui::Context,
+        ) {
+            CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
+            resourceStore(id as f64, &serde_json::to_string(&save).unwrap());
+        }
         pub fn poll(&self) -> Option<Event> {
             EVENTS.with(|q| q.borrow_mut().pop_front())
         }

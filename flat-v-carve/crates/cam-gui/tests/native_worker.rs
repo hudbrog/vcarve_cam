@@ -57,6 +57,53 @@ impl Worker {
 }
 
 #[test]
+fn native_resource_commands_copy_profiles_generate_and_prepare() {
+    use cam_gui_runtime::resources::{Catalog, ResourceCommand};
+    let worker = Worker::new();
+    let mut job = include_str!("../../../fixtures/gui4/lettering.job.json").to_string();
+    let catalog = Catalog::decode(include_str!("../../../fixtures/gui5/library.json")).unwrap();
+    for (role, tool, preset) in [
+        (
+            cam_core::project::v5::resources::AssignmentRole::Endmill,
+            "endmill",
+            "rough",
+        ),
+        (
+            cam_core::project::v5::resources::AssignmentRole::Vbit,
+            "vbit",
+            "finish",
+        ),
+    ] {
+        let (copied, _) = worker.request(Command::Resource {
+            job,
+            action: Box::new(ResourceCommand::Apply {
+                operation: "carving".into(),
+                role,
+                catalog: catalog.clone(),
+                tool: tool.into(),
+                preset: preset.into(),
+            }),
+        });
+        assert_eq!(copied.report["gui2"]["kind"], "resource");
+        job = copied.job;
+    }
+    let mut doc = gui::open(&job).unwrap();
+    cam_gui_runtime::authoring::set_mode(&mut doc, cam_core::project::FlatVcarveMode::Combined);
+    job = doc.to_json().unwrap();
+    let (generated, _) = worker.request(Command::Generate { job: job.clone() });
+    let handle = generated.report["gui2"]["handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (seek, _) = worker.request(Command::Seek {
+        handle: handle.clone(),
+        prefix: generated.motions,
+    });
+    assert_eq!(seek.report["gui2"]["prefix"], generated.motions);
+    let (prepared, _) = worker.request(Command::Prepare { job, handle });
+    assert_eq!(prepared.report["gui2"]["kind"], "prepared");
+}
+#[test]
 fn native_collection_commands_generate_seek_prepare_and_reopen() {
     use cam_gui_runtime::authoring;
     let worker = Worker::new();

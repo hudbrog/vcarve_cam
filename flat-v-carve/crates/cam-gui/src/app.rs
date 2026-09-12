@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 mod inspector;
 #[path = "issues.rs"]
 mod issues;
+#[path = "resource_ui.rs"]
+mod resource_ui;
 #[path = "resume.rs"]
 mod resume;
 #[path = "workspace_ui.rs"]
@@ -269,8 +271,19 @@ pub struct App {
     issue_focus: Option<String>,
     artwork_io: Option<(u64, String)>,
     artwork_rejections: Vec<String>,
+    resources: crate::resources::Editor,
+    resource_request: Option<(u64, ResourceIntent)>,
+    resource_import_stamp: Option<String>,
+    profile_io_revision: Option<u64>,
+    debug_events: std::collections::VecDeque<String>,
 }
 #[derive(Clone, Copy)]
+enum ResourceIntent {
+    Load,
+    Compare,
+    Save,
+}
+#[derive(Clone, Copy, Debug)]
 enum IoKind {
     Svg,
     AddSvg,
@@ -278,6 +291,8 @@ enum IoKind {
     Open,
     Migrate,
     Profile,
+    LibraryImport,
+    MachineImport,
     Save(Option<u64>),
 }
 impl Default for App {
@@ -319,10 +334,21 @@ impl Default for App {
             issue_focus: None,
             artwork_io: None,
             artwork_rejections: vec![],
+            resources: Default::default(),
+            resource_request: None,
+            resource_import_stamp: None,
+            profile_io_revision: None,
+            debug_events: Default::default(),
         }
     }
 }
 impl App {
+    fn trace(&mut self, event: String) {
+        if self.debug_events.len() >= 30 {
+            self.debug_events.pop_front();
+        }
+        self.debug_events.push_back(event);
+    }
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut app = Self {
             view: View::new_viewer(cc),
@@ -353,6 +379,12 @@ impl App {
         self.redo.clear();
     }
     fn submit(&mut self, command: Command, ctx: &egui::Context) {
+        self.trace(format!(
+            "Submit {:?}; active {:?}; revision {}",
+            std::mem::discriminant(&command),
+            self.active,
+            self.revision
+        ));
         if self.active.is_some() {
             return;
         }
@@ -362,6 +394,7 @@ impl App {
         self.status = match command {
             Command::ImportSvg { .. } => "Importing SVG…",
             Command::Artwork { .. } => "Updating artwork collection…",
+            Command::Resource { .. } => "Copying reviewed resource values…",
             Command::Preview { .. } => "Updating artwork preview…",
             Command::ValidatePlan { .. } => "Checking whether the retained carving still matches…",
             Command::Seek { .. } => "Loading stock position…",
@@ -379,6 +412,13 @@ impl App {
         self.port.start(id, Request::Gui2(command), ctx.clone());
     }
     fn open(&mut self, kind: IoKind, ctx: &egui::Context) {
+        self.trace(format!(
+            "Open {:?}; active {:?}; revision {}",
+            kind, self.active, self.revision
+        ));
+        self.resource_import_stamp = matches!(kind, IoKind::LibraryImport | IoKind::MachineImport)
+            .then(|| self.resource_stamp());
+        self.profile_io_revision = matches!(kind, IoKind::Profile).then_some(self.revision);
         let id = self.id();
         self.io = Some((id, kind));
         self.focus = ctx.memory(|m| m.focused());
@@ -487,6 +527,28 @@ impl App {
             return;
         }
         match reply["kind"].as_str() {
+            Some("resource") => {
+                let job = match engine::open(&meta.job) {
+                    Ok(job) => job,
+                    Err(e) => {
+                        self.status = e;
+                        return;
+                    }
+                };
+                self.remember();
+                if let Some(doc) = &mut self.document {
+                    doc.job = job;
+                    if let Some(fields) = reply["clearFields"].as_array() {
+                        for field in fields.iter().filter_map(Value::as_u64) {
+                            doc.raw.raw.remove(&doc.raw.key(field as usize));
+                        }
+                    }
+                }
+                self.edit_group = None;
+                self.changed(ctx);
+                self.status =
+                    "Reviewed values copied into the job. Undo restores the previous copy.".into();
+            }
             Some("artwork") => {
                 let job = match engine::open(&meta.job) {
                     Ok(job) => job,
@@ -589,7 +651,7 @@ impl App {
                     Draft::for_job(&job)
                 };
                 if reply["kind"] == "profile" {
-                    for field in [7, 32, 33, 38, 39] {
+                    for field in [7, 32, 33, 34, 35, 36, 38, 39] {
                         raw.raw.remove(&raw.key(field));
                     }
                 }
@@ -699,6 +761,7 @@ impl App {
     }
     fn event(&mut self, event: Event, ctx: &egui::Context) {
         match event {
+            Event::Resources { id, result } => self.accept_resources(id, result),
             Event::Computed { id, result, .. } => self.accept(id, result, ctx),
             Event::Cancelled { id, stop_ms } => {
                 if self.cancelled_id == Some(id) && self.active.is_none() {
@@ -709,6 +772,19 @@ impl App {
                 }
             }
             Event::Io { id, result } => {
+                self.trace(format!(
+                    "IO {id}; expected {:?}; active {:?}; revision {}; {}",
+                    self.io,
+                    self.active,
+                    self.revision,
+                    match &result {
+                        Ok(IoValue::Svg { filename, .. }) => filename.as_str(),
+                        Ok(IoValue::Job(_)) => "JSON",
+                        Ok(IoValue::Svgs(_)) => "batch",
+                        Ok(_) => "saved",
+                        Err(e) => e.as_str(),
+                    }
+                ));
                 let Some((expected, kind)) = self.io else {
                     return;
                 };
@@ -743,7 +819,22 @@ impl App {
                         }
                         IoKind::Open => self.submit(Command::Open { json }, ctx),
                         IoKind::Migrate => self.submit(Command::Migrate { json }, ctx),
+                        IoKind::LibraryImport | IoKind::MachineImport => {
+                            if self.resource_import_stamp.take().as_deref()
+                                != Some(self.resource_stamp().as_str())
+                            {
+                                self.resources.status="Library changed while choosing a file. Your edits are preserved; import again.".into();
+                            } else if matches!(kind, IoKind::LibraryImport) {
+                                self.import_resources(&json);
+                            } else {
+                                self.import_machine(&json);
+                            }
+                        }
                         IoKind::Profile => {
+                            if self.profile_io_revision.take() != Some(self.revision) {
+                                self.status="Job changed while choosing a machine configuration; choose it again.".into();
+                                return;
+                            }
                             if let Some(doc) = &self.document {
                                 self.submit(
                                     Command::ApplyProfile {
@@ -853,7 +944,7 @@ impl App {
                 }
             }
         });
-        if self.io.is_none() && !self.ime {
+        if self.io.is_none() && !self.ime && !self.resources.open && !self.resources.jobs_open {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
                 self.undo(ctx);
             }
@@ -877,6 +968,7 @@ impl App {
         self.issue_panel(ctx);
         self.view.result_current = self.current();
         self.inspector(ctx);
+        self.resource_windows(ctx);
         if self.preview_dirty
             && self.active.is_none()
             && self.io.is_none()
@@ -1003,7 +1095,9 @@ impl App {
                 ui.spinner();
             });
         }
-        crate::viewport::probe::publish(json!({"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":self.document.as_ref().map(|d|json!({"name":d.job.name,"depth":engine::settings(&d.job).max_depth_mm,"feed":engine::settings(&d.job).endmill.cutting_feed_mm_min,"machine":d.job.machine_configuration.is_some(),"rawDepth":d.text(0),"rawFeed":d.text(2),"components":engine::settings(&d.job).components.len(),"mode":engine::settings(&d.job).mode,"stock":d.job.setup.stock,"placement":d.active_artwork().map(|i| &i.placement),"activeArtwork":d.raw.artwork_item,"artworks":d.job.artwork.iter().map(|i|json!({"id":i.id,"name":i.name,"placement":i.placement})).collect::<Vec<_>>(),"assignment":engine::settings(&d.job).components,"workZero":d.job.setup.work_zero,"endmillGeometry":crate::authoring::tool(&d.job,false).and_then(|t|t.geometry.clone()),"vbitGeometry":crate::authoring::tool(&d.job,true).and_then(|t|t.geometry.clone())})),"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
+        let resources_probe = json!({"open":self.resources.open,"jobsOpen":self.resources.jobs_open,"ready":self.resources.ready,"busy":self.resources.busy,"dirty":self.resources.dirty,"status":self.resources.status,"revision":self.resources.base.as_ref().map(|s|s.revision),"catalog":self.resources.draft,"selectedTool":self.resources.tool,"selectedProfile":self.resources.preset,"role":self.resources.role,"conflictRevision":self.resources.conflict.as_ref().map(|s|s.revision)});
+        let job_probe = self.document.as_ref().map(|d|json!({"tools":d.job.tools,"profileStatuses":cam_core::project::v5::resources::assignment_statuses(&d.job),"machineSnapshot":d.job.machine_configuration,"name":d.job.name,"depth":engine::settings(&d.job).max_depth_mm,"feed":engine::settings(&d.job).endmill.cutting_feed_mm_min,"machine":d.job.machine_configuration.is_some(),"rawDepth":d.text(0),"rawFeed":d.text(2),"components":engine::settings(&d.job).components.len(),"mode":engine::settings(&d.job).mode,"stock":d.job.setup.stock,"placement":d.active_artwork().map(|i| &i.placement),"activeArtwork":d.raw.artwork_item,"artworks":d.job.artwork.iter().map(|i|json!({"id":i.id,"name":i.name,"placement":i.placement})).collect::<Vec<_>>(),"assignment":engine::settings(&d.job).components,"workZero":d.job.setup.work_zero,"endmillGeometry":crate::authoring::tool(&d.job,false).and_then(|t|t.geometry.clone()),"vbitGeometry":crate::authoring::tool(&d.job,true).and_then(|t|t.geometry.clone())}));
+        crate::viewport::probe::publish(json!({"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"debugEvents":self.debug_events,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
     }
     fn save_output(&mut self, ctx: &egui::Context) {
         if let Some((prepared, revision)) = &self.prepared

@@ -12,6 +12,7 @@ pub mod pick;
 pub mod platform;
 pub mod recovery;
 pub mod render;
+pub mod resources;
 pub mod session;
 pub mod sim;
 pub mod state;

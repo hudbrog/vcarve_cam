@@ -62,6 +62,14 @@ impl Store {
                 .join("cam-gui-recovery"),
         ))
     }
+    pub fn resources_location() -> Result<Self, String> {
+        let root = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
+            .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")))
+            .ok_or("User resource directory is unavailable")?;
+        Ok(Self::new(root.join("flat-v-carve/resources")))
+    }
     fn lock(&self) -> Result<File, String> {
         fs::create_dir_all(&self.directory).map_err(|e| e.to_string())?;
         let file = File::options()
@@ -72,7 +80,7 @@ impl Store {
             .open(self.directory.join("session.lock"))
             .map_err(|e| e.to_string())?;
         file.try_lock()
-            .map_err(|e| format!("Recovery is busy or unavailable: {e}"))?;
+            .map_err(|e| format!("Local storage is busy or unavailable: {e}"))?;
         Ok(file)
     }
     fn read_unlocked(&self) -> Result<Option<Stored>, String> {
@@ -86,6 +94,40 @@ impl Store {
     pub fn load(&self) -> Result<Option<Stored>, String> {
         let _lock = self.lock()?;
         self.read_unlocked()
+    }
+    fn resources_unlocked(&self) -> Result<Option<crate::resources::StoredCatalog>, String> {
+        let path = self.directory.join("resources.json");
+        match fs::metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
+            Ok(_) => {
+                let text = read_text(&path, crate::resources::MAX_BYTES + 1024)?;
+                let stored: crate::resources::StoredCatalog =
+                    serde_json::from_str(&text).map_err(|e| e.to_string())?;
+                stored.validate()?;
+                Ok(Some(stored))
+            }
+        }
+    }
+    pub fn load_resources(&self) -> Result<Option<crate::resources::StoredCatalog>, String> {
+        let _lock = self.lock()?;
+        self.resources_unlocked()
+    }
+    pub fn save_resources(
+        &self,
+        expected: Option<u64>,
+        snapshot: crate::resources::Catalog,
+    ) -> Result<crate::resources::StoredCatalog, String> {
+        let stored = crate::resources::StoredCatalog::next(expected, snapshot)?;
+        let _lock = self.lock()?;
+        if self.resources_unlocked()?.as_ref().map(|s| s.revision) != expected {
+            return Err("Library revision conflict. Compare the stored revision; your edit buffer is preserved.".into());
+        }
+        atomic_write(
+            &self.directory.join("resources.json"),
+            &serde_json::to_vec(&stored).map_err(|e| e.to_string())?,
+        )?;
+        Ok(stored)
     }
     pub fn save(&self, expected: Option<u64>, snapshot: Snapshot) -> Result<u64, String> {
         snapshot.validate()?;

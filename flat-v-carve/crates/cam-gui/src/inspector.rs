@@ -676,6 +676,7 @@ impl App {
         ui.small(if ramp { "Angle: greater than 0 and less than 90°. Feed: positive mm/min." } else { "Ramp fields are inactive. Enter both values, then choose Ramp entry. Recovery retains this draft." });
     }
     fn assignment_tool(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, finish: bool) {
+        self.assignment_profiles(ui, ctx, finish);
         use cam_core::project::ToolGeometry;
         let job = &self.document.as_ref().unwrap().job;
         let assignment = if finish {
@@ -820,6 +821,11 @@ impl App {
                 self.numbers(ui, ctx, &[38, 39]);
             }
             ui.small("Setup owns the datum. Clearance is shared with Setup.");
+            self.applied_machine_options(ui, ctx);
+            self.numbers(ui, ctx, &[34, 35]);
+            if crate::authoring::active(&self.document.as_ref().unwrap().job, 36) {
+                self.numbers(ui, ctx, &[36]);
+            }
         } else {
             ui.colored_label(
                 Color32::from_rgb(164, 83, 12),

@@ -180,6 +180,7 @@ fn copy_knife_preset(
 
 fn clear_milling(assignment: &mut MillingAssignmentV5) {
     assignment.spindle_rpm = None;
+    assignment.spindle_direction = None;
     assignment.cutting_feed_mm_min = None;
     assignment.plunge_feed_mm_min = None;
     assignment.max_stepdown_mm = None;
@@ -512,8 +513,9 @@ fn library_capabilities(tool: &crate::tool_library::LibraryTool) -> ToolCapabili
 /// the job gains or refreshes an independent tool snapshot with copied
 /// provenance, and the assignment binds it. Choosing a *different* tool
 /// without a cutting preset clears the assignment's applicable cutting
-/// fields and its previous baseline; re-applying the same tool updates the
-/// snapshot and keeps the values for revalidation (plan section 22.6).
+/// fields and its previous baseline; unchanged geometry with the same origin
+/// reuses its snapshot and keeps values. Changed library geometry creates a
+/// new snapshot; editing shared job geometry is a separate explicit action.
 /// Other assignments using the shared snapshot are not rewritten.
 pub fn apply_tool_to_assignment(
     job: &CamJobV5,
@@ -523,42 +525,103 @@ pub fn apply_tool_to_assignment(
     library_id: &str,
     library_tool_id: &str,
 ) -> Result<super::commands::CommandOutcome> {
-    let index = operation_index(job, operation_id)?;
+    let added = add_library_tool(job, library, library_id, library_tool_id)?;
+    let tool_id = added.1;
+    use_job_tool(&added.0.job, operation_id, role, &tool_id)
+}
+
+/// Add independent geometry without changing an assignment. Only an exact
+/// unchanged snapshot with the same explicit origin can be reused. Colliding
+/// local IDs and equal dimensions never identify the same physical tool.
+pub fn add_library_tool(
+    job: &CamJobV5,
+    library: &ToolLibrary,
+    library_id: &str,
+    library_tool_id: &str,
+) -> Result<(super::commands::CommandOutcome, String)> {
+    library.validate()?;
     let tool = library.tool(library_tool_id)?;
-    // The role decides which geometry kinds are acceptable: V-bit geometry
-    // belongs to a V-bit assignment, a knife to a knife assignment.
-    let accepts = |geometry: &LibraryGeometry| match role {
-        AssignmentRole::Endmill => matches!(geometry, LibraryGeometry::Endmill(_)),
-        AssignmentRole::Vbit => matches!(geometry, LibraryGeometry::Vbit(_)),
-        AssignmentRole::Milling => matches!(
-            geometry,
-            LibraryGeometry::Endmill(_) | LibraryGeometry::Vbit(_)
-        ),
-        AssignmentRole::Knife => matches!(geometry, LibraryGeometry::DragKnife(_)),
-    };
-    if !accepts(&tool.geometry) {
-        return Err(resource_error(format!(
-            "library tool '{library_tool_id}' does not fit the {} assignment of operation '{operation_id}'",
-            role.name()
-        )));
+    let geometry = Some(job_geometry(&tool.geometry));
+    let capabilities = library_capabilities(tool);
+    if let Some(existing) = job.tools.iter().find(|t| {
+        t.library_origin
+            .as_ref()
+            .is_some_and(|o| o.library_id == library_id && o.tool_id == library_tool_id)
+            && t.geometry == geometry
+            && t.capabilities == capabilities
+    }) {
+        return Ok((
+            super::commands::CommandOutcome::commit(job.clone(), vec![])?,
+            existing.id.clone(),
+        ));
     }
-    let snapshot = JobToolV5 {
-        id: tool.id.clone(),
+    let mut id = tool.id.clone();
+    let mut suffix = 2;
+    let referenced = assigned_tool_ids(job);
+    while job.tools.iter().any(|t| t.id == id)
+        || referenced.contains(&id)
+        || job
+            .machine_configuration
+            .as_ref()
+            .is_some_and(|m| m.tools.iter().any(|row| row.job_tool_id == id))
+    {
+        id = format!("{}-{suffix}", tool.id.chars().take(85).collect::<String>());
+        suffix += 1;
+    }
+    let mut candidate = job.clone();
+    candidate.tools.push(JobToolV5 {
+        id: id.clone(),
         name: tool.name.clone(),
-        geometry: Some(job_geometry(&tool.geometry)),
-        capabilities: library_capabilities(tool),
+        geometry,
+        capabilities,
         library_origin: Some(LibraryOrigin {
-            library_id: library_id.to_string(),
+            library_id: library_id.into(),
             tool_id: tool.id.clone(),
             copied_revision: library.revision,
             name_at_copy: tool.name.clone(),
         }),
+    });
+    Ok((
+        super::commands::CommandOutcome::commit(
+            candidate,
+            vec![super::commands::AffectedEntity::JobTool(id.clone())],
+        )?,
+        id,
+    ))
+}
+
+/// Bind a selected copied job tool; changing physical tools clears only this
+/// assignment's cutting values and baseline. Existing geometry stays shared.
+pub fn use_job_tool(
+    job: &CamJobV5,
+    operation_id: &str,
+    role: AssignmentRole,
+    tool_id: &str,
+) -> Result<super::commands::CommandOutcome> {
+    let index = operation_index(job, operation_id)?;
+    let tool = job
+        .tools
+        .iter()
+        .find(|t| t.id == tool_id)
+        .ok_or_else(|| resource_error(format!("unknown job tool '{tool_id}'")))?;
+    // The role decides which geometry kinds are acceptable: V-bit geometry
+    // belongs to a V-bit assignment, a knife to a knife assignment.
+    let accepts = |geometry: &crate::project::ToolGeometry| match role {
+        AssignmentRole::Endmill => matches!(geometry, crate::project::ToolGeometry::Endmill(_)),
+        AssignmentRole::Vbit => matches!(geometry, crate::project::ToolGeometry::Vbit(_)),
+        AssignmentRole::Milling => matches!(
+            geometry,
+            crate::project::ToolGeometry::Endmill(_) | crate::project::ToolGeometry::Vbit(_)
+        ),
+        AssignmentRole::Knife => matches!(geometry, crate::project::ToolGeometry::DragKnife(_)),
     };
-    let mut candidate = job.clone();
-    match candidate.tools.iter().position(|t| t.id == tool.id) {
-        Some(position) => candidate.tools[position] = snapshot,
-        None => candidate.tools.push(snapshot),
+    if !tool.geometry.as_ref().is_some_and(accepts) {
+        return Err(resource_error(format!(
+            "job tool '{tool_id}' does not fit the {} assignment of operation '{operation_id}'",
+            role.name()
+        )));
     }
+    let mut candidate = job.clone();
     match assignment_mut(
         &mut candidate.operations[index].settings,
         operation_id,
