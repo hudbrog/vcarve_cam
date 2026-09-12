@@ -705,6 +705,26 @@ impl App {
                     "machine": d.job.machine_configuration.is_some(),
                 })
             }
+            Some(OperationKind::Profile) => {
+                let settings = crate::profile::settings_in(&d.job, &selected);
+                json!({
+                    "kind": "profile",
+                    "profile": settings,
+                    "stepdown": settings.and_then(|s| s.stepdown_mm),
+                    "contours": settings.map(|s| s.contours.len()).unwrap_or(0),
+                    "sides": settings.map(|s| {
+                        s.contours.iter().map(|c| c.side).collect::<Vec<_>>()
+                    }),
+                    "direction": settings.and_then(|s| s.direction),
+                    "finish": settings.map(|s| &s.finish),
+                    "tabs": settings.and_then(|s| s.tabs.as_ref()),
+                    "start": settings.map(|s| &s.start),
+                    "entry": settings.map(|s| &s.entry),
+                    "leadIn": settings.map(|s| &s.lead_in),
+                    "rawStepdown": d.text(8),
+                    "machine": d.job.machine_configuration.is_some(),
+                })
+            }
             Some(kind) => {
                 let carving = engine::settings_in(&d.job, &selected);
                 let mut probe = json!({
@@ -905,8 +925,15 @@ impl App {
                 Err(error) => self.status = error.to_string(),
             },
             Some(
-                "artwork" | "carve_selection" | "knife_start" | "knife_selection"
-                | "knife_outlines",
+                "artwork"
+                | "carve_selection"
+                | "knife_start"
+                | "knife_selection"
+                | "knife_outlines"
+                | "profile_selection"
+                | "profile_tab_anchor"
+                | "profile_start"
+                | "profile_anchor_reattach",
             ) => {
                 let job = match engine::open(&meta.job) {
                     Ok(job) => job,
@@ -936,14 +963,17 @@ impl App {
                     self.navigate(0);
                 }
                 self.simulate = false;
-                self.status = if matches!(
-                    reply["kind"].as_str(),
-                    Some("carve_selection" | "knife_selection")
-                ) {
-                    "Operation geometry updated. Undo restores the previous selection.".into()
-                } else {
-                    "Artwork updated. Assignments retain their exact source revisions; repair unresolved references or Undo.".into()
-                };
+                self.status = match reply["kind"].as_str() {
+                    Some("carve_selection" | "knife_selection" | "profile_selection") => {
+                        "Operation geometry updated. Undo restores the previous selection."
+                    }
+                    Some(
+                        "knife_start" | "profile_start" | "profile_tab_anchor"
+                        | "profile_anchor_reattach",
+                    ) => "Operation anchors updated. Undo restores the previous anchors.",
+                    _ => "Artwork updated. Assignments retain their exact source revisions; repair unresolved references or Undo.",
+                }
+                .into();
                 if let Some(rejected) = reply["rejectedFiles"].as_array().filter(|r| !r.is_empty())
                 {
                     self.status = format!(

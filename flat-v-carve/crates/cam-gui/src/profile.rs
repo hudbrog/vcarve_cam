@@ -381,7 +381,8 @@ pub fn set_entry(job: &mut CamJobV5, operation_id: &str, ramp: bool) -> Result<(
 }
 
 /// Lead-in/lead-out shape. `None` clears the lead; a chosen shape keeps its
-/// values unset until edited.
+/// values unset until edited (the mode buttons pass a shape without values,
+/// while a caller that has resolved values supplies them).
 pub fn set_lead(
     job: &mut CamJobV5,
     operation_id: &str,
@@ -390,20 +391,7 @@ pub fn set_lead(
 ) -> Result<(), String> {
     let s = settings_in_mut(job, operation_id).ok_or("Expected a profile operation")?;
     let slot = if out { &mut s.lead_out } else { &mut s.lead_in };
-    *slot = match (&spec, &*slot) {
-        (LeadSpec::TangentLine { .. }, LeadSpec::TangentLine { .. })
-        | (LeadSpec::TangentArc { .. }, LeadSpec::TangentArc { .. })
-        | (LeadSpec::None, _) => spec,
-        (LeadSpec::TangentLine { .. }, _) => LeadSpec::TangentLine {
-            length_mm: None,
-            feed_mm_min: None,
-        },
-        _ => LeadSpec::TangentArc {
-            radius_mm: None,
-            sweep_deg: None,
-            feed_mm_min: None,
-        },
-    };
+    *slot = spec;
     Ok(())
 }
 
@@ -981,13 +969,6 @@ pub enum TabAnchorAction {
     Add { wire_id: String, fraction: f64 },
     /// Remove the manual anchor whose contour scope matches.
     Remove { scope: String },
-    /// Reattach the n-th manual anchor to an explicitly chosen contour.
-    Reattach {
-        index: usize,
-        wire_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        fraction: Option<f64>,
-    },
 }
 
 /// Apply one manual-tab-anchor edit against the current catalogue. This runs
@@ -1005,19 +986,6 @@ pub fn tab_anchor(
         }
         TabAnchorAction::Remove { scope } => {
             remove_tab_anchor(&mut candidate, operation_id, scope)?;
-        }
-        TabAnchorAction::Reattach {
-            index,
-            wire_id,
-            fraction,
-        } => {
-            candidate = reattach(
-                &candidate,
-                operation_id,
-                v5::commands::AnchorTarget::Tab(*index),
-                wire_id,
-                *fraction,
-            )?;
         }
     }
     candidate.validate_structure().map_err(|e| e.to_string())?;

@@ -178,6 +178,13 @@ pub enum ArtworkCommand {
         wire_id: Option<String>,
         fraction: f64,
     },
+    /// Reattach an unresolved profile start or manual tab anchor.
+    ProfileAnchorReattach {
+        start: bool,
+        index: usize,
+        wire_id: String,
+        fraction: Option<f64>,
+    },
     AddMany {
         files: Vec<crate::platform::SvgFile>,
     },
@@ -299,6 +306,23 @@ fn artwork_command(
             return Ok((
                 open(&candidate.to_json().map_err(|e| e.to_string())?)?,
                 json!({"kind":"profile_start"}),
+            ));
+        }
+        ArtworkCommand::ProfileAnchorReattach {
+            start,
+            index,
+            wire_id,
+            fraction,
+        } => {
+            let anchor = if start {
+                v5::commands::AnchorTarget::Start
+            } else {
+                v5::commands::AnchorTarget::Tab(index)
+            };
+            let candidate = crate::profile::reattach(job, &target, anchor, &wire_id, fraction)?;
+            return Ok((
+                open(&candidate.to_json().map_err(|e| e.to_string())?)?,
+                json!({"kind":"profile_anchor_reattach"}),
             ));
         }
         ArtworkCommand::AddMany { files } => {
@@ -527,7 +551,16 @@ fn terminal(reply: &Value) -> Result<(), String> {
     if reply["task"]["state"] == "succeeded" {
         return Ok(());
     }
-    Err(format!("{}", reply["task"]["diagnostic"]))
+    // A failed task carries the engine's structured diagnostic; present its
+    // code and message rather than a raw JSON object.
+    let diagnostic = &reply["task"]["diagnostic"];
+    match diagnostic["message"].as_str() {
+        Some(message) => Err(match diagnostic["code"].as_str() {
+            Some(code) => format!("{code}: {message}"),
+            None => message.into(),
+        }),
+        None => Err(format!("{diagnostic}")),
+    }
 }
 
 /// Enabled operations inside a scope, in document order. A prefix scope that

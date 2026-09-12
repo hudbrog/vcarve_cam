@@ -9,8 +9,8 @@
 use super::*;
 use crate::profile::{self, AnchorKind, SelectionRow};
 use cam_core::project::{
-    ContourOrder, ContourSide, CutDirection, HeightReference, SpindleDirection, TabShape,
-    TraversalDirection,
+    ContourOrder, ContourSide, CutDirection, HeightReference, LeadSpec, ProfileEntry,
+    SpindleDirection, TabShape, TraversalDirection, v5::StartSelectionV5,
 };
 
 const SIDES: [(&str, ContourSide); 3] = [
@@ -51,6 +51,7 @@ impl App {
                 self.profile_order(ui, ctx);
                 self.profile_tabs(ui, ctx);
                 self.profile_finishing(ui, ctx);
+                self.profile_starts(ui, ctx);
                 self.profile_evidence(ui);
             }
         }
@@ -736,12 +737,11 @@ impl App {
                                     let name = owner_of(&wire);
                                     if button(ui, &name, app.active.is_none()).clicked() {
                                         app.artwork_command(
-                                            engine::ArtworkCommand::ProfileTabAnchor {
-                                                action: profile::TabAnchorAction::Reattach {
+                                            engine::ArtworkCommand::ProfileAnchorReattach {
+                                                start: false,
                                                     index: row.index,
                                                     wire_id: wire,
                                                     fraction: Some(row.fraction),
-                                                },
                                             },
                                             ctx,
                                         );
@@ -873,6 +873,196 @@ impl App {
                     Color32::from_rgb(164, 83, 12),
                     "A zero-offset (on-contour) selection cannot carry a radial allowance; set the allowance to zero or give the contour a retained side.",
                 );
+            }
+        });
+    }
+
+    /// Starts and entries (GUI8d): where the cut begins, how it descends and
+    /// whether it approaches and leaves the contour with a lead. Every choice
+    /// is a document value; the planner resolves the seam, the ramp and the
+    /// lead geometry and reports a located reason when one does not fit.
+    fn profile_starts(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let id = self.operation_id();
+        let Some(job) = self.document.as_ref().map(|d| d.job.clone()) else {
+            return;
+        };
+        let Some(settings) = profile::settings_in(&job, &id) else {
+            return;
+        };
+        let start = settings.start.clone();
+        let entry = settings.entry.clone();
+        let lead_in = settings.lead_in.clone();
+        let lead_out = settings.lead_out.clone();
+        let row = profile::start_row(&job, &id);
+        let selection = profile::selection(&job, &id);
+        let contours = self.view.profile_contours();
+        let owner_of = |wire: &str| {
+            contours
+                .iter()
+                .find(|contour| contour.wire_id == wire)
+                .map(|contour| {
+                    format!(
+                        "{} / {}",
+                        contour.owner, contour.reference.local_geometry_id
+                    )
+                })
+                .unwrap_or_else(|| wire.into())
+        };
+        self.operation_group(ui, "Start & entry", true, |app, ui| {
+            help::label(ui, "Cut start");
+            let anchored = matches!(start, StartSelectionV5::Anchor(_));
+            if anchored {
+                let row = row.clone().expect("an anchored start has a row");
+                ui.label(format!("Anchored start on {}", owner_of(&row.scope)));
+                app.anchor_number(ui, ctx, &row.scope, AnchorKind::Start, 108, Some(row.fraction));
+                if !row.resolved {
+                    let response = ui.colored_label(
+                        Color32::DARK_RED,
+                        "This start's source geometry changed; reattach it or return to the automatic seam.",
+                    );
+                    observe_control("Unresolved start anchor", response.rect);
+                    let menu = ui.menu_button("Reattach start to…", |ui| {
+                        for selection_row in selection.iter() {
+                            let wire = profile::anchor_scope(&selection_row.reference);
+                            let name = owner_of(&wire);
+                            if button(ui, &name, app.active.is_none()).clicked() {
+                                app.artwork_command(
+                                    engine::ArtworkCommand::ProfileAnchorReattach {
+                                        start: true,
+                                        index: 0,
+                                        wire_id: wire,
+                                        fraction: Some(row.fraction),
+                                    },
+                                    ctx,
+                                );
+                                ui.close();
+                            }
+                        }
+                    });
+                    observe_control("Reattach start anchor", menu.response.rect);
+                }
+                if button(ui, "Use automatic start", app.active.is_none()).clicked() {
+                    app.artwork_command(
+                        engine::ArtworkCommand::ProfileStart {
+                            wire_id: None,
+                            fraction: 0.,
+                        },
+                        ctx,
+                    );
+                }
+                ui.small("Automatic keeps the source seam the planner already uses.");
+            } else {
+                ui.label("Automatic start: the planner cuts from the source contour's own seam.");
+                let menu = ui.menu_button("Anchor the start…", |ui| {
+                    if selection.is_empty() {
+                        ui.label("Select contours first.");
+                        return;
+                    }
+                    ui.small("Choose a contour and a starting position; the start can then be dragged in the viewport or typed exactly.");
+                    for selection_row in selection.iter() {
+                        let wire = profile::anchor_scope(&selection_row.reference);
+                        let name = owner_of(&wire);
+                        for fraction in [0., 0.25, 0.5, 0.75] {
+                            if button(
+                                ui,
+                                &format!("{name} · {:.0}%", fraction * 100.),
+                                app.active.is_none(),
+                            )
+                            .clicked()
+                            {
+                                app.artwork_command(
+                                    engine::ArtworkCommand::ProfileStart {
+                                        wire_id: Some(wire.clone()),
+                                        fraction,
+                                    },
+                                    ctx,
+                                );
+                                ui.close();
+                            }
+                        }
+                    }
+                });
+                observe_control("Anchor the start", menu.response.rect);
+            }
+            ui.small("Drag the yellow square in the viewport to move the start; the release is one undo step and the numeric row states the same value.");
+            ui.separator();
+            help::label(ui, "Entry");
+            let ramp = matches!(entry, ProfileEntry::Ramp { .. });
+            ui.horizontal_wrapped(|ui| {
+                for (label, value) in [("Plunge entry", false), ("Ramp entry", true)] {
+                    let r = ui.selectable_label(ramp == value, label);
+                    observe_control(label, r.rect);
+                    if r.clicked() && ramp != value {
+                        let id = app.operation_id();
+                        app.edit_job(ctx, &[98, 99], move |job| {
+                            profile::set_entry(job, &id, value)
+                        });
+                    }
+                }
+            });
+            if ramp {
+                app.operation_numbers(ui, ctx, &[98, 99]);
+                ui.small("A ramp descends along the loop instead of straight down. It needs a tool you mark ramp capable, and it must fit before any tab bridge — the planner reports a located reason otherwise.");
+            } else {
+                ui.small("A plunge descends straight at the seam. Choose a ramp to enter along the contour instead.");
+            }
+            ui.separator();
+            for (label, out, spec) in [("Lead-in", false, &lead_in), ("Lead-out", true, &lead_out)] {
+                help::label(ui, label);
+                ui.horizontal_wrapped(|ui| {
+                    for (name, value) in [
+                        ("No lead", LeadSpec::None),
+                        ("Tangent line", LeadSpec::TangentLine {
+                            length_mm: None,
+                            feed_mm_min: None,
+                        }),
+                        ("Tangent arc", LeadSpec::TangentArc {
+                            radius_mm: None,
+                            sweep_deg: None,
+                            feed_mm_min: None,
+                        }),
+                    ] {
+                        let selected = matches!(
+                            (&value, spec),
+                            (LeadSpec::None, LeadSpec::None)
+                                | (
+                                    LeadSpec::TangentLine { .. },
+                                    LeadSpec::TangentLine { .. }
+                                )
+                                | (LeadSpec::TangentArc { .. }, LeadSpec::TangentArc { .. })
+                        );
+                        let control = format!("{label}: {name}");
+                        let r = ui.selectable_label(selected, name);
+                        observe_control(&control, r.rect);
+                        if r.clicked() && !selected {
+                            let id = app.operation_id();
+                            app.edit_job(ctx, &[100, 101, 102, 103, 104, 105, 106, 107], move |job| {
+                                profile::set_lead(job, &id, out, value)
+                            });
+                        }
+                    }
+                });
+                match spec {
+                    LeadSpec::None => {
+                        ui.small("The cut starts and ends on the contour.");
+                    }
+                    LeadSpec::TangentLine { .. } => {
+                        app.operation_numbers(
+                            ui,
+                            ctx,
+                            if out { &[104, 105] } else { &[100, 101] },
+                        );
+                        ui.small("A tangent line is collinear with the loop: it approaches along the contour's own direction.");
+                    }
+                    LeadSpec::TangentArc { .. } => {
+                        app.operation_numbers(
+                            ui,
+                            ctx,
+                            if out { &[106, 107, 105] } else { &[102, 103, 101] },
+                        );
+                        ui.small("A tangent arc bulges into the scrap side, so it needs a retained side (inside or outside) and room beside the contour and its tabs.");
+                    }
+                }
             }
         });
     }
@@ -1211,5 +1401,110 @@ mod tests {
             "0.5".into(),
         );
         assert!(invalid.validate_job(&doc.job).is_err());
+    }
+
+    #[test]
+    fn a_profile_selection_reply_is_adopted_not_reported_as_unknown() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let id = app.operation_id();
+        let job = app.document.as_ref().unwrap().job.clone();
+        // Re-select only the two outer contours: the reply must arrive, be
+        // adopted into the document and keep the selection semantics.
+        let rows = crate::profile::selection(&job, &id)
+            .into_iter()
+            .filter(|row| {
+                crate::profile::contours(&job)
+                    .unwrap()
+                    .iter()
+                    .any(|contour| contour.reference == row.reference && contour.role == "outer")
+            })
+            .collect::<Vec<_>>();
+        let (meta, payload) = crate::session::execute(
+            &mut Retained::new(),
+            Command::Artwork {
+                job: job.to_json().unwrap(),
+                operation_id: id.clone(),
+                action: engine::ArtworkCommand::ProfileSelection { rows },
+            },
+        )
+        .unwrap();
+        let request = app.id();
+        app.active = Some((request, app.revision));
+        app.accept(request, Ok((meta, payload)), &ctx);
+        assert_eq!(
+            app.status,
+            "Operation geometry updated. Undo restores the previous selection."
+        );
+        assert_eq!(
+            crate::profile::selection(&app.document.as_ref().unwrap().job, &id).len(),
+            2,
+            "the adopted document carries only the outer contours"
+        );
+    }
+
+    #[test]
+    fn start_entry_and_lead_controls_state_their_supported_choices() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let controls = render(&mut app, &ctx);
+        for label in [
+            "Anchor the start",
+            "Plunge entry",
+            "Ramp entry",
+            "Lead-in: No lead",
+            "Lead-in: Tangent line",
+            "Lead-in: Tangent arc",
+            "Lead-out: No lead",
+            "Lead-out: Tangent line",
+            "Lead-out: Tangent arc",
+        ] {
+            assert!(controls.contains_key(label), "{label} missing");
+        }
+        // Choosing a ramp states its own two values; the mode change leaves
+        // them unset so the planner reports what is missing.
+        let doc = app.document.as_mut().unwrap();
+        let id = doc.raw.operation.clone();
+        crate::profile::set_entry(&mut doc.job, &id, true).unwrap();
+        assert!(
+            crate::profile::settings_in(&doc.job, &id).unwrap().entry
+                == cam_core::project::ProfileEntry::Ramp {
+                    max_angle_deg: None,
+                    feed_mm_min: None,
+                }
+        );
+        doc.edit(98, "15".into()).unwrap();
+        doc.edit(99, "90".into()).unwrap();
+        let scope =
+            crate::profile::anchor_scope(&crate::profile::selection(&doc.job, &id)[0].reference);
+        crate::profile::set_lead(
+            &mut doc.job,
+            &id,
+            false,
+            cam_core::project::LeadSpec::TangentLine {
+                length_mm: None,
+                feed_mm_min: None,
+            },
+        )
+        .unwrap();
+        crate::profile::set_start(&mut doc.job, &id, Some(&scope), 0.25).unwrap();
+        let controls = render(&mut app, &ctx);
+        for label in [
+            "Entry ramp angle",
+            "Entry ramp feed",
+            "Lead-in length",
+            "Lead-in feed",
+        ] {
+            assert!(controls.contains_key(label), "{label} missing");
+        }
+        // A start anchor adds its own scoped numeric row.
+        assert!(
+            controls
+                .keys()
+                .any(|key| key == &format!("Anchor Start fraction {scope}")),
+            "the start's own numeric row is missing: {:?}",
+            controls.keys().collect::<Vec<_>>()
+        );
+        assert!(controls.contains_key("Use automatic start"));
     }
 }

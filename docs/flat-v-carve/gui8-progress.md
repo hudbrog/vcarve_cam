@@ -1,8 +1,8 @@
 # GUI8 profiles, workholding and finish controls
 
-Status: GUI8a–GUI8c implemented and checked; GUI8d in progress. Starting
-commit: `80e53a5` (the GUI7 worktree as committed). User review is pending for
-every letter; no physical machining claim is made anywhere in this report.
+Status: GUI8a–GUI8d implemented and checked; ready for manual review. Starting
+commit: `80e53a5` (the GUI7 worktree as committed). User review is pending; no
+physical machining claim is made anywhere in this report.
 
 GUI8 introduces the fourth first-release operation: a **closed milling
 Profile**. A profile selects explicit closed contours of the imported artwork,
@@ -262,4 +262,119 @@ operations keep the exact labels GUI2–GUI7 published.
 
 ## GUI8d — starts and entries
 
-Not started.
+The profile can now control where and how the real cut begins and ends: an
+anchored start (numeric or dragged), a plunge or ramp entry, and supported
+tangent line/arc leads on the lead-in and lead-out — with an invalid entry
+provoked, explained where it lives and repaired.
+
+### Contracts and implementation
+
+`crates/cam-gui/src/profile_ui.rs::profile_starts` states the start (automatic
+source seam or one selected contour at a fraction, with the same presets and
+the same draggable marker the tabs use), the entry (plunge or ramp with its own
+angle and feed) and each lead (none, tangent line, tangent arc) with the values
+that mode actually uses. The group opens by default because it carries the
+cut's entry, not an optional extra.
+
+Every choice is a document value or a service command:
+`cam_core::project::{ProfileEntry, LeadSpec}` and
+`cam_core::project::v5::{StartSelectionV5, ContourAnchorV5}`.
+`ArtworkCommand::ProfileStart` chooses the start against the current catalogue,
+`ArtworkCommand::ProfileAnchorReattach` reattaches an unresolved start or tab
+anchor to an explicitly picked contour, and the ramp/lead values are ordinary
+operation fields. `profile::set_entry` and `profile::set_lead` never invent
+values: choosing a mode leaves its parameters unset so the planner reports
+exactly what is missing, while a caller that has resolved values (a recipe or a
+test) supplies them and they are kept.
+
+Nothing is resolved in the UI. The planner repositions the seam on the
+compensated loop, wraps an overshooting ramp onto the loop, checks each lead's
+whole cutter sweep against every selected contour's retained side and against
+the tab bridges, and reports a located reason for anything that does not fit:
+`PROFILE_ENTRY_CAPABILITY`, `PROFILE_RAMP_NO_SPACE`, `PROFILE_LEAD_SIDE`,
+`PROFILE_LEAD_NO_SPACE`, plus the ramp-capability requirement as a located
+missing field. `app::issues` routes those field paths to the profile controls,
+and `the ramp-capable tool` control lives in the same tool group.
+
+### Evidence and acceptance audit
+
+| GUI8d requirement | Evidence |
+| --- | --- |
+| Move a start (drag and numeric) | `crates/cam-gui/tests/profile.rs::moving_the_start_and_choosing_the_entry_change_the_real_motion`: after anchoring the start at one contour's half-source position, a pass enters within one cutter standoff of that point, while the automatic job enters only at its own seams; the viewport drag writes the same field (`App::ui` → `Document::edit_anchor`) and the group offers preset positions plus the exact numeric row |
+| Choose a supported entry and see it in the motion | The same test: the plunge job descends with no XY travel, the ramp job descends while travelling, and a tangent line lead-in adds a 4 mm approach and more motions than the same job without it |
+| Typed candidate commands and source-revision binding | The start/reattach/tab authoring commands are typed `ArtworkCommand`s executed by the retained service; an anchor keeps its stored fingerprint, so a changed source needs an explicit reattach (see GUI8b's replaced-source test) |
+| Provoke and repair an invalid entry | `::an_invalid_entry_is_located_and_can_be_repaired`: an unset ramp capability is a located missing field, `Some(false)` is `PROFILE_ENTRY_CAPABILITY`, switching to a plunge repairs it; a tangent arc on an on-contour selection is `PROFILE_LEAD_SIDE` and removing the arc repairs it |
+| Lead and tab constraints | The planner's lead/tab overlap checks (`PROFILE_LEAD_NO_SPACE`, `PROFILE_RAMP_NO_SPACE`) and the retained-side check are exercised by the same tests and by `::tabs_hold_material_and_follow_their_manual_anchors`; a lead or ramp that cannot fit a small hole is refused with the reason naming the contour |
+| Every drag has a numeric/list equivalent | The start and tab rows expose their fraction numerically, the add menus offer 0/25/50/75% presets, and `app::inspector::profile_ui::tests::start_entry_and_lead_controls_state_their_supported_choices` pins the control names |
+
+### Checks
+
+- `cargo test -p cam-gui --locked`: 66 library tests plus every integration
+  suite pass, including the ten `tests/profile.rs` tests. Log:
+  `artifacts/gui/gui8d-tests.txt`.
+- `cargo test -p cam-core -p cam-service --locked`: every suite passes. Log:
+  `artifacts/gui/gui8d-core-tests.txt`.
+- `cargo clippy ... -D warnings` and `cargo fmt --all -- --check` pass. Logs:
+  `artifacts/gui/gui8d-clippy.txt`, `artifacts/gui/gui8d-fmt.txt`.
+
+### Limits
+
+- **One start per operation, not per contour.** The anchor positions the
+  selected contour's seam; other contours keep their automatic seams.
+- **Two lead shapes.** Tangent line and tangent arc ship; they are checked
+  against retained material and tab bridges, so a lead that cannot fit is
+  refused rather than trimmed.
+- **Ramp needs a capable tool and room.** The capability is the user's
+  declaration; the fit is the planner's check on the contour's own loop.
+- **No physical claim.** Entries are modelled and emitted, not measured on a
+  machine.
+
+## Manual review
+
+The review build, the starting fixtures, the exact settings and the tour for
+each letter are in [the GUI8 review recipe](gui8-review.md). Technical status
+is "ready for manual review"; user acceptance is pending and is not implied by
+these tests.
+
+### Review builds
+
+- Native release: `artifacts/gui8/review/profile-native/cam-gui.exe`, SHA-256
+  `f41f439c3e8c4fa8afe48beb2b22a015b5fb6a0e6f6b9145bc677754a33dbda7`
+  (recorded in its `SHA256SUMS`).
+- Browser package: `artifacts/gui8/review/browser` (WASM SHA-256
+  `e6723d78efab93e7a863277ef005f9c00288c75f7121667c9910484e055e8297`), served
+  by `artifacts/gui8/review/serve-package.mjs`; offline bundle
+  `0ba368a67d8a4da83db983f144da664f4b283af21c0eabdbad1c5b2bc88c5e22`.
+- `artifacts/gui8/review/manifest.json` records the source-tree hash (286
+  source inputs) and both package identities. The slice was uncommitted while
+  the packages were built, so the manifest identifies the actual files.
+
+### Implementing agent's end-to-end browser run
+
+`node crates/cam-gui/web/smoke.mjs --gui8` against the packaged review build,
+real Chromium 152.0.7977.83 on Windows x86_64 with an NVIDIA Ampere WebGPU
+adapter, zero console errors. Log: `artifacts/gui/gui8-browser-smoke.txt`;
+evidence directory
+`artifacts/gui/browser-smoke/2026-09-12T22-14-52.830Z` with screenshots of the
+new job, contour selection, generated profile, rough stock, the refused tab,
+the tabbed result, the finishing stock, the ramp requirement, the ramp entry,
+the prepared output, the reopened job and the pending-text state.
+
+The tour exercised: new profile job from SVG with nothing invented (894
+motions generated), the rough stock checkpoint, a located tab rejection on the
+small hole (then repaired by removing the hole from the selection, 860
+motions), radial finishing with its own pass and checkpoint (1828 motions), an
+anchored start at 50% with the ramp-capability requirement reported as one
+setting needing attention and then satisfied (1864 motions), prepared checked
+output (`065bbdc3e061570e363361cf960cff6d3d14c3bbc8bc28aaecb5857650014c74`)
+whose downloaded bytes match that hash, and a portable reopen that keeps the
+contours, tabs, finishing, start anchor and ramp entry.
+
+The browser tour found a real defect that the native suites could not: the
+application's asynchronous reply handler did not recognize the four new
+profile command kinds, so a profile selection (or anchor edit) answered by the
+worker was reported as "Unknown GUI2 worker response" and never reached the
+document. `App::accept` now adopts them, and
+`app::inspector::profile_ui::tests::a_profile_selection_reply_is_adopted_not_reported_as_unknown`
+pins that path. Failed tasks also report their code and message
+(`HEIGHT_RANGE_INVALID: …`) instead of a raw diagnostic JSON.

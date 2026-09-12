@@ -74,6 +74,58 @@ fn generate(service: &mut Retained, job: &CamJobV5) -> cam_gui_runtime::compute:
         .0
 }
 
+/// The same generation, keeping the transported payload so the test can read
+/// the motion stream exactly as the simulator displays it.
+fn generate_scene(service: &mut Retained, job: &CamJobV5) -> cam_gui_runtime::compute::Scene {
+    let (meta, payload) =
+        session::execute(service, Command::generate(job.to_json().unwrap())).unwrap();
+    cam_gui_runtime::compute::Scene {
+        meta,
+        payload: std::sync::Arc::new(payload),
+    }
+}
+
+/// The displayed motion stream of a generated scene.
+fn stream(scene: &cam_gui_runtime::compute::Scene) -> Vec<cam_gui_runtime::sim::Motion> {
+    scene
+        .sim_input()
+        .expect("a decoded simulation")
+        .unwrap_or_else(|| {
+            panic!(
+                "the ramped job produced no simulation: {}",
+                scene.meta.report["gui2"]["generationIssues"]
+            )
+        })
+        .motions
+}
+
+/// The largest outer contour, which has room for an entry away from a corner.
+fn widest_outer(job: &CamJobV5) -> profile::Contour {
+    profile::contours(job)
+        .unwrap()
+        .into_iter()
+        .filter(|contour| contour.role == "outer")
+        .max_by(|a, b| a.perimeter_mm.total_cmp(&b.perimeter_mm))
+        .unwrap()
+}
+
+/// The same job with only its outer contours selected: a small hole has no room
+/// for a tab, a ramp or a lead, and the planner says so rather than cutting an
+/// unprotected part.
+fn outers_only(job: &CamJobV5) -> CamJobV5 {
+    let id = job.operations[0].id.clone();
+    let contours = profile::contours(job).unwrap();
+    let rows = profile::selection(job, &id)
+        .into_iter()
+        .filter(|row| {
+            contours
+                .iter()
+                .any(|contour| contour.reference == row.reference && contour.role == "outer")
+        })
+        .collect::<Vec<_>>();
+    profile::set_selection_rows(job, &id, &rows).unwrap()
+}
+
 /// Removed volume at the end of the displayed stock playback.
 fn removed(meta: &cam_gui_runtime::compute::SceneMeta) -> f64 {
     meta.stock
@@ -509,14 +561,12 @@ fn a_replaced_source_leaves_tab_anchors_unresolved_until_reattached() {
         .into_iter()
         .find(|contour| contour.role == "outer")
         .unwrap();
-    let reattached = profile::tab_anchor(
+    let reattached = profile::reattach(
         &replaced,
         &id,
-        &TabAnchorAction::Reattach {
-            index: 0,
-            wire_id: current.wire_id.clone(),
-            fraction: Some(0.5),
-        },
+        v5::commands::AnchorTarget::Tab(0),
+        &current.wire_id,
+        Some(0.5),
     )
     .unwrap();
     let rows = profile::tab_rows(&reattached, &id);
@@ -713,6 +763,246 @@ fn finishing_keeps_the_tabs_and_their_anchors() {
         removed(&meta) >= plain_removed - 1.,
         "finishing clears the allowance: {} vs {plain_removed} mm³",
         removed(&meta)
+    );
+}
+
+#[test]
+fn moving_the_start_and_choosing_the_entry_change_the_real_motion() {
+    let job = profile_job();
+    let id = job.operations[0].id.clone();
+    let mut service = Retained::new();
+    let automatic_scene = generate_scene(&mut service, &job);
+    let automatic = stream(&automatic_scene);
+    let first = automatic
+        .iter()
+        .find(|motion| motion.kind == "cut")
+        .expect("the automatic profile cuts");
+    assert!(
+        (first.x0 - first.x1).hypot(first.y0 - first.y1) < 1e-6,
+        "a plunge entry descends without travelling: {first:?}"
+    );
+
+    // Anchor the start on the widest outer contour at half of its source
+    // length: the first cutting motion now begins at that point.
+    let outer = widest_outer(&job);
+    let mut anchored = job.clone();
+    anchored = profile::start_anchor(&anchored, &id, Some(&outer.wire_id), 0.5).unwrap();
+    assert!(
+        profile::start_row(&anchored, &id).is_some_and(|row| row.resolved),
+        "the start anchor resolves against its source"
+    );
+    let anchored_scene = generate_scene(&mut service, &anchored);
+    let anchored_stream = stream(&anchored_scene);
+    let anchor_point = profile::ring_point(&outer.anchor_ring, 0.5).unwrap();
+    // A cut that follows a rapid (or opens the stream) is where a pass enters;
+    // the segments between are the cut itself. The anchor moves one contour's
+    // entry to the requested point; the automatic job enters at its own seams.
+    let entries = |motions: &[cam_gui_runtime::sim::Motion]| {
+        motions
+            .iter()
+            .enumerate()
+            .filter(|(index, motion)| {
+                motion.kind == "cut" && (*index == 0 || motions[index - 1].kind != "cut")
+            })
+            .map(|(_, motion)| (motion.x0, motion.y0))
+            .collect::<Vec<_>>()
+    };
+    let distance = |point: (f64, f64)| (point.0 - anchor_point[0]).hypot(point.1 - anchor_point[1]);
+    let anchored_entries = entries(&anchored_stream);
+    assert!(
+        anchored_entries.iter().any(|point| distance(*point) < 2.5),
+        "a pass enters near the anchor {anchor_point:?}: {anchored_entries:?}"
+    );
+    let automatic_entries = entries(&automatic);
+    assert!(
+        automatic_entries.iter().all(|point| distance(*point) > 2.5),
+        "the automatic job enters at its own seams, not the anchor {anchor_point:?}: {automatic_entries:?}"
+    );
+
+    // A ramp entry descends along the loop instead of straight down, so its
+    // first descending motion covers real XY distance.
+    // The small hole has no room for a 45° entry, so the ramp fixture cuts the
+    // outer contours (the planner refuses the hole with a located reason).
+    let mut ramped =
+        profile::start_anchor(&outers_only(&job), &id, Some(&outer.wire_id), 0.5).unwrap();
+    profile::set_entry(&mut ramped, &id, true).unwrap();
+    // 45° keeps the first layer's ramp short enough for every selected
+    // contour, including the small hole.
+    for (field, value) in [(98, 45.), (99, 80.)] {
+        ramped = app::set_value(&ramped, &id, field, Some(value)).unwrap();
+    }
+    cam_gui_runtime::authoring::tool_mut_in(&mut ramped, &id, false)
+        .unwrap()
+        .capabilities
+        .ramp_capable = Some(true);
+    let ramped_stream = stream(&generate_scene(&mut service, &ramped));
+    let travel = |motion: &cam_gui_runtime::sim::Motion| {
+        (motion.x0 - motion.x1).hypot(motion.y0 - motion.y1)
+    };
+    let descends = |motion: &cam_gui_runtime::sim::Motion| {
+        motion.kind == "cut" && motion.z1 < motion.z0 - 1e-9
+    };
+    let descent = ramped_stream
+        .iter()
+        .find(|motion| descends(motion) && travel(motion) > 0.5)
+        .unwrap_or_else(|| {
+            panic!(
+                "the ramp descends while travelling: {:?}",
+                ramped_stream
+                    .iter()
+                    .filter(|m| descends(m))
+                    .map(|m| (m.x0, m.y0, m.x1, m.y1, m.z0, m.z1))
+                    .take(4)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        travel(descent) > 0.5,
+        "a ramp travels while descending: {descent:?}"
+    );
+    // The anchored plunge job descends without travelling at all.
+    assert!(
+        anchored_stream
+            .iter()
+            .filter(|motion| descends(motion))
+            .all(|motion| travel(motion) < 0.5),
+        "a plunge descends straight down"
+    );
+
+    // A tangent line lead-in adds approach motion before the seam, at its own
+    // feed. The small hole has no room beside its void either, so the lead
+    // fixture cuts the outer contours.
+    let mut lead =
+        profile::start_anchor(&outers_only(&job), &id, Some(&outer.wire_id), 0.5).unwrap();
+    let without_lead = stream(&generate_scene(&mut service, &lead));
+    profile::set_lead(
+        &mut lead,
+        &id,
+        false,
+        cam_core::project::LeadSpec::TangentLine {
+            length_mm: None,
+            feed_mm_min: None,
+        },
+    )
+    .unwrap();
+    lead = app::set_value(&lead, &id, 100, Some(4.)).unwrap();
+    lead = app::set_value(&lead, &id, 101, Some(150.)).unwrap();
+    let lead_stream = stream(&generate_scene(&mut service, &lead));
+    assert!(
+        lead_stream.len() > without_lead.len(),
+        "the lead-in adds motion: {} vs {}",
+        lead_stream.len(),
+        without_lead.len()
+    );
+    assert!(
+        lead_stream
+            .iter()
+            .any(|motion| motion.kind == "cut" && (travel(motion) - 4.).abs() < 0.3),
+        "the lead-in runs the requested 4 mm before the seam"
+    );
+}
+
+#[test]
+fn an_invalid_entry_is_located_and_can_be_repaired() {
+    let job = profile_job();
+    let id = job.operations[0].id.clone();
+    let mut service = Retained::new();
+    let outer = widest_outer(&job);
+    let mut ramped = profile::start_anchor(&job, &id, Some(&outer.wire_id), 0.5).unwrap();
+    profile::set_entry(&mut ramped, &id, true).unwrap();
+    for (field, value) in [(98, 10.), (99, 80.)] {
+        ramped = app::set_value(&ramped, &id, field, Some(value)).unwrap();
+    }
+    // The tool has not been marked ramp capable: the requirement is reported as
+    // a located missing field before planning.
+    let meta = generate(&mut service, &ramped);
+    assert_eq!(meta.report["gui2"]["kind"], "issues");
+    assert!(
+        meta.report["gui2"]["issues"]
+            .as_array()
+            .is_some_and(|issues| issues.iter().any(|issue| issue["field_path"]
+                .as_str()
+                .is_some_and(|path| path.contains("ramp_capable")))),
+        "{}",
+        meta.report["gui2"]["issues"]
+    );
+    // Marked as not ramp capable: a located generation conflict.
+    cam_gui_runtime::authoring::tool_mut_in(&mut ramped, &id, false)
+        .unwrap()
+        .capabilities
+        .ramp_capable = Some(false);
+    let meta = generate(&mut service, &ramped);
+    assert!(
+        meta.report["gui2"]["generationIssues"]
+            .as_array()
+            .is_some_and(|issues| issues
+                .iter()
+                .any(|issue| issue["code"] == "PROFILE_ENTRY_CAPABILITY")),
+        "{}",
+        meta.report["gui2"]["generationIssues"]
+    );
+    // Repair: a plunge entry needs no ramp capability.
+    let repaired = {
+        let mut job = ramped.clone();
+        profile::set_entry(&mut job, &id, false).unwrap();
+        cam_gui_runtime::authoring::tool_mut_in(&mut job, &id, false)
+            .unwrap()
+            .capabilities
+            .ramp_capable = None;
+        job
+    };
+    let meta = generate(&mut service, &repaired);
+    assert_eq!(meta.report["gui2"]["checks"]["exportReady"], true);
+
+    // A tangent arc lead needs a retained side: on-contour selections have a
+    // zero offset and are refused with a located reason, and choosing a plain
+    // lead repairs it.
+    let mut on_contour = {
+        let mut job = repaired.clone();
+        profile::set_entry(&mut job, &id, false).unwrap();
+        let rows = profile::selection(&job, &id)
+            .into_iter()
+            .map(|row| profile::SelectionRow {
+                side: ContourSide::On,
+                traversal: Some(cam_core::project::TraversalDirection::Forward),
+                ..row
+            })
+            .collect::<Vec<_>>();
+        profile::set_selection_rows(&job, &id, &rows).unwrap()
+    };
+    profile::set_lead(
+        &mut on_contour,
+        &id,
+        false,
+        cam_core::project::LeadSpec::TangentArc {
+            radius_mm: Some(2.),
+            sweep_deg: Some(90.),
+            feed_mm_min: Some(120.),
+        },
+    )
+    .unwrap();
+    let meta = generate(&mut service, &on_contour);
+    assert!(
+        meta.report["gui2"]["generationIssues"]
+            .as_array()
+            .is_some_and(|issues| issues
+                .iter()
+                .any(|issue| issue["code"] == "PROFILE_LEAD_SIDE")),
+        "{}",
+        meta.report["gui2"]
+    );
+    profile::set_lead(
+        &mut on_contour,
+        &id,
+        false,
+        cam_core::project::LeadSpec::None,
+    )
+    .unwrap();
+    let meta = generate(&mut service, &on_contour);
+    assert_eq!(
+        meta.report["gui2"]["checks"]["exportReady"], true,
+        "removing the arc lead repairs the entry: {}",
+        meta.report["gui2"]["generationIssues"]
     );
 }
 

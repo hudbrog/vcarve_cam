@@ -363,5 +363,23 @@ mod tests {
             target(&job, &format!("operations[{id}].direction")),
             Some((2, "Cut direction unset".into()))
         );
+        assert_eq!(
+            target(&job, &format!("operations[{id}].start")),
+            Some((2, "Profile start".into()))
+        );
+        assert_eq!(
+            target(&job, &format!("operations[{id}].entry")),
+            Some((2, "Entry ramp angle".into()))
+        );
+        assert_eq!(
+            target(&job, &format!("operations[{id}].lead_in.radius_mm")),
+            Some((2, "Lead-in radius".into()))
+        );
+        // Reference inspection reports unresolved anchors with the local path
+        // the operation's own row owns.
+        assert_eq!(
+            target(&job, "tabs.placement.anchors[0]"),
+            Some((2, "Unresolved tab 0".into()))
+        );
     }
 }
