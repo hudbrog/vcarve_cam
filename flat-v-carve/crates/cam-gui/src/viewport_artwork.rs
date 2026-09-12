@@ -7,6 +7,7 @@ use cam_core::{geometry::Point, project::v5::GeometryRef, svg::Placement};
 
 #[derive(Clone)]
 pub enum ArtworkEvent {
+    KnifeSelection(Vec<GeometryRef>),
     Selection(Vec<GeometryRef>),
     Placement {
         item: String,
@@ -103,6 +104,11 @@ impl Viewport {
                 ("Rotate artwork", GestureMode::Rotate),
                 ("Scale artwork", GestureMode::Scale),
             ] {
+                let label = if self.is_knife() && mode == GestureMode::Select {
+                    "Select knife paths"
+                } else {
+                    label
+                };
                 let response = ui.selectable_value(&mut self.artwork.mode, mode, label);
                 crate::app::observe_control(label, response.rect);
             }
@@ -120,7 +126,7 @@ impl Viewport {
                 }
             }
         });
-        ui.small(if self.artwork.mode==GestureMode::Select {"Pick filled regions · Shift-click adds/removes · selection does not change the cut"} else {"Drag the whole source · rotate/scale about setup 0,0 (numeric page origin) · Esc cancels"});
+        ui.small(if self.is_knife() && self.artwork.mode==GestureMode::Select {"Click a knife path to assign it · Shift-click adds/removes · or use Geometry to cut in the operation"} else if self.artwork.mode==GestureMode::Select {"Pick filled regions · Shift-click adds/removes · selection does not change the cut"} else {"Drag the whole source · rotate/scale about setup 0,0 (numeric page origin) · Esc cancels"});
     }
     pub(super) fn artwork_pointer(
         &mut self,
@@ -142,6 +148,65 @@ impl Viewport {
             return;
         }
         if self.artwork.mode == GestureMode::Select {
+            if self.is_knife() {
+                if response.clicked()
+                    && let Some(p) = response.interact_pointer_pos()
+                {
+                    let mut nearest = None;
+                    let mut distance = 8.;
+                    for chain in self.knife_chains.iter().filter(|c| {
+                        !self.artwork.hidden.contains(&c.reference.artwork_item_id.0)
+                            && !self.artwork.locked.contains(&c.reference.artwork_item_id.0)
+                    }) {
+                        for i in 0..chain
+                            .vertices
+                            .len()
+                            .saturating_sub(usize::from(!chain.closed))
+                        {
+                            let screen = |xy: [f64; 2]| {
+                                artwork_view::screen_point(
+                                    camera,
+                                    bounds,
+                                    rect,
+                                    cam_core::geometry::Point::new(xy[0], xy[1]),
+                                )
+                            };
+                            let a = screen(chain.vertices[i]);
+                            let b = screen(chain.vertices[(i + 1) % chain.vertices.len()]);
+                            let ab = b - a;
+                            let t = if ab.length_sq() > 0. {
+                                ((p - a).dot(ab) / ab.length_sq()).clamp(0., 1.)
+                            } else {
+                                0.
+                            };
+                            let d = (p - (a + ab * t)).length();
+                            if d < distance {
+                                distance = d;
+                                nearest = Some(chain.reference.clone());
+                            }
+                        }
+                    }
+                    if let Some(reference) = nearest {
+                        let mut selected: Vec<GeometryRef> = serde_json::from_value(
+                            scene.meta.report["gui2"]["knifeSelection"].clone(),
+                        )
+                        .unwrap_or_default();
+                        if ui.input(|i| i.modifiers.shift) {
+                            if selected.contains(&reference) {
+                                selected.retain(|r| r != &reference);
+                            } else {
+                                selected.push(reference);
+                            }
+                        } else {
+                            selected = vec![reference];
+                        }
+                        self.artwork
+                            .events
+                            .push(ArtworkEvent::KnifeSelection(selected));
+                    }
+                }
+                return;
+            }
             if response.clicked()
                 && let Some(p) = response.interact_pointer_pos()
             {
@@ -181,7 +246,8 @@ impl Viewport {
             && let Some(p) = ui.input(|i| i.pointer.press_origin())
         {
             let start = artwork_view::setup_point(camera, bounds, rect, p);
-            if self.artwork.mode != GestureMode::Move
+            if self.is_knife()
+                || self.artwork.mode != GestureMode::Move
                 || artwork_view::hit_candidates(&self.artwork.components, start)
                     .iter()
                     .any(|r| r.artwork_item_id.0 == self.artwork.item)

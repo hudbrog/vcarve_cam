@@ -61,7 +61,7 @@ impl App {
                             self.document
                                 .as_ref()
                                 .map(|d| d.job.name.as_str())
-                                .unwrap_or("New carving"),
+                                .unwrap_or("New job"),
                         )
                         .color(Color32::WHITE),
                     );
@@ -82,7 +82,10 @@ impl App {
                             );
                         }
                         let ready = !self.operation_ramp_draft
-                            && self.document.as_ref().is_some_and(|d| !d.pending());
+                            && self
+                                .document
+                                .as_ref()
+                                .is_some_and(|d| !d.pending() && !d.job.operations.is_empty());
                         let generate = ui.add_enabled(
                             idle && ready,
                             egui::Button::new("Generate").fill(Color32::from_rgb(49, 190, 195)),
@@ -120,6 +123,10 @@ impl App {
         egui::TopBottomPanel::top("gui2-files").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let menu = ui.menu_button("File", |ui| {
+                    if button(ui, "New drag knife from SVG", idle).clicked() {
+                        self.open(IoKind::KnifeSvg, ctx);
+                        ui.close();
+                    }
                     if button(ui, "New from SVG", idle).clicked() {
                         self.open(IoKind::Svg, ctx);
                         ui.close();
@@ -364,22 +371,49 @@ impl App {
                     ui.add_space(8.);
                     ui.separator();
                     ui.strong("OPERATIONS");
-                    self.nav_item(ui, "01  Flat V-carve", "Cutting", 2);
-                    self.nav_item(ui, "Inspect result", "Inspect result", 6);
+                    let has_operation = self
+                        .document
+                        .as_ref()
+                        .is_some_and(|d| !d.job.operations.is_empty());
+                    let knife = self
+                        .document
+                        .as_ref()
+                        .is_some_and(|d| crate::knife::settings(&d.job).is_some());
+                    if has_operation {
+                        self.nav_item(
+                            ui,
+                            if knife {
+                                "01  Drag knife"
+                            } else {
+                                "01  Flat V-carve"
+                            },
+                            "Cutting",
+                            2,
+                        );
+                        self.nav_item(ui, "Inspect result", "Inspect result", 6);
+                    } else {
+                        ui.label("No operations");
+                    }
+                    self.operation_actions(ui, ctx);
                     if let Some(doc) = &self.document {
-                        ui.small(format!(
-                            "{} filled components",
-                            engine::settings(&doc.job).components.len()
-                        ));
+                        if let Some(s) = crate::knife::settings(&doc.job) {
+                            ui.small(format!("{} knife chains", s.chains.len()));
+                        } else if let Some(s) = engine::carving(&doc.job) {
+                            ui.small(format!("{} filled components", s.components.len()));
+                        }
                     }
                     ui.add_space(16.);
                     ui.separator();
                     ui.strong("ASSIGNED TOOLS");
-                    if button(ui, "Job tools", self.document.is_some()).clicked() {
+                    if button(ui, "Job tools", has_operation).clicked() {
                         self.resources.jobs_open = true;
                     }
-                    self.nav_item(ui, "Endmill", "Endmill tool", 4);
-                    self.nav_item(ui, "V-bit", "V-bit tool", 5);
+                    if knife {
+                        self.nav_item(ui, "Drag knife", "Knife tool", 4);
+                    } else if has_operation {
+                        self.nav_item(ui, "Endmill", "Endmill tool", 4);
+                        self.nav_item(ui, "V-bit", "V-bit tool", 5);
+                    }
                     ui.small("Geometry belongs to this job.");
                     if ui.link("Controller mapping in Machine").clicked() {
                         self.navigate(3);

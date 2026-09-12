@@ -25,6 +25,14 @@ struct Display {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Command {
+    Operation {
+        job: String,
+        action: crate::operation_authoring::Action,
+    },
+    ImportKnifeSvg {
+        filename: String,
+        svg: String,
+    },
     ImportSvg {
         filename: String,
         svg: String,
@@ -69,6 +77,16 @@ pub enum Command {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ArtworkCommand {
+    KnifeOutlines {
+        item: v5::ArtworkItemId,
+    },
+    KnifeStart {
+        reference: Option<v5::GeometryRef>,
+        fraction: f64,
+    },
+    KnifeSelection {
+        references: Vec<v5::GeometryRef>,
+    },
     AddMany {
         files: Vec<crate::platform::SvgFile>,
     },
@@ -98,8 +116,36 @@ pub enum ArtworkCommand {
 
 fn artwork_command(job: &CamJobV5, action: ArtworkCommand) -> Result<(CamJobV5, Value), String> {
     use v5::commands;
+    let interpretation = if crate::knife::settings(job).is_some() {
+        crate::knife::interpretation()
+    } else {
+        Default::default()
+    };
     let mut rejected = Vec::new();
     let (outcome, selected) = match action {
+        ArtworkCommand::KnifeOutlines { item } => {
+            let result = crate::knife_outlines::create(job, &item)?;
+            let active = result.artwork.last().map(|i| i.id.clone());
+            return Ok((
+                result,
+                json!({"kind":"knife_outlines","activeArtwork":active}),
+            ));
+        }
+        ArtworkCommand::KnifeStart {
+            reference,
+            fraction,
+        } => {
+            return Ok((
+                crate::knife::set_start(job, reference.as_ref(), fraction)?,
+                json!({"kind":"knife_start"}),
+            ));
+        }
+        ArtworkCommand::KnifeSelection { references } => {
+            return Ok((
+                crate::knife::select(job, &references)?,
+                json!({"kind":"knife_selection"}),
+            ));
+        }
         ArtworkCommand::AddMany { files } => {
             let inputs = files
                 .into_iter()
@@ -107,7 +153,7 @@ fn artwork_command(job: &CamJobV5, action: ArtworkCommand) -> Result<(CamJobV5, 
                     Ok(svg) => Some(commands::ArtworkInput {
                         filename: file.filename,
                         svg,
-                        interpretation: Default::default(),
+                        interpretation: interpretation.clone(),
                         placement: Default::default(),
                         name: None,
                     }),
@@ -151,7 +197,7 @@ fn artwork_command(job: &CamJobV5, action: ArtworkCommand) -> Result<(CamJobV5, 
                 vec![commands::ArtworkInput {
                     filename,
                     svg,
-                    interpretation: Default::default(),
+                    interpretation,
                     placement: Default::default(),
                     name: None,
                 }],
@@ -185,6 +231,9 @@ fn artwork_command(job: &CamJobV5, action: ArtworkCommand) -> Result<(CamJobV5, 
             expected,
             replacement,
         } => {
+            if job.operations.is_empty() {
+                return Err("Add an operation before repairing its selection".into());
+            }
             // Reject a target picked from an obsolete displayed catalogue.
             let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
             if !crate::authoring::catalogue_components(&catalogue)
@@ -219,18 +268,20 @@ pub fn open(text: &str) -> Result<CamJobV5, String> {
         return Err("GUI2 supports jobs up to 8 MB".into());
     }
     let job = CamJobV5::from_json(text).map_err(|e| e.to_string())?;
-    if job.operations.len() != 1
-        || !matches!(
-            job.operations[0].settings,
-            OperationSettingsV5::FlatVcarve(_)
-        )
+    if job.operations.len() > 1
+        || job.operations.first().is_some_and(|op| {
+            !matches!(
+                op.settings,
+                OperationSettingsV5::FlatVcarve(_) | OperationSettingsV5::DragKnife(_)
+            )
+        })
         || job
             .artwork
             .iter()
             .any(|item| !matches!(item.content, v5::ArtworkContent::Svg(_)))
     {
         return Err(
-            "This workspace supports SVG artwork and one Flat V-carve operation; current document retained"
+            "This workspace supports SVG artwork and at most one Flat V-carve or Drag knife operation; current document retained"
                 .into(),
         );
     }
@@ -242,6 +293,13 @@ pub fn settings(job: &CamJobV5) -> &v5::FlatVcarveSettingsV5 {
         unreachable!()
     };
     settings
+}
+
+pub fn carving(job: &CamJobV5) -> Option<&v5::FlatVcarveSettingsV5> {
+    match &job.operations.first()?.settings {
+        OperationSettingsV5::FlatVcarve(s) => Some(s),
+        _ => None,
+    }
 }
 
 pub fn run(command: Command) -> Result<(SceneMeta, Vec<u8>), String> {
@@ -272,6 +330,14 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"seek","prefix":prefix,"handle":handle}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None})
             });
         }
+        Command::ImportKnifeSvg { filename, svg } => (
+            crate::knife::import_svg(filename, svg)?,
+            json!({"kind":"imported"}),
+        ),
+        Command::Operation { job, action } => (
+            crate::operation_authoring::apply(&open(&job)?, action)?,
+            json!({"kind":"operation"}),
+        ),
         Command::ImportSvg { filename, svg } => (
             crate::authoring::import_svg(filename, svg)?,
             json!({"kind":"imported"}),
@@ -329,9 +395,16 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
         }
         Command::Generate { job } => {
             let job = open(&job)?;
-            let mut issues =
+            if job.operations.is_empty() {
+                return Err("Add an operation before generating".into());
+            }
+            let mut issues = if crate::knife::settings(&job).is_some() {
+                v5::inspection::inspect_knife_fields(&job, &job.operations[0].id)
+                    .map_err(|e| e.to_string())?
+            } else {
                 v5::inspection::inspect_flat_vcarve_fields(&job, &job.operations[0].id)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| e.to_string())?
+            };
             issues.extend(
                 v5::references::planning_readiness(
                     &job,
@@ -439,6 +512,9 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
 }
 
 fn outline(job: &CamJobV5, mut report: Value) -> Result<(SceneMeta, Vec<u8>), String> {
+    if crate::knife::settings(job).is_some() {
+        return crate::knife::scene(job, None, report);
+    }
     let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
     let components = crate::authoring::catalogue_components(&catalogue);
     let mut points = Vec::new();
@@ -450,18 +526,22 @@ fn outline(job: &CamJobV5, mut report: Value) -> Result<(SceneMeta, Vec<u8>), St
             report["artworkIssue"] = json!(error);
         }
         if let Some(catalogue) = &item.catalogue {
-            for contour in &catalogue.contours {
+            for contour in catalogue.contours.iter().chain(&catalogue.open_chains) {
                 let selected = item.entries.iter().any(|entry| {
                     entry.reference.local_geometry_id == contour.component_id
                         && entry.kind == v5::GeometryRefKind::FilledComponent
-                        && settings(job).components.contains(&entry.reference)
+                        && carving(job).is_some_and(|s| s.components.contains(&entry.reference))
                 });
                 let color = if selected {
                     [0.25, 0.8, 0.85, 1.]
                 } else {
                     [0.5, 0.55, 0.6, 1.]
                 };
-                for i in 0..contour.vertices.len() {
+                for i in 0..contour
+                    .vertices
+                    .len()
+                    .saturating_sub(usize::from(!contour.closed))
+                {
                     for p in [
                         contour.vertices[i],
                         contour.vertices[(i + 1) % contour.vertices.len()],
@@ -555,6 +635,9 @@ pub fn scene(
     plan: &cam_core::sequence::OperationPlanV5,
     mut report: Value,
 ) -> Result<(SceneMeta, Vec<u8>), String> {
+    if crate::knife::settings(job).is_some() {
+        return crate::knife::scene(job, Some(plan), report);
+    }
     let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
     report["components"] = json!(crate::authoring::catalogue_components(&catalogue));
     report["inspection"] = json!(v5::inspection::inspect_plan(plan).map_err(|e| e.to_string())?);
@@ -607,6 +690,7 @@ pub fn scene(
     let mut detail = f64::INFINITY;
     for t in &tools {
         match *t {
+            ToolSpec::Knife { .. } => unreachable!("knife uses its own scene adapter"),
             ToolSpec::Endmill { diameter } => {
                 radius = radius.max(diameter / 2.);
                 detail = detail.min(diameter);

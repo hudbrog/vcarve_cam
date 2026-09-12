@@ -332,9 +332,13 @@ impl App {
                     ui.close();
                 }
             } else {
-                for (label, finish) in [("New endmill", false), ("New V-bit", true)] {
+                for (label, role) in [
+                    ("New endmill", Role::Endmill),
+                    ("New V-bit", Role::Vbit),
+                    ("New drag knife", Role::Knife),
+                ] {
                     if button(ui, label, count < 1000).clicked() {
-                        self.library_new_tool(label, finish);
+                        self.library_new_tool(label, role);
                         ui.close();
                     }
                 }
@@ -598,16 +602,20 @@ impl App {
                     .tools
                     .iter()
                     .find(|t| t.id == self.resources.tool);
-                let preset = tool.and_then(|t| {
+                let has_preset = tool.is_some_and(|t| {
                     t.cutting_presets
                         .iter()
-                        .find(|p| p.id == self.resources.preset)
+                        .any(|p| p.id == self.resources.preset)
+                        || t.knife_cutting_presets
+                            .iter()
+                            .any(|p| p.id == self.resources.preset)
                 });
                 let fits = tool.is_some_and(|t| {
                     matches!(
                         (&t.geometry, self.resources.role),
                         (LibraryGeometry::Endmill(_), Role::Endmill)
                             | (LibraryGeometry::Vbit(_), Role::Vbit)
+                            | (LibraryGeometry::DragKnife(_), Role::Knife)
                     )
                 });
                 let selected = if machines {
@@ -621,7 +629,7 @@ impl App {
                 };
                 let title = if machines {
                     "Use machine"
-                } else if preset.is_some() {
+                } else if has_preset {
                     "Use tool & profile"
                 } else {
                     "Use tool"
@@ -658,7 +666,7 @@ impl App {
                         let operation =
                             self.document.as_ref().unwrap().job.operations[0].id.clone();
                         let role = self.resources.role;
-                        let command = if preset.is_some() {
+                        let command = if has_preset {
                             R::ApplyToolProfile {
                                 catalog,
                                 tool: self.resources.tool.clone(),
@@ -691,7 +699,7 @@ impl App {
         });
     }
 
-    fn library_new_tool(&mut self, label: &str, finish: bool) {
+    fn library_new_tool(&mut self, label: &str, role: Role) {
         let id = unique(
             "tool",
             self.resources
@@ -701,7 +709,12 @@ impl App {
                 .iter()
                 .map(|t| t.id.clone()),
         );
-        let geometry = if finish {
+        let geometry = if role == Role::Knife {
+            LibraryGeometry::DragKnife(cam_core::project::DragKnifeSpec {
+                blade_offset_mm: 0.,
+                max_cut_depth_mm: 0.,
+            })
+        } else if role == Role::Vbit {
             LibraryGeometry::Vbit(cam_core::model::VBitSpec {
                 included_angle_deg: 0.,
                 tip_diameter_mm: 0.,
@@ -716,7 +729,8 @@ impl App {
             })
         };
         self.resources.draft.library.tools.push(LibraryTool {
-            spindle_direction: Some(cam_core::project::SpindleDirection::Clockwise),
+            spindle_direction: (role != Role::Knife)
+                .then_some(cam_core::project::SpindleDirection::Clockwise),
             id: id.clone(),
             name: label.into(),
             geometry,

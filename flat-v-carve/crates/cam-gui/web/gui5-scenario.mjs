@@ -105,7 +105,8 @@ export async function gui5Scenario({control,edit,state,waitFor,send,evaluate,sle
   await waitFor(s=>!s.resources.busy&&!s.resources.dirty&&s.resources.revision===5,'reusable machine settings save');
   await control('Apply reviewed machine');await waitFor(s=>!s.active&&s.job.machineSnapshot.work_offset==='G55','single applied machine copy');
   await control('Close library');await control('Machine');await edit('Tool number','5');await edit('V-bit tool number','9');await waitFor(s=>!s.active&&!s.pending,'changed active tool mappings');
-  await control('Setup');await control('Z: stock bottom');await control('Custom XY');await edit('Work zero X','1');await edit('Work zero Y','2');
+  await control('Setup');await control('Z: stock bottom');await waitFor(s=>!s.active&&s.job.workZero.z==='stock_bottom','stock bottom datum');
+  await control('Custom XY');await waitFor(s=>!s.active&&s.job.workZero.xy.kind==='custom_point','custom datum fields');await edit('Work zero X','1');await edit('Work zero Y','2');
   await waitFor(s=>!s.active&&!s.pending&&s.job.workZero.z==='stock_bottom'&&s.job.workZero.xy.x_mm===1&&s.job.workZero.xy.y_mm===2,'changed output work zero');
   await control('Generate');await waitFor(s=>s.current&&!s.active&&s.exportReady,'resource and machine generation',120);
   await control('Simulate');await control('After endmill');await waitFor(s=>!s.active&&s.stockPrefix>0&&s.stockPrefix<s.motions,'rough stock');

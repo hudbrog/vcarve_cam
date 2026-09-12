@@ -94,6 +94,9 @@ pub fn build(job: &Job, plan: &CombinedPlan, slices: &[SliceInfo]) -> Result<Inp
     let mut detail = f64::INFINITY;
     for t in &tools {
         match *t {
+            ToolSpec::Knife { .. } => {
+                unreachable!("this fixture adapter only builds milling tools")
+            }
             ToolSpec::Endmill { diameter } => {
                 radius = radius.max(diameter / 2.);
                 detail = detail.min(diameter);

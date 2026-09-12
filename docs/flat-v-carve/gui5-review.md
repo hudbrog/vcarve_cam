@@ -117,7 +117,8 @@ node crates/cam-gui/web/smoke.mjs --port=9339
 ```
 
 One Flat V-carve operation remains the supported production GUI scope; multiple
-operations and Face are GUI6. Catalogs are capped at 8 MB, with core limits of
+operations and Face are GUI7; standalone Drag knife is GUI6 in the revised plan.
+Catalogs are capped at 8 MB, with core limits of
 1,000 tools and 100 profiles per tool and a GUI limit of 100 configurations.
 Job/motion limits remain unchanged. Browser automation and native worker tests
 do not constitute physical machining or native-window user acceptance.

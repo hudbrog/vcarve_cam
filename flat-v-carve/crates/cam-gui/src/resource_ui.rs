@@ -1,4 +1,6 @@
 use super::*;
+#[path = "knife_library.rs"]
+mod knife_library;
 #[path = "library_modal.rs"]
 mod library_modal;
 use crate::resources::{Catalog, ResourceCommand as R, StoredCatalog};
@@ -236,20 +238,22 @@ fn tool_form(
             );
         }
     });
-    ui.columns(2, |cols| {
-        e.dirty |= select(
-            &mut cols[0],
-            &format!("{prefix} plunge"),
-            &mut tool.plunge_capable,
-            &[("Unset", None), ("Yes", Some(true)), ("No", Some(false))],
-        );
-        e.dirty |= select(
-            &mut cols[1],
-            &format!("{prefix} ramp"),
-            &mut tool.ramp_capable,
-            &[("Unset", None), ("Yes", Some(true)), ("No", Some(false))],
-        );
-    });
+    if !matches!(tool.geometry, LibraryGeometry::DragKnife(_)) {
+        ui.columns(2, |cols| {
+            e.dirty |= select(
+                &mut cols[0],
+                &format!("{prefix} plunge"),
+                &mut tool.plunge_capable,
+                &[("Unset", None), ("Yes", Some(true)), ("No", Some(false))],
+            );
+            e.dirty |= select(
+                &mut cols[1],
+                &format!("{prefix} ramp"),
+                &mut tool.ramp_capable,
+                &[("Unset", None), ("Yes", Some(true)), ("No", Some(false))],
+            );
+        });
+    }
     if let LibraryGeometry::Endmill(g) = &mut tool.geometry
         && let Some(plunge) = tool.plunge_capable
     {
@@ -464,6 +468,24 @@ impl App {
         }
     }
     pub(super) fn resource_windows(&mut self, ctx: &egui::Context) {
+        if self
+            .document
+            .as_ref()
+            .is_some_and(|d| d.job.operations.is_empty())
+        {
+            self.resources.jobs_open = false;
+            if self.resources.open {
+                egui::Window::new("Tool library").open(&mut self.resources.open).show(ctx, |ui| { ui.label("Add an operation before choosing its tools and cutting profiles. Existing job tools are retained."); });
+            }
+            return;
+        }
+        if let Some(doc) = &self.document {
+            if crate::knife::settings(&doc.job).is_some() {
+                self.resources.role = Role::Knife;
+            } else if self.resources.role == Role::Knife {
+                self.resources.role = Role::Endmill;
+            }
+        }
         if self.resources.open {
             self.library_window(ctx);
         }
@@ -499,92 +521,108 @@ impl App {
             .as_ref()
             .filter(|_| !self.resources.dirty && self.resources.invalid.is_empty())
             .map(|s| s.snapshot.clone());
-        section(
-            ui,
-            (tool.id.clone(), "profiles"),
-            "Cutting profiles",
-            true,
-            |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    let r =
-                        ui.selectable_value(&mut self.resources.preset, String::new(), "Tool only");
-                    observe_control("Library profile none", r.rect);
-                    for p in &tool.cutting_presets {
-                        let r =
-                            ui.selectable_value(&mut self.resources.preset, p.id.clone(), &p.name);
-                        observe_control(&format!("Library profile {}", p.id), r.rect);
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    if button(
-                        ui,
-                        "New cutting profile",
-                        !matches!(tool.geometry, LibraryGeometry::DragKnife(_)),
-                    )
-                    .clicked()
-                    {
-                        let id =
-                            unique("profile", tool.cutting_presets.iter().map(|p| p.id.clone()));
-                        tool.cutting_presets.push(CuttingPreset {
-                            id: id.clone(),
-                            name: "New profile".into(),
-                            material: None,
-                            machine: None,
-                            spindle_rpm: None,
-                            cutting_feed_mm_min: None,
-                            plunge_feed_mm_min: None,
-                            max_stepdown_mm: None,
-                            stepover_mm: None,
-                        });
-                        self.resources.preset = id;
-                        self.resources.dirty = true;
-                    }
-                    if button(
-                        ui,
-                        "Capture assignment as profile",
-                        self.document.is_some()
-                            && !matches!(tool.geometry, LibraryGeometry::DragKnife(_)),
-                    )
-                    .clicked()
-                    {
-                        let id =
-                            unique("profile", tool.cutting_presets.iter().map(|p| p.id.clone()));
-                        match crate::resources::capture_assignment(
-                            &self.document.as_ref().unwrap().job,
-                            self.resources.role,
-                            id.clone(),
-                            "Captured cutting values".into(),
-                        ) {
-                            Ok(p) => {
-                                tool.cutting_presets.push(p);
-                                self.resources.preset = id;
-                                self.resources.dirty = true;
+        if matches!(tool.geometry, LibraryGeometry::DragKnife(_)) {
+            self.knife_library_profiles(ui, &mut tool);
+        } else {
+            section(
+                ui,
+                (tool.id.clone(), "profiles"),
+                "Cutting profiles",
+                true,
+                |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        let r = ui.selectable_value(
+                            &mut self.resources.preset,
+                            String::new(),
+                            "Tool only",
+                        );
+                        observe_control("Library profile none", r.rect);
+                        for p in &tool.cutting_presets {
+                            let r = ui.selectable_value(
+                                &mut self.resources.preset,
+                                p.id.clone(),
+                                &p.name,
+                            );
+                            observe_control(&format!("Library profile {}", p.id), r.rect);
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        if button(
+                            ui,
+                            "New cutting profile",
+                            !matches!(tool.geometry, LibraryGeometry::DragKnife(_)),
+                        )
+                        .clicked()
+                        {
+                            let id = unique(
+                                "profile",
+                                tool.cutting_presets.iter().map(|p| p.id.clone()),
+                            );
+                            tool.cutting_presets.push(CuttingPreset {
+                                id: id.clone(),
+                                name: "New profile".into(),
+                                material: None,
+                                machine: None,
+                                spindle_rpm: None,
+                                cutting_feed_mm_min: None,
+                                plunge_feed_mm_min: None,
+                                max_stepdown_mm: None,
+                                stepover_mm: None,
+                            });
+                            self.resources.preset = id;
+                            self.resources.dirty = true;
+                        }
+                        if button(
+                            ui,
+                            "Capture assignment as profile",
+                            self.document.is_some()
+                                && !matches!(tool.geometry, LibraryGeometry::DragKnife(_)),
+                        )
+                        .clicked()
+                        {
+                            let id = unique(
+                                "profile",
+                                tool.cutting_presets.iter().map(|p| p.id.clone()),
+                            );
+                            match crate::resources::capture_assignment(
+                                &self.document.as_ref().unwrap().job,
+                                self.resources.role,
+                                id.clone(),
+                                "Captured cutting values".into(),
+                            ) {
+                                Ok(p) => {
+                                    tool.cutting_presets.push(p);
+                                    self.resources.preset = id;
+                                    self.resources.dirty = true;
+                                }
+                                Err(e) => self.resources.status = e,
                             }
-                            Err(e) => self.resources.status = e,
+                        }
+                    });
+                    if let Some(pindex) = tool
+                        .cutting_presets
+                        .iter()
+                        .position(|p| p.id == self.resources.preset)
+                    {
+                        let p = &mut tool.cutting_presets[pindex];
+                        ui.push_id((tool.id.clone(), p.id.clone()), |ui| {
+                            preset_form(ui, &tool.id, p, &mut self.resources)
+                        });
+                        if button(ui, "Duplicate cutting profile", true).clicked() {
+                            let mut copy = tool.cutting_presets[pindex].clone();
+                            copy.id = unique(
+                                "profile",
+                                tool.cutting_presets.iter().map(|p| p.id.clone()),
+                            );
+                            copy.name.push_str(" copy");
+                            self.resources.preset = copy.id.clone();
+                            tool.cutting_presets.push(copy);
+                            self.resources.dirty = true;
                         }
                     }
-                });
-                if let Some(pindex) = tool
-                    .cutting_presets
-                    .iter()
-                    .position(|p| p.id == self.resources.preset)
-                {
-                    let p = &mut tool.cutting_presets[pindex];
-                    ui.push_id((tool.id.clone(), p.id.clone()), |ui| {
-                        preset_form(ui, &tool.id, p, &mut self.resources)
-                    });
-                    if button(ui, "Duplicate cutting profile", true).clicked() {
-                        let mut copy = tool.cutting_presets[pindex].clone();
-                        copy.id =
-                            unique("profile", tool.cutting_presets.iter().map(|p| p.id.clone()));
-                        copy.name.push_str(" copy");
-                        self.resources.preset = copy.id.clone();
-                        tool.cutting_presets.push(copy);
-                        self.resources.dirty = true;
-                    }
-                }
-            },
-        );
+                },
+            );
+        }
         self.resources.draft.library.tools[index] = tool;
         section(
             ui,
@@ -648,6 +686,15 @@ impl App {
         );
     }
     fn resource_role(&mut self, ui: &mut egui::Ui) {
+        if self
+            .document
+            .as_ref()
+            .is_some_and(|d| crate::knife::settings(&d.job).is_some())
+        {
+            self.resources.role = Role::Knife;
+            ui.label("Target assignment: Drag knife");
+            return;
+        }
         ui.horizontal(|ui| {
             ui.label("Target assignment");
             for (label, role) in [

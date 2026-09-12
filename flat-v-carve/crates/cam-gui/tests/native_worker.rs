@@ -12,6 +12,30 @@ struct Worker {
     child: Child,
     folder: PathBuf,
 }
+
+#[test]
+fn native_knife_execution_seek_and_exact_output_evidence() {
+    let worker = Worker::new();
+    let job = include_str!("../../../fixtures/gui6/knife.job.json").to_owned();
+    let (generated, _) = worker.request(Command::Generate { job: job.clone() });
+    let handle = generated.report["gui2"]["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(generated.motions > 0);
+    let (seek, _) = worker.request(Command::Seek {
+        handle: handle.clone(),
+        prefix: generated.motions / 2,
+    });
+    assert_eq!(seek.stock.unwrap().frames[0].stats.removed_volume_mm3, 0.);
+    let (prepared, _) = worker.request(Command::Prepare { job, handle });
+    let r = &prepared.report["gui2"];
+    assert_eq!(r["retained"]["plansRun"], 1);
+    assert_eq!(
+        r["bundle"]["report"]["knifeEvidence"]["programSha256"],
+        r["file"]["sha256"]
+    );
+}
 impl Worker {
     fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

@@ -5,6 +5,10 @@ pub mod clock;
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod file_io;
+pub mod knife;
+pub mod knife_defaults;
+pub mod knife_outlines;
+pub mod operation_authoring;
 pub mod overlay;
 pub mod pages;
 pub mod paging;

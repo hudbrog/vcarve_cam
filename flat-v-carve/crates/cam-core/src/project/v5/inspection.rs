@@ -134,6 +134,27 @@ pub fn inspect_flat_vcarve_fields(
     ))
 }
 
+/// Knife editor diagnostics use the same required fields as the planner.
+pub fn inspect_knife_fields(
+    job: &CamJobV5,
+    operation_id: &str,
+) -> Result<Vec<crate::operations::LocatedDiagnostic>> {
+    let operation = job
+        .operations
+        .iter()
+        .find(|o| o.id == operation_id)
+        .ok_or_else(|| super::error("OPERATION_REFERENCE", "Unknown operation"))?;
+    let OperationSettingsV5::DragKnife(settings) = &operation.settings else {
+        return Err(super::error("OPERATION_KIND", "Expected Drag knife"));
+    };
+    Ok(crate::operations::drag_knife::missing_fields_ctx(
+        &crate::operations::PlanContext::from_v5(job),
+        operation_id,
+        &super::resolve::to_knife_settings(settings),
+        "artwork",
+    ))
+}
+
 fn operation_kind(settings: &OperationSettingsV5) -> &'static str {
     match settings {
         OperationSettingsV5::FlatVcarve(_) => "flat_vcarve",

@@ -92,6 +92,7 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
         "Profile plunge feed" => FIELD_HELP[10],
         "Profile stepdown" => FIELD_HELP[8],
         "Profile stepover" => FIELD_HELP[9],
+        "Profile swivel feed" => FIELD_HELP[65],
         "New machine ID" => {
             "A short unique name for your machine configuration, for example workshop-router. This is a library identifier, not a controller address."
         }
@@ -177,7 +178,7 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
     })
 }
 
-const FIELD_HELP: [&str; 61] = [
+const FIELD_HELP: [&str; 75] = [
     "Total carving depth below the operation top, in millimeters. Stepdown controls how much is removed in each pass.",
     "Material left on walls by roughing, in millimeters, for a later finishing pass. Zero requests no extra allowance.",
     "Endmill cutting speed along the path, in mm/min. Choose for your cutter, material and machine; it is not spindle RPM.",
@@ -239,6 +240,20 @@ const FIELD_HELP: [&str; 61] = [
     "Maximum finishing quality samples. This is a resource cap, not a machining feed or accuracy value.",
     "Maximum cells used for finishing reachability analysis. Increase only when an otherwise valid job hits this limit.",
     "Number of stock slices used for finishing analysis. This controls the planner's internal stock approximation, not the playback timeline.",
+    "Distance in millimeters from the passive knife pivot to its cutting tip. Use the physical blade geometry.",
+    "Maximum cutting depth supported by this knife blade, in millimeters. This is a tool limit, not the requested cut depth.",
+    "Knife cutting feed in millimeters per minute along the compensated holder path.",
+    "Knife plunge feed in millimeters per minute for lowering the blade into material.",
+    "Holder feed in millimeters per minute during passive corner swivels. The blade must remain engaged in material.",
+    "Maximum depth increment allowed by this tool assignment, in millimeters. Applying a knife profile copies this limit.",
+    "Requested depth increment between knife passes, in millimeters. The planner checks it against the tool assignment limit.",
+    "Blade engagement below the operation top while swiveling, in millimeters. Lifting completely clear cannot establish passive heading.",
+    "Corner angle threshold in degrees used by the knife planner to choose supported corner handling.",
+    "Optional additional through-cut allowance in millimeters. Leave blank when no extra allowance is intended; confirm physical backing separately.",
+    "Optional overlap length in millimeters past closure on a closed knife chain. Open chains do not receive artificial closing segments.",
+    "Explicit initial blade heading in degrees counterclockwise from +X, pointing from pivot toward tip. It must match the physical blade alignment.",
+    "Signed height offset in millimeters from the selected knife top reference. Positive is upward, negative is downward.",
+    "Signed height offset in millimeters from the selected knife bottom reference. A negative stock-top offset sets a cut below stock top.",
 ];
 
 #[cfg(test)]

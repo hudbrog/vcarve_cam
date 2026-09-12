@@ -810,6 +810,34 @@ pub fn compute(claimed: ClaimedTask) -> Result<TaskOutcome> {
             let trusted = TrustedPlanV5::from_generated(snapshot);
             let prepared = PreparedExecution::prepare(&trusted, &profile)?;
             let bundle = prepared.export_bundle(&trusted, &profile, layout)?;
+            let mut report = serde_json::to_value(&bundle.report)
+                .map_err(|e| retained_error("RETAINED_JSON", e.to_string()))?;
+            // GUI6 inspection is tied to these retained bytes and this retained
+            // execution. Never replan/re-export through the stateless evidence
+            // route just to draw the blade. Bundled-file inspection is GUI10.
+            if layout == OutputLayout::OneProgram
+                && trusted
+                    .plan()
+                    .stages
+                    .iter()
+                    .any(|stage| stage.role == cam_core::sequence::StageRole::Knife)
+            {
+                let file = &bundle.files[0];
+                let decoded = prepared.decode_program(
+                    trusted.plan(),
+                    prepared.output_decimal_places,
+                    &file.gcode,
+                )?;
+                let evidence = cam_core::operations::drag_knife::evidence::build_evidence(
+                    trusted.plan(),
+                    &prepared,
+                    &decoded,
+                    &bundle.manifest.files[0].sha256,
+                    2_048,
+                )?;
+                report["knifeEvidence"] = serde_json::to_value(evidence)
+                    .map_err(|e| retained_error("RETAINED_JSON", e.to_string()))?;
+            }
             for file in &bundle.files {
                 if file.gcode.len() > crate::export::PROGRAM_BYTES {
                     return Err(retained_error(
@@ -826,8 +854,7 @@ pub fn compute(claimed: ClaimedTask) -> Result<TaskOutcome> {
                 files: bundle.files,
                 manifest: serde_json::to_value(&bundle.manifest)
                     .map_err(|e| retained_error("RETAINED_JSON", e.to_string()))?,
-                report: serde_json::to_value(&bundle.report)
-                    .map_err(|e| retained_error("RETAINED_JSON", e.to_string()))?,
+                report,
                 machining_identity: plan.machining_identity.clone(),
             })))
         }

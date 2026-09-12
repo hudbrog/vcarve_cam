@@ -13,14 +13,28 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
         };
         return Some((tab, label.into()));
     }
-    let operation = &job.operations[0].id;
+    let operation = job.operations.first().map(|o| o.id.as_str()).unwrap_or("");
     let local = path
         .strip_prefix(&format!("operations[{operation}]."))
         .unwrap_or(path);
+    if local.starts_with("chains[") {
+        return Some((0, "Select all knife chains".into()));
+    }
     if local.starts_with("components[") {
         return Some((0, "Unresolved assignments".into()));
     }
     let field = match local {
+        "assignment.tool" | "assignment.tool_id" => 61,
+        "assignment.cutting_feed_mm_min" => 63,
+        "assignment.plunge_feed_mm_min" => 64,
+        "assignment.swivel_feed_mm_min" => 65,
+        "assignment.max_stepdown_mm" => 66,
+        "stepdown_mm" => 67,
+        "swivel_depth_mm" => 68,
+        "corner_threshold_deg" => 69,
+        "alignment.initial_heading_deg" => 72,
+        "setup.stock.xy" => 42,
+        "chains" | "artwork" => return Some((0, "Select all knife chains".into())),
         "max_depth_mm" => 0,
         "wall_allowance_mm" => 1,
         "endmill.cutting_feed_mm_min" => 2,
@@ -57,7 +71,7 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
     };
     let tab = if matches!(field, 23 | 25) {
         7
-    } else if matches!(field, 6 | 7 | 30) {
+    } else if matches!(field, 6 | 7 | 30 | 40..=43) {
         1
     } else {
         2

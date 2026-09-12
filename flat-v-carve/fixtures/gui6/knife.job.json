@@ -1,0 +1,166 @@
+{
+  "schema_version": 5,
+  "name": "GUI6 knife review",
+  "setup": {
+    "stock": {
+      "thickness_mm": 2.0,
+      "xy": {
+        "min_x_mm": 0.0,
+        "min_y_mm": 0.0,
+        "width_mm": 40.0,
+        "length_mm": 30.0
+      }
+    },
+    "work_zero": {
+      "xy": {
+        "kind": "setup_origin"
+      },
+      "z": "stock_top"
+    },
+    "clearance_above_stock_mm": 5.0,
+    "start_xy_mm": {
+      "x": 0.0,
+      "y": 0.0
+    }
+  },
+  "artwork": [
+    {
+      "id": "artwork-1",
+      "name": "chains.svg",
+      "content": {
+        "kind": "svg",
+        "filename": "chains.svg",
+        "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40mm\" height=\"30mm\" viewBox=\"0 0 40 30\">\n  <path id=\"corner\" fill=\"none\" stroke=\"black\" d=\"M5 8 L15 8 L15 18\"/>\n  <path id=\"closed\" fill=\"none\" stroke=\"black\" d=\"M23 8 L33 8 L33 18 L23 18 Z\"/>\n</svg>\n"
+      },
+      "import_settings": {
+        "geometry_tolerance_mm": 0.001,
+        "mode": "centerline"
+      },
+      "placement": {
+        "origin_mm": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "scale": 1.0,
+        "rotation_deg": 0.0
+      }
+    }
+  ],
+  "tools": [
+    {
+      "id": "knife-tool",
+      "name": "Drag knife",
+      "geometry": {
+        "kind": "drag_knife",
+        "dimensions": {
+          "blade_offset_mm": 1.0,
+          "max_cut_depth_mm": 2.0
+        }
+      },
+      "capabilities": {}
+    }
+  ],
+  "operations": [
+    {
+      "id": "knife",
+      "name": "Drag knife",
+      "enabled": true,
+      "settings": {
+        "kind": "drag_knife",
+        "settings": {
+          "chains": [
+            {
+              "artwork_item_id": "artwork-1",
+              "kind": "centerline",
+              "local_geometry_id": "corner-chain-0",
+              "source_revision": {
+                "content_digest": "b575e584ec6f2268bd8393d5680dc7d9ce411720d44dc1cf93f97ecf4289cfbc",
+                "algorithm_version": 1
+              }
+            },
+            {
+              "artwork_item_id": "artwork-1",
+              "kind": "centerline",
+              "local_geometry_id": "closed-chain-0",
+              "source_revision": {
+                "content_digest": "b575e584ec6f2268bd8393d5680dc7d9ce411720d44dc1cf93f97ecf4289cfbc",
+                "algorithm_version": 1
+              }
+            }
+          ],
+          "assignment": {
+            "tool_id": "knife-tool",
+            "cutting_feed_mm_min": 150.0,
+            "plunge_feed_mm_min": 50.0,
+            "swivel_feed_mm_min": 75.0,
+            "max_stepdown_mm": 1.0
+          },
+          "top": {
+            "reference": {
+              "kind": "stock_top"
+            },
+            "offset_mm": 0.0
+          },
+          "bottom": {
+            "reference": {
+              "kind": "stock_top"
+            },
+            "offset_mm": -1.0
+          },
+          "stepdown_mm": 1.0,
+          "swivel_depth_mm": 0.5,
+          "corner_threshold_deg": 20.0,
+          "start": {
+            "kind": "automatic"
+          },
+          "alignment": {
+            "initial_heading_deg": 180.0
+          }
+        }
+      }
+    }
+  ],
+  "tolerances": {
+    "motion_tolerance_mm": 0.01,
+    "verification_tolerance_mm": 0.05
+  },
+  "machine_configuration": {
+    "origin": {
+      "configuration_id": "gui6-review-machine",
+      "name": "gui6-review-machine"
+    },
+    "work_offset": "G54",
+    "clearance_z_mm": 5.0,
+    "decimal_places": 3,
+    "length_compensation": "macro_managed",
+    "path_control": {
+      "kind": "blend",
+      "tolerance_mm": 0.05,
+      "naive_cam_tolerance_mm": 0.05
+    },
+    "spindle_spinup_seconds": 0.5,
+    "coolant": "off",
+    "m6": {
+      "reference": "hi",
+      "reviewed": true,
+      "return_position": {
+        "kind": "safe_retract",
+        "z_mm": 150.0,
+        "transit_xy_mm": {
+          "x": 0.0,
+          "y": 0.0
+        }
+      },
+      "preserves_work_datum": true,
+      "local_offsets_unused": true,
+      "tool_offsets_z_only": true
+    },
+    "tools": [
+      {
+        "job_tool_id": "knife-tool",
+        "tool_number": 1
+      }
+    ]
+  }
+}
+

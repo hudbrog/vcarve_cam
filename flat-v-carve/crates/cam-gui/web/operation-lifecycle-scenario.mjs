@@ -1,0 +1,30 @@
+import {renameSync} from 'node:fs';
+export async function lifecycleScenario({control,state,waitFor,evaluate,sleep,record,screenshot,readFileSync,path,out}) {
+  const drop=async(text,name)=>evaluate(`(()=>{const t=new DataTransfer();t.items.add(new File([${JSON.stringify(text)}],${JSON.stringify(name)},{type:'application/json'}));document.getElementById('cam').dispatchEvent(new DragEvent('drop',{dataTransfer:t,bubbles:true,cancelable:true}));})()`);
+  if((await state()).job)throw Error('Expected blank startup');
+  await control('Add operation');await control('Add drag knife');
+  await waitFor(s=>s.job?.kind==='drag_knife'&&!s.active,'add knife before artwork');
+  await control('Undo');await waitFor(s=>s.job?.kind==='empty'&&!s.active,'undo initial add');
+  await control('Add operation');await control('Add Flat V-carve');
+  await waitFor(s=>s.job&&s.job.kind!=='empty'&&!s.active,'add V-carve');
+  await drop(readFileSync('fixtures/gui4/lettering.job.json','utf8'),'lettering.job.json');
+  await waitFor(s=>s.job?.machine&&!s.active,'existing V-carve');
+  const before=(await state()).job;
+  await control('Delete operation');await waitFor(s=>s.job?.kind==='empty'&&!s.active,'delete V-carve');
+  const empty=(await state()).job;
+  if(JSON.stringify(empty.stock)!==JSON.stringify(before.stock)||JSON.stringify(empty.machineSnapshot)!==JSON.stringify(before.machineSnapshot)||JSON.stringify(empty.tools)!==JSON.stringify(before.tools))throw Error('Delete changed shared job context');
+  await screenshot('operation-deleted.png');
+  await control('Undo');await waitFor(s=>s.job?.components===before.components&&!s.active,'undo delete');
+  await control('Redo');await waitFor(s=>s.job?.kind==='empty'&&!s.active,'redo delete');
+  await evaluate('globalThis.showSaveFilePicker=undefined');
+  await control('Save job');await waitFor(s=>s.status.includes('Download requested'),'empty job save');await sleep(500);
+  await drop(readFileSync(path.join(out,'carving.gui2.job.json'),'utf8'),'empty.job.json');
+  await waitFor(s=>s.job?.kind==='empty'&&!s.active,'empty job reopen');
+  renameSync(path.join(out,'carving.gui2.job.json'),path.join(out,'empty.gui2.job.json'));
+  await control('Add operation');await screenshot('add-operation-menu.png');await control('Add drag knife');
+  await waitFor(s=>s.job?.kind==='drag_knife'&&!s.active,'knife added to existing job');
+  const knife=(await state()).job;
+  if(knife.artworks.length!==empty.artworks.length||knife.knife.chains.length||JSON.stringify(knife.stock)!==JSON.stringify(empty.stock))throw Error('Knife add lost context or invented selection');
+  for(let i=0;i<knife.artworks.length;i++)if(JSON.stringify(knife.artworks[i].content)!==JSON.stringify(empty.artworks[i].content)||JSON.stringify(knife.artworks[i].placement)!==JSON.stringify(empty.artworks[i].placement))throw Error('Knife add changed source or placement');
+  record('blank add and V-carve delete Undo Redo empty save reopen and knife add',await state());
+}

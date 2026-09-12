@@ -1,4 +1,6 @@
 use super::*;
+#[path = "knife_ui.rs"]
+mod knife_ui;
 #[path = "operation_ui.rs"]
 mod operation_ui;
 use crate::authoring::{self, settings_mut};
@@ -13,17 +15,16 @@ impl App {
     ) {
         let Some(doc) = &self.document else { return };
         let mut job = doc.job.clone();
-        let cached_finish = engine::settings(&job)
-            .finish
-            .clone()
+        let cached_finish = engine::carving(&job)
+            .and_then(|s| s.finish.clone())
             .or(doc.finish_draft.clone());
-        let old_mode = engine::settings(&job).mode;
+        let old_mode = engine::carving(&job).map(|s| s.mode);
         if let Err(error) = edit(&mut job) {
             self.status = error;
             return;
         }
-        if old_mode != engine::settings(&job).mode
-            && engine::settings(&job).mode == FlatVcarveMode::Combined
+        if old_mode != engine::carving(&job).map(|s| s.mode)
+            && engine::carving(&job).is_some_and(|s| s.mode == FlatVcarveMode::Combined)
             && cached_finish.is_some()
         {
             settings_mut(&mut job).finish = cached_finish.clone();
@@ -34,7 +35,9 @@ impl App {
         }
         self.remember();
         let doc = self.document.as_mut().unwrap();
-        doc.finish_draft = engine::settings(&job).finish.clone().or(cached_finish);
+        doc.finish_draft = engine::carving(&job)
+            .and_then(|s| s.finish.clone())
+            .or(cached_finish);
         doc.job = job;
         for &field in clear {
             doc.raw.raw.remove(&doc.raw.key(field));
@@ -70,7 +73,7 @@ impl App {
                             20 if operation => "Stepdown",
                             46 if operation => "Stepover",
                             16 if operation => "Included angle",
-                            32 => "Endmill tool (T)",
+                            32 => "Tool number (T)",
                             33 => "Length entry (H)",
                             38 => "V-bit tool (T)",
                             39 => "V-bit entry (H)",
@@ -93,7 +96,7 @@ impl App {
                                         .id(egui::Id::new((
                                             "carving-field",
                                             doc.raw.key(field),
-                                            &doc.job.operations[0].id,
+                                            &doc.raw.operation,
                                             field,
                                         )))
                                         .desired_width(if operation {
@@ -106,9 +109,9 @@ impl App {
                                 )
                                 .labelled_by(label.id);
                             ui.small(match field {
-                                2 | 3 | 10 | 21 | 51 => "mm/min",
+                                2 | 3 | 10 | 21 | 51 | 63..=65 => "mm/min",
                                 11 | 22 => "RPM",
-                                14 | 16 | 28 => "deg",
+                                14 | 16 | 28 | 69 | 72 => "deg",
                                 29 => "×",
                                 34 | 37 => "s",
                                 35 => "digits",
@@ -143,9 +146,14 @@ impl App {
                         self.issues = vec![cam_core::operations::LocatedDiagnostic {
                             code: "EDITOR_VALUE".into(),
                             message: error.clone(),
-                            operation_id: Some(
-                                self.document.as_ref().unwrap().job.operations[0].id.clone(),
-                            ),
+                            operation_id: self
+                                .document
+                                .as_ref()
+                                .unwrap()
+                                .job
+                                .operations
+                                .first()
+                                .map(|o| o.id.clone()),
                             tool_id: None,
                             field_path: Some(format!("editor.fields.{}", FIELDS[field])),
                         }];
@@ -179,7 +187,15 @@ impl App {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 if operation { ui.spacing_mut().interact_size.y = 22.; }
                 if self.document.is_none(){ui.label("Import an SVG or open a saved job to begin.");return;}
-                match self.inspector_tab {0=>self.artwork_panel(ui,ctx),1=>self.setup_panel(ui,ctx),2=>self.cutting_panel(ui,ctx),3=>self.machine_panel(ui,ctx),6=>self.view.inspection_controls(ui),7=>self.job_settings_panel(ui,ctx),index=>{
+                if self.document.as_ref().unwrap().job.operations.is_empty() {
+                    match self.inspector_tab {
+                        1 => self.setup_panel(ui,ctx),
+                        7 => self.job_settings_panel(ui,ctx),
+                        _ => { ui.heading("No operations"); ui.label("Add an operation from the Operations list. Your artwork, stock, tools and machine settings are retained."); if self.inspector_tab == 0 {self.numbers(ui,ctx,&[26,27,28,29]);} }
+                    }
+                } else if crate::knife::settings(&self.document.as_ref().unwrap().job).is_some() && matches!(self.inspector_tab,0|2|4|5|6) {
+                    self.knife_panel(ui,ctx);
+                } else { match self.inspector_tab {0=>self.artwork_panel(ui,ctx),1=>self.setup_panel(ui,ctx),2=>self.cutting_panel(ui,ctx),3=>self.machine_panel(ui,ctx),6=>self.view.inspection_controls(ui),7=>self.job_settings_panel(ui,ctx),index=>{
                     let finish=index==5;
                     ui.heading(if finish {"V-bit geometry"}else{"Endmill geometry"});
                     self.numbers(ui,ctx,if finish {&[16,17,18,19]}else{&[12,13]});
@@ -190,7 +206,7 @@ impl App {
                     ui.small(if finish {"Defines the V-shaped target in both modes; executes finishing in Combined mode."}else{"Endmill clearing stage"});
                     if button(ui,"Edit cutting assignment",true).clicked(){self.navigate(2);}
                     if button(ui,"Edit controller mapping",true).clicked(){self.navigate(3);}
-                }}
+                }}}
                 if let Some(label) = self.issue_focus.clone() {
                     let rect = CONTROLS.with(|c| c.borrow().get(&label).copied());
                     if let Some([x0,y0,x1,y1]) = rect { ui.scroll_to_rect(egui::Rect::from_min_max(egui::pos2(x0,y0),egui::pos2(x1,y1)), Some(egui::Align::Center)); self.issue_focus = None; }
@@ -203,7 +219,7 @@ impl App {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.small("Changes apply to this job");
-                    let ready = !self.operation_ramp_draft && self.document.as_ref().is_some_and(|d| !d.pending());
+                    let ready = !self.operation_ramp_draft && self.document.as_ref().is_some_and(|d| !d.pending() && !d.job.operations.is_empty());
                     let generate = ui.add_enabled(ready && self.active.is_none() && self.io.is_none(),egui::Button::new("Generate").fill(Color32::from_rgb(49,190,195)));
                     observe_control("Generate operation",generate.rect);
                     if generate.clicked() {
@@ -477,7 +493,11 @@ impl App {
                 Ok(())
             });
         }
-        ui.small("New SVG jobs use the page size, 18 mm thickness and 5 mm clearance. Adjust these to your actual stock. Page capture changes only XY.");
+        if crate::knife::settings(&self.document.as_ref().unwrap().job).is_some() {
+            ui.small("Set actual stock thickness and clearance. Page capture changes only XY.");
+        } else {
+            ui.small("New SVG jobs use the page size, 18 mm thickness and 5 mm clearance. Adjust these to your actual stock. Page capture changes only XY.");
+        }
         ui.separator();
         ui.heading("Work zero");
         help::icon(ui, "Work zero");
@@ -781,9 +801,11 @@ impl App {
                 machine.length_compensation == Some(cam_core::post::LengthCompensation::ToolTable);
             self.numbers(ui, ctx, &[7]);
             let job = &self.document.as_ref().unwrap().job;
-            let tool_id = &engine::settings(job).endmill.tool_id;
+            let tool_id = crate::knife::settings(job)
+                .map(|s| &s.assignment.tool_id)
+                .unwrap_or_else(|| &engine::settings(job).endmill.tool_id);
             ui.label(format!(
-                "Endmill: {}",
+                "Tool: {}",
                 job.tools
                     .iter()
                     .find(|t| &t.id == tool_id)
@@ -791,18 +813,17 @@ impl App {
                     .unwrap_or(tool_id)
             ));
             self.numbers(ui, ctx, if table { &[32, 33] } else { &[32] });
-            if engine::settings(&self.document.as_ref().unwrap().job).mode
-                == FlatVcarveMode::Combined
+            if engine::carving(&self.document.as_ref().unwrap().job)
+                .is_some_and(|s| s.mode == FlatVcarveMode::Combined)
             {
                 self.numbers(ui, ctx, if table { &[38, 39] } else { &[38] });
             }
             if table && button(ui, "Use T numbers for H entries", true).clicked() {
                 self.edit_job(ctx, &[33, 39], |job| {
-                    let s = engine::settings(job);
-                    let mut used = vec![s.endmill.tool_id.clone()];
-                    if s.mode == FlatVcarveMode::Combined {
-                        used.push(s.vbit.tool_id.clone());
-                    }
+                    let used = cam_core::project::v5::resources::assignment_statuses(job)
+                        .into_iter()
+                        .map(|s| s.tool_id)
+                        .collect::<Vec<_>>();
                     if let Some(m) = &mut job.machine_configuration {
                         for row in &mut m.tools {
                             if used.contains(&row.job_tool_id) {

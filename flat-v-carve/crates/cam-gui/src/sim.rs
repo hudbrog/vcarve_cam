@@ -20,6 +20,10 @@ pub struct Stock {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ToolSpec {
+    Knife {
+        #[serde(rename = "bladeOffsetMm")]
+        offset: f64,
+    },
     Endmill {
         #[serde(rename = "diameterMm")]
         diameter: f64,
@@ -37,6 +41,7 @@ pub enum ToolSpec {
 }
 #[derive(Clone, Copy, Debug)]
 pub enum Tool {
+    Knife,
     Endmill { radius: f64 },
     Vbit { tip: f64, slope: f64, radius: f64 },
 }
@@ -46,6 +51,7 @@ fn positive(v: f64) -> bool {
 impl ToolSpec {
     pub fn normalize(self) -> Result<Tool, String> {
         match self {
+            Self::Knife { offset } if positive(offset) => Ok(Tool::Knife),
             Self::Endmill { diameter } if positive(diameter) => Ok(Tool::Endmill {
                 radius: diameter / 2.,
             }),
@@ -186,6 +192,7 @@ impl Field {
         if tools.is_empty()
             || tools.iter().any(|t| match t {
                 Tool::Endmill { radius } | Tool::Vbit { radius, .. } => !positive(*radius),
+                Tool::Knife => false,
             })
         {
             return Err("Simulator requires positive-radius tools".into());
@@ -373,7 +380,7 @@ impl Field {
             return Err("Simulator needs finite motion coordinates and a known tool".into());
         }
         self.stats.applied_motions += 1;
-        if !cutting {
+        if !cutting || matches!(self.tools.get(motion.tool), Some(Tool::Knife)) {
             return Ok(());
         }
         self.stats.cutting_motions += 1;
@@ -397,6 +404,7 @@ impl Field {
         }
         let tool = self.tools[motion.tool];
         let (radius, role) = match tool {
+            Tool::Knife => return Ok(()),
             Tool::Endmill { radius } => (radius, 1),
             Tool::Vbit { radius, .. } => (radius, 2),
         };
@@ -441,6 +449,7 @@ impl Field {
                             continue;
                         };
                         let depth = match tool {
+                            Tool::Knife => unreachable!("knife never removes stock"),
                             Tool::Endmill { .. } => {
                                 let d0 = -a[2] - dz * t0;
                                 let d1 = -a[2] - dz * t1;

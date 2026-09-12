@@ -12,6 +12,8 @@ use std::sync::Arc;
 mod artwork;
 #[path = "viewport_inspection.rs"]
 mod inspection;
+#[path = "viewport_knife.rs"]
+mod knife;
 pub use artwork::{ArtworkEvent, ArtworkInteraction};
 
 /// Pages fingerprinted per frame while a new scene settles.
@@ -100,6 +102,7 @@ impl ViewSettings {
 }
 
 pub struct Viewport {
+    knife_chains: Arc<Vec<crate::knife::Chain>>,
     pub artwork: ArtworkInteraction,
     pub stock_loading: bool,
     pub result_current: bool,
@@ -145,6 +148,7 @@ pub struct Viewport {
 impl Default for Viewport {
     fn default() -> Self {
         Self {
+            knife_chains: Arc::new(Vec::new()),
             artwork: ArtworkInteraction::default(),
             stock_loading: false,
             result_current: false,
@@ -219,6 +223,12 @@ impl Viewport {
     }
 
     pub fn set_scene(&mut self, scene: Scene) {
+        self.knife_chains = Arc::new(
+            serde_json::from_value(scene.meta.report["gui2"]["chains"].clone()).unwrap_or_default(),
+        );
+        if scene.meta.report["gui2"]["knife"] == true {
+            self.stage = 0;
+        }
         self.playhead = scene.motion_count();
         self.stock_prefix = scene.motion_count();
         self.selection = None;
@@ -554,6 +564,10 @@ impl Viewport {
             ui.horizontal_wrapped(|ui| {
                 let play=ui.button(if self.playing {"Pause"} else {"Play"});crate::app::observe_control(if self.playing {"Pause"} else {"Play"},play.rect);if play.clicked() { self.playing = !self.playing; if self.playing && self.stock_prefix==self.motion_count(){self.stock_seek(0);} }
                 let start=ui.button("Start");crate::app::observe_control("Start",start.rect);if start.clicked() {self.playing=false;self.stock_seek(0);}
+                if self.is_knife() {
+                    let end=ui.button("After knife");crate::app::observe_control("After knife",end.rect);if end.clicked(){self.playing=false;self.stock_seek(self.motion_count());}
+                    ui.label("Knife pivot paths");
+                } else {
                 let rough=ui.button("After endmill");crate::app::observe_control("After endmill",rough.rect);if rough.clicked() {self.playing=false;
                     let prefix=self.scene.as_ref().map_or(0,|s|s.meta.rough_vertices/2);
                     self.stock_seek(prefix);
@@ -564,6 +578,7 @@ impl Viewport {
                     ui.selectable_value(&mut self.stage,1,"Endmill paths");
                     ui.selectable_value(&mut self.stage,2,"V-bit paths");
                 });
+                }
             });
             ui.horizontal(|ui| {
                 ui.spacing_mut().slider_width=(ui.available_width()-160.).max(80.);
@@ -769,6 +784,7 @@ impl Viewport {
                 let tool = sim.tools.get(motion_tool).copied()?;
                 let tip = [points[1][0], points[1][1], points[1][2]];
                 Some(match tool {
+                    sim::ToolSpec::Knife { .. } => return None,
                     sim::ToolSpec::Endmill { diameter } => overlay::Marker {
                         glyph: overlay::Glyph::Endmill {
                             radius: (diameter / 2.) as f32 * scale as f32,
@@ -793,7 +809,8 @@ impl Viewport {
                 })
             });
         let half = self.pick_tolerance_px * 0.5 / ppp.max(1e-3) / per_unit.max(1e-6);
-        let built = overlay::build(selection, half, marker.as_slice());
+        let mut built = overlay::build(selection, half, marker.as_slice());
+        self.knife_overlay(&mut built);
         self.overlay_lines = Arc::new(built.lines);
         self.overlay_triangles = Arc::new(built.triangles);
     }

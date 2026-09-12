@@ -19,6 +19,16 @@ pub(super) fn tab_for_control(label: &str) -> usize {
 
 impl App {
     pub(super) fn operation_header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.document.as_ref().unwrap().job.operations.is_empty() {
+            ui.heading("No operations");
+            return;
+        }
+        if crate::knife::settings(&self.document.as_ref().unwrap().job).is_some() {
+            ui.heading("Drag knife");
+            ui.small("Passive XYZ · spindle and coolant off");
+            ui.separator();
+            return;
+        }
         if let Some(label) = &self.issue_focus {
             self.operation_tab = tab_for_control(label);
         }

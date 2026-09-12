@@ -1,0 +1,51 @@
+export async function knifeAuthoringScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,path,out,chooseFile}) {
+  const drop=async(text,name)=>evaluate(`(()=>{const t=new DataTransfer();t.items.add(new File([${JSON.stringify(text)}],${JSON.stringify(name)},{type:'application/json'}));document.getElementById('cam').dispatchEvent(new DragEvent('drop',{dataTransfer:t,bubbles:true,cancelable:true}));})()`);
+  const clear=async()=>{await control('Filter fields');await pressKey('a','KeyA',2);await pressKey('Backspace','Backspace');await sleep(150);};
+  await drop(readFileSync('fixtures/gui6/knife.job.json','utf8'),'knife.job.json');
+  await waitFor(s=>s.job?.kind==='drag_knife'&&!s.active,'knife fixture');
+  await control('Cutting');await control('Clear knife selection');
+  await waitFor(s=>!s.active&&s.job.knife.chains.length===0&&s.workspace.inspector===2,'operation selection stays in operation');
+  await control('Top');await control('Select knife paths');
+  const pick=async(x,y,shift=false)=>{
+    const s=await state(),b=s.bounds,r=s.controls['Artwork viewport'],v=s.workspace.view,k=1.6/Math.max(b[2]-b[0],b[3]-b[1]);
+    x=(x-(b[0]+b[2])/2)*k;y=(y-(b[1]+b[3])/2)*k;
+    const u=x*Math.cos(v.yaw)-y*Math.sin(v.yaw),w=(x*Math.sin(v.yaw)+y*Math.cos(v.yaw))*(v.isometric?.65:1);
+    const p={x:(r[0]+r[2])/2+u*v.zoom*(r[3]-r[1])/2,y:(r[1]+r[3])/2-w*v.zoom*(r[3]-r[1])/2};
+    if(shift)await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Shift',code:'ShiftLeft',modifiers:8,windowsVirtualKeyCode:16});
+    await send('Input.dispatchMouseEvent',{type:'mouseMoved',...p,modifiers:shift?8:0});await sleep(80);
+    for(const type of ['mousePressed','mouseReleased']){await send('Input.dispatchMouseEvent',{type,...p,button:'left',clickCount:1,modifiers:shift?8:0});await sleep(80);}
+    if(shift)await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Shift',code:'ShiftLeft',windowsVirtualKeyCode:16});
+  };
+  await pick(10,22);await waitFor(s=>!s.active&&s.job.knife.chains.length===1,'viewport assigns open chain');
+  await pick(28,22,true);await waitFor(s=>!s.active&&s.job.knife.chains.length===2,'shift adds closed chain');
+  await pick(28,22,true);await waitFor(s=>!s.active&&s.job.knife.chains.length===1,'shift removes closed chain');
+  await control('Undo');await waitFor(s=>!s.active&&s.job.knife.chains.length===2,'undo viewport assignment');
+  record('operation geometry and direct viewport chain selection',await state());
+  for(const label of ['Knife pass stepdown','Swivel depth','Corner threshold'])await edit(label,'');
+  await clear();await waitFor(s=>!s.active,'blank defaults fields');
+  await control('Use suggested operation values');
+  await waitFor(s=>!s.active&&s.job.knife.stepdown_mm===1&&s.job.knife.swivel_depth_mm===0.1&&s.job.knife.corner_threshold_deg===20,'derived and suggested values');
+  await control('Undo');await waitFor(s=>!s.active&&s.job.knife.stepdown_mm==null,'undo suggestions');
+  await control('Use suggested operation values');await waitFor(s=>!s.active&&s.job.knife.stepdown_mm===1,'reapply reviewed suggestions');
+  await edit('Swivel depth','0.2');await edit('Corner threshold','-');await clear();
+  if(!(await state()).pending)throw Error('Partial angle lost');
+  await control('Undo');await waitFor(s=>!s.active&&!s.pending&&s.job.knife.swivel_depth_mm===0.2,'custom swivel and partial angle Undo');
+  await screenshot('knife-defaults.png');record('reviewable defaults and manual edits Undo',await state());
+  await chooseFile('Import knife geometry','fixtures/gui3/lettering.svg');await waitFor(s=>!s.active&&s.job.artworks.length===2,'filled source added');
+  const original=(await state()).job.artworks[1];
+  await control('Cutting');await clear();await control('Create knife outlines');await control('Outlines of lettering.svg');
+  await waitFor(s=>!s.active&&s.job.artworks.length===3&&s.workspace.inspector===2,'explicit outline copy');
+  if(JSON.stringify((await state()).job.artworks[1])!==JSON.stringify(original))throw Error('Original filled artwork changed');
+  await control('Clear knife selection');await waitFor(s=>!s.active&&s.job.knife.chains.length===0,'clear previous assignment');
+  const label=Object.keys((await state()).controls).find(k=>k.startsWith('Knife chain ')&&k.includes('outline-2'));
+  if(!label)throw Error('Derived outline checkbox unavailable');
+  await control(label);await waitFor(s=>!s.active&&s.job.knife.chains.length===1,'choose one derived outline');
+  await screenshot('knife-geometry.png');
+  await control('Generate');await waitFor(s=>s.current&&!s.active&&s.exportReady,'derived outline generation');
+  await evaluate('globalThis.showSaveFilePicker=undefined');await control('Export…');await waitFor(s=>s.prepared&&!s.active,'derived outline checked output');
+  await control('Close export');await waitFor(s=>!s.controls['Close export'],'close export dialog');
+  await control('Save job');await waitFor(s=>s.status.includes('Download requested'),'save outline job');await sleep(500);
+  await drop(readFileSync(path.join(out,'carving.gui2.job.json'),'utf8'),'outlines.job.json');await waitFor(s=>!s.active&&s.job?.artworks.length===3,'reopen outline job');
+  await control('Generate');await waitFor(s=>!s.active&&s.current&&s.exportReady,'reopened outline generation');
+  record('filled artwork outline copy selected generated checked saved and reopened',await state());
+}

@@ -198,7 +198,12 @@ pub fn set_mode(job: &mut CamJobV5, mode: FlatVcarveMode) {
     };
 }
 pub fn tool(job: &CamJobV5, finishing: bool) -> Option<&JobToolV5> {
-    let s = crate::session::settings(job);
+    if let Some(s) = crate::knife::settings(job) {
+        return (!finishing)
+            .then(|| job.tools.iter().find(|t| t.id == s.assignment.tool_id))
+            .flatten();
+    }
+    let s = crate::session::carving(job)?;
     let id = if finishing {
         &s.vbit.tool_id
     } else {
@@ -261,9 +266,18 @@ pub fn tool_mut(job: &mut CamJobV5, finishing: bool) -> Result<&mut JobToolV5, S
 pub const FIELDS: &[usize] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22, 23, 25, 26, 27, 28,
     29, 30, 31, 32, 33, 38, 39, 40, 41, 42, 43, 44, 45, 46, 14, 47, 48, 49, 50, 51, 52, 53, 54, 55,
-    56, 57, 58, 59, 60, 34, 35, 36,
+    56, 57, 58, 59, 60, 34, 35, 36, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74,
 ];
 pub fn active(job: &CamJobV5, field: usize) -> bool {
+    if job.operations.is_empty() {
+        return matches!(field, 6 | 7 | 23 | 25..=31 | 34..=36 | 40..=45);
+    }
+    if crate::knife::settings(job).is_some() {
+        return matches!(field, 6 | 7 | 23 | 25..=36 | 40..=45 | 61..=74);
+    }
+    if field >= 61 {
+        return false;
+    }
     let s = crate::session::settings(job);
     if matches!(field, 33 | 39) {
         return (field == 33 || s.mode == FlatVcarveMode::Combined)
@@ -293,13 +307,13 @@ pub fn active(job: &CamJobV5, field: usize) -> bool {
         || !matches!(field, 3 | 4 | 5 | 20 | 21 | 22 | 38 | 39 | 46 | 52..=60)
 }
 pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
-    let s = crate::session::settings(job);
+    let s = crate::session::carving(job);
     match field {
-        47 => Some(s.top.offset_mm),
-        48 => Some(s.rough.as_ref()?.max_layers as f64),
-        49 => Some(s.rough.as_ref()?.max_loops_per_layer as f64),
-        50 => Some(s.rough.as_ref()?.max_motions as f64),
-        14 | 51 => match s.rough.as_ref()?.entry {
+        47 => Some(s?.top.offset_mm),
+        48 => Some(s?.rough.as_ref()?.max_layers as f64),
+        49 => Some(s?.rough.as_ref()?.max_loops_per_layer as f64),
+        50 => Some(s?.rough.as_ref()?.max_motions as f64),
+        14 | 51 => match s?.rough.as_ref()?.entry {
             cam_core::pocket::EntryStrategy::Ramp {
                 max_angle_deg,
                 feed_mm_min,
@@ -311,7 +325,7 @@ pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
             _ => None,
         },
         52..=60 => {
-            let f = s.finish.as_ref()?;
+            let f = s?.finish.as_ref()?;
             Some(match field {
                 52 => f.max_paths as f64,
                 53 => f.max_motions as f64,
@@ -329,7 +343,7 @@ pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
                 .as_ref()
                 .and_then(|m| m.clearance_z_mm)
         }),
-        11 => s.endmill.spindle_rpm,
+        11 => s?.endmill.spindle_rpm,
         12 | 13 => match &tool(job, false)?.geometry {
             Some(ToolGeometry::Endmill(g)) => Some(if field == 12 {
                 g.diameter_mm
@@ -347,10 +361,10 @@ pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
             }),
             _ => None,
         },
-        20 => s.vbit.max_stepdown_mm,
-        21 => s.vbit.plunge_feed_mm_min,
-        22 => s.vbit.spindle_rpm,
-        46 => s.vbit.stepover_mm,
+        20 => s?.vbit.max_stepdown_mm,
+        21 => s?.vbit.plunge_feed_mm_min,
+        22 => s?.vbit.spindle_rpm,
+        46 => s?.vbit.stepover_mm,
         23 => job.tolerances.motion_tolerance_mm,
         25 => job.tolerances.verification_tolerance_mm,
         26 => Some(job.artwork.first()?.placement.origin_mm.x),
@@ -539,6 +553,7 @@ fn whole(v: Option<f64>) -> Result<usize, String> {
 
 pub fn group(field: usize) -> &'static [usize] {
     match field {
+        61 | 62 => &[61, 62],
         14 | 51 => &[14, 51],
         12 | 13 => &[12, 13],
         16..=19 => &[16, 17, 18, 19],
@@ -549,6 +564,21 @@ pub fn group(field: usize) -> &'static [usize] {
 }
 pub fn set_group(job: &mut CamJobV5, field: usize, values: &[f64]) -> Result<(), String> {
     match field {
+        61 | 62 => {
+            let id = crate::knife::settings(job)
+                .ok_or("Expected knife operation")?
+                .assignment
+                .tool_id
+                .clone();
+            job.tools
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("Missing knife tool")?
+                .geometry = Some(ToolGeometry::DragKnife(project::DragKnifeSpec {
+                blade_offset_mm: values[0],
+                max_cut_depth_mm: values[1],
+            }));
+        }
         14 | 51 => {
             settings_mut(job)
                 .rough

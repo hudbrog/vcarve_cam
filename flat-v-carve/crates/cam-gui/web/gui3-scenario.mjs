@@ -42,7 +42,9 @@ export async function gui3Scenario({control,edit,state,waitFor,send,evaluate,sle
   };
   before=await drag('Move artwork',[4,20],[9,23]);
   let moved=await waitFor(s=>!s.active&&s.revision>before.revision,'move release');
-  if(Math.abs(moved.job.placement.origin_mm.x+5)>.05 || Math.abs(moved.job.placement.origin_mm.y+3)>.05 || moved.undo!==before.undo+1)throw new Error('Move used a wrong conversion or multiple transactions');
+  // CDP pointer positions resolve to CSS pixels; allow one pixel in setup units.
+  const pixelMm=Math.max(before.bounds[2]-before.bounds[0],before.bounds[3]-before.bounds[1])*2/(1.6*before.workspace.view.zoom*(before.controls['Artwork viewport'][3]-before.controls['Artwork viewport'][1]));
+  if(Math.abs(moved.job.placement.origin_mm.x+5)>pixelMm || Math.abs(moved.job.placement.origin_mm.y+3)>pixelMm || moved.undo!==before.undo+1)throw new Error('Move used a wrong conversion or multiple transactions');
   await control('Undo');await waitFor(s=>!s.active&&s.job.placement.origin_mm.x===0,'gesture undo');
   before=await drag('Move artwork',[4,20],[7,21],true);let cancelled=await state();
   if(cancelled.revision!==before.revision || cancelled.job.placement.origin_mm.x!==0)throw new Error('Escape committed a placement gesture');
@@ -61,7 +63,8 @@ export async function gui3Scenario({control,edit,state,waitFor,send,evaluate,sle
   await control('Artwork');await control('Select artwork');await pick([9,23]);await control('Use picked');
   await waitFor(s=>s.job.components===1&&!s.active,'lettering subset assignment');
   await control('Setup');await edit('Stock thickness','');
-  await control('Generate');let issues=await waitFor(s=>s.issues?.length>10&&!s.active,'typed missing machining issues');
+  await waitFor(s=>!s.active&&s.job.stock.thickness_mm===null,'cleared thickness preview');
+  await control('Generate');let issues=await waitFor(s=>s.issues?.some(i=>i.field_path==='setup.stock.thickness_mm')&&!s.active,'typed missing stock thickness issue');
   const stockIssue=issues.issues.findIndex(i=>i.field_path==='setup.stock.thickness_mm');
   await control('Issue '+stockIssue);await sleep(350);
   const located=await state(),field=located.controls['Stock thickness'],clip=located.controls['Inspector viewport'];

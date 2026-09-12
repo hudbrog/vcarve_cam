@@ -20,6 +20,8 @@ mod help;
 mod inspector;
 #[path = "issues.rs"]
 mod issues;
+#[path = "operation_list.rs"]
+mod operation_list;
 #[path = "resource_ui.rs"]
 mod resource_ui;
 #[path = "resume.rs"]
@@ -47,6 +49,16 @@ fn button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
 /// Stable field IDs use the same recovery keys as the qualified input binder.
 pub const LIVE_FIELDS: [usize; 10] = [0, 1, 2, 3, 4, 5, 6, 8, 9, 10];
 pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
+    if job.operations.is_empty() {
+        return if field == 6 {
+            job.setup.stock.thickness_mm
+        } else {
+            crate::authoring::value(job, field)
+        };
+    }
+    if crate::knife::settings(job).is_some() {
+        return crate::knife::value(job, field);
+    }
     let s = engine::settings(job);
     match field {
         0 => s.max_depth_mm,
@@ -64,6 +76,23 @@ pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
 }
 pub fn set_value(job: &CamJobV5, field: usize, value: Option<f64>) -> Result<CamJobV5, String> {
     let mut job = job.clone();
+    if job.operations.is_empty() {
+        if !crate::authoring::active(&job, field) {
+            return Err("Add an operation before editing cutting fields".into());
+        }
+        if field == 6 {
+            job.setup.stock.thickness_mm = value;
+        } else {
+            crate::authoring::set(&mut job, field, value)?;
+        }
+        job.validate_structure().map_err(|e| e.to_string())?;
+        return Ok(job);
+    }
+    if crate::knife::settings(&job).is_some() {
+        crate::knife::set(&mut job, field, value)?;
+        job.validate_structure().map_err(|e| e.to_string())?;
+        return Ok(job);
+    }
     let OperationSettingsV5::FlatVcarve(s) = &mut job.operations[0].settings else {
         return Err("Unsupported operation".into());
     };
@@ -137,7 +166,7 @@ impl Document {
     pub fn new(job: CamJobV5) -> Self {
         Self {
             raw: Draft::for_job(&job),
-            finish_draft: engine::settings(&job).finish.clone(),
+            finish_draft: engine::carving(&job).and_then(|s| s.finish.clone()),
             job,
         }
     }
@@ -293,6 +322,7 @@ enum ResourceIntent {
 }
 #[derive(Clone, Copy)]
 enum IoKind {
+    KnifeSvg,
     Svg,
     AddSvg,
     ReplaceSvg,
@@ -374,6 +404,7 @@ impl App {
         self.revision += 1;
         self.issues.clear();
         self.prepared = None;
+        self.view.stale_knife_evidence();
         self.preview_dirty = true;
         self.recovery.changed(ctx.input(|i| i.time));
     }
@@ -405,18 +436,19 @@ impl App {
             });
         }
         self.status = match command {
-            Command::ImportSvg { .. } => "Importing SVG…",
+            Command::ImportSvg { .. } | Command::ImportKnifeSvg { .. } => "Importing SVG…",
             Command::Artwork { .. } => "Updating artwork collection…",
+            Command::Operation { .. } => "Updating operations…",
             Command::Resource { .. } => "Copying reviewed resource values…",
             Command::Preview { .. } => "Updating artwork preview…",
-            Command::ValidatePlan { .. } => "Checking whether the retained carving still matches…",
+            Command::ValidatePlan { .. } => {
+                "Checking whether the retained execution still matches…"
+            }
             Command::Seek { .. } => "Loading stock position…",
             Command::Open { .. } => "Opening document…",
             Command::Migrate { .. } => "Importing older job into the portable format…",
             Command::ApplyProfile { .. } => "Applying machine configuration…",
-            Command::Generate { .. } => {
-                "Generating ordered endmill / V-bit execution and stock checkpoints…"
-            }
+            Command::Generate { .. } => "Generating toolpaths and stock checkpoints…",
             Command::Prepare { .. } => {
                 "Checking retained execution and reading back emitted output…"
             }
@@ -440,7 +472,10 @@ impl App {
         };
         self.port.open(
             id,
-            matches!(kind, IoKind::Svg | IoKind::AddSvg | IoKind::ReplaceSvg),
+            matches!(
+                kind,
+                IoKind::Svg | IoKind::KnifeSvg | IoKind::AddSvg | IoKind::ReplaceSvg
+            ),
             matches!(kind, IoKind::AddSvg),
             ctx.clone(),
         );
@@ -465,6 +500,8 @@ impl App {
                 engine::ArtworkCommand::Add { filename, svg }
             };
             self.artwork_command(action, ctx);
+        } else if matches!(kind, IoKind::KnifeSvg) {
+            self.submit(Command::ImportKnifeSvg { filename, svg }, ctx);
         } else {
             self.submit(Command::ImportSvg { filename, svg }, ctx);
         }
@@ -574,7 +611,14 @@ impl App {
                 self.status =
                     "Reviewed values copied into the job. Undo restores the previous copy.".into();
             }
-            Some("artwork") => {
+            Some("operation") => match CamJobV5::from_json(&meta.job) {
+                Ok(job) => {
+                    self.adopt_operation(job, ctx);
+                    self.view.load_scene(Ok((meta, payload)));
+                }
+                Err(error) => self.status = error.to_string(),
+            },
+            Some("artwork" | "knife_start" | "knife_selection" | "knife_outlines") => {
                 let job = match engine::open(&meta.job) {
                     Ok(job) => job,
                     Err(error) => {
@@ -599,7 +643,9 @@ impl App {
                 self.issues = serde_json::from_value(reply["issues"].clone()).unwrap_or_default();
                 self.artwork_rejections =
                     serde_json::from_value(reply["rejectedFiles"].clone()).unwrap_or_default();
-                self.navigate(0);
+                if reply["kind"] == "artwork" {
+                    self.navigate(0);
+                }
                 self.simulate = false;
                 self.status = "Artwork updated. Assignments retain their exact source revisions; repair unresolved references or Undo.".into();
                 if let Some(rejected) = reply["rejectedFiles"].as_array().filter(|r| !r.is_empty())
@@ -681,11 +727,15 @@ impl App {
                     }
                 }
                 self.document = Some(Document {
-                    finish_draft: engine::settings(&job).finish.clone().or_else(|| {
-                        (reply["kind"] == "profile")
-                            .then(|| self.document.as_ref().and_then(|d| d.finish_draft.clone()))
-                            .flatten()
-                    }),
+                    finish_draft: engine::carving(&job)
+                        .and_then(|s| s.finish.clone())
+                        .or_else(|| {
+                            (reply["kind"] == "profile")
+                                .then(|| {
+                                    self.document.as_ref().and_then(|d| d.finish_draft.clone())
+                                })
+                                .flatten()
+                        }),
                     job,
                     raw,
                 });
@@ -775,6 +825,10 @@ impl App {
                 }
             }
             Some("prepared") => {
+                self.view.accept_knife_evidence(
+                    &reply["bundle"]["report"]["knifeEvidence"],
+                    &reply["file"]["sha256"],
+                );
                 self.prepared = Some((reply.clone(), self.revision));
                 self.status =
                     "Checked output ready. Exact bytes are retained for save and retry.".into();
@@ -840,7 +894,7 @@ impl App {
                         self.import_file(kind, filename, svg, ctx)
                     }
                     Ok(IoValue::Job(json)) => match kind {
-                        IoKind::Svg | IoKind::AddSvg | IoKind::ReplaceSvg => {
+                        IoKind::Svg | IoKind::KnifeSvg | IoKind::AddSvg | IoKind::ReplaceSvg => {
                             self.import_file(kind, "Imported.svg".into(), json, ctx)
                         }
                         IoKind::Open => self.submit(Command::Open { json }, ctx),
@@ -1040,6 +1094,13 @@ impl App {
         self.view.show(ctx, self.simulate);
         for event in self.view.take_artwork_events() {
             match event {
+                crate::viewport::ArtworkEvent::KnifeSelection(references) => {
+                    self.artwork_command(
+                        engine::ArtworkCommand::KnifeSelection { references },
+                        ctx,
+                    );
+                    self.navigate(2);
+                }
                 crate::viewport::ArtworkEvent::Selection(refs) => {
                     if let Some(reference) = refs.last() {
                         self.select_artwork(&reference.artwork_item_id.0, ctx);
@@ -1138,7 +1199,7 @@ impl App {
             });
         }
         let resources_probe = json!({"open":self.resources.open,"jobsOpen":self.resources.jobs_open,"ready":self.resources.ready,"busy":self.resources.busy,"dirty":self.resources.dirty,"status":self.resources.status,"revision":self.resources.base.as_ref().map(|s|s.revision),"catalog":self.resources.draft,"selectedTool":self.resources.tool,"selectedProfile":self.resources.preset,"role":self.resources.role,"conflictRevision":self.resources.conflict.as_ref().map(|s|s.revision)});
-        let job_probe = self.document.as_ref().map(|d|json!({"tools":d.job.tools,"profileStatuses":cam_core::project::v5::resources::assignment_statuses(&d.job),"machineSnapshot":d.job.machine_configuration,"name":d.job.name,"depth":engine::settings(&d.job).max_depth_mm,"feed":engine::settings(&d.job).endmill.cutting_feed_mm_min,"machine":d.job.machine_configuration.is_some(),"rawDepth":d.text(0),"rawFeed":d.text(2),"components":engine::settings(&d.job).components.len(),"mode":engine::settings(&d.job).mode,"stock":d.job.setup.stock,"placement":d.active_artwork().map(|i| &i.placement),"activeArtwork":d.raw.artwork_item,"artworks":d.job.artwork.iter().map(|i|json!({"id":i.id,"name":i.name,"placement":i.placement})).collect::<Vec<_>>(),"assignment":engine::settings(&d.job).components,"workZero":d.job.setup.work_zero,"endmillGeometry":crate::authoring::tool(&d.job,false).and_then(|t|t.geometry.clone()),"vbitGeometry":crate::authoring::tool(&d.job,true).and_then(|t|t.geometry.clone())}));
+        let job_probe = self.document.as_ref().map(|d| if d.job.operations.is_empty() { json!({"kind":"empty","name":d.job.name,"stock":d.job.setup.stock,"machineSnapshot":d.job.machine_configuration,"artworks":d.job.artwork,"tools":d.job.tools}) } else if let Some(knife) = crate::knife::settings(&d.job) { json!({"kind":"drag_knife","name":d.job.name,"knife":knife,"tools":d.job.tools,"stock":d.job.setup.stock,"machineSnapshot":d.job.machine_configuration,"workZero":d.job.setup.work_zero,"activeArtwork":d.raw.artwork_item,"artworks":d.job.artwork}) } else {json!({"tools":d.job.tools,"profileStatuses":cam_core::project::v5::resources::assignment_statuses(&d.job),"machineSnapshot":d.job.machine_configuration,"name":d.job.name,"depth":engine::settings(&d.job).max_depth_mm,"feed":engine::settings(&d.job).endmill.cutting_feed_mm_min,"machine":d.job.machine_configuration.is_some(),"rawDepth":d.text(0),"rawFeed":d.text(2),"components":engine::settings(&d.job).components.len(),"mode":engine::settings(&d.job).mode,"stock":d.job.setup.stock,"placement":d.active_artwork().map(|i| &i.placement),"activeArtwork":d.raw.artwork_item,"artworks":d.job.artwork.iter().map(|i|json!({"id":i.id,"name":i.name,"placement":i.placement})).collect::<Vec<_>>(),"assignment":engine::settings(&d.job).components,"workZero":d.job.setup.work_zero,"endmillGeometry":crate::authoring::tool(&d.job,false).and_then(|t|t.geometry.clone()),"vbitGeometry":crate::authoring::tool(&d.job,true).and_then(|t|t.geometry.clone())})});
         crate::viewport::probe::publish(json!({"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
     }
     fn save_output(&mut self, ctx: &egui::Context) {

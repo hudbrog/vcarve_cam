@@ -208,6 +208,23 @@ pub enum ResourceCommand {
 }
 impl ResourceCommand {
     pub fn clear_fields(&self, job: &CamJobV5) -> Vec<usize> {
+        if job.operations.is_empty() {
+            return vec![];
+        }
+        if let Some(s) = crate::knife::settings(job) {
+            return match self {
+                Self::StockPage { .. } => vec![40, 41, 42, 43],
+                Self::Machine { .. } => vec![7, 32, 33, 34, 35, 36],
+                Self::ApplyToolProfile { .. }
+                | Self::SelectLibraryTool { .. }
+                | Self::UseTool { .. } => vec![61, 62, 63, 64, 65, 66, 32, 33],
+                Self::Apply { .. } | Self::Reset { .. } | Self::Reapply { .. } => {
+                    vec![63, 64, 65, 66]
+                }
+                Self::EditTool { tool } if tool.id == s.assignment.tool_id => vec![61, 62],
+                _ => vec![],
+            };
+        }
         if let Self::ApplyToolProfile { role, .. } = self {
             return match role {
                 AssignmentRole::Endmill => vec![2, 8, 9, 10, 11, 12, 13, 32, 33],
@@ -451,7 +468,8 @@ pub fn capture_assignment(
     id: String,
     name: String,
 ) -> Result<CuttingPreset, String> {
-    let s = crate::session::settings(job);
+    let s = crate::session::carving(job)
+        .ok_or("Choose a milling assignment to capture milling values")?;
     let a = match role {
         AssignmentRole::Endmill => &s.endmill,
         AssignmentRole::Vbit => &s.vbit,

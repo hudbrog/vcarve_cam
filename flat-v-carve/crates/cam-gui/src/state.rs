@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const FIELDS: [&str; 61] = [
+pub const FIELDS: [&str; 75] = [
     "Maximum depth",
     "Wall allowance",
     "Roughing feed",
@@ -63,6 +63,20 @@ pub const FIELDS: [&str; 61] = [
     "Quality sample limit",
     "Reachability cell limit",
     "Stock slices",
+    "Blade offset",
+    "Blade cutting depth",
+    "Knife cutting feed",
+    "Knife plunge feed",
+    "Swivel feed",
+    "Knife tool stepdown",
+    "Knife pass stepdown",
+    "Swivel depth",
+    "Corner threshold",
+    "Through-cut allowance",
+    "Closure overlap",
+    "Initial heading",
+    "Knife top offset",
+    "Knife bottom offset",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -83,7 +97,11 @@ impl Draft {
                 .first()
                 .map(|i| i.id.0.clone())
                 .unwrap_or_default(),
-            operation: job.operations[0].id.clone(),
+            operation: job
+                .operations
+                .first()
+                .map(|o| o.id.clone())
+                .unwrap_or_default(),
             raw: BTreeMap::new(),
         }
     }
@@ -103,7 +121,7 @@ impl Draft {
         )
     }
     pub fn validate_job(&self, job: &cam_core::project::v5::CamJobV5) -> Result<(), String> {
-        if self.operation != job.operations[0].id
+        if self.operation != job.operations.first().map(|o| o.id.as_str()).unwrap_or("")
             || (!self.artwork_item.is_empty()
                 && !job.artwork.iter().any(|i| i.id.0 == self.artwork_item))
         {
@@ -144,7 +162,7 @@ impl Draft {
         let draft: Self = serde_json::from_str(text).map_err(|e| e.to_string())?;
         if draft.schema != 3
             || (!draft.artwork_item.is_empty() && !cam_core::preview::valid_id(&draft.artwork_item))
-            || !cam_core::preview::valid_id(&draft.operation)
+            || (!draft.operation.is_empty() && !cam_core::preview::valid_id(&draft.operation))
         {
             return Err("Unsupported recovery identity/schema".into());
         }

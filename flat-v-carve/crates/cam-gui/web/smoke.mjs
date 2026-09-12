@@ -50,13 +50,13 @@ if (!target) {
 
 const socket = new WebSocket(target.webSocketDebuggerUrl);
 let nextId = 1;
-const send = (method, params = {}) => new Promise(resolve => {
+const send = (method, params = {}) => new Promise((resolve,reject) => {
   const id = nextId++;
   const onMessage = event => {
     const payload = JSON.parse(event.data);
     if (payload.id === id) {
       socket.removeEventListener('message', onMessage);
-      resolve(payload.result);
+      if(payload.error)reject(new Error(`${method}: ${JSON.stringify(payload.error)}`));else resolve(payload.result);
     }
   };
   socket.addEventListener('message', onMessage);
@@ -93,8 +93,11 @@ const waitFor = async (test, label, attempts = 60) => {
   throw new Error(`timed out waiting for ${label}; last state ${JSON.stringify(await state())}`);
 };
 const click = async (x, y) => {
+  await send('Input.dispatchMouseEvent', {type:'mouseMoved',x,y});
+  await sleep(60);
   for (const type of ['mousePressed', 'mouseReleased']) {
     await send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1});
+    await sleep(60);
   }
 };
 const pressKey = async (key, code, modifiers = 0) => {
@@ -115,7 +118,7 @@ const control = async label => {
       'Import library':'Library actions','Export library':'Library actions','Import machine configuration':'Library actions',
       'Load library':'Library actions','Compare stored revision':'Library actions','Reload stored library':'Library actions','Overwrite reviewed revision':'Library actions',
       'Duplicate library tool':'Library item actions','Duplicate machine configuration':'Library item actions','Add geometry to job':'Library item actions',
-      'New endmill':'New tool','New V-bit':'New tool','Capture job geometry':'New tool',
+      'New endmill':'New tool','New V-bit':'New tool','New drag knife':'New tool','Capture job geometry':'New tool',
       'New machine profile':'New machine','New machine ID':'New machine','Capture applied machine':'New machine'
     };
     const dropdown=['Library rotation','Library plunge','Library ramp','Copied plunge','Copied ramp','Work offset','Length compensation','Coolant','Path control','M6 return'].find(prefix=>label.startsWith(prefix+' '));
@@ -137,7 +140,7 @@ const control = async label => {
       if(current.resources?.open&&['Reapply reviewed profile','Reset assignment overrides'].includes(label)){await control('Applied job values');continue;}
       throw new Error(`Missing control ${label}`);
     }
-    const nav=label.startsWith('Artwork ') || ['Setup','Machine','Job settings','Artwork','Cutting','Inspect result','Endmill tool','V-bit tool','+ Import artwork','Tool library','Job tools'].includes(label);
+    const nav=label.startsWith('Artwork ') || ['Add operation','Delete operation','Setup','Machine','Job settings','Artwork','Cutting','Inspect result','Endmill tool','V-bit tool','+ Import artwork','Tool library','Job tools'].includes(label);
     const resource=!nav&&current.resources?.open,jobTools=!nav&&current.resources?.jobsOpen;
     const list=resource&&label!=='Library tool name'&&(label.startsWith('Library tool ')||label.startsWith('Library machine '));
     const clip=current.controls?.[nav?'Navigator viewport':list?'Resource list viewport':resource?'Resource viewport':jobTools?'Job tools viewport':'Inspector viewport'];
@@ -157,7 +160,7 @@ const edit = async(label,text)=>{
   if(current.workspace?.inspector===2&&tab!==null&&current.workspace.operation_tab!==tab)await control(['Operation Shape & depth','Operation Endmill','Operation V-bit'][tab]);
   await control('Filter fields');await pressKey('a','KeyA',2);await send('Input.insertText',{text:label});await sleep(160);
   await control(label);await pressKey('a','KeyA',2);
-  await send('Input.insertText',{text});await sleep(100);
+  if(text==='')await pressKey('Backspace','Backspace');else await send('Input.insertText',{text});await sleep(100);
 };
 const out=path.resolve('artifacts/gui/browser-smoke',new Date().toISOString().replaceAll(':','-'));mkdirSync(out,{recursive:true});
 const screenshot=async name=>{const shot=await send('Page.captureScreenshot',{format:'png'});const bytes=Buffer.from(shot.data,'base64');writeFileSync(path.join(out,name),bytes);return bytes;};
@@ -168,19 +171,30 @@ const chooseFile=async(label,filename)=>{
   let listener;
   const chosen=new Promise((resolve,reject)=>{
     const timer=setTimeout(()=>{socket.removeEventListener('message',listener);reject(new Error('No file chooser for '+label));},5000);
-    listener=event=>{const message=JSON.parse(event.data);if(message.method==='Page.fileChooserOpened'){clearTimeout(timer);socket.removeEventListener('message',listener);resolve(message.params.backendNodeId);}};
+    listener=event=>{const message=JSON.parse(event.data);if(message.method==='Page.fileChooserOpened'){clearTimeout(timer);socket.removeEventListener('message',listener);send('DOM.setFileInputFiles',{backendNodeId:message.params.backendNodeId,files:(Array.isArray(filename)?filename:[filename]).map(name=>path.resolve(name))}).then(resolve,reject);}};
     socket.addEventListener('message',listener);
   });
   await control(label);
-  const backendNodeId=await chosen;
-  await send('DOM.setFileInputFiles',{backendNodeId,files:(Array.isArray(filename)?filename:[filename]).map(name=>path.resolve(name))});
+  await chosen;
   await send('Page.setInterceptFileChooserDialog',{enabled:false});
 };
 try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
   if(process.argv.includes('--trace-io'))await evaluate(`(()=>{globalThis.GUI_IO_TRACE=[];const original=globalThis.CAM_GUI.receive_event;globalThis.CAM_GUI.receive_event=text=>{try{const event=JSON.parse(text);if(event.Io)globalThis.GUI_IO_TRACE.push(event.Io);}catch{}return original(text);};})()`);
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  if(process.argv.includes('--operation')) {
+  if(process.argv.includes('--knife-authoring')) {
+    const {knifeAuthoringScenario}=await import('./knife-authoring-scenario.mjs');
+    await knifeAuthoringScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,path,out,chooseFile});
+  } else if(process.argv.includes('--lifecycle')) {
+    const {lifecycleScenario}=await import('./operation-lifecycle-scenario.mjs');
+    const args={control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,path,out,chooseFile};
+    await lifecycleScenario(args);
+    const {gui6Scenario}=await import('./gui6-scenario.mjs');
+    await gui6Scenario({...args,existingKnife:true});
+  } else if(process.argv.includes('--gui6')) {
+    const {gui6Scenario}=await import('./gui6-scenario.mjs');
+    await gui6Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,path,out,chooseFile});
+  } else if(process.argv.includes('--operation')) {
     const {operationScenario}=await import('./operation-scenario.mjs');
     await operationScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out});
   } else if(process.argv.includes('--gui5')) {
@@ -241,11 +255,14 @@ try {
   await control('Prepare checked output');await waitFor(s=>s.prepared&&!s.active,'fresh worker prepares retained plan',120);
   }
   if(problems.length)throw new Error('Browser errors: '+problems.join('\n'));
-  writeFileSync(path.join(out,'evidence.json'),JSON.stringify({url:base,checks,consoleErrors:problems,note:'Real Chromium/WebGPU UI and WASM Worker. Denied save is injected; the fallback download is written and its actual bytes checked. Browser terminate call does not measure stopped CPU latency.'},null,2));
-  console.log((process.argv.includes('--gui5')?'GUI5':process.argv.includes('--gui4')?'GUI4':process.argv.includes('--gui3')?'GUI3':'GUI2')+' browser workflow passed');
+  const browserVersion=await send('Browser.getVersion');
+  const gpuResult=await send('Runtime.evaluate',{expression:'(async()=>{const a=await navigator.gpu.requestAdapter();return a?{vendor:a.info.vendor,architecture:a.info.architecture,device:a.info.device,description:a.info.description}:null})()',awaitPromise:true,returnByValue:true});
+  const offlineBuild=readFileSync('crates/cam-gui/web/offline-manifest.js','utf8').match(/"version":"([a-f0-9]+)"/)?.[1];
+  writeFileSync(path.join(out,'evidence.json'),JSON.stringify({url:base,browserVersion,gpu:gpuResult.result?.value,offlineBuild,checks,consoleErrors:problems,note:'Real Chromium/WebGPU UI and WASM Worker. Checks list the exercised workflow; saved download bytes are verified where recorded. Browser terminate does not measure stopped CPU latency.'},null,2));
+  console.log((process.argv.includes('--gui6')?'GUI6':process.argv.includes('--gui5')?'GUI5':process.argv.includes('--gui4')?'GUI4':process.argv.includes('--gui3')?'GUI3':'GUI2')+' browser workflow passed');
 } catch(error) {const screenshot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(path.join(out,'failure.png'),Buffer.from(screenshot.data,'base64'));writeFileSync(path.join(out,'failure-state.json'),JSON.stringify(await state(),null,2));if(process.argv.includes('--trace-io'))writeFileSync(path.join(out,'io-trace.json'),JSON.stringify(await evaluate('globalThis.GUI_IO_TRACE'),null,2));console.error(error);console.error(await state());console.error(problems);process.exitCode=1;}
 finally {
   await Promise.race([send('Browser.close'),sleep(1500)]);
   socket.close();browser.kill();await sleep(500);
-  rmSync(profile,{recursive:true,force:true});
+  rmSync(profile,{recursive:true,force:true,maxRetries:20,retryDelay:250});
 }
