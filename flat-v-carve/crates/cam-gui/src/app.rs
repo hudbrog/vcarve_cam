@@ -46,6 +46,17 @@ fn button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
     response
 }
 
+/// The geometry the current operation owns. Every operation keeps its own
+/// explicit selection; artwork never assigns geometry on its own.
+pub fn operation_selection(job: &CamJobV5) -> Vec<cam_core::project::v5::GeometryRef> {
+    if let Some(knife) = crate::knife::settings(job) {
+        return knife.chains.clone();
+    }
+    crate::session::carving(job)
+        .map(|settings| settings.components.clone())
+        .unwrap_or_default()
+}
+
 /// Stable field IDs use the same recovery keys as the qualified input binder.
 pub const LIVE_FIELDS: [usize; 10] = [0, 1, 2, 3, 4, 5, 6, 8, 9, 10];
 pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
@@ -618,7 +629,10 @@ impl App {
                 }
                 Err(error) => self.status = error.to_string(),
             },
-            Some("artwork" | "knife_start" | "knife_selection" | "knife_outlines") => {
+            Some(
+                "artwork" | "carve_selection" | "knife_start" | "knife_selection"
+                | "knife_outlines",
+            ) => {
                 let job = match engine::open(&meta.job) {
                     Ok(job) => job,
                     Err(error) => {
@@ -647,7 +661,14 @@ impl App {
                     self.navigate(0);
                 }
                 self.simulate = false;
-                self.status = "Artwork updated. Assignments retain their exact source revisions; repair unresolved references or Undo.".into();
+                self.status = if matches!(
+                    reply["kind"].as_str(),
+                    Some("carve_selection" | "knife_selection")
+                ) {
+                    "Operation geometry updated. Undo restores the previous selection.".into()
+                } else {
+                    "Artwork updated. Assignments retain their exact source revisions; repair unresolved references or Undo.".into()
+                };
                 if let Some(rejected) = reply["rejectedFiles"].as_array().filter(|r| !r.is_empty())
                 {
                     self.status = format!(
@@ -757,7 +778,6 @@ impl App {
                 self.issues = serde_json::from_value(reply["issues"].clone()).unwrap_or_default();
                 if reply["kind"] != "profile" {
                     self.view.reset_inspection();
-                    self.view.artwork.selected.clear();
                     self.view.artwork.hidden.clear();
                     self.view.artwork.locked.clear();
                     self.search.clear();
@@ -776,7 +796,7 @@ impl App {
                 }
                 self.view.load_scene(Ok((meta, payload)));
                 if self.inspector_tab == 0 {
-                    self.status="SVG imported. Select filled components and enter stock, target and cutting settings; no machining defaults were copied.".into();
+                    self.status="SVG imported. In the operation's Geometry to carve, or by clicking filled regions in the viewport, select the components to cut; no machining defaults were copied.".into();
                 }
             }
             Some("generated" | "revalidated") => {
@@ -1015,6 +1035,7 @@ impl App {
                     .map(|i| (i.id.0.clone(), i.placement.clone()))
                     .collect(),
                 self.components.clone(),
+                operation_selection(&doc.job),
             );
         }
     }
@@ -1099,14 +1120,16 @@ impl App {
                         engine::ArtworkCommand::KnifeSelection { references },
                         ctx,
                     );
+                    self.operation_tab = 0;
                     self.navigate(2);
                 }
-                crate::viewport::ArtworkEvent::Selection(refs) => {
-                    if let Some(reference) = refs.last() {
-                        self.select_artwork(&reference.artwork_item_id.0, ctx);
-                    }
-                    self.status="Viewport selection only. Use, Add or Remove to change the carving assignment.".into();
-                    self.navigate(0);
+                crate::viewport::ArtworkEvent::CarveSelection(references) => {
+                    self.artwork_command(
+                        engine::ArtworkCommand::CarveSelection { references },
+                        ctx,
+                    );
+                    self.operation_tab = 0;
+                    self.navigate(2);
                 }
                 crate::viewport::ArtworkEvent::Placement {
                     item,

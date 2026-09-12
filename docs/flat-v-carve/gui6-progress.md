@@ -33,6 +33,13 @@ clearly labeled editable starting suggestions. Applying fills blank fields only,
 preserves explicit/partial values, and supports Undo. Feeds, target cut depth and
 physical heading remain explicit. No new material-specific cutting claim is made.
 
+A later review follow-up moved the Flat V-carve geometry selection out of the
+artwork panel: each operation now owns its geometry exactly as the knife does,
+with the selection list, Select all/Clear, viewport click/Shift-click assignment
+and explicit unresolved-reference repair living in the operation. See
+[operation geometry selection](operation-geometry-selection.md) for the design,
+the command contract and the verification record.
+
 ## Contracts and implementation
 
 F3 compensation, passive-blade replay and contact checks remain in core. H4/H5

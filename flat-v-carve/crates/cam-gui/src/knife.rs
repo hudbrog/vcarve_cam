@@ -260,17 +260,13 @@ pub fn select(job: &CamJobV5, references: &[GeometryRef]) -> Result<CamJobV5, St
     {
         return Err("Artwork changed; select the knife chain again".into());
     }
-    let picks = references
-        .iter()
-        .map(|r| artwork::GeometryPick {
-            artwork_item_id: r.artwork_item_id.clone(),
-            kind: r.kind,
-            local_geometry_id: r.local_geometry_id.clone(),
-        })
-        .collect::<Vec<_>>();
-    commands::set_chain_selection(job, &job.operations[0].id, &picks)
-        .map(|o| o.job)
-        .map_err(|e| e.to_string())
+    commands::set_chain_selection(
+        job,
+        &job.operations[0].id,
+        &crate::authoring::picks(references),
+    )
+    .map(|o| o.job)
+    .map_err(|e| e.to_string())
 }
 
 /// Bind a source-length start anchor using the current core catalogue.

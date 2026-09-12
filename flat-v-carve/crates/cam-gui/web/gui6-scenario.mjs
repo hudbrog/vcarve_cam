@@ -7,9 +7,9 @@ export async function gui6Scenario({control,edit,state,waitFor,send,evaluate,sle
   await waitFor(s=>s.job?.kind==='drag_knife'&&!s.active,'new knife job');
   const initial=(await state()).job;
   if(initial.knife.chains.length||initial.tools.find(t=>t.id===initial.knife.assignment.tool_id)?.geometry)throw Error('New knife job invented selection or geometry');
-  await control('Artwork');await clear();await control('Select all knife chains');
+  await control('Artwork');await clear();await control('Cutting');await control('Select all knife chains');
   await waitFor(s=>s.job.knife.chains.length===2&&!s.active,'explicit open and closed selection');
-  await screenshot('gui6-artwork.png');
+  await screenshot('gui6-knife-geometry.png');
   await control('Move artwork');await sleep(250);const moveBefore=await state(),rect=moveBefore.controls['Artwork viewport'];
   const x=(rect[0]+rect[2])/2,y=(rect[1]+rect[3])/2;
   await send('Input.dispatchMouseEvent',{type:'mouseMoved',x,y});await send('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',buttons:1,clickCount:1});

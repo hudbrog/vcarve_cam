@@ -29,9 +29,11 @@ are test inputs, not material or machine recommendations:
 
 ## Five-to-ten-minute review
 
-1. In Artwork, inspect the open and closed chain checkboxes. Clear and select
-   them explicitly. Use Move, Rotate or Scale, then Undo. Importing another SVG
-   adds a source without assigning its geometry to the cut.
+1. In Cutting, inspect the open and closed chain checkboxes under **Geometry to
+   cut**. Clear and select them explicitly, or click and Shift-click chains in
+   the viewport. Artwork keeps placement, hide/lock and source management only.
+   Use Move, Rotate or Scale, then Undo. Importing another SVG adds a source
+   without assigning its geometry to the cut.
 2. Inspect Cutting and the knife tool. The process is passive XYZ, spindle and
    coolant off. Edit depth, feeds, swivel depth, corner threshold and initial
    heading. Partial text such as `-` must stay visible and block Generate until

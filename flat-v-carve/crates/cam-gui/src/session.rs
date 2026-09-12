@@ -77,6 +77,10 @@ pub enum Command {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ArtworkCommand {
+    /// Replace the Flat V-carve operation's own filled-component selection.
+    CarveSelection {
+        references: Vec<v5::GeometryRef>,
+    },
     KnifeOutlines {
         item: v5::ArtworkItemId,
     },
@@ -123,6 +127,32 @@ fn artwork_command(job: &CamJobV5, action: ArtworkCommand) -> Result<(CamJobV5, 
     };
     let mut rejected = Vec::new();
     let (outcome, selected) = match action {
+        ArtworkCommand::CarveSelection { references } => {
+            if job.operations.is_empty() {
+                return Err("Add a Flat V-carve operation before selecting its geometry".into());
+            }
+            // Only the displayed catalogue's exact references are accepted:
+            // a reference from a replaced source is reattached deliberately,
+            // never rebound by re-sending it.
+            let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
+            let available = crate::authoring::catalogue_components(&catalogue);
+            if references
+                .iter()
+                .any(|reference| !available.iter().any(|c| &c.reference == reference))
+            {
+                return Err("Selected geometry changed; select the filled components again".into());
+            }
+            let outcome = commands::set_component_selection(
+                job,
+                &job.operations[0].id,
+                &crate::authoring::picks(&references),
+            )
+            .map_err(|e| e.to_string())?;
+            return Ok((
+                open(&outcome.job.to_json().map_err(|e| e.to_string())?)?,
+                json!({"kind":"carve_selection","issues":outcome.issues}),
+            ));
+        }
         ArtworkCommand::KnifeOutlines { item } => {
             let result = crate::knife_outlines::create(job, &item)?;
             let active = result.artwork.last().map(|i| i.id.clone());

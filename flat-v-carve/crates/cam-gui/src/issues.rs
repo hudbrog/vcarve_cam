@@ -18,10 +18,10 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
         .strip_prefix(&format!("operations[{operation}]."))
         .unwrap_or(path);
     if local.starts_with("chains[") {
-        return Some((0, "Select all knife chains".into()));
+        return Some((2, "Unresolved knife selections".into()));
     }
     if local.starts_with("components[") {
-        return Some((0, "Unresolved assignments".into()));
+        return Some((2, "Unresolved selections".into()));
     }
     let field = match local {
         "assignment.tool" | "assignment.tool_id" => 61,
@@ -34,7 +34,7 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
         "corner_threshold_deg" => 69,
         "alignment.initial_heading_deg" => 72,
         "setup.stock.xy" => 42,
-        "chains" | "artwork" => return Some((0, "Select all knife chains".into())),
+        "chains" | "artwork" => return Some((2, "Select all knife chains".into())),
         "max_depth_mm" => 0,
         "wall_allowance_mm" => 1,
         "endmill.cutting_feed_mm_min" => 2,
@@ -57,7 +57,7 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
         "setup.start_xy_mm" => 30,
         "vbit.stepover_mm" => 46,
         "top" => 47,
-        "component_ids" | "components" => return Some((0, "Select all filled components".into())),
+        "component_ids" | "components" => return Some((2, "Select all filled components".into())),
         "rough" => return Some((2, "Depth-dependent clearing".into())),
         "finish" => return Some((2, "Combined".into())),
         "endmill.plunge_capable" => return Some((2, "Plunge yes".into())),
@@ -143,5 +143,44 @@ mod tests {
             );
         }
         assert!(target(&job, "operations[unrelated].endmill.spindle_rpm").is_none());
+    }
+
+    #[test]
+    fn selection_issues_route_to_the_operation_geometry_group() {
+        let mut job = crate::authoring::import_svg(
+            "letters.svg".into(),
+            include_str!("../../../fixtures/gui3/lettering.svg").into(),
+        )
+        .unwrap();
+        let operation = job.operations[0].id.clone();
+        assert_eq!(
+            target(&job, &format!("operations[{operation}].components[0]")),
+            Some((2, "Unresolved selections".into()))
+        );
+        assert_eq!(
+            target(&job, &format!("operations[{operation}].components")),
+            Some((2, "Select all filled components".into()))
+        );
+        // The knife panel owns its own list inside the same operation tab.
+        job.operations[0].settings = crate::knife::import_svg(
+            "chains.svg".into(),
+            include_str!("../../../fixtures/gui6/chains.svg").into(),
+        )
+        .unwrap()
+        .operations[0]
+            .settings
+            .clone();
+        assert_eq!(
+            target(&job, &format!("operations[{operation}].chains[0]")),
+            Some((2, "Unresolved knife selections".into()))
+        );
+        assert_eq!(
+            target(&job, &format!("operations[{operation}].chains")),
+            Some((2, "Select all knife chains".into()))
+        );
+        assert_eq!(
+            target(&job, &format!("operations[{operation}].artwork")),
+            Some((2, "Select all knife chains".into()))
+        );
     }
 }

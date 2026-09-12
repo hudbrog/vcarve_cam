@@ -43,10 +43,11 @@ stale gesture. Switching rows and ordinary picking do not change machining.
 With **Select artwork**, pick near setup (9,23) and Shift-pick (29,20). The
 second point lies inside the first O's hole and on the second L, so each pick
 has a different owner. At genuinely coincident fills, **Next overlap** cycles
-the candidates. Verify `artwork-1 / letter-l::0` and `second / letter-l::0` in
-the assignment list, then choose **Use picked**. **Add picked** and **Remove
-picked** make explicit incremental changes. Importing or duplicating never
-expands the assignment automatically.
+the candidates and assigns the chosen owner. Each click and Shift-click assigns
+directly to the operation: verify `artwork-1 / letter-l::0` and
+`second / letter-l::0` in **Cutting → Geometry to carve**, which is the
+operation's own selection list. Importing or duplicating never expands the
+selection automatically, and the Artwork panel no longer assigns geometry.
 
 Choose **Combined** in Cutting, Generate, Simulate, then **After endmill** and
 **After V-bit**. Both Ls must be carved. Inspection still uses actual sampled
@@ -75,14 +76,16 @@ execution/output trust from a saved file.
 Select the first source and **Replace SVG** with `fixtures/gui4/replacement.svg`.
 It changes the L while deliberately reusing its local IDs. Its existing
 assignment becomes unresolved because the source revision changed. The second
-source remains assigned. The issue links to **Unresolved assignments**; save
-and reopen this incomplete project to verify the reference is preserved.
+source remains assigned. The issue links to **Unresolved selections** in the
+operation's geometry list; save and reopen this incomplete project to verify the
+reference is preserved.
 
-Pick the intended new L and choose **Repair reference 1 with picked**. The
-command replaces that exact old reference with the explicitly chosen current
-component; other unresolved references stay untouched. Alternatively remove an
-unresolved assignment explicitly, or Undo the replacement. Generate the repaired
-project and inspect/export again.
+In **Cutting → Geometry to carve**, choose **Replace reference 1 with…** and pick
+the intended current component from the offered list. The command replaces that
+exact old reference with the explicitly chosen current component; other
+unresolved references stay untouched. Alternatively **Remove unresolved
+reference 1**, or Undo the replacement. Generate the repaired project and
+inspect/export again.
 
 Delete a used source. Its references remain visibly dangling, and the project
 is still saveable. Undo restores the exact source/assignment. Adding a new file

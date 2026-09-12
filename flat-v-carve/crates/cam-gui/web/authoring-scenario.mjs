@@ -11,8 +11,9 @@ export async function authoringScenario({control,edit,state,waitFor,send,evaluat
   await sleep(500);const incomplete=JSON.parse(readFileSync(path.join(out,'carving.gui2.job.json'),'utf8'));
   if(incomplete.setup.stock.thickness_mm!==18 || !incomplete.setup.stock.xy || incomplete.operations[0].settings.settings.endmill.cutting_feed_mm_min)throw new Error('Incomplete save lost stock defaults or invented cutting values');
   if(incomplete.setup.start_xy_mm?.x!==0||incomplete.setup.start_xy_mm?.y!==0||incomplete.tolerances.motion_tolerance_mm!==0.01||incomplete.tolerances.verification_tolerance_mm!==0.05)throw new Error('New SVG missing start or tolerance defaults');
-  await control('Select all filled components');await waitFor(s=>s.job?.components===2&&!s.active,'explicit component selection');
+  await control('Cutting');await control('Select all filled components');await waitFor(s=>s.job?.components===2&&!s.active,'explicit component selection');
   record('selected artwork visible before generation',selectedArtworkPixels(await screenshot('imported-artwork.png'),(await state()).controls['Artwork viewport']));
+  await control('Artwork');
   await edit('Origin X','2');await edit('Origin Y','3');await edit('Rotation','15');await edit('Scale','1');
   await control('Setup');
   await control('Stock XY from SVG page');await waitFor(s=>!s.active&&s.job.stock.xy.min_x_mm!==0,'page capture follows placed SVG');

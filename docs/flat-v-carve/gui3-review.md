@@ -15,16 +15,20 @@ For the browser review, run `node crates/cam-gui/web/serve.mjs` from
 
 Import `flat-v-carve/fixtures/gui3/lettering.svg`. The fixture contains a filled L
 and a separate O with a hole. Click each letter; click inside the O's hole. An
-ordinary pick changes only the orange temporary selection. Shift-click toggles
-members. For overlapping sources, **Next overlap** cycles the qualified filled
-component candidates. **Use picked**, **Add picked**, and **Remove picked** are
-the explicit changes to the machining assignment.
+ordinary click assigns that filled region to the operation's own geometry
+selection; Shift-click adds or removes one member. Clicking a hole or a hidden or
+locked source changes nothing. For overlapping sources, **Next overlap** cycles
+the qualified filled component candidates and assigns the chosen owner.
+**Cutting → Geometry to carve** lists the same selection for checkboxes, Select
+all, Clear and explicit repair, and is the only place geometry is assigned: the
+Artwork panel manages placement and sources only.
 
 Choose **Move artwork**, drag the L, and Undo. Rotate and Scale use setup (0,0),
 the image of the numeric page origin, as their pivot. One released gesture is one
 Undo transaction; Escape cancels it. Numeric placement uses the same core
 `scale × rotate(page − origin)` conversion. Use origin X = -5, Y = -3, rotation =
-0, scale = 1 for the following tour. Pick only the L and choose **Use picked**.
+0, scale = 1 for the following tour. Click only the L, or check only it in
+**Geometry to carve**.
 
 ## Configure the lettering job
 

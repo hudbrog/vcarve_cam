@@ -8,7 +8,7 @@ use cam_core::{geometry::Point, project::v5::GeometryRef, svg::Placement};
 #[derive(Clone)]
 pub enum ArtworkEvent {
     KnifeSelection(Vec<GeometryRef>),
-    Selection(Vec<GeometryRef>),
+    CarveSelection(Vec<GeometryRef>),
     Placement {
         item: String,
         revision: u64,
@@ -27,6 +27,9 @@ struct Drag {
 pub struct ArtworkInteraction {
     pub enabled: bool,
     pub mode: GestureMode,
+    /// The geometry assigned to the current operation, mirrored here so the
+    /// viewport can extend or replace that operation's own selection. Pointer
+    /// assignment is an explicit document command; it is never display-only.
     pub selected: Vec<GeometryRef>,
     pub revision: u64,
     pub hidden: std::collections::BTreeSet<String>,
@@ -62,6 +65,7 @@ impl Viewport {
         item: String,
         placements: std::collections::BTreeMap<String, Placement>,
         components: Vec<Component>,
+        selection: Vec<GeometryRef>,
     ) {
         self.artwork.revision = revision;
         self.artwork.item = item;
@@ -78,13 +82,20 @@ impl Viewport {
             .retain(|id| self.artwork.placements.contains_key(id));
         self.artwork.drag = None;
         self.artwork.components = components;
-        self.artwork
-            .candidates
-            .retain(|r| self.artwork.components.iter().any(|c| &c.reference == r));
+        self.artwork.selected = selection;
+        let known = self.available_references();
+        self.artwork.candidates.retain(|r| known.contains(r));
         self.artwork.candidate_index = 0;
+    }
+    /// Every reference the displayed scene can resolve: filled components for
+    /// a carving operation and knife chains for a drag knife.
+    fn available_references(&self) -> Vec<GeometryRef> {
         self.artwork
-            .selected
-            .retain(|r| self.artwork.components.iter().any(|c| &c.reference == r));
+            .components
+            .iter()
+            .map(|c| c.reference.clone())
+            .chain(self.knife_chains.iter().map(|c| c.reference.clone()))
+            .collect()
     }
     pub fn take_artwork_events(&mut self) -> Vec<ArtworkEvent> {
         std::mem::take(&mut self.artwork.events)
@@ -116,17 +127,21 @@ impl Viewport {
                 let r = ui.button("Next overlap");
                 crate::app::observe_control("Next overlap", r.rect);
                 if r.clicked() {
-                    self.artwork.candidate_index =
-                        (self.artwork.candidate_index + 1) % self.artwork.candidates.len();
-                    self.artwork.selected =
-                        vec![self.artwork.candidates[self.artwork.candidate_index].clone()];
-                    self.artwork
-                        .events
-                        .push(ArtworkEvent::Selection(self.artwork.selected.clone()));
+                    // Advance from whichever coincident owner is assigned now,
+                    // so a completed assignment cycle does not repeat an owner.
+                    self.artwork.candidate_index = self
+                        .artwork
+                        .candidates
+                        .iter()
+                        .position(|c| self.artwork.selected.contains(c))
+                        .map_or(0, |index| (index + 1) % self.artwork.candidates.len());
+                    self.artwork.events.push(ArtworkEvent::CarveSelection(vec![
+                        self.artwork.candidates[self.artwork.candidate_index].clone(),
+                    ]));
                 }
             }
         });
-        ui.small(if self.is_knife() && self.artwork.mode==GestureMode::Select {"Click a knife path to assign it · Shift-click adds/removes · or use Geometry to cut in the operation"} else if self.artwork.mode==GestureMode::Select {"Pick filled regions · Shift-click adds/removes · selection does not change the cut"} else {"Drag the whole source · rotate/scale about setup 0,0 (numeric page origin) · Esc cancels"});
+        ui.small(if self.is_knife() && self.artwork.mode==GestureMode::Select {"Click a knife path to assign it to this operation · Shift-click adds/removes · or use Geometry to cut in the operation"} else if self.artwork.mode==GestureMode::Select {"Click a filled region to assign it to this operation · Shift-click adds/removes · or use Geometry to carve in the operation"} else {"Drag the whole source · rotate/scale about setup 0,0 (numeric page origin) · Esc cancels"});
     }
     pub(super) fn artwork_pointer(
         &mut self,
@@ -218,21 +233,32 @@ impl Viewport {
                         && !self.artwork.locked.contains(&r.artwork_item_id.0)
                 });
                 self.artwork.candidate_index = 0;
-                let chosen = self.artwork.candidates.first().cloned();
+                // Assigning from the viewport replaces or extends the
+                // operation's own selection. Unresolved references are not
+                // silently rewritten; they simply cannot be re-sent.
+                let known = self.available_references();
+                let mut selected: Vec<GeometryRef> = self
+                    .artwork
+                    .selected
+                    .iter()
+                    .filter(|r| known.contains(r))
+                    .cloned()
+                    .collect();
+                let Some(chosen) = self.artwork.candidates.first().cloned() else {
+                    return;
+                };
                 if ui.input(|i| i.modifiers.shift) {
-                    if let Some(chosen) = chosen {
-                        if self.artwork.selected.contains(&chosen) {
-                            self.artwork.selected.retain(|r| r != &chosen);
-                        } else {
-                            self.artwork.selected.push(chosen);
-                        }
+                    if selected.contains(&chosen) {
+                        selected.retain(|r| r != &chosen);
+                    } else {
+                        selected.push(chosen);
                     }
                 } else {
-                    self.artwork.selected = chosen.into_iter().collect();
+                    selected = vec![chosen];
                 }
                 self.artwork
                     .events
-                    .push(ArtworkEvent::Selection(self.artwork.selected.clone()));
+                    .push(ArtworkEvent::CarveSelection(selected));
             }
             return;
         }
@@ -294,48 +320,38 @@ impl Viewport {
         let camera = self.camera(rect);
         let bounds = scene.meta.bounds;
         let painter = ui.painter().with_clip_rect(rect);
-        for component in &self.artwork.components {
-            if self
-                .artwork
-                .hidden
-                .contains(&component.reference.artwork_item_id.0)
-            {
-                continue;
-            }
-            if self
-                .artwork
-                .drag
-                .as_ref()
-                .is_some_and(|d| component.reference.artwork_item_id.0 != d.item)
-            {
-                continue;
-            }
-            if self.artwork.drag.is_none() && !self.artwork.selected.contains(&component.reference)
-            {
-                continue;
-            }
-            for ring in &component.rings {
-                let mut screen = Vec::new();
-                for p in ring {
-                    let mut point = Point::new(p[0], p[1]);
-                    if let Some(drag) = &self.artwork.drag {
-                        let Ok(page) = drag.initial.to_page(point) else {
+        // The orange outline is the placement-drag preview only. Assigned
+        // geometry is already colored by the scene, so the operation's own
+        // selection needs no second highlight.
+        if let Some(drag) = &self.artwork.drag {
+            for component in &self.artwork.components {
+                if self
+                    .artwork
+                    .hidden
+                    .contains(&component.reference.artwork_item_id.0)
+                    || component.reference.artwork_item_id.0 != drag.item
+                {
+                    continue;
+                }
+                for ring in &component.rings {
+                    let mut screen = Vec::new();
+                    for p in ring {
+                        let Ok(page) = drag.initial.to_page(Point::new(p[0], p[1])) else {
                             continue;
                         };
                         let Ok(next) = drag.candidate.to_setup(page) else {
                             continue;
                         };
-                        point = next;
+                        screen.push(artwork_view::screen_point(camera, bounds, rect, next));
                     }
-                    screen.push(artwork_view::screen_point(camera, bounds, rect, point));
+                    if let Some(first) = screen.first().copied() {
+                        screen.push(first);
+                    }
+                    painter.add(egui::Shape::line(
+                        screen,
+                        egui::Stroke::new(2., Color32::from_rgb(226, 130, 30)),
+                    ));
                 }
-                if let Some(first) = screen.first().copied() {
-                    screen.push(first);
-                }
-                painter.add(egui::Shape::line(
-                    screen,
-                    egui::Stroke::new(2., Color32::from_rgb(226, 130, 30)),
-                ));
             }
         }
         if matches!(self.artwork.mode, GestureMode::Rotate | GestureMode::Scale) {

@@ -175,6 +175,20 @@ pub fn settings_mut(job: &mut CamJobV5) -> &mut FlatVcarveSettingsV5 {
     s
 }
 
+/// The explicit picks a selection command sends for a stored reference list.
+/// References are never inferred from names or positions: the command still
+/// binds every pick to its item's current source revision.
+pub fn picks(references: &[GeometryRef]) -> Vec<artwork::GeometryPick> {
+    references
+        .iter()
+        .map(|reference| artwork::GeometryPick {
+            artwork_item_id: reference.artwork_item_id.clone(),
+            kind: reference.kind,
+            local_geometry_id: reference.local_geometry_id.clone(),
+        })
+        .collect()
+}
+
 /// Resource/algorithm policy selected explicitly with Combined mode. Cutting
 /// assignments, cutter geometry, stock and machine values remain untouched.
 pub fn set_mode(job: &mut CamJobV5, mode: FlatVcarveMode) {

@@ -33,9 +33,11 @@ browser requires wasm-pack and the wasm32-unknown-unknown Rust target.
 7. Enter a partial number such as `-`, restart, and restore the recovery draft.
 
 For a new carving, use **File → Import SVG** or **+ Import artwork**. Select
-filled components in Artwork, set stock/work zero in Setup, and edit the two
-job tools and cutting assignments. New machining values are unset. The inspector
-filter and its scroll position help navigate longer forms. See the full
+filled components in the operation's own **Cutting → Geometry to carve**, or
+click them in the viewport (Shift-click adds or removes one); the Artwork panel
+manages placement, hide/lock and sources only. Set stock/work zero in Setup, and
+edit the two job tools and cutting assignments. New machining values are unset.
+The inspector filter and its scroll position help navigate longer forms. See the full
 [authoring and recovery recipe](../../../docs/flat-v-carve/gui2bc-progress.md).
 
 Admission is intentionally limited to schema-5 jobs with one SVG and one

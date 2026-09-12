@@ -167,6 +167,77 @@ fn collection_placement_drafts_recovery_are_bound_to_ids() {
     assert!(!doc.pending());
 }
 #[test]
+fn operation_owns_its_geometry_selection_and_binds_current_revisions() {
+    let job = added();
+    let picked: Vec<_> = components(&job)
+        .into_iter()
+        .filter(|c| c.reference.local_geometry_id == "letter-l::0")
+        .map(|c| c.reference)
+        .collect();
+    assert_eq!(picked.len(), 2, "one L per source");
+    let (selected, report) = edit(
+        &job,
+        ArtworkCommand::CarveSelection {
+            references: picked.clone(),
+        },
+    );
+    assert_eq!(session::settings(&selected).components, picked);
+    assert!(report["issues"].as_array().unwrap().is_empty());
+    assert_eq!(
+        session::open(&selected.to_json().unwrap()).unwrap(),
+        selected
+    );
+    let (cleared, _) = edit(
+        &selected,
+        ArtworkCommand::CarveSelection { references: vec![] },
+    );
+    assert!(
+        session::settings(&cleared).components.is_empty(),
+        "an empty viewport or list selection clears the operation's geometry"
+    );
+    assert_eq!(
+        session::settings(&cleared).endmill,
+        session::settings(&selected).endmill
+    );
+    // A reference from a replaced source cannot be re-sent: the whole command
+    // fails and the prior document is preserved rather than partially bound.
+    let (replaced, _) = edit(
+        &job,
+        ArtworkCommand::Replace {
+            item: job.artwork[0].id.clone(),
+            filename: "replacement.svg".into(),
+            svg: REPLACEMENT.into(),
+        },
+    );
+    assert!(
+        session::execute(
+            &mut Retained::new(),
+            Command::Artwork {
+                job: replaced.to_json().unwrap(),
+                action: ArtworkCommand::CarveSelection {
+                    references: picked.clone()
+                }
+            }
+        )
+        .is_err()
+    );
+    // Selecting the current component of the same owner is accepted.
+    let current = components(&replaced)
+        .into_iter()
+        .find(|c| c.reference.local_geometry_id == "letter-l::0")
+        .unwrap()
+        .reference;
+    let (reselected, report) = edit(
+        &replaced,
+        ArtworkCommand::CarveSelection {
+            references: vec![current.clone()],
+        },
+    );
+    assert_eq!(session::settings(&reselected).components, vec![current]);
+    assert!(report["issues"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn replaced_and_deleted_sources_stay_unresolved_until_explicit_repair() {
     let mut job = added();
     let refs: Vec<_> = components(&job)

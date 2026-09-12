@@ -8,59 +8,14 @@ impl App {
         match self.inspector_tab {
             0 => {
                 ui.heading("Knife artwork");
-                ui.small("Use stroked paths with fill=none. Open and closed chains are preserved; filled regions are not knife selections. Select chains explicitly.");
+                ui.small("Use stroked paths with fill=none. Open and closed chains are preserved; filled regions are not knife selections.");
                 self.numbers(ui, ctx, &[26, 27, 28, 29]);
-                let chains = self.view.knife_chains();
-                let job = &self.document.as_ref().unwrap().job;
-                let mut selected = crate::knife::settings(job).unwrap().chains.clone();
-                let old = selected.clone();
-                let active = self.document.as_ref().unwrap().raw.artwork_item.clone();
-                if button(ui, "Select all knife chains", self.active.is_none()).clicked() {
-                    selected = chains.iter().map(|c| c.reference.clone()).collect();
-                }
-                if button(ui, "Clear knife selection", self.active.is_none()).clicked() {
-                    selected.clear();
-                }
-                for chain in chains
-                    .iter()
-                    .filter(|c| c.reference.artwork_item_id.0 == active)
-                {
-                    let mut on = selected.contains(&chain.reference);
-                    let label = format!(
-                        "{} · {}",
-                        chain.reference.local_geometry_id,
-                        if chain.closed { "closed" } else { "open" }
-                    );
-                    let r =
-                        ui.add_enabled(self.active.is_none(), egui::Checkbox::new(&mut on, label));
-                    observe_control(
-                        &format!("Knife chain {}", chain.reference.local_geometry_id),
-                        r.rect,
-                    );
-                    if r.changed() {
-                        if on {
-                            selected.push(chain.reference.clone());
-                        } else {
-                            selected.retain(|r| r != &chain.reference);
-                        }
-                    }
-                }
-                if selected
-                    .iter()
-                    .any(|r| !chains.iter().any(|c| &c.reference == r))
-                {
-                    ui.colored_label(
-                        Color32::DARK_RED,
-                        "Unresolved chains: clear selection and select their replacements.",
-                    );
-                }
-                if selected != old {
-                    self.artwork_command(
-                        engine::ArtworkCommand::KnifeSelection {
-                            references: selected,
-                        },
-                        ctx,
-                    );
+                ui.separator();
+                ui.label("Geometry selection");
+                ui.small("Which chains get cut belongs to the operation, not to the artwork. Select them under Cutting → Geometry to cut, or click them in the viewport. This panel keeps placement and source management only.");
+                if button(ui, "Open operation geometry", self.document.is_some()).clicked() {
+                    self.operation_tab = 0;
+                    self.navigate(2);
                 }
                 ui.separator();
                 if button(
@@ -73,6 +28,7 @@ impl App {
                     self.open(IoKind::ReplaceSvg, ctx);
                 }
                 if button(ui, "Delete knife artwork", self.active.is_none()).clicked() {
+                    let active = self.document.as_ref().unwrap().raw.artwork_item.clone();
                     self.artwork_command(
                         engine::ArtworkCommand::Delete {
                             item: cam_core::project::v5::ArtworkItemId(active),
@@ -316,7 +272,8 @@ impl App {
             .iter()
             .any(|r| !chains.iter().any(|c| &c.reference == r))
         {
-            ui.colored_label(Color32::DARK_RED,"Some selected paths are unresolved. Clear the selection and choose their replacements.");
+            let response = ui.colored_label(Color32::DARK_RED,"Some selected paths are unresolved. Clear the selection and choose their replacements.");
+            observe_control("Unresolved knife selections", response.rect);
         }
         if selected != old {
             self.artwork_command(
@@ -471,6 +428,50 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn render(app: &mut App, ctx: &egui::Context) -> std::collections::BTreeMap<String, [f32; 4]> {
+        for _ in 0..3 {
+            CONTROLS.with(|c| c.borrow_mut().clear());
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280., 800.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| app.inspector(ctx),
+            );
+        }
+        CONTROLS.with(|c| c.borrow().clone())
+    }
+
+    #[test]
+    fn knife_geometry_is_selected_in_the_operation_not_in_the_artwork_panel() {
+        let job = crate::knife::import_svg(
+            "chains.svg".into(),
+            include_str!("../../../fixtures/gui6/chains.svg").into(),
+        )
+        .unwrap();
+        let mut app = App {
+            document: Some(Document::new(job.clone())),
+            ..Default::default()
+        };
+        let scene = engine::run(Command::Preview {
+            job: job.to_json().unwrap(),
+        })
+        .unwrap();
+        app.view.load_scene(Ok(scene));
+        let ctx = egui::Context::default();
+        app.inspector_tab = 0;
+        let artwork = render(&mut app, &ctx);
+        assert!(artwork.contains_key("Open operation geometry"));
+        assert!(!artwork.keys().any(|k| k.starts_with("Knife chain ")));
+        app.inspector_tab = 2;
+        let cutting = render(&mut app, &ctx);
+        assert!(cutting.contains_key("Select all knife chains"));
+        assert!(cutting.keys().any(|k| k.starts_with("Knife chain ")));
+    }
+
     #[test]
     fn knife_editor_renders_every_panel_without_milling_assignments() {
         let job = crate::knife::import_svg(

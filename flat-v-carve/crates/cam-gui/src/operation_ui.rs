@@ -8,6 +8,20 @@ pub(super) fn tab_for_control(label: &str) -> usize {
             _ => 1,
         };
     }
+    // The operation's own geometry selection lives with the operation shape.
+    if label.starts_with("Carving component")
+        || label.starts_with("Replace reference")
+        || label.starts_with("Remove unresolved reference")
+        || matches!(
+            label,
+            "Select all filled components"
+                | "Clear component selection"
+                | "Unresolved selections"
+                | "Operation Geometry to carve"
+        )
+    {
+        return 0;
+    }
     if label.contains("V-bit") || label.starts_with("Finish") {
         2
     } else if label == "Combined" || label == "Endmill only" {
@@ -125,6 +139,7 @@ impl App {
     pub(super) fn cutting_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         match self.operation_tab {
             0 => {
+                self.carving_geometry(ui, ctx);
                 self.operation_group(ui, "Height & depth", true, |app, ui| {
                     help::label(ui, "Operation top");
                     ui.horizontal_wrapped(|ui| {
@@ -245,6 +260,175 @@ impl App {
                 });
             }
         }
+    }
+
+    /// The operation's own filled-component selection. Geometry belongs to
+    /// each operation, so nothing here reads or writes an artwork-level
+    /// assignment; the viewport assigns through the same command.
+    fn carving_geometry(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let job = &self.document.as_ref().unwrap().job;
+        let selected = engine::settings(job).components.clone();
+        let components = self.components.clone();
+        let artwork = job
+            .artwork
+            .iter()
+            .map(|item| (item.id.0.clone(), item.name.clone()))
+            .collect::<Vec<_>>();
+        let unresolved = selected
+            .iter()
+            .filter(|reference| !components.iter().any(|c| &c.reference == *reference))
+            .cloned()
+            .collect::<Vec<_>>();
+        let idle = self.active.is_none();
+        let mut next = selected.clone();
+        self.operation_group(ui, "Geometry to carve", true, |app, ui| {
+            ui.small(format!(
+                "{} of {} filled components selected. Cyan = selected; gray = excluded.",
+                selected.len(),
+                components.len()
+            ));
+            ui.small("Click a filled region in the viewport to assign it to this operation; Shift-click adds or removes one.");
+            ui.horizontal_wrapped(|ui| {
+                if button(ui, "Select all filled components", idle && !components.is_empty())
+                    .clicked()
+                {
+                    next = components.iter().map(|c| c.reference.clone()).collect();
+                }
+                if button(ui, "Clear component selection", idle && !selected.is_empty()).clicked() {
+                    next.clear();
+                }
+            });
+            if components.is_empty() {
+                ui.label("This artwork has no filled components to carve. Stroked paths are knife geometry, not carving regions.");
+            } else {
+                egui::ScrollArea::vertical()
+                    .id_salt("carving-geometry-list")
+                    .auto_shrink([false, true])
+                    .max_height(180.)
+                    .show(ui, |ui| {
+                        for (item, name) in &artwork {
+                            let local = components
+                                .iter()
+                                .filter(|c| &c.reference.artwork_item_id.0 == item)
+                                .collect::<Vec<_>>();
+                            if local.is_empty() {
+                                continue;
+                            }
+                            ui.strong(name);
+                            for component in local {
+                                let mut on = next.contains(&component.reference);
+                                let response = ui.add_enabled(
+                                    idle,
+                                    egui::Checkbox::new(
+                                        &mut on,
+                                        component.reference.local_geometry_id.clone(),
+                                    ),
+                                );
+                                observe_control(
+                                    &format!(
+                                        "Carving component {} / {}",
+                                        component.reference.artwork_item_id.0,
+                                        component.reference.local_geometry_id
+                                    ),
+                                    response.rect,
+                                );
+                                if response.changed() {
+                                    next.retain(|r| r != &component.reference);
+                                    if on {
+                                        next.push(component.reference.clone());
+                                    }
+                                }
+                                ui.small(format!(
+                                    "[{:.2}, {:.2}] – [{:.2}, {:.2}] mm",
+                                    component.bounds[0],
+                                    component.bounds[1],
+                                    component.bounds[2],
+                                    component.bounds[3]
+                                ));
+                            }
+                        }
+                    });
+            }
+            if !unresolved.is_empty() {
+                let response = ui.colored_label(
+                    Color32::from_rgb(176, 42, 35),
+                    format!(
+                        "{} selected reference(s) are unresolved: their source changed. Replace or remove each one explicitly.",
+                        unresolved.len()
+                    ),
+                );
+                observe_control("Unresolved selections", response.rect);
+                ui.small("Reused local IDs never repair a changed source by themselves.");
+                for (index, reference) in unresolved.iter().enumerate() {
+                    ui.label(format!(
+                        "{} / {} · revision {}",
+                        reference.artwork_item_id.0,
+                        reference.local_geometry_id,
+                        &reference.source_revision.content_digest[..12]
+                    ));
+                    let same_item = components
+                        .iter()
+                        .filter(|c| c.reference.artwork_item_id == reference.artwork_item_id)
+                        .collect::<Vec<_>>();
+                    let candidates = if same_item.is_empty() {
+                        components.iter().collect::<Vec<_>>()
+                    } else {
+                        same_item
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        let menu = ui.menu_button(
+                            format!("Replace reference {} with…", index + 1),
+                            |ui| {
+                                if candidates.is_empty() {
+                                    ui.label(
+                                        "This artwork has no current filled component to replace it with.",
+                                    );
+                                }
+                                for candidate in &candidates {
+                                    let label = format!(
+                                        "{} / {}",
+                                        candidate.reference.artwork_item_id.0,
+                                        candidate.reference.local_geometry_id
+                                    );
+                                    if button(ui, &label, idle).clicked() {
+                                        app.artwork_command(
+                                            engine::ArtworkCommand::Repair {
+                                                expected: reference.clone(),
+                                                replacement: candidate.reference.clone(),
+                                            },
+                                            ctx,
+                                        );
+                                        ui.close();
+                                    }
+                                }
+                            },
+                        );
+                        observe_control(
+                            &format!("Replace reference {}", index + 1),
+                            menu.response.rect,
+                        );
+                        if button(
+                            ui,
+                            &format!("Remove unresolved reference {}", index + 1),
+                            idle,
+                        )
+                        .clicked()
+                        {
+                            app.edit_job(ctx, &[], |job| {
+                                settings_mut(job).components.retain(|r| r != reference);
+                                Ok(())
+                            });
+                        }
+                    });
+                }
+            }
+            if next != selected {
+                app.artwork_command(
+                    engine::ArtworkCommand::CarveSelection { references: next },
+                    ctx,
+                );
+            }
+        });
     }
 
     fn operation_tool(
@@ -449,6 +633,58 @@ mod tests {
         let controls = render(&mut app, &ctx);
         assert!(controls.contains_key("Maximum depth"));
         assert!(!controls.contains_key("V-bit angle"));
+    }
+
+    #[test]
+    fn geometry_issue_focus_reveals_the_shape_tab() {
+        for label in [
+            "Select all filled components",
+            "Clear component selection",
+            "Unresolved selections",
+            "Operation Geometry to carve",
+            "Carving component artwork-1 / letter-l::0",
+            "Replace reference 1",
+            "Remove unresolved reference 1",
+        ] {
+            assert_eq!(tab_for_control(label), 0, "{label}");
+        }
+        assert_eq!(tab_for_control("Roughing feed"), 1);
+        assert_eq!(tab_for_control("Finishing feed"), 2);
+    }
+
+    #[test]
+    fn operation_owns_the_component_selection_and_artwork_does_not() {
+        let mut app = app();
+        let components = crate::authoring::catalogue_components(
+            &cam_core::project::v5::artwork::inspect_artwork(&app.document.as_ref().unwrap().job)
+                .unwrap(),
+        );
+        assert!(!components.is_empty());
+        app.components = components;
+        app.operation_tab = 0;
+        let ctx = egui::Context::default();
+        let controls = render(&mut app, &ctx);
+        assert!(controls.contains_key("Operation Geometry to carve"));
+        assert!(controls.contains_key("Select all filled components"));
+        assert!(controls.contains_key("Clear component selection"));
+        assert!(
+            controls.keys().any(|k| k.starts_with("Carving component ")),
+            "the operation lists its own selectable components"
+        );
+        assert!(!controls.contains_key("Use picked"));
+        app.inspector_tab = 0;
+        let artwork = render(&mut app, &ctx);
+        assert!(artwork.contains_key("Open operation geometry"));
+        assert!(!artwork.contains_key("Select all filled components"));
+        assert!(!artwork.contains_key("Clear component selection"));
+        assert!(!artwork.keys().any(|k| k.starts_with("Carving component ")));
+        app.inspector_tab = 2;
+        app.operation_tab = 1;
+        let endmill = render(&mut app, &ctx);
+        assert!(
+            !endmill.keys().any(|k| k.starts_with("Carving component ")),
+            "the tool tabs keep their own fields"
+        );
     }
 
     #[test]

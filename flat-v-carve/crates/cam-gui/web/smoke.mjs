@@ -111,6 +111,8 @@ const shapeFields=['Maximum depth','Wall allowance','Floor ridge','Top offset','
 const endmillFields=['Roughing feed','Plunge feed','Stepdown','Stepover','Spindle speed','Endmill diameter','Cutting length','Ramp angle','Ramp feed','Rough layer limit','Rough loop limit','Rough motion limit','Plunge entry','Ramp entry','Plunge yes','Plunge no','Ramp yes','Ramp no','Endmill CW','Endmill CCW','Depth-dependent clearing','Deepest-region clearing','Reset roughing overrides','Endmill assignment tool'];
 const vbitFields=['Finishing feed','Finish plunge','Finish stepdown','Finish stepover','Finish spindle','Detail residual','V-bit angle','Tip diameter','Cutting diameter','Cutting height','V-bit CW','V-bit CCW','V-bit plunge yes','V-bit plunge no','V-bit assignment tool','Reset finish overrides','Finish path limit','Finish motion limit','Curve segment limit','Depth pass limit','Cleanup iterations','Quality sample spacing','Quality sample limit','Reachability cell limit','Stock slices'];
 const operationTarget=label=>shapeFields.includes(label)?0:endmillFields.includes(label)||label.startsWith('Roughing ')?1:vbitFields.includes(label)||label.startsWith('Finish ')?2:null;
+// The operation's own geometry selection lives on its shape tab.
+const geometryTarget=label=>['Select all filled components','Clear component selection','Unresolved selections','Operation Geometry to carve'].includes(label)||label.startsWith('Carving component')||label.startsWith('Replace reference')||label.startsWith('Remove unresolved reference')?0:null;
 const control = async label => {
   for(let attempt=0;attempt<12;attempt++) {
     const current=await state(); const rect=current.controls?.[label];
@@ -124,7 +126,7 @@ const control = async label => {
     const dropdown=['Library rotation','Library plunge','Library ramp','Copied plunge','Copied ramp','Work offset','Length compensation','Coolant','Path control','M6 return'].find(prefix=>label.startsWith(prefix+' '));
     if(!rect){
       if(current.workspace?.inspector===2&&!current.resources?.open&&!current.resources?.jobsOpen){
-        const tab=operationTarget(label);
+        const tab=operationTarget(label)??geometryTarget(label);
         if(tab!==null&&current.workspace.operation_tab!==tab){await control(['Operation Shape & depth','Operation Endmill','Operation V-bit'][tab]);continue;}
         if(['Depth-dependent clearing','Deepest-region clearing'].includes(label)){await control('Operation clearing strategy');continue;}
         if(label.includes('library tool')||label.includes('library profile')||label.startsWith('Apply Roughing')||label.startsWith('Apply Finish')||label.endsWith('assignment tool')){await control(current.workspace.operation_tab===2?'Change V-bit tool':'Change endmill tool');continue;}

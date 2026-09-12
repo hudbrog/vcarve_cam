@@ -28,9 +28,9 @@ export async function gui4Scenario({control,edit,state,waitFor,send,evaluate,sle
   await waitFor(s=>!s.active&&s.undo===before.undo+1,'one gesture on second source');
   if((await state()).job.artworks.find(i=>i.id===first).placement.origin_mm.x!==-5)throw new Error('Gesture moved sibling artwork');
   await control('Undo');await waitFor(s=>!s.active&&s.job.placement.origin_mm.x===-25,'second gesture undo');
-  await control('Select artwork');await pick([9,23]);await pick([29,20],8);
-  if((await state()).picked.length!==2)throw new Error('Cross-source multiselect failed');
-  await control('Use picked');await waitFor(s=>!s.active&&s.job.components===2,'qualified cross-source assignment');
+  await control('Select artwork');await pick([9,23]);
+  await waitFor(s=>!s.active&&s.job.components===1,'first source assigned from the viewport');
+  await pick([29,20],8);await waitFor(s=>!s.active&&s.job.components===2,'qualified cross-source assignment');
   if(new Set((await state()).job.assignment.map(r=>r.artwork_item_id)).size!==2 || (await state()).job.assignment.some(r=>r.local_geometry_id!=='letter-l::0'))throw new Error('Assignment did not select one L from each source');
   record('independent source placement raw drafts gestures and qualified assignment',await state());
   await screenshot('gui4-collection.png');
@@ -40,6 +40,7 @@ export async function gui4Scenario({control,edit,state,waitFor,send,evaluate,sle
   await control('After V-bit');await waitFor(s=>!s.active&&s.stockPrefix===s.motions,'collection final stock');
   await control('Inspect result');await screenshot('gui4-simulation.png');
   await control('Prepare checked output');await waitFor(s=>s.prepared&&!s.active,'collection checked output',120);
+  await waitFor(s=>s.controls['Save as…'],'export dialog offers its exact save',30);
   await evaluate('globalThis.showSaveFilePicker=undefined');await control('Save as…');await waitFor(s=>s.status.includes('Download requested'),'collection program download');
   await sleep(700);const outputs=readdirSync(out).filter(n=>n.endsWith('.ngc'));
   if(outputs.length!==1||createHash('sha256').update(readFileSync(path.join(out,outputs[0]))).digest('hex')!==(await state()).preparedSha256)throw new Error('Collection output bytes differ from prepared');
@@ -59,8 +60,16 @@ export async function gui4Scenario({control,edit,state,waitFor,send,evaluate,sle
   const changed=files.map(n=>readFileSync(path.join(out,n),'utf8')).find(text=>text.includes('H14V22'));
   if(!changed)throw new Error('Unresolved replacement job was not downloaded');
   revision=(await state()).revision;await drop(changed,'unresolved.job.json');await waitFor(s=>s.revision>revision&&!s.active&&s.issues.length>0,'unresolved references survive reopen');
-  await control('Artwork '+first);await control('Select artwork');await pick([9,23]);
-  await control('Repair reference 1 with picked');await waitFor(s=>!s.active&&s.issues.length===0,'explicit reference repair');
+  await control('Cutting');await control('Replace reference 1');
+  let candidate;
+  for(let attempt=0;attempt<10&&!candidate;attempt++){
+    candidate=Object.keys((await state()).controls).find(k=>k.startsWith(first+' / '));
+    if(!candidate)await sleep(150);
+  }
+  if(!candidate)throw new Error('No current component was offered for the unresolved reference');
+  const candidateRect=(await state()).controls[candidate];
+  await click((candidateRect[0]+candidateRect[2])/2,(candidateRect[1]+candidateRect[3])/2);
+  await waitFor(s=>!s.active&&s.issues.length===0,'explicit reference repair');
   await control('Generate');await waitFor(s=>s.current&&!s.active&&s.exportReady,'repaired collection generates',120);
   await control('Prepare');await control('Artwork '+first);await control('Delete artwork');await waitFor(s=>!s.active&&s.job.artworks.length===1&&s.issues.length>0,'deleted used artwork stays dangling');
   await control('Undo');await waitFor(s=>!s.active&&s.job.artworks.length===2&&s.issues.length===0,'delete undo restores exact source and refs');
@@ -70,8 +79,10 @@ export async function gui4Scenario({control,edit,state,waitFor,send,evaluate,sle
   const visibility=await state();await control('Hide artwork');
   if(!(await state()).current||(await state()).revision!==visibility.revision)throw new Error('Hide changed machining');
   await screenshot('gui4-hidden.png');await control('Hide artwork');
-  await control('Lock artwork');await control('Select artwork');await pick([29,20]);
-  if((await state()).picked.some(r=>r.artwork_item_id===second))throw new Error('Locked source was picked');
+  await control('Lock artwork');await control('Select artwork');
+  const locked=await state();await pick([29,20]);
+  const afterLocked=await state();
+  if(afterLocked.job.components!==locked.job.components||JSON.stringify(afterLocked.job.assignment)!==JSON.stringify(locked.job.assignment))throw new Error('Locked source changed the machining selection');
   await control('Artwork '+second);await control('Lock artwork');
   await control('Move row up');await waitFor(s=>!s.active&&s.current&&s.job.artworks[0].id===second,'reorder reuses retained plan');
   await control('Duplicate artwork');await waitFor(s=>!s.active&&s.current&&s.job.artworks.length===3,'unassigned duplicate retains carving');
