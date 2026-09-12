@@ -22,6 +22,10 @@ export const libraryGeometrySchema = z.discriminatedUnion('kind',[
 ]);
 export const libraryToolSchema = z.strictObject({id:libraryId,name:label,
   geometry:libraryGeometrySchema,
+  // The shared record carries a preferred milling spindle direction. This
+  // deprecated library editor does not surface it, so it stays nullable and
+  // defaults to unset; strict parsing still accepts a record that sets it.
+  spindle_direction:z.enum(['clockwise','counterclockwise']).nullable().default(null),
   ramp_capable:z.boolean().nullable().default(null),plunge_capable:z.boolean().nullable().default(null),
   cutting_presets:z.array(cuttingPresetSchema).max(100),
   // Knife tools carry typed knife presets; the list is additive so legacy
