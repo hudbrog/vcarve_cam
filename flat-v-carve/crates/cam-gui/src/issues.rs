@@ -106,6 +106,14 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
             _ if local.starts_with("tools[") && local.contains("ramp_capable") => {
                 Some((2, "Ramp yes".into()))
             }
+            _ if local.starts_with("tabs.placement.anchors[") => {
+                let index = local
+                    .trim_start_matches("tabs.placement.anchors[")
+                    .trim_end_matches(']')
+                    .parse::<usize>()
+                    .ok()?;
+                Some((2, format!("Unresolved tab {index}")))
+            }
             _ => None,
         };
     }

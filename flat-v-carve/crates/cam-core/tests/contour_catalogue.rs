@@ -165,6 +165,95 @@ fn placement_moves_anchors_correctly() {
 }
 
 #[test]
+fn the_anchor_ring_starts_at_the_fraction_zero_vertex() {
+    // Identity placement: the published setup ring already starts at the
+    // canonical vertex the fraction addresses.
+    let identity = ContourCatalogue::build(&job(WINDING_A, Placement::default())).unwrap();
+    let outer = identity.contour("shape-0-outer").unwrap();
+    assert_eq!(outer.anchor_ring(), outer.vertices);
+    let zero = identity
+        .resolve_anchor(&ContourAnchor {
+            contour_id: outer.id.clone(),
+            source_geometry_fingerprint: outer.source_fingerprint.clone(),
+            fraction_along_source_contour: 0.,
+        })
+        .unwrap();
+    assert_eq!(zero.point, outer.anchor_ring()[0]);
+
+    // A rotated and scaled placement reorders the canonical start. The anchor
+    // ring still begins at the vertex fraction zero resolves to, so an editor
+    // that walks the ring reproduces the stored anchors exactly.
+    let moved = ContourCatalogue::build(&job(
+        WINDING_A,
+        Placement {
+            origin_mm: Point::new(3., -2.),
+            scale: 1.5,
+            rotation_deg: 37.,
+        },
+    ))
+    .unwrap();
+    let outer = moved.contour("shape-0-outer").unwrap();
+    let ring = outer.anchor_ring();
+    assert_eq!(ring.len(), outer.vertices.len());
+    for (index, vertex) in outer.vertices.iter().enumerate() {
+        assert!(
+            ring.iter()
+                .any(|candidate| candidate.distance(*vertex) < 1e-9),
+            "vertex {index} of the setup ring is present in the anchor ring"
+        );
+    }
+    let zero = moved
+        .resolve_anchor(&ContourAnchor {
+            contour_id: outer.id.clone(),
+            source_geometry_fingerprint: outer.source_fingerprint.clone(),
+            fraction_along_source_contour: 0.,
+        })
+        .unwrap();
+    assert!(
+        zero.point.distance(ring[0]) < 1e-9,
+        "fraction zero is the anchor ring's first vertex: {:?} vs {:?}",
+        zero.point,
+        ring[0]
+    );
+    // Fraction f addresses the same source location whatever the placement:
+    // the anchor ring's arc-length fraction agrees with the resolved point.
+    let fraction = 0.3;
+    let resolved = moved
+        .resolve_anchor(&ContourAnchor {
+            contour_id: outer.id.clone(),
+            source_geometry_fingerprint: outer.source_fingerprint.clone(),
+            fraction_along_source_contour: fraction,
+        })
+        .unwrap();
+    let walked = walk(&ring, fraction);
+    assert!(
+        walked.distance(resolved.point) < 1e-6,
+        "walking the ring reproduces the resolved anchor: {walked:?} vs {:?}",
+        resolved.point
+    );
+}
+
+/// Walk a closed ring by arc-length fraction, as an editor's numeric/drag
+/// equivalent does.
+fn walk(ring: &[Point], fraction: f64) -> Point {
+    let lengths: Vec<f64> = (0..ring.len())
+        .map(|i| ring[i].distance(ring[(i + 1) % ring.len()]))
+        .collect();
+    let total: f64 = lengths.iter().sum();
+    let mut remaining = fraction * total;
+    for (i, length) in lengths.iter().enumerate() {
+        if remaining <= *length {
+            let t = if *length > 0. { remaining / length } else { 0. };
+            let a = ring[i];
+            let b = ring[(i + 1) % ring.len()];
+            return Point::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+        }
+        remaining -= length;
+    }
+    ring[0]
+}
+
+#[test]
 fn source_geometry_edits_leave_anchors_unresolved() {
     let catalogue = ContourCatalogue::build(&job(WINDING_A, Placement::default())).unwrap();
     let outer = catalogue.contour("shape-0-outer").unwrap();

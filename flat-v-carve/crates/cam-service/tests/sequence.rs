@@ -341,6 +341,7 @@ fn capabilities_advertise_only_implemented_features() {
     assert_eq!(capabilities["features"]["rotatedFacing"], json!(false));
     assert_eq!(capabilities["features"]["legacyJobMigration"], json!(true));
     assert_eq!(capabilities["features"]["profileEntries"], json!(true));
+    assert_eq!(capabilities["features"]["profileTabs"], json!(true));
 }
 
 #[test]

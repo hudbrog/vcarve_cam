@@ -14,12 +14,25 @@ mod artwork;
 mod inspection;
 #[path = "viewport_knife.rs"]
 mod knife;
+#[path = "viewport_profile.rs"]
+mod profile;
 pub use artwork::{ArtworkEvent, ArtworkInteraction};
+pub use profile::{ProfileAnchor, ProfileAnchorEvent};
 
 /// Pages fingerprinted per frame while a new scene settles.
 const HASH_PAGES_PER_FRAME: usize = 4;
 /// Everything the overlay geometry depends on; a change rebuilds it.
-type OverlaySignature = (u64, Option<u32>, usize, usize, i32, i32, i32);
+type OverlaySignature = (
+    u64,
+    Option<u32>,
+    usize,
+    usize,
+    i32,
+    i32,
+    i32,
+    u64,
+    Option<(u64, u64)>,
+);
 
 /// Read-only state snapshot for the browser integration probe. The probe page
 /// cannot read the egui canvas, so the running application publishes the few
@@ -127,6 +140,12 @@ pub struct Viewport {
     /// Whether the operation being edited is a profile: viewport selection
     /// then addresses closed contours with their advisory sides.
     profile_selected: bool,
+    /// Candidate anchors of the selected profile operation (document-derived
+    /// display state) and their drag gesture.
+    profile_anchors: Vec<profile::ProfileAnchor>,
+    profile_anchor_signature: u64,
+    anchor_drag: Option<profile::AnchorDrag>,
+    profile_anchor_events: Vec<profile::ProfileAnchorEvent>,
     pub artwork: ArtworkInteraction,
     pub stock_loading: bool,
     pub result_current: bool,
@@ -177,6 +196,10 @@ impl Default for Viewport {
             groups: Arc::new(Vec::new()),
             knife_selected: false,
             profile_selected: false,
+            profile_anchors: Vec::new(),
+            profile_anchor_signature: 0,
+            anchor_drag: None,
+            profile_anchor_events: Vec::new(),
             artwork: ArtworkInteraction::default(),
             stock_loading: false,
             result_current: false,
@@ -437,7 +460,9 @@ impl Viewport {
                 .rect_filled(rect, 0., Color32::from_rgb(246, 248, 250));
             self.draw_workspace(ui, rect);
             self.artwork_pointer(ui, &response, rect);
+            self.profile_anchor_pointer(ui, &response, rect);
             if response.dragged()
+                && self.anchor_drag.is_none()
                 && (!self.artwork.enabled
                     || self.artwork.mode == crate::artwork_view::GestureMode::Select)
             {
@@ -787,6 +812,10 @@ impl Viewport {
             (self.zoom * 100.) as i32,
             rect.width() as i32,
             rect.height() as i32,
+            self.profile_anchor_signature,
+            self.anchor_drag
+                .as_ref()
+                .map(|drag| (drag.point[0].to_bits(), drag.point[1].to_bits())),
         );
         if self.overlay_signature == Some(signature) {
             return;
@@ -857,6 +886,7 @@ impl Viewport {
         let half = self.pick_tolerance_px * 0.5 / ppp.max(1e-3) / per_unit.max(1e-6);
         let mut built = overlay::build(selection, half, marker.as_slice());
         self.knife_overlay(&mut built);
+        self.profile_overlay(&mut built);
         self.overlay_lines = Arc::new(built.lines);
         self.overlay_triangles = Arc::new(built.triangles);
     }

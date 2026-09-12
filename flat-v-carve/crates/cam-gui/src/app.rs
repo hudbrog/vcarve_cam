@@ -76,6 +76,14 @@ fn kind_name(kind: OperationKind) -> &'static str {
         OperationKind::DragKnife => "drag_knife",
     }
 }
+
+/// The document field an anchor row's text belongs to.
+fn anchor_field(kind: crate::profile::AnchorKind) -> usize {
+    match kind {
+        crate::profile::AnchorKind::Tab => 97,
+        crate::profile::AnchorKind::Start => 108,
+    }
+}
 /// The value one field shows for one explicit operation. The operation's kind
 /// decides which settings own the field; everything shared (setup, machine,
 /// placement, tool geometry) resolves through the shared authoring layer.
@@ -1378,6 +1386,8 @@ impl App {
             .set_knife_selected(self.operation_kind() == Some(OperationKind::DragKnife));
         self.view
             .set_profile_selected(self.operation_kind() == Some(OperationKind::Profile));
+        let candidates = self.profile_candidates();
+        self.view.set_profile_anchors(candidates);
         if let Some(doc) = &self.document {
             self.view.select_artwork(&doc.raw.artwork_item);
         }
@@ -1432,6 +1442,60 @@ impl App {
                         });
                     } else {
                         self.status = "Source changed during gesture; drag again.".into();
+                    }
+                }
+            }
+        }
+        for event in self.view.take_profile_anchor_events() {
+            match event {
+                crate::viewport::ProfileAnchorEvent::Moved {
+                    scope,
+                    kind,
+                    fraction,
+                } => {
+                    let field = anchor_field(kind);
+                    let known = self.document.as_ref().is_some_and(|document| {
+                        crate::profile::anchor_value(
+                            &document.job,
+                            &document.raw.operation,
+                            &scope,
+                            field,
+                        )
+                        .is_some()
+                    });
+                    if !known {
+                        self.status = "That anchor no longer exists; nothing was changed.".into();
+                        continue;
+                    }
+                    // One drag gesture is one undo transaction.
+                    self.remember();
+                    let result = self.document.as_mut().unwrap().edit_anchor(
+                        &scope,
+                        field,
+                        fraction.to_string(),
+                        kind,
+                    );
+                    match result {
+                        Ok(()) => {
+                            // A drag commits the value, not a long raw token:
+                            // the field shows the document's own formatting.
+                            if let Some(document) = &mut self.document {
+                                document
+                                    .raw
+                                    .raw
+                                    .remove(&document.raw.key_scoped(&scope, field));
+                            }
+                            self.changed(ctx);
+                            self.edit_group = None;
+                            self.status =
+                                "Anchor moved; generate to update the cutting result.".into();
+                        }
+                        Err(error) => {
+                            // The gesture changed nothing, so it is not an
+                            // undoable step.
+                            self.undo.pop();
+                            self.status = error;
+                        }
                     }
                 }
             }

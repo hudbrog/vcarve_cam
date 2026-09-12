@@ -169,6 +169,15 @@ pub enum ArtworkCommand {
     ProfileSelection {
         rows: Vec<crate::profile::SelectionRow>,
     },
+    /// Author one manual tab anchor against the current catalogue.
+    ProfileTabAnchor {
+        action: crate::profile::TabAnchorAction,
+    },
+    /// Choose the profile's cut start (`None` = automatic source seam).
+    ProfileStart {
+        wire_id: Option<String>,
+        fraction: f64,
+    },
     AddMany {
         files: Vec<crate::platform::SvgFile>,
     },
@@ -275,6 +284,21 @@ fn artwork_command(
             return Ok((
                 crate::profile::select_in(job, &target, &rows)?,
                 json!({"kind":"profile_selection"}),
+            ));
+        }
+        ArtworkCommand::ProfileTabAnchor { action } => {
+            let candidate = crate::profile::tab_anchor(job, &target, &action)?;
+            return Ok((
+                open(&candidate.to_json().map_err(|e| e.to_string())?)?,
+                json!({"kind":"profile_tab_anchor"}),
+            ));
+        }
+        ArtworkCommand::ProfileStart { wire_id, fraction } => {
+            let candidate =
+                crate::profile::start_anchor(job, &target, wire_id.as_deref(), fraction)?;
+            return Ok((
+                open(&candidate.to_json().map_err(|e| e.to_string())?)?,
+                json!({"kind":"profile_start"}),
             ));
         }
         ArtworkCommand::AddMany { files } => {

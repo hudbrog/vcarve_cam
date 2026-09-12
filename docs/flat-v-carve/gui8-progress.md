@@ -1,6 +1,6 @@
 # GUI8 profiles, workholding and finish controls
 
-Status: GUI8a implemented and checked; GUI8b–GUI8d in progress. Starting
+Status: GUI8a and GUI8b implemented and checked; GUI8c–GUI8d in progress. Starting
 commit: `80e53a5` (the GUI7 worktree as committed). User review is pending for
 every letter; no physical machining claim is made anywhere in this report.
 
@@ -96,7 +96,97 @@ assignment, heights, tabs, finishing and entries).
 
 ## GUI8b — tabs
 
-Not started.
+The profile can now leave visible material bridges in the same cutting
+workflow: automatic placement by count or spacing, or manual anchors that are
+added, moved (numerically and by dragging in the viewport) and removed, with
+the generated bridge drawn from the plan's own footprint.
+
+### Contracts and implementation
+
+`cam_core::contours::Contour::anchor_ring()` publishes the closed ring in the
+vertex order anchor fractions address: the setup-space ring rotated so its
+first vertex is the same physical vertex as the placement-independent source
+ring's canonical start. Uniform placement scaling preserves arc-length
+fractions, so an editor that walks this ring reproduces the planner's own
+`resolve_anchor` exactly — the UI can therefore offer a numeric and drag
+equivalent for a tab position without re-deriving the parameterization.
+`crates/cam-core/tests/contour_catalogue.rs::the_anchor_ring_starts_at_the_fraction_zero_vertex`
+pins that contract for identity and rotated/scaled placements.
+
+The scene publishes each closed contour's `anchor_ring` alongside its vertices,
+so `crates/cam-gui/src/profile.rs` can compute a candidate position
+(`ring_point`) and the inverse (`project_ring`) without importing an SVG in the
+frame function. `crates/cam-gui/src/viewport_profile.rs` draws two clearly
+different things:
+
+* **candidate markers** (yellow squares) at the document's own requested
+  anchors, and
+* **generated bridges** (green quads) from the retained plan's
+  `tabPlacements[].footprintMm`, which the planner publishes as the exact
+  protected cross-section, independent of the display grid.
+
+Dragging a marker captures the anchor's contour scope and the document
+revision at press time, projects the pointer onto that ring while dragging,
+and emits exactly one move on release. `App::ui` commits that as one undo
+transaction (`remember`, then `Document::edit_anchor`) and drops the long raw
+token so the field shows the document's own formatting. Escape or a document
+revision change cancels the gesture; the camera-yaw gesture no longer competes
+with an anchor drag.
+
+Manual-anchor authoring is a service command
+(`ArtworkCommand::ProfileTabAnchor` → `profile::tab_anchor` →
+`cam_core::project::v5::commands::set_contour_selection`/`reattach_anchor`), so
+the catalogue import that binds a new anchor's fingerprint happens in the
+worker, never in the frame function. Each anchor's numeric row is scoped to
+*its own contour* (`state::Draft::key_scoped`): the draft key is
+`{contour wire ID}/{operation}/Tab anchor fraction`, so reselecting, reordering
+or removing one row can never move another row's text. Partial text stays
+attached to that anchor and blocks Generate/Save; a removed anchor's text is
+dropped from the store without ever blocking a save.
+
+The tabs group states the display limit where the user configures it: the
+heightfield's cell size is shown, together with the fact that a tab narrower
+than one cell may not appear in the raster while the drawn bridge boundary is
+exact. `cam-service` now advertises `profileTabs` (rectangular tabs with
+automatic or anchored placement); ramped shoulders stay unadvertised and the
+planner still reports them.
+
+### Evidence and acceptance audit
+
+| GUI8b requirement | Evidence |
+| --- | --- |
+| Add/move/remove tabs numerically | `crates/cam-gui/tests/profile.rs::tabs_hold_material_and_follow_their_manual_anchors` (add on a contour, move by fraction, remove, and the generated bridge follows), `app::inspector::profile_ui::tests::tab_controls_state_their_placement_mode_and_anchor_rows`, `::an_anchor_draft_stays_with_its_own_contour` |
+| …and by dragging | `viewport_profile.rs` drag gesture (candidate → projected ring position → one move event → one undo transaction); the candidate marker is drawn at the same position the numeric row states |
+| Retained material in the actual cutting workflow | `::tabs_hold_material_and_follow_their_manual_anchors`: the same job with tabs removes less material than without, and every placement publishes its four-corner footprint |
+| Scrub rough and final passes | The timeline's `Profile rough` / `After profile rough` entries and the stock checkpoints are the GUI7 ones; the generated bridge is drawn from the plan at every playhead |
+| Export and reopen | `::profile_job_generates_playback_output_and_reopens` and the tab test's `exportReady` assertions; profiles save and reopen with their tabs, anchors and placement mode |
+| Source anchors versus silent repair | `::a_replaced_source_leaves_tab_anchors_unresolved_until_reattached`: replacing the source leaves the anchor unresolved with `ARTWORK_REVISION_MISMATCH` at `tabs.placement.anchors[0]`, generation stays blocked, an explicit reattach resolves it, and re-binding the contour selection is a separate explicit step |
+| Candidate versus generated geometry | Candidate markers and generated bridges are separate overlay layers; a candidate is never drawn as if it were cut, and the generated quads come from the plan |
+| Visible sub-cell display limits | The tabs group reports the display cell size and the raster limitation; the exact generated boundary is drawn as an overlay regardless of the grid |
+| Single-gesture Undo | The drag handler pushes exactly one history entry per released gesture and none for a cancelled or failed gesture |
+
+### Checks
+
+- `cargo test -p cam-gui --locked`: 64 library tests plus every integration
+  suite pass, including the six `tests/profile.rs` tests. Log:
+  `artifacts/gui/gui8b-tests.txt`.
+- `cargo test -p cam-core -p cam-service --locked`: every suite passes. Log:
+  `artifacts/gui/gui8b-core-tests.txt`.
+- `cargo clippy ... -D warnings` and `cargo fmt --all -- --check` pass. Logs:
+  `artifacts/gui/gui8b-clippy.txt`, `artifacts/gui/gui8b-fmt.txt`.
+
+### Limits
+
+- **Automatic placement is feasibility-checked.** A requested count that does
+  not fit a contour's straight spans is refused with
+  `PROFILE_TAB_NO_SPACE` naming the contour; the editor does not shrink tabs or
+  drop some of them silently. A tab anchored where the compensated path has no
+  room is refused with the same located reason.
+- **One manual anchor per contour.** Several tabs around one contour come from
+  automatic placement; a second manual anchor on the same contour is refused.
+- **Rectangular tabs only.** Ramped shoulders remain diagnosed.
+- **Drag is a display gesture.** The released position is committed as a source
+  fraction; the cut still comes from the planner's resolved placement.
 
 ## GUI8c — finishing
 

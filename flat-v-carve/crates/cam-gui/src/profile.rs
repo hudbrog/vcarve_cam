@@ -485,6 +485,10 @@ pub struct Contour {
     pub bounds: [f64; 4],
     pub perimeter_mm: f64,
     pub vertices: Vec<[f64; 2]>,
+    /// The ring in the vertex order anchor fractions address. Uniform
+    /// placement scaling preserves arc-length fractions, so walking this ring
+    /// reproduces the planner's own anchor resolution exactly.
+    pub anchor_ring: Vec<[f64; 2]>,
 }
 
 /// Every closed contour of every artwork item, owner-qualified.
@@ -521,9 +525,93 @@ pub fn contours(job: &CamJobV5) -> Result<Vec<Contour>, String> {
                         .and_then(|catalogue| catalogue.contour(&entry.reference.local_geometry_id))
                         .map(|contour| contour.vertices.iter().map(|p| [p.x, p.y]).collect())
                         .unwrap_or_default(),
+                    anchor_ring: item
+                        .catalogue
+                        .as_ref()
+                        .and_then(|catalogue| catalogue.contour(&entry.reference.local_geometry_id))
+                        .map(|contour| contour.anchor_ring().iter().map(|p| [p.x, p.y]).collect())
+                        .unwrap_or_default(),
                 })
         })
         .collect())
+}
+
+/// Walk a closed ring by arc-length fraction. This is the numeric equivalent
+/// of dragging an anchor: it uses the same ring order the planner resolves.
+pub fn ring_point(ring: &[[f64; 2]], fraction: f64) -> Option<[f64; 2]> {
+    if ring.len() < 2 {
+        return None;
+    }
+    let lengths: Vec<f64> = ring_lengths(ring);
+    let total: f64 = lengths.iter().sum();
+    if total <= 0. {
+        return Some(ring[0]);
+    }
+    let target = fraction.rem_euclid(1.) * total;
+    let mut walked = 0.;
+    for (index, length) in lengths.iter().enumerate() {
+        if target <= walked + length || index + 1 == ring.len() {
+            let t = if *length > 0. {
+                ((target - walked) / length).clamp(0., 1.)
+            } else {
+                0.
+            };
+            let a = ring[index];
+            let b = ring[(index + 1) % ring.len()];
+            return Some([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        }
+        walked += length;
+    }
+    Some(ring[0])
+}
+
+/// Project a setup-space point onto a closed ring: the nearest point on the
+/// ring and its arc-length fraction. Used by anchor dragging.
+pub fn project_ring(ring: &[[f64; 2]], point: [f64; 2]) -> Option<([f64; 2], f64)> {
+    if ring.len() < 2 {
+        return None;
+    }
+    let lengths = ring_lengths(ring);
+    let total: f64 = lengths.iter().sum();
+    let mut best: Option<(f64, [f64; 2], f64)> = None;
+    let mut walked = 0.;
+    for (index, length) in lengths.iter().enumerate() {
+        let a = ring[index];
+        let b = ring[(index + 1) % ring.len()];
+        let dx = b[0] - a[0];
+        let dy = b[1] - a[1];
+        let t = if *length > 0. {
+            (((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / (length * length)).clamp(0., 1.)
+        } else {
+            0.
+        };
+        let projected = [a[0] + dx * t, a[1] + dy * t];
+        let distance =
+            ((point[0] - projected[0]).powi(2) + (point[1] - projected[1]).powi(2)).sqrt();
+        if best.is_none_or(|(best_distance, _, _)| distance < best_distance) {
+            best = Some((distance, projected, walked + length * t));
+        }
+        walked += length;
+    }
+    let (_, projected, arc) = best?;
+    Some((
+        projected,
+        if total > 0. {
+            (arc / total).rem_euclid(1.)
+        } else {
+            0.
+        },
+    ))
+}
+
+fn ring_lengths(ring: &[[f64; 2]]) -> Vec<f64> {
+    (0..ring.len())
+        .map(|index| {
+            let a = ring[index];
+            let b = ring[(index + 1) % ring.len()];
+            ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt()
+        })
+        .collect()
 }
 
 /// One row of the explicit contour selection.
@@ -863,7 +951,7 @@ pub fn remove_tab_anchor(
 /// Reattach one unresolved start or tab anchor to an explicitly chosen current
 /// contour, keeping its stored fraction unless a replacement is supplied.
 pub fn reattach(
-    job: &mut CamJobV5,
+    job: &CamJobV5,
     operation_id: &str,
     target: v5::commands::AnchorTarget,
     wire_id: &str,
@@ -881,6 +969,73 @@ pub fn reattach(
     v5::commands::reattach_anchor(job, operation_id, target, &pick, fraction)
         .map(|outcome| outcome.job)
         .map_err(|e| e.to_string())
+}
+
+/// One explicit manual-tab-anchor edit. Every variant names the anchor by the
+/// contour it belongs to, so a reordered or re-rendered list cannot redirect
+/// the edit to another tab.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TabAnchorAction {
+    /// Bind one new manual anchor on a selected contour at a source fraction.
+    Add { wire_id: String, fraction: f64 },
+    /// Remove the manual anchor whose contour scope matches.
+    Remove { scope: String },
+    /// Reattach the n-th manual anchor to an explicitly chosen contour.
+    Reattach {
+        index: usize,
+        wire_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fraction: Option<f64>,
+    },
+}
+
+/// Apply one manual-tab-anchor edit against the current catalogue. This runs
+/// where the catalogue can be imported (the retained service), never in the
+/// frame function.
+pub fn tab_anchor(
+    job: &CamJobV5,
+    operation_id: &str,
+    action: &TabAnchorAction,
+) -> Result<CamJobV5, String> {
+    let mut candidate = job.clone();
+    match action {
+        TabAnchorAction::Add { wire_id, fraction } => {
+            add_tab_anchor(&mut candidate, operation_id, wire_id, *fraction)?;
+        }
+        TabAnchorAction::Remove { scope } => {
+            remove_tab_anchor(&mut candidate, operation_id, scope)?;
+        }
+        TabAnchorAction::Reattach {
+            index,
+            wire_id,
+            fraction,
+        } => {
+            candidate = reattach(
+                &candidate,
+                operation_id,
+                v5::commands::AnchorTarget::Tab(*index),
+                wire_id,
+                *fraction,
+            )?;
+        }
+    }
+    candidate.validate_structure().map_err(|e| e.to_string())?;
+    Ok(candidate)
+}
+
+/// Choose the cut start against the current catalogue: the automatic source
+/// seam, or one selected contour at an explicit fraction.
+pub fn start_anchor(
+    job: &CamJobV5,
+    operation_id: &str,
+    wire_id: Option<&str>,
+    fraction: f64,
+) -> Result<CamJobV5, String> {
+    let mut candidate = job.clone();
+    set_start(&mut candidate, operation_id, wire_id, fraction)?;
+    candidate.validate_structure().map_err(|e| e.to_string())?;
+    Ok(candidate)
 }
 
 /// Explicitly chosen new profile job: the SVG is imported with the default

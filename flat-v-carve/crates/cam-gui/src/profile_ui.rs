@@ -7,9 +7,10 @@
 //! the compensation, tab placement and entry geometry that the result
 //! inspection and the viewport then display.
 use super::*;
-use crate::profile::{self, SelectionRow};
+use crate::profile::{self, AnchorKind, SelectionRow};
 use cam_core::project::{
-    ContourOrder, ContourSide, CutDirection, HeightReference, SpindleDirection, TraversalDirection,
+    ContourOrder, ContourSide, CutDirection, HeightReference, SpindleDirection, TabShape,
+    TraversalDirection,
 };
 
 const SIDES: [(&str, ContourSide); 3] = [
@@ -48,6 +49,7 @@ impl App {
                 self.profile_tool(ui, ctx);
                 self.profile_heights(ui, ctx);
                 self.profile_order(ui, ctx);
+                self.profile_tabs(ui, ctx);
                 self.profile_evidence(ui);
             }
         }
@@ -284,6 +286,138 @@ impl App {
         self.profile_selection(rows, ctx);
     }
 
+    /// The candidate anchors of the selected profile operation: where the
+    /// document asks for tabs and for the start, walked along each contour's
+    /// anchor ring. Display state; the document stays the authority.
+    pub(crate) fn profile_candidates(&self) -> Vec<crate::viewport::ProfileAnchor> {
+        let Some(document) = &self.document else {
+            return vec![];
+        };
+        if self.operation_kind() != Some(crate::session::OperationKind::Profile) {
+            return vec![];
+        }
+        let id = document.raw.operation.clone();
+        let contours = self.view.profile_contours();
+        let point_of = |scope: &str, fraction: f64| {
+            let contour = contours.iter().find(|contour| contour.wire_id == scope)?;
+            profile::ring_point(&contour.anchor_ring, fraction)
+        };
+        let mut out = vec![];
+        if let Some(row) = profile::start_row(&document.job, &id)
+            && let Some(point) = point_of(&row.scope, row.fraction)
+        {
+            out.push(crate::viewport::ProfileAnchor {
+                scope: row.scope,
+                kind: AnchorKind::Start,
+                point,
+            });
+        }
+        for row in profile::tab_rows(&document.job, &id) {
+            if let Some(point) = point_of(&row.scope, row.fraction) {
+                out.push(crate::viewport::ProfileAnchor {
+                    scope: row.scope,
+                    kind: AnchorKind::Tab,
+                    point,
+                });
+            }
+        }
+        out
+    }
+
+    /// One anchor's own numeric row. The text is scoped to the contour the
+    /// anchor belongs to, so switching rows never carries text across anchors.
+    pub(super) fn anchor_number(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        scope: &str,
+        kind: AnchorKind,
+        field: usize,
+        value: Option<f64>,
+    ) {
+        if !FIELDS[field]
+            .to_lowercase()
+            .contains(&self.search.to_lowercase())
+        {
+            return;
+        }
+        let Some(document) = &self.document else {
+            return;
+        };
+        let mut text = document.anchor_text(scope, field, value);
+        let response = ui
+            .with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                let label = ui
+                    .horizontal_wrapped(|ui| {
+                        let response = ui.label(FIELDS[field]);
+                        help::icon(ui, FIELDS[field]);
+                        response
+                    })
+                    .inner;
+                ui.horizontal(|ui| {
+                    let response = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut text)
+                                .id(egui::Id::new((
+                                    "carving-field",
+                                    scope,
+                                    &document.raw.operation,
+                                    field,
+                                )))
+                                .desired_width((ui.available_width() - 58.).clamp(65., 160.))
+                                .char_limit(128)
+                                .hint_text("Unset"),
+                        )
+                        .labelled_by(label.id);
+                    ui.small("share of the contour, 0 up to 1");
+                    response
+                })
+                .inner
+            })
+            .inner;
+        observe_control(FIELDS[field], response.rect);
+        observe_control(&format!("Anchor {} {scope}", FIELDS[field]), response.rect);
+        if self.issue_focus.as_deref() == Some(FIELDS[field]) {
+            response.scroll_to_me(Some(egui::Align::Center));
+            response.request_focus();
+            self.issue_focus = None;
+        }
+        if response.changed() {
+            if self.edit_group != Some(field) {
+                self.remember();
+                self.edit_group = Some(field);
+            }
+            let result =
+                self.document
+                    .as_mut()
+                    .unwrap()
+                    .edit_anchor(scope, field, text.clone(), kind);
+            self.changed(ctx);
+            self.status = match result {
+                Ok(()) => "Setting changed; generate to update simulation.".into(),
+                Err(error) => {
+                    self.issues = vec![cam_core::operations::LocatedDiagnostic {
+                        code: "EDITOR_VALUE".into(),
+                        message: error.clone(),
+                        operation_id: {
+                            let selected = &self.document.as_ref().unwrap().raw.operation;
+                            (!selected.is_empty()).then(|| selected.clone())
+                        },
+                        tool_id: None,
+                        field_path: Some(format!("editor.fields.{}", FIELDS[field])),
+                    }];
+                    error
+                }
+            };
+        }
+        if response.lost_focus() {
+            self.edit_group = None;
+        }
+        if let Err(error) = Draft::parse(&text) {
+            ui.colored_label(Color32::from_rgb(176, 42, 35), error);
+        }
+    }
+
     fn profile_tool(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.operation_group(ui, "Tool & cutting", true, |app, ui| {
             let job = app.document.as_ref().unwrap().job.clone();
@@ -478,6 +612,221 @@ impl App {
                 }
             });
             ui.small("Inner before outer cuts nested islands before the material that holds them. Selection order follows the contour table.");
+        });
+    }
+
+    /// Tabs (GUI8b): visible material bridges that keep the part in the stock.
+    /// Automatic placement states a count or a spacing; manual placement
+    /// anchors one tab per selected contour at an explicit source fraction,
+    /// which is the numeric equivalent of dragging its marker in the viewport.
+    fn profile_tabs(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let id = self.operation_id();
+        let Some(job) = self.document.as_ref().map(|d| d.job.clone()) else {
+            return;
+        };
+        let Some(settings) = profile::settings_in(&job, &id) else {
+            return;
+        };
+        let tabs = settings.tabs.clone();
+        let selection = profile::selection(&job, &id);
+        let contours = self.view.profile_contours();
+        let rows = profile::tab_rows(&job, &id);
+        let cell = self.view.display_cell_mm();
+        let owner_of = |wire: &str| {
+            contours
+                .iter()
+                .find(|contour| contour.wire_id == wire)
+                .map(|contour| {
+                    format!(
+                        "{} / {}",
+                        contour.owner, contour.reference.local_geometry_id
+                    )
+                })
+                .unwrap_or_else(|| wire.into())
+        };
+        // An operation that already carries tabs opens its own group; nothing
+        // is hidden behind a collapsed header that the job depends on.
+        self.operation_group(ui, "Tabs", tabs.is_some(), |app, ui| {
+            let Some(tabs) = tabs.clone() else {
+                ui.small("Tabs leave visible bridges of material that hold the part in the stock while the rest of the contour is cut through.");
+                if button(ui, "Add tabs", app.active.is_none()).clicked() {
+                    let id = app.operation_id();
+                    app.edit_job(ctx, &[], move |job| {
+                        profile::set_tabs_enabled(job, &id, true)
+                    });
+                }
+                return;
+            };
+            if button(ui, "Cut without tabs", app.active.is_none()).clicked() {
+                let id = app.operation_id();
+                app.edit_job(ctx, &[93, 94, 95, 96, 97, 108], move |job| {
+                    profile::set_tabs_enabled(job, &id, false)
+                });
+            }
+            ui.separator();
+            help::label(ui, "Tab shape");
+            ui.horizontal_wrapped(|ui| {
+                let r = ui.selectable_label(tabs.shape == TabShape::Rectangular, "Rectangular");
+                observe_control("Rectangular", r.rect);
+                if r.clicked() && tabs.shape != TabShape::Rectangular {
+                    let id = app.operation_id();
+                    app.edit_job(ctx, &[], move |job| {
+                        profile::set_tab_shape(job, &id, TabShape::Rectangular)
+                    });
+                }
+                let r = ui
+                    .add_enabled(false, egui::Button::new("Ramped"))
+                    .on_disabled_hover_text(
+                        "Ramped tab shoulders are not implemented; the planner reports them instead of changing the shape.",
+                    );
+                observe_control("Ramped", r.rect);
+            });
+            if tabs.shape != TabShape::Rectangular {
+                ui.colored_label(
+                    Color32::from_rgb(164, 83, 12),
+                    "This job stores ramped tabs, which this milestone does not cut: the planner reports it, and choosing Rectangular is the explicit change.",
+                );
+            }
+            app.operation_numbers(ui, ctx, &[93, 94]);
+            ui.small("Tab height is measured up from the physical stock bottom; the width is the protected band around the tab, left standing by rough and finish passes.");
+            ui.separator();
+            help::label(ui, "Tab placement");
+            let automatic = matches!(tabs.placement, cam_core::project::v5::TabPlacementV5::Automatic { .. });
+            ui.horizontal_wrapped(|ui| {
+                for (label, value) in [("Automatic placement", true), ("Manual anchors", false)] {
+                    let r = ui.selectable_label(automatic == value, label);
+                    observe_control(label, r.rect);
+                    if r.clicked() && automatic != value {
+                        let id = app.operation_id();
+                        app.edit_job(ctx, &[95, 96, 97], move |job| {
+                            profile::set_tab_placement_mode(job, &id, value)
+                        });
+                    }
+                }
+            });
+            if automatic {
+                app.operation_numbers(ui, ctx, &[95, 96]);
+                ui.small("Give a count or a spacing between tabs; a count takes precedence. The planner distributes them around each selected contour and reports what it placed.");
+            } else {
+                ui.small("Each manual tab is anchored on one selected contour. Use automatic placement for several tabs around a single contour.");
+                if rows.is_empty() {
+                    ui.label("No manual tabs yet.");
+                }
+                for row in &rows {
+                    let label = owner_of(&row.scope);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(if row.resolved {
+                            format!("Tab on {label}")
+                        } else {
+                            format!("Tab on {label} (unresolved source)")
+                        });
+                    });
+                    if !row.resolved {
+                        let response = ui.colored_label(
+                            Color32::DARK_RED,
+                            "This anchor's source geometry changed.",
+                        );
+                        observe_control(&format!("Unresolved tab {}", row.index), response.rect);
+                        let menu = ui.menu_button(
+                            format!("Reattach tab {} to…", row.index),
+                            |ui| {
+                                for contour in selection.iter() {
+                                    let wire = profile::anchor_scope(&contour.reference);
+                                    let name = owner_of(&wire);
+                                    if button(ui, &name, app.active.is_none()).clicked() {
+                                        app.artwork_command(
+                                            engine::ArtworkCommand::ProfileTabAnchor {
+                                                action: profile::TabAnchorAction::Reattach {
+                                                    index: row.index,
+                                                    wire_id: wire,
+                                                    fraction: Some(row.fraction),
+                                                },
+                                            },
+                                            ctx,
+                                        );
+                                        ui.close();
+                                    }
+                                }
+                            },
+                        );
+                        observe_control(&format!("Reattach tab {}", row.index), menu.response.rect);
+                    }
+                    app.anchor_number(ui, ctx, &row.scope, AnchorKind::Tab, 97, Some(row.fraction));
+                    if button(
+                        ui,
+                        &format!("Remove tab {}", row.index),
+                        app.active.is_none(),
+                    )
+                    .clicked()
+                    {
+                        app.artwork_command(
+                            engine::ArtworkCommand::ProfileTabAnchor {
+                                action: profile::TabAnchorAction::Remove {
+                                    scope: row.scope.clone(),
+                                },
+                            },
+                            ctx,
+                        );
+                    }
+                    ui.separator();
+                }
+                let anchored: Vec<String> = rows.iter().map(|row| row.scope.clone()).collect();
+                let available: Vec<&crate::profile::Contour> = selection
+                    .iter()
+                    .filter_map(|row| {
+                        let wire = profile::anchor_scope(&row.reference);
+                        (!anchored.contains(&wire))
+                            .then(|| contours.iter().find(|c| c.wire_id == wire))
+                            .flatten()
+                    })
+                    .collect();
+                let menu = ui.menu_button("Add tab on…", |ui| {
+                    if available.is_empty() {
+                        ui.label("Every selected contour already carries a manual tab.");
+                        return;
+                    }
+                    ui.small("Choose a contour and a starting position; the tab can then be dragged in the viewport or typed exactly.");
+                    for contour in &available {
+                        for fraction in [0., 0.25, 0.5, 0.75] {
+                            if button(
+                                ui,
+                                &format!(
+                                    "{} / {} · {:.0}%",
+                                    contour.owner,
+                                    contour.reference.local_geometry_id,
+                                    fraction * 100.
+                                ),
+                                app.active.is_none(),
+                            )
+                            .clicked()
+                            {
+                                app.artwork_command(
+                                    engine::ArtworkCommand::ProfileTabAnchor {
+                                        action: profile::TabAnchorAction::Add {
+                                            wire_id: contour.wire_id.clone(),
+                                            fraction,
+                                        },
+                                    },
+                                    ctx,
+                                );
+                                ui.close();
+                            }
+                        }
+                    }
+                });
+                observe_control("Add tab on", menu.response.rect);
+                ui.small("Drag a tab marker in the viewport to move it; the released position is one undo step.");
+            }
+            ui.separator();
+            ui.small(match cell {
+                Some(cell) => format!(
+                    "Display grid: {cell:.4} mm cells. A tab narrower than one cell may not appear in the heightfield; the drawn bridge boundary is exact and is not a raster claim."
+                ),
+                None => "Generate to see the display grid size; a tab narrower than one cell may not appear in the heightfield.".into(),
+            });
+            if app.view.is_profile() {
+                ui.small("Yellow squares are the requested anchors; the green bridges are the plan's generated tab placements.");
+            }
         });
     }
 
@@ -706,5 +1055,109 @@ mod tests {
             "wall allowance is a carving field"
         );
         doc.validate().unwrap();
+    }
+
+    /// Turn tabs on with one manual anchor on the first selected contour.
+    fn manual_tabs(app: &mut App) -> String {
+        let doc = app.document.as_mut().unwrap();
+        let id = doc.raw.operation.clone();
+        crate::profile::set_tabs_enabled(&mut doc.job, &id, true).unwrap();
+        crate::profile::set_tab_placement_mode(&mut doc.job, &id, false).unwrap();
+        doc.edit(93, "0.5".into()).unwrap();
+        doc.edit(94, "2".into()).unwrap();
+        let scope = crate::profile::selection(&doc.job, &id)[0]
+            .reference
+            .clone();
+        let scope = crate::profile::anchor_scope(&scope);
+        crate::profile::add_tab_anchor(&mut doc.job, &id, &scope, 0.5).unwrap();
+        scope
+    }
+
+    #[test]
+    fn tab_controls_state_their_placement_mode_and_anchor_rows() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let doc = app.document.as_mut().unwrap();
+        crate::profile::set_tabs_enabled(&mut doc.job, &doc.raw.operation, true).unwrap();
+        doc.edit(93, "0.5".into()).unwrap();
+        doc.edit(94, "3".into()).unwrap();
+        let controls = render(&mut app, &ctx);
+        for label in [
+            "Cut without tabs",
+            "Rectangular",
+            "Ramped",
+            "Automatic placement",
+            "Manual anchors",
+            "Tab height",
+            "Tab width",
+            "Tab count",
+            "Tab spacing",
+        ] {
+            assert!(controls.contains_key(label), "{label} missing");
+        }
+        let scope = manual_tabs(&mut app);
+        let controls = render(&mut app, &ctx);
+        assert!(
+            controls.contains_key("Add tab on"),
+            "the add menu is missing"
+        );
+        assert!(
+            controls
+                .keys()
+                .any(|key| key == &format!("Anchor Tab anchor fraction {scope}")),
+            "the anchor's own numeric row is missing: {:?}",
+            controls.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_anchor_draft_stays_with_its_own_contour() {
+        let mut app = app();
+        let scope = manual_tabs(&mut app);
+        let doc = app.document.as_mut().unwrap();
+        let id = doc.raw.operation.clone();
+        // A committed move leaves no pending text.
+        doc.edit_anchor(&scope, 97, "0.4".into(), AnchorKind::Tab)
+            .unwrap();
+        assert_eq!(
+            crate::profile::tab_rows(&doc.job, &id)[0].fraction,
+            0.4,
+            "the anchor's own row defines its value"
+        );
+        assert!(!doc.pending());
+        // Partial text stays attached to that anchor and blocks generate/save.
+        assert!(
+            doc.edit_anchor(&scope, 97, "-".into(), AnchorKind::Tab)
+                .is_err()
+        );
+        assert_eq!(doc.anchor_text(&scope, 97, Some(0.4)), "-");
+        assert!(doc.pending(), "partial text is pending");
+        // The scoped draft validates and survives a recovery round trip.
+        doc.validate().unwrap();
+        let recovered =
+            crate::state::Draft::recover(&serde_json::to_string(&doc.raw).unwrap()).unwrap();
+        assert_eq!(recovered, doc.raw);
+        // Anchor text must be scoped to a qualified contour whose owner is in
+        // the document: a malformed scope or a gone artwork item is rejected.
+        let mut invalid = doc.raw.clone();
+        invalid.raw.insert(
+            format!(
+                "gone:contour:letter/{}/{}",
+                doc.raw.operation,
+                crate::state::FIELDS[97]
+            ),
+            "0.5".into(),
+        );
+        assert!(invalid.validate_job(&doc.job).is_err());
+        invalid.raw.clear();
+        invalid.raw.insert(
+            format!(
+                "not-a-wire-id/{}/{}",
+                doc.raw.operation,
+                crate::state::FIELDS[97]
+            ),
+            "0.5".into(),
+        );
+        assert!(invalid.validate_job(&doc.job).is_err());
     }
 }

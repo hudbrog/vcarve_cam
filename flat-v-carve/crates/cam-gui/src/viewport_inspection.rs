@@ -84,6 +84,11 @@ impl Viewport {
     pub fn reset_inspection(&mut self) {
         self.inspection = Inspection::default();
     }
+    /// The display grid's cell size in millimetres, when a stock field is
+    /// displayed. Features smaller than a cell can be missed by the raster.
+    pub fn display_cell_mm(&self) -> Option<f64> {
+        Some(self.stock.as_ref()?.meta.cell_mm)
+    }
     pub fn export_ready(&self) -> bool {
         self.scene
             .as_ref()

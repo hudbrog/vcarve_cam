@@ -819,6 +819,9 @@ pub fn execute(command: SequenceCommand) -> Result<Value> {
                 "rotatedFacing": false,
                 "profileFinishing": true,
                 "profileEntries": true,
+                // GUI8b: rectangular tabs with automatic or anchored placement
+                // ship in the planner; ramped shoulders do not.
+                "profileTabs": true,
                 "knifeReplay": true,
                 "knifeToolLibrary": true,
                 // F3: emitted-byte decoding, actual-output replay evidence

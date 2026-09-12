@@ -118,6 +118,39 @@ impl Contour {
             ContourRole::Open => ContourSide::On,
         }
     }
+
+    /// The closed ring in the vertex order anchor fractions address: the
+    /// setup-space ring rotated so its first vertex is the same physical vertex
+    /// as the placement-independent source ring's canonical start. Uniform
+    /// placement scaling preserves arc-length fractions, so walking this ring
+    /// by a fraction reproduces `resolve_anchor` exactly and gives editors a
+    /// numeric/list equivalent of an anchor gesture. Open chains already carry
+    /// their source order, which is what their fractions address.
+    pub fn anchor_ring(&self) -> Vec<Point> {
+        if !self.closed || self.vertices.len() != self.page_vertices.len() {
+            return self.vertices.clone();
+        }
+        let Some(target) = self.page_vertices.first() else {
+            return self.vertices.clone();
+        };
+        let page = page_space(&self.placement);
+        let index = self
+            .vertices
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                let d = |p: &Point| {
+                    let mapped = page(*p);
+                    (mapped.x - target.x).powi(2) + (mapped.y - target.y).powi(2)
+                };
+                d(a).partial_cmp(&d(b)).expect("finite vertices")
+            })
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        let mut ring = self.vertices.clone();
+        ring.rotate_left(index);
+        ring
+    }
 }
 
 /// The resolved position of an anchor in setup coordinates.

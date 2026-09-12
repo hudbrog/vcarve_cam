@@ -116,6 +116,26 @@ pub fn ribbon(out: &mut Overlay, a: [f32; 3], b: [f32; 3], half: f32, color: [f3
     triangle(&mut out.triangles, p0, p2, p3, color);
 }
 
+/// A small screen-independent marker for one candidate anchor: a square with a
+/// pale outline so it stays visible over stock, paths and generated bridges.
+pub fn candidate_marker(out: &mut Overlay, centre: [f32; 3], fill: [f32; 4]) {
+    let half = 0.022;
+    let corners = [
+        [centre[0] - half, centre[1] - half, centre[2]],
+        [centre[0] + half, centre[1] - half, centre[2]],
+        [centre[0] + half, centre[1] + half, centre[2]],
+        [centre[0] - half, centre[1] + half, centre[2]],
+    ];
+    triangle(&mut out.triangles, corners[0], corners[1], corners[2], fill);
+    triangle(&mut out.triangles, corners[0], corners[2], corners[3], fill);
+    for index in 0..4 {
+        let a = corners[index];
+        let b = corners[(index + 1) % 4];
+        out.lines.push(vertex(a, BLADE_LINE));
+        out.lines.push(vertex(b, BLADE_LINE));
+    }
+}
+
 fn disc(out: &mut Overlay, centre: [f32; 3], radius: f32, fill: [f32; 4], line: [f32; 4]) {
     let vertices = ring(&centre, radius);
     for i in 0..RING {
