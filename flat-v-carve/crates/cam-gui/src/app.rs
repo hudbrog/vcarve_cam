@@ -275,7 +275,6 @@ pub struct App {
     resource_request: Option<(u64, ResourceIntent)>,
     resource_import_stamp: Option<String>,
     profile_io_revision: Option<u64>,
-    debug_events: std::collections::VecDeque<String>,
 }
 #[derive(Clone, Copy)]
 enum ResourceIntent {
@@ -283,7 +282,7 @@ enum ResourceIntent {
     Compare,
     Save,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 enum IoKind {
     Svg,
     AddSvg,
@@ -338,17 +337,10 @@ impl Default for App {
             resource_request: None,
             resource_import_stamp: None,
             profile_io_revision: None,
-            debug_events: Default::default(),
         }
     }
 }
 impl App {
-    fn trace(&mut self, event: String) {
-        if self.debug_events.len() >= 30 {
-            self.debug_events.pop_front();
-        }
-        self.debug_events.push_back(event);
-    }
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut app = Self {
             view: View::new_viewer(cc),
@@ -379,12 +371,6 @@ impl App {
         self.redo.clear();
     }
     fn submit(&mut self, command: Command, ctx: &egui::Context) {
-        self.trace(format!(
-            "Submit {:?}; active {:?}; revision {}",
-            std::mem::discriminant(&command),
-            self.active,
-            self.revision
-        ));
         if self.active.is_some() {
             return;
         }
@@ -412,10 +398,6 @@ impl App {
         self.port.start(id, Request::Gui2(command), ctx.clone());
     }
     fn open(&mut self, kind: IoKind, ctx: &egui::Context) {
-        self.trace(format!(
-            "Open {:?}; active {:?}; revision {}",
-            kind, self.active, self.revision
-        ));
         self.resource_import_stamp = matches!(kind, IoKind::LibraryImport | IoKind::MachineImport)
             .then(|| self.resource_stamp());
         self.profile_io_revision = matches!(kind, IoKind::Profile).then_some(self.revision);
@@ -772,19 +754,6 @@ impl App {
                 }
             }
             Event::Io { id, result } => {
-                self.trace(format!(
-                    "IO {id}; expected {:?}; active {:?}; revision {}; {}",
-                    self.io,
-                    self.active,
-                    self.revision,
-                    match &result {
-                        Ok(IoValue::Svg { filename, .. }) => filename.as_str(),
-                        Ok(IoValue::Job(_)) => "JSON",
-                        Ok(IoValue::Svgs(_)) => "batch",
-                        Ok(_) => "saved",
-                        Err(e) => e.as_str(),
-                    }
-                ));
                 let Some((expected, kind)) = self.io else {
                     return;
                 };
@@ -1097,7 +1066,7 @@ impl App {
         }
         let resources_probe = json!({"open":self.resources.open,"jobsOpen":self.resources.jobs_open,"ready":self.resources.ready,"busy":self.resources.busy,"dirty":self.resources.dirty,"status":self.resources.status,"revision":self.resources.base.as_ref().map(|s|s.revision),"catalog":self.resources.draft,"selectedTool":self.resources.tool,"selectedProfile":self.resources.preset,"role":self.resources.role,"conflictRevision":self.resources.conflict.as_ref().map(|s|s.revision)});
         let job_probe = self.document.as_ref().map(|d|json!({"tools":d.job.tools,"profileStatuses":cam_core::project::v5::resources::assignment_statuses(&d.job),"machineSnapshot":d.job.machine_configuration,"name":d.job.name,"depth":engine::settings(&d.job).max_depth_mm,"feed":engine::settings(&d.job).endmill.cutting_feed_mm_min,"machine":d.job.machine_configuration.is_some(),"rawDepth":d.text(0),"rawFeed":d.text(2),"components":engine::settings(&d.job).components.len(),"mode":engine::settings(&d.job).mode,"stock":d.job.setup.stock,"placement":d.active_artwork().map(|i| &i.placement),"activeArtwork":d.raw.artwork_item,"artworks":d.job.artwork.iter().map(|i|json!({"id":i.id,"name":i.name,"placement":i.placement})).collect::<Vec<_>>(),"assignment":engine::settings(&d.job).components,"workZero":d.job.setup.work_zero,"endmillGeometry":crate::authoring::tool(&d.job,false).and_then(|t|t.geometry.clone()),"vbitGeometry":crate::authoring::tool(&d.job,true).and_then(|t|t.geometry.clone())}));
-        crate::viewport::probe::publish(json!({"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"debugEvents":self.debug_events,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
+        crate::viewport::probe::publish(json!({"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
     }
     fn save_output(&mut self, ctx: &egui::Context) {
         if let Some((prepared, revision)) = &self.prepared

@@ -1,7 +1,8 @@
 # GUI5 review recipe
 
-Implementation and verification are in progress; consult
-[the progress report](gui5-progress.md) for the final evidence and build IDs.
+GUI5 implementation and automated verification are complete; consult
+[the progress report](gui5-progress.md) for evidence and build IDs. This
+recipe is for final user and machine-specific review.
 GUI5 lives in the production `flat-v-carve/crates/cam-gui` crate.
 
 ## Launch and portable starting point

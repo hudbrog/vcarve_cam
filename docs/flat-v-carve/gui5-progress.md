@@ -1,7 +1,6 @@
 # GUI5 reusable tools and machine configuration
 
-Status: GUI5 implementation checkpoint on top of GUI4 commit `45d2bc1`.
-Technical completion and final regression verification remain in progress.
+Status: GUI5 implementation complete on top of GUI4 commit `45d2bc1`.
 The GUI4 native/browser review builds are preserved in
 `flat-v-carve/artifacts/gui4` with their source commit.
 
@@ -31,27 +30,38 @@ import/export, copied geometry editing, and reusable machine controls.
   Local log: `flat-v-carve/artifacts/gui/gui5-tests.txt`.
 - Core resource suites: 20 passing tests. Local log:
   `flat-v-carve/artifacts/gui/gui5-core-tests.txt`.
-- Clippy with warnings denied passed before the latest diagnostic tracing.
+- Clippy with warnings denied passed on the cleaned source.
 - GUI5 browser tour passed profile, library CRUD, competing-writer conflict,
   job-tool, machine, real Generate/Simulate/Export and offline portable reopen
-  workflows on browser build `2c1e7ade673c`. Local evidence:
-  `flat-v-carve/artifacts/gui/browser-smoke/2026-09-12T06-43-21.803Z/evidence.json`.
-- GUI3 and Flower browser regressions passed on build `2e1a3afb3b63`.
-- The latest browser build with bounded diagnostic event tracing compiled
-  successfully as `210116d098ed`; it has not completed the browser tours.
+  workflows on browser build `2c1e7ade673c`. Final evidence:
+  `flat-v-carve/artifacts/gui/browser-smoke/2026-09-12T08-47-22.821Z/evidence.json`.
+- GUI3 and Flower browser regressions passed on the same final browser build.
+  Evidence: `flat-v-carve/artifacts/gui/browser-smoke/2026-09-12T08-48-49.043Z/evidence.json`
+  and `flat-v-carve/artifacts/gui/browser-smoke/2026-09-12T08-50-33.461Z/evidence.json`.
+- The latest normal GUI4 browser regression passed after portable reopen,
+  including replacement, repair, delete/Undo, ordering and batch import. Its
+  evidence is under `flat-v-carve/artifacts/gui/browser-smoke/2026-09-12T06-53-15.792Z`.
 
 ## Remaining work
 
-The normal GUI4 browser tour intermittently times out replacing SVG after
-portable reopen. A run with optional I/O tracing passed, but that does not
-resolve the normal-flow failure. The cause is still under investigation.
-The latest failure state is in local artifacts under
-`browser-smoke/2026-09-12T06-43-23.628Z`; the checkpoint retains a bounded
-30-event App diagnostic trace and optional smoke `--trace-io` instrumentation.
+The intermittent GUI4 replacement failure was not reproduced in the final
+normal-flow regression. The GUI5 browser tour also covers active tool mappings,
+work zero, real generation/simulation/preparation, exact checked bytes, and
+portable reopen without the external library. Native and browser artifacts
+were built from the same source revision; the local ignored artifact directory
+contains the exact build logs and screenshots used for review.
 
-Resolve this failure, then run the strengthened GUI5 mapping/work-zero tour,
-repeat affected regressions, and produce matching native/browser review builds.
-The latest native artifact predates the diagnostic browser build. Complete the
-final visual audit and evidence report before marking GUI5 complete.
+The remaining qualification boundary is physical machine cutting and broader
+multi-operation workflows, which belong to later GUI6+ slices in the plan.
+User review should use the recipe in `gui5-review.md` and record any usability
+or machine-specific findings separately from these software fixtures.
+
+Final artifact hashes from the cleaned source:
+
+- Native `artifacts/gui/native/cam-gui.exe`: SHA-256
+  `48dc32cde2e2334e19abde20e4c79cba7d5b3d33507006aa59d5d845ee084f18`.
+- Browser `crates/cam-gui/pkg/cam_gui_bg.wasm`: SHA-256
+  `aee5e3c7ea9d8a7b7650e939db686b52921711c0ef91ed62fc8f02395b35121e`.
+
 Generated builds, logs and screenshots are local ignored artifacts; the source,
 fixture and review recipe are included in this checkpoint.
