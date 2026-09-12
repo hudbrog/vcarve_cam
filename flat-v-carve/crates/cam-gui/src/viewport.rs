@@ -8,6 +8,11 @@ use crate::{
 };
 use egui::Color32;
 use std::sync::Arc;
+#[path = "viewport_artwork.rs"]
+mod artwork;
+#[path = "viewport_inspection.rs"]
+mod inspection;
+pub use artwork::{ArtworkEvent, ArtworkInteraction};
 
 /// Pages fingerprinted per frame while a new scene settles.
 const HASH_PAGES_PER_FRAME: usize = 4;
@@ -61,6 +66,8 @@ pub struct ViewSettings {
     pub stage: usize,
     pub stock: bool,
     pub prefix: usize,
+    #[serde(default)]
+    pub inspection_xy: Option<[f64; 2]>,
 }
 impl Default for ViewSettings {
     fn default() -> Self {
@@ -71,12 +78,16 @@ impl Default for ViewSettings {
             stage: 0,
             stock: true,
             prefix: 0,
+            inspection_xy: None,
         }
     }
 }
 impl ViewSettings {
     pub fn validate(&self) -> Result<(), String> {
-        if !self.zoom.is_finite()
+        if self
+            .inspection_xy
+            .is_some_and(|xy| !xy.iter().all(|v| v.is_finite()))
+            || !self.zoom.is_finite()
             || !(0.5..=3.).contains(&self.zoom)
             || !self.yaw.is_finite()
             || self.stage > 2
@@ -89,7 +100,10 @@ impl ViewSettings {
 }
 
 pub struct Viewport {
+    pub artwork: ArtworkInteraction,
     pub stock_loading: bool,
+    pub result_current: bool,
+    inspection: inspection::Inspection,
     requested_stock: Option<usize>,
     pub status: String,
     scene: Option<Scene>,
@@ -131,7 +145,10 @@ pub struct Viewport {
 impl Default for Viewport {
     fn default() -> Self {
         Self {
+            artwork: ArtworkInteraction::default(),
             stock_loading: false,
+            result_current: false,
+            inspection: Default::default(),
             requested_stock: None,
             status: "Open a job to begin.".into(),
             scene: None,
@@ -177,10 +194,12 @@ impl Viewport {
             stage: self.stage,
             stock: self.show_stock,
             prefix: self.stock_prefix,
+            inspection_xy: self.inspection.point,
         }
     }
     pub fn restore_settings(&mut self, settings: &ViewSettings) {
         self.iso = settings.isometric;
+        self.inspection.point = settings.inspection_xy;
         self.zoom = settings.zoom;
         self.yaw = settings.yaw;
         self.stage = settings.stage;
@@ -215,6 +234,9 @@ impl Viewport {
         self.playing = false;
         self.scene_revision += 1;
         self.scene = Some(scene);
+        if let Some(prefix) = self.comparison_prefix() {
+            self.stock_seek(prefix);
+        }
     }
 
     fn build_stock(&mut self, scene: &Scene) -> Option<StockView> {
@@ -356,6 +378,7 @@ impl Viewport {
                     ui.checkbox(&mut self.show_stock, "Stock preview");
                 }
             });
+            self.artwork_toolbar(ui);
             ui.label(
                 self.scene
                     .as_ref()
@@ -368,13 +391,27 @@ impl Viewport {
             ui.painter()
                 .rect_filled(rect, 0., Color32::from_rgb(246, 248, 250));
             self.draw_workspace(ui, rect);
-            if response.dragged() {
+            self.artwork_pointer(ui, &response, rect);
+            if response.dragged()
+                && (!self.artwork.enabled
+                    || self.artwork.mode == crate::artwork_view::GestureMode::Select)
+            {
                 self.yaw += response.drag_delta().x * 0.005;
             }
-            if response.clicked()
+            if !self.artwork.enabled
+                && response.clicked()
                 && let Some(position) = response.interact_pointer_pos()
             {
                 self.pick_at(position, rect, ctx.pixels_per_point());
+                if let Some(scene) = &self.scene {
+                    let p = crate::artwork_view::setup_point(
+                        self.camera(rect),
+                        scene.meta.bounds,
+                        rect,
+                        position,
+                    );
+                    self.inspection.point = Some([p.x, p.y]);
+                }
             }
             self.build_overlay(rect, ctx.pixels_per_point());
             if self.gpu_unavailable {
@@ -446,6 +483,7 @@ impl Viewport {
                             table: page_table(scene),
                             hashes: self.page_hashes.clone(),
                             required: self.required_pages.clone(),
+                            visible: self.visible_motion_range(),
                             budget_bytes: self.page_budget,
                             contour_vertices: scene.meta.contour_vertices,
                             contour_range: scene
@@ -468,6 +506,8 @@ impl Viewport {
                         },
                     ));
             }
+            self.artwork_overlay(ui, rect);
+            self.inspection_marker(ui, rect);
             let pick = self
                 .selection
                 .map(|pick| {
@@ -562,6 +602,9 @@ impl Viewport {
     pub fn motion_count(&self) -> usize {
         self.scene.as_ref().map_or(0, Scene::motion_count)
     }
+    pub fn scene_bounds(&self) -> Option<[f64; 4]> {
+        self.scene.as_ref().map(|s| s.meta.bounds)
+    }
 
     /// Pages the display needs, nearest the playhead first. The renderer admits
     /// this order until the resident budget is reached.
@@ -570,14 +613,9 @@ impl Viewport {
         if table.motions == 0 {
             return Vec::new();
         }
-        let rough = scene.meta.rough_vertices / 2;
         let playhead = self.playhead.min(table.motions);
-        let (mut start, mut end) = (0, playhead.max(1));
-        match self.stage {
-            1 => end = end.min(rough.max(1)),
-            2 => start = rough.min(table.motions),
-            _ => {}
-        }
+        let range = visible_range(scene, self.stage, self.playhead);
+        let (start, end) = (range.start, range.end);
         if end <= start {
             return Vec::new();
         }
@@ -587,6 +625,12 @@ impl Viewport {
         let mut pages: Vec<usize> = (first..=last).collect();
         pages.sort_by_key(|page| (page.abs_diff(anchor), *page));
         pages
+    }
+
+    pub fn visible_motion_range(&self) -> std::ops::Range<usize> {
+        self.scene.as_ref().map_or(0..0, |scene| {
+            visible_range(scene, self.stage, self.playhead)
+        })
     }
 
     fn stock_seek(&mut self, target: usize) {
@@ -622,7 +666,14 @@ impl Viewport {
         let local = [cursor.x - rect.center().x, cursor.y - rect.center().y];
         let ppp = pixels_per_point.max(1e-3);
         let picker = self.picker.as_ref().unwrap();
-        self.selection = picker.pick(&camera, rect_points, local, self.pick_tolerance_px, ppp);
+        self.selection = picker.pick_visible(
+            &camera,
+            rect_points,
+            local,
+            self.pick_tolerance_px,
+            ppp,
+            self.visible_motion_range(),
+        );
         self.overlay_signature = None;
         self.status = match self.selection {
             Some(pick) => format!(
@@ -671,13 +722,16 @@ impl Viewport {
         let scale = 1.6 / size;
         // Points per scene unit, matching the viewport projection.
         let per_unit = self.zoom * rect.height().max(1.) / 2.;
-        let selection = self.selection.and_then(|pick| {
-            self.picker.as_ref().and_then(|picker| {
-                picker
-                    .endpoints(pick.motion)
-                    .map(|points| (points[0], points[1]))
-            })
-        });
+        let selection = self
+            .selection
+            .filter(|p| self.visible_motion_range().contains(&(p.motion as usize)))
+            .and_then(|pick| {
+                self.picker.as_ref().and_then(|picker| {
+                    picker
+                        .endpoints(pick.motion)
+                        .map(|points| (points[0], points[1]))
+                })
+            });
         let marker = scene
             .meta
             .sim
@@ -766,4 +820,14 @@ fn page_table(scene: &Scene) -> pages::PageTable {
         motion_offset: 0,
         motion_len: 0,
     })
+}
+
+fn visible_range(scene: &Scene, stage: usize, prefix: usize) -> std::ops::Range<usize> {
+    let rough = scene.meta.rough_vertices / 2;
+    let end = prefix.min(scene.motion_count());
+    match stage {
+        1 => 0..end.min(rough),
+        2 => rough.min(end)..end,
+        _ => 0..end,
+    }
 }

@@ -1023,7 +1023,11 @@ fn semantic_settings(settings: &OperationSettingsV5) -> OperationSettingsV5 {
                 max_floor_ridge_mm: s.max_floor_ridge_mm,
                 max_detail_residual_mm: s.max_detail_residual_mm,
                 rough: s.rough.clone(),
-                finish: s.finish.clone(),
+                finish: if s.mode == crate::project::FlatVcarveMode::Combined {
+                    s.finish.clone()
+                } else {
+                    None
+                },
             })
         }
         OperationSettingsV5::Face(s) => OperationSettingsV5::Face(v5::FaceSettingsV5 {

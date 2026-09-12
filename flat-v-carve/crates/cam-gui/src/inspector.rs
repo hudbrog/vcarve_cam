@@ -3,7 +3,7 @@ use crate::authoring::{self, settings_mut};
 use cam_core::project::{FlatVcarveMode, SpindleDirection, WorkZeroXY, WorkZeroZ};
 
 impl App {
-    fn edit_job(
+    pub(super) fn edit_job(
         &mut self,
         ctx: &egui::Context,
         clear: &[usize],
@@ -71,17 +71,22 @@ impl App {
                         )
                         .labelled_by(label.id);
                     ui.small(match field {
-                        2 | 3 | 10 | 21 => "mm/min",
+                        2 | 3 | 10 | 21 | 51 => "mm/min",
                         11 | 22 => "RPM",
-                        16 | 28 => "deg",
+                        14 | 16 | 28 => "deg",
                         29 => "×",
-                        32 | 33 | 38 | 39 => "",
+                        32 | 33 | 38 | 39 | 48..=50 | 52..=56 | 58..=60 => "",
                         _ => "mm",
                     });
                     response
                 })
                 .inner;
             observe_control(FIELDS[field], response.rect);
+            if self.issue_focus.as_deref() == Some(FIELDS[field]) {
+                response.scroll_to_me(Some(egui::Align::Center));
+                response.request_focus();
+                self.issue_focus = None;
+            }
             if response.changed() {
                 if self.edit_group != Some(field) {
                     self.remember();
@@ -92,9 +97,21 @@ impl App {
                     self.plan = None;
                 }
                 self.changed(ctx);
-                self.status = result
-                    .err()
-                    .unwrap_or_else(|| "Setting changed; generate to update simulation.".into());
+                self.status = match result {
+                    Ok(()) => "Setting changed; generate to update simulation.".into(),
+                    Err(error) => {
+                        self.issues = vec![cam_core::operations::LocatedDiagnostic {
+                            code: "EDITOR_VALUE".into(),
+                            message: error.clone(),
+                            operation_id: Some(
+                                self.document.as_ref().unwrap().job.operations[0].id.clone(),
+                            ),
+                            tool_id: None,
+                            field_path: Some(format!("editor.fields.{}", FIELDS[field])),
+                        }];
+                        error
+                    }
+                };
             }
             if response.lost_focus() {
                 self.edit_group = None;
@@ -107,21 +124,31 @@ impl App {
     pub(super) fn inspector(&mut self, ctx: &egui::Context) {
         let panel=egui::SidePanel::right("gui2-inspector").default_width(self.inspector_width).width_range(300.0..=480.0).resizable(true).show(ctx,|ui|{
             ui.add_space(8.);
-            ui.strong(["ARTWORK", "STOCK & WORK ZERO", "OPERATION", "MACHINE & EXPORT", "JOB TOOL · ENDMILL", "JOB TOOL · V-BIT"][self.inspector_tab]);
+            ui.strong(["ARTWORK", "STOCK & WORK ZERO", "OPERATION", "MACHINE & EXPORT", "JOB TOOL · ENDMILL", "JOB TOOL · V-BIT", "RESULT INSPECTION"][self.inspector_tab]);
             ui.separator();
+            if self.inspector_tab != 6 {
             let r=ui.add(egui::TextEdit::singleline(&mut self.search).id(egui::Id::new("gui2-search")).char_limit(512).hint_text("Filter fields"));observe_control("Filter fields",r.rect);
             if r.changed(){self.scroll[self.inspector_tab]=0.;}
+            }
             let area=egui::ScrollArea::vertical().id_salt(("inspector-scroll",self.inspector_tab)).vertical_scroll_offset(self.scroll[self.inspector_tab]).show(ui,|ui|{
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 if self.document.is_none(){ui.label("Import an SVG or open a saved job to begin.");return;}
-                match self.inspector_tab {0=>self.artwork_panel(ui,ctx),1=>self.setup_panel(ui,ctx),2=>self.cutting_panel(ui,ctx),3=>self.machine_panel(ui,ctx),index=>{
+                match self.inspector_tab {0=>self.artwork_panel(ui,ctx),1=>self.setup_panel(ui,ctx),2=>self.cutting_panel(ui,ctx),3=>self.machine_panel(ui,ctx),6=>self.view.inspection_controls(ui),index=>{
                     let finish=index==5;
                     ui.heading(if finish {"V-bit geometry"}else{"Endmill geometry"});
                     self.numbers(ui,ctx,if finish {&[16,17,18,19]}else{&[12,13]});
+                    if button(ui, if finish {"Unset V-bit geometry"} else {"Unset endmill geometry"}, true).clicked() {
+                        self.edit_job(ctx, if finish {&[16,17,18,19]} else {&[12,13]}, |job| { authoring::tool_mut(job, finish)?.geometry = None; Ok(()) });
+                    }
                     ui.separator();ui.label("Used by Flat V-carve");
                     ui.small(if finish {"Defines the V-shaped target in both modes; executes finishing in Combined mode."}else{"Endmill clearing stage"});
                     if button(ui,"Edit cutting assignment",true).clicked(){self.navigate(2);}
                     if button(ui,"Edit controller mapping",true).clicked(){self.navigate(3);}
                 }}
+                if let Some(label) = self.issue_focus.clone() {
+                    let rect = CONTROLS.with(|c| c.borrow().get(&label).copied());
+                    if let Some([x0,y0,x1,y1]) = rect { ui.scroll_to_rect(egui::Rect::from_min_max(egui::pos2(x0,y0),egui::pos2(x1,y1)), Some(egui::Align::Center)); self.issue_focus = None; }
+                }
                 if self.document.as_ref().is_some_and(Document::pending){ui.colored_label(Color32::from_rgb(164,83,12),"Complete partial fields before generation or job save. Recovery keeps the raw text.");}
             });
             observe_control("Inspector viewport",area.inner_rect);
@@ -135,7 +162,42 @@ impl App {
         ui.small("SVG units become mm. Origin is in the SVG page: placement = scale × rotate(page − origin).");
         self.numbers(ui, ctx, &[26, 27, 28, 29]);
         ui.separator();
-        ui.label("Filled components");
+        ui.label("Viewport selection");
+        ui.small(format!(
+            "{} picked · orange outline. Picking does not change the cut.",
+            self.view.artwork.selected.len()
+        ));
+        ui.horizontal_wrapped(|ui| {
+            for (label, action) in [("Use picked", 0), ("Add picked", 1), ("Remove picked", 2)] {
+                if button(ui, label, !self.view.artwork.selected.is_empty()).clicked() {
+                    let picked = self.view.artwork.selected.clone();
+                    // References come from the currently displayed catalogue, never
+                    // inferred from names or nearest positions.
+                    if picked
+                        .iter()
+                        .all(|r| self.components.iter().any(|c| &c.reference == r))
+                    {
+                        self.edit_job(ctx, &[], |job| {
+                            let refs = &mut settings_mut(job).components;
+                            match action {
+                                0 => *refs = picked,
+                                1 => {
+                                    for r in picked {
+                                        if !refs.contains(&r) {
+                                            refs.push(r);
+                                        }
+                                    }
+                                }
+                                _ => refs.retain(|r| !picked.contains(r)),
+                            }
+                            Ok(())
+                        });
+                    }
+                }
+            }
+        });
+        ui.separator();
+        ui.label("Carving assignment · filled components");
         let count = engine::settings(&self.document.as_ref().unwrap().job)
             .components
             .len();
@@ -283,8 +345,40 @@ impl App {
                 }
             }
         });
-        self.numbers(ui, ctx, &[0, 1, 4]);
+        ui.label("Operation top");
+        ui.horizontal(|ui| {
+            for (label, reference) in [
+                (
+                    "Top: stock top",
+                    cam_core::project::HeightReference::StockTop,
+                ),
+                (
+                    "Top: stock bottom",
+                    cam_core::project::HeightReference::StockBottom,
+                ),
+            ] {
+                let r = ui.selectable_label(
+                    engine::settings(&self.document.as_ref().unwrap().job)
+                        .top
+                        .reference
+                        == reference,
+                    label,
+                );
+                observe_control(label, r.rect);
+                if r.clicked() {
+                    self.edit_job(ctx, &[], |job| {
+                        settings_mut(job).top.reference = reference;
+                        Ok(())
+                    });
+                }
+            }
+        });
+        self.numbers(ui, ctx, &[47, 0, 1, 4]);
+        ui.small(
+            "Top offset is signed, positive upward. Depth is measured below the operation top.",
+        );
         ui.heading("Endmill assignment");
+        self.assignment_tool(ui, ctx, false);
         ui.small("Choose the clearing strategy and confirm plunge capability explicitly.");
         ui.horizontal(|ui| {
             for (label, strategy) in [
@@ -305,16 +399,24 @@ impl App {
                 observe_control(label, r.rect);
                 if r.clicked() {
                     self.edit_job(ctx, &[], |job| {
-                        settings_mut(job).rough =
-                            Some(cam_core::project::FlatVcarveRoughSettings {
-                                strategy,
-                                ..Default::default()
-                            });
+                        settings_mut(job)
+                            .rough
+                            .get_or_insert_with(Default::default)
+                            .strategy = strategy;
                         Ok(())
                     });
                 }
             }
         });
+        if engine::settings(&self.document.as_ref().unwrap().job)
+            .rough
+            .is_some()
+        {
+            self.entry_panel(ui, ctx);
+            ui.label("Rough planner limits");
+            self.numbers(ui, ctx, &[48, 49, 50]);
+            ui.small("Limits: 1–256 layers, 1–1024 loops per layer, 1–100000 motions.");
+        }
         self.numbers(ui, ctx, &[12, 13, 2, 10, 8, 9, 11]);
         self.direction(ui, ctx, false);
         let mut plunge = authoring::tool(&self.document.as_ref().unwrap().job, false)
@@ -338,6 +440,7 @@ impl App {
             });
         }
         ui.heading("V-shaped target");
+        self.assignment_tool(ui, ctx, true);
         ui.small(
             "Geometry is required in both modes. Endmill-only does not execute a V-bit stage.",
         );
@@ -346,6 +449,9 @@ impl App {
             ui.heading("V-bit finishing assignment");
             self.numbers(ui, ctx, &[3, 21, 20, 46, 22, 5]);
             self.direction(ui, ctx, true);
+            ui.label("Finish planner limits & inspection sampling");
+            self.numbers(ui, ctx, &[52, 53, 54, 55, 56, 57, 58, 59, 60]);
+            ui.small("Paths ≤65536; motions, curve segments and quality samples ≤1000000; depth passes ≤256; cleanup 0–8; reachability cells ≤100000; stock slices 1–32. Other limits start at 1. Sample spacing must be positive.");
             let mut plunge = authoring::tool(&self.document.as_ref().unwrap().job, true)
                 .and_then(|t| t.capabilities.plunge_capable);
             let before = plunge;
@@ -368,6 +474,158 @@ impl App {
         } else {
             ui.small("V-bit cutting values and controller mapping are retained but unused.");
         }
+    }
+    fn entry_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        use cam_core::pocket::EntryStrategy;
+        let ramp = matches!(
+            engine::settings(&self.document.as_ref().unwrap().job)
+                .rough
+                .as_ref()
+                .unwrap()
+                .entry,
+            EntryStrategy::Ramp { .. }
+        );
+        ui.label("Endmill entry");
+        ui.horizontal(|ui| {
+            let r = ui.selectable_label(!ramp, "Plunge entry");
+            observe_control("Plunge entry", r.rect);
+            if r.clicked() && ramp {
+                // Keep the last ramp numbers as inactive raw fields for recovery
+                // and switching back; Plunge does not replace them with defaults.
+                let doc = self.document.as_mut().unwrap();
+                for f in [14, 51] {
+                    let text = doc.text(f);
+                    doc.raw.raw.insert(doc.raw.key(f), text);
+                }
+                self.edit_job(ctx, &[], |job| {
+                    settings_mut(job).rough.as_mut().unwrap().entry = EntryStrategy::Plunge;
+                    Ok(())
+                });
+            }
+            let r = ui.selectable_label(ramp, "Ramp entry");
+            observe_control("Ramp entry", r.rect);
+            if r.clicked() && !ramp {
+                let doc = self.document.as_ref().unwrap();
+                let values = [14, 51]
+                    .into_iter()
+                    .map(|f| {
+                        Draft::parse(&doc.text(f))
+                            .map_err(str::to_string)?
+                            .ok_or("Enter ramp angle and feed, then choose Ramp entry".into())
+                    })
+                    .collect::<Result<Vec<_>, String>>();
+                match values {
+                    Ok(values) => {
+                        self.edit_job(ctx, &[], |job| authoring::set_group(job, 14, &values))
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+        });
+        let mut capable = authoring::tool(&self.document.as_ref().unwrap().job, false)
+            .and_then(|t| t.capabilities.ramp_capable);
+        let before = capable;
+        ui.label("Endmill can ramp");
+        ui.horizontal(|ui| {
+            for (label, value) in [
+                ("Ramp unset", None),
+                ("Ramp yes", Some(true)),
+                ("Ramp no", Some(false)),
+            ] {
+                let r = ui.selectable_value(&mut capable, value, label);
+                observe_control(label, r.rect);
+            }
+        });
+        if capable != before {
+            self.edit_job(ctx, &[], |job| {
+                authoring::tool_mut(job, false)?.capabilities.ramp_capable = capable;
+                Ok(())
+            });
+        }
+        self.numbers(ui, ctx, &[14, 51]);
+        ui.small(if ramp { "Angle: greater than 0 and less than 90°. Feed: positive mm/min." } else { "Ramp fields are inactive. Enter both values, then choose Ramp entry. Recovery retains this draft." });
+    }
+    fn assignment_tool(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, finish: bool) {
+        use cam_core::project::ToolGeometry;
+        let job = &self.document.as_ref().unwrap().job;
+        let assignment = if finish {
+            &engine::settings(job).vbit
+        } else {
+            &engine::settings(job).endmill
+        };
+        let mut selected = assignment.tool_id.clone();
+        let before = selected.clone();
+        let current = job
+            .tools
+            .iter()
+            .find(|t| t.id == selected)
+            .map(|t| t.name.as_str())
+            .unwrap_or("Missing tool");
+        let response = egui::ComboBox::from_id_salt(("assignment-tool", finish))
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                for tool in &job.tools {
+                    if matches!(
+                        (&tool.geometry, finish),
+                        (None, _)
+                            | (Some(ToolGeometry::Endmill(_)), false)
+                            | (Some(ToolGeometry::Vbit(_)), true)
+                    ) {
+                        let r = ui.selectable_value(
+                            &mut selected,
+                            tool.id.clone(),
+                            format!("{} · {}", tool.name, tool.id),
+                        );
+                        observe_control(
+                            &format!(
+                                "Assign {} {}",
+                                if finish { "V-bit" } else { "endmill" },
+                                tool.id
+                            ),
+                            r.rect,
+                        );
+                    }
+                }
+            });
+        observe_control(
+            if finish {
+                "V-bit assignment tool"
+            } else {
+                "Endmill assignment tool"
+            },
+            response.response.rect,
+        );
+        if selected != before {
+            self.edit_job(
+                ctx,
+                if finish {
+                    &[16, 17, 18, 19, 3, 20, 21, 22, 46, 38, 39]
+                } else {
+                    &[12, 13, 2, 8, 9, 10, 11, 32, 33]
+                },
+                |job| authoring::assign_tool(job, finish, &selected),
+            );
+        }
+        let label = if finish {
+            "Clear V-bit cutting values"
+        } else {
+            "Clear endmill cutting values"
+        };
+        if button(ui, label, true).clicked() {
+            self.edit_job(
+                ctx,
+                if finish {
+                    &[3, 20, 21, 22, 46]
+                } else {
+                    &[2, 8, 9, 10, 11]
+                },
+                |job| {
+                    authoring::clear_assignment(job, finish);
+                    Ok(())
+                },
+            );
+        }
+        ui.small("Choosing another job tool clears this assignment’s cutting values; enter values for the chosen cutter.");
     }
     fn direction(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, finish: bool) {
         let s = engine::settings(&self.document.as_ref().unwrap().job);

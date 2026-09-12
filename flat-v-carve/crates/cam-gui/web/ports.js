@@ -16,7 +16,7 @@ export function startWorker(id, request) {
   active = {worker,id};
   worker.onmessage = ({data}) => {
     if (active?.id !== id) return;
-    if (data.protocol !== 'cam-gui-retained-2' || data.gui2Protocol !== 'gui2-retained-2') {
+    if (data.protocol !== 'cam-gui-retained-3' || data.gui2Protocol !== 'gui2-retained-3') {
       cancelWorker();
       emit({Computed:{id,elapsed_ms:performance.now()-begin,result:{Err:'Worker version mismatch; reload matching assets'}}});return;
     }
@@ -29,7 +29,7 @@ export function startWorker(id, request) {
     worker.terminate();active=undefined;
     emit({Computed:{id,elapsed_ms:performance.now()-begin,result:{Err:'Compute worker failed: '+event.message}}});
   };
-  worker.postMessage({protocol:'cam-gui-retained-2',request});
+  worker.postMessage({protocol:'cam-gui-retained-3',request});
 }
 export function openFile(id,svg) {
   const complete=result=>emit({Io:{id,result}});

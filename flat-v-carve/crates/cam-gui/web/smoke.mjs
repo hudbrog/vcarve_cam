@@ -99,7 +99,7 @@ const click = async (x, y) => {
 };
 const pressKey = async (key, code, modifiers = 0) => {
   for (const type of ['keyDown', 'keyUp']) {
-    await send('Input.dispatchKeyEvent', {type, key, code, windowsVirtualKeyCode: key.toUpperCase().charCodeAt(0), nativeVirtualKeyCode: key.toUpperCase().charCodeAt(0), modifiers});
+    await send('Input.dispatchKeyEvent', {type, key, code, windowsVirtualKeyCode: key==='Escape'?27:key.toUpperCase().charCodeAt(0), nativeVirtualKeyCode: key==='Escape'?27:key.toUpperCase().charCodeAt(0), modifiers});
   }
 };
 
@@ -107,14 +107,16 @@ const control = async label => {
   for(let attempt=0;attempt<12;attempt++) {
     const current=await state(); const rect=current.controls?.[label];
     if(!rect)throw new Error(`Missing control ${label}`);
-    const clip=current.controls?.['Inspector viewport'];
+    const nav=['Setup','Machine','Artwork','Cutting','Inspect result','Endmill tool','V-bit tool','+ Import artwork'].includes(label);
+    const clip=current.controls?.[nav?'Navigator viewport':'Inspector viewport'];
     const bottom=clip?.[3]??await evaluate('innerHeight-65');
     const top=clip?.[1]??150;
-    if(rect[1]>=top && rect[3]<=bottom || rect[0]<850 || ['Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
+    if(rect[1]>=top && rect[3]<=bottom || !nav && rect[0]<(clip?.[0]??850) || ['Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
       await click((rect[0]+rect[2])/2,(rect[1]+rect[3])/2); await sleep(120);return;
     }
-    await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:1100,y:350});
-    await send('Input.dispatchMouseEvent',{type:'mouseWheel',x:1100,y:350,deltaX:0,deltaY:rect[1]<top?-200:200});await sleep(200);
+    const x=nav?100:1100,y=(top+bottom)/2;
+    await send('Input.dispatchMouseEvent',{type:'mouseMoved',x,y});
+    await send('Input.dispatchMouseEvent',{type:'mouseWheel',x,y,deltaX:0,deltaY:rect[1]<top?-200:200});await sleep(200);
   }
   throw new Error(`Could not scroll to ${label}`);
 };
@@ -130,7 +132,10 @@ const record=(label,value)=>{checks.push({label,value});console.log(label);};
 try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  if(process.argv.includes('--authoring')) {
+  if(process.argv.includes('--gui3')) {
+    const {gui3Scenario}=await import('./gui3-scenario.mjs');
+    await gui3Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out});
+  } else if(process.argv.includes('--authoring')) {
     const {authoringScenario}=await import('./authoring-scenario.mjs');
     await authoringScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,writeFileSync,path,out});
   } else {

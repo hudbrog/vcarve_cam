@@ -909,14 +909,9 @@ fn validate_flat_vcarve(settings: &FlatVcarveSettingsV5, id: &str) -> Result<()>
             ));
         }
         (crate::project::FlatVcarveMode::EndmillOnly, None) => {}
-        (crate::project::FlatVcarveMode::EndmillOnly, Some(_)) => {
-            return Err(error(
-                "PROJECT_OPERATION",
-                format!(
-                    "operation '{id}' is endmill-only mode and must not carry V-bit finish settings"
-                ),
-            ));
-        }
+        // Retain inactive finishing policy in portable jobs. Mode remains the
+        // execution authority; the legacy execution adapter omits this policy.
+        (crate::project::FlatVcarveMode::EndmillOnly, Some(finish)) => finish.validate()?,
     }
     for component in &settings.components {
         component.validate()?;

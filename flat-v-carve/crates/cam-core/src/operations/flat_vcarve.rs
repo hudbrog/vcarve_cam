@@ -197,6 +197,12 @@ fn missing_fields_ctx(
                 }
             }
             EntryStrategy::Ramp { .. } => {
+                if endmill.is_some_and(|t| t.capabilities.plunge_capable.is_none()) {
+                    push(
+                        format!("operations[{operation_id}].endmill.plunge_capable"),
+                        "explicit endmill plunge capability",
+                    );
+                }
                 if endmill.is_none_or(|t| t.capabilities.ramp_capable != Some(true)) {
                     push(
                         format!("operations[{operation_id}].endmill.ramp_capable"),
@@ -351,7 +357,11 @@ pub(crate) fn to_legacy_job_v5(
         tolerances: ctx.tolerances.clone(),
         machine_profile: job.legacy_machine_profile.clone(),
         endmill_planning: Some(endmill_planning),
-        vbit_planning: settings.finish.clone(),
+        vbit_planning: if settings.mode == FlatVcarveMode::Combined {
+            settings.finish.clone()
+        } else {
+            None
+        },
     };
     legacy.validate_settings()?;
     Ok(legacy)
@@ -443,7 +453,11 @@ pub fn to_legacy_job(
         tolerances: job.tolerances.clone(),
         machine_profile,
         endmill_planning: Some(endmill_planning),
-        vbit_planning: settings.finish.clone(),
+        vbit_planning: if settings.mode == FlatVcarveMode::Combined {
+            settings.finish.clone()
+        } else {
+            None
+        },
     };
     legacy.validate_settings()?;
     Ok(legacy)

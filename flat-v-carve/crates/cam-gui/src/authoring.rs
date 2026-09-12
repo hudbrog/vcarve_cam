@@ -91,6 +91,40 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
 pub struct Component {
     pub reference: GeometryRef,
     pub bounds: [f64; 4],
+    /// Canonical imported boundaries in setup millimeters, including holes.
+    pub rings: Vec<Vec<[f64; 2]>>,
+}
+pub fn catalogue_components(catalogue: &artwork::CombinedCatalogue) -> Vec<Component> {
+    catalogue
+        .items
+        .iter()
+        .flat_map(|item| {
+            item.entries
+                .iter()
+                .filter(|e| e.kind == GeometryRefKind::FilledComponent)
+                .map(|entry| Component {
+                    reference: entry.reference.clone(),
+                    bounds: [
+                        entry.bounds.min_x_mm,
+                        entry.bounds.min_y_mm,
+                        entry.bounds.max_x_mm,
+                        entry.bounds.max_y_mm,
+                    ],
+                    rings: item
+                        .catalogue
+                        .as_ref()
+                        .map(|catalogue| {
+                            catalogue
+                                .contours
+                                .iter()
+                                .filter(|c| c.component_id == entry.reference.local_geometry_id)
+                                .map(|c| c.vertices.iter().map(|p| [p.x, p.y]).collect())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
+        })
+        .collect()
 }
 pub fn settings_mut(job: &mut CamJobV5) -> &mut FlatVcarveSettingsV5 {
     let OperationSettingsV5::FlatVcarve(s) = &mut job.operations[0].settings else {
@@ -105,7 +139,7 @@ pub fn set_mode(job: &mut CamJobV5, mode: FlatVcarveMode) {
     let s = settings_mut(job);
     s.mode = mode;
     s.finish = match mode {
-        FlatVcarveMode::EndmillOnly => None,
+        FlatVcarveMode::EndmillOnly => s.finish.clone(),
         FlatVcarveMode::Combined => Some(s.finish.clone().unwrap_or(
             cam_core::vcarve::VBitPlanningSettings {
                 max_paths: 65536,
@@ -130,6 +164,46 @@ pub fn tool(job: &CamJobV5, finishing: bool) -> Option<&JobToolV5> {
     };
     job.tools.iter().find(|t| &t.id == id)
 }
+pub fn clear_assignment(job: &mut CamJobV5, finishing: bool) {
+    let s = settings_mut(job);
+    let a = if finishing {
+        &mut s.vbit
+    } else {
+        &mut s.endmill
+    };
+    a.spindle_rpm = None;
+    a.spindle_direction = None;
+    a.cutting_feed_mm_min = None;
+    a.plunge_feed_mm_min = None;
+    a.max_stepdown_mm = None;
+    a.stepover_mm = None;
+    a.applied_profile = None;
+}
+pub fn assign_tool(job: &mut CamJobV5, finishing: bool, id: &str) -> Result<(), String> {
+    let tool = job
+        .tools
+        .iter()
+        .find(|t| t.id == id)
+        .ok_or("Unknown job tool")?;
+    if !matches!(
+        (&tool.geometry, finishing),
+        (None, _) | (Some(ToolGeometry::Endmill(_)), false) | (Some(ToolGeometry::Vbit(_)), true)
+    ) {
+        return Err("Tool geometry does not match this assignment".into());
+    }
+    let s = settings_mut(job);
+    let a = if finishing {
+        &mut s.vbit
+    } else {
+        &mut s.endmill
+    };
+    if a.tool_id == id {
+        return Ok(());
+    }
+    a.tool_id = id.into();
+    clear_assignment(job, finishing);
+    Ok(())
+}
 pub fn tool_mut(job: &mut CamJobV5, finishing: bool) -> Result<&mut JobToolV5, String> {
     let s = crate::session::settings(job);
     let id = if finishing {
@@ -144,15 +218,55 @@ pub fn tool_mut(job: &mut CamJobV5, finishing: bool) -> Result<&mut JobToolV5, S
 }
 pub const FIELDS: &[usize] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22, 23, 25, 26, 27, 28,
-    29, 30, 31, 32, 33, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+    29, 30, 31, 32, 33, 38, 39, 40, 41, 42, 43, 44, 45, 46, 14, 47, 48, 49, 50, 51, 52, 53, 54, 55,
+    56, 57, 58, 59, 60,
 ];
 pub fn active(job: &CamJobV5, field: usize) -> bool {
-    crate::session::settings(job).mode == FlatVcarveMode::Combined
-        || !matches!(field, 3 | 5 | 20 | 21 | 22 | 38 | 39 | 46)
+    let s = crate::session::settings(job);
+    if matches!(field, 14 | 51) {
+        return s
+            .rough
+            .as_ref()
+            .is_some_and(|r| matches!(r.entry, cam_core::pocket::EntryStrategy::Ramp { .. }));
+    }
+    if matches!(field, 48..=50) {
+        return s.rough.is_some();
+    }
+    s.mode == FlatVcarveMode::Combined
+        || !matches!(field, 3 | 4 | 5 | 20 | 21 | 22 | 38 | 39 | 46 | 52..=60)
 }
 pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
     let s = crate::session::settings(job);
     match field {
+        47 => Some(s.top.offset_mm),
+        48 => Some(s.rough.as_ref()?.max_layers as f64),
+        49 => Some(s.rough.as_ref()?.max_loops_per_layer as f64),
+        50 => Some(s.rough.as_ref()?.max_motions as f64),
+        14 | 51 => match s.rough.as_ref()?.entry {
+            cam_core::pocket::EntryStrategy::Ramp {
+                max_angle_deg,
+                feed_mm_min,
+            } => Some(if field == 14 {
+                max_angle_deg
+            } else {
+                feed_mm_min
+            }),
+            _ => None,
+        },
+        52..=60 => {
+            let f = s.finish.as_ref()?;
+            Some(match field {
+                52 => f.max_paths as f64,
+                53 => f.max_motions as f64,
+                54 => f.max_curve_segments as f64,
+                55 => f.max_depth_passes as f64,
+                56 => f.max_cleanup_iterations as f64,
+                57 => f.quality_sample_spacing_mm,
+                58 => f.max_quality_samples as f64,
+                59 => f.reachability_max_cells as f64,
+                _ => f.stock_slices as f64,
+            })
+        }
         7 => job.setup.clearance_above_stock_mm.or_else(|| {
             job.machine_configuration
                 .as_ref()
@@ -219,6 +333,40 @@ pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
 
 pub fn set(job: &mut CamJobV5, field: usize, v: Option<f64>) -> Result<(), String> {
     match field {
+        47 => settings_mut(job).top.offset_mm = v.ok_or("Top offset cannot be unset")?,
+        48..=50 => {
+            let n = whole(v)?;
+            let r = settings_mut(job)
+                .rough
+                .as_mut()
+                .ok_or("Choose a clearing strategy first")?;
+            match field {
+                48 => r.max_layers = n,
+                49 => r.max_loops_per_layer = n,
+                _ => r.max_motions = n,
+            }
+        }
+        52..=60 => {
+            let f = settings_mut(job)
+                .finish
+                .as_mut()
+                .ok_or("Choose Combined mode first")?;
+            if field == 57 {
+                f.quality_sample_spacing_mm = v.ok_or("Sample spacing cannot be unset")?;
+            } else {
+                let n = whole(v)?;
+                match field {
+                    52 => f.max_paths = n,
+                    53 => f.max_motions = n,
+                    54 => f.max_curve_segments = n,
+                    55 => f.max_depth_passes = n,
+                    56 => f.max_cleanup_iterations = n,
+                    58 => f.max_quality_samples = n,
+                    59 => f.reachability_max_cells = n,
+                    _ => f.stock_slices = n,
+                }
+            }
+        }
         7 => {
             job.setup.clearance_above_stock_mm = v;
             if let Some(m) = &mut job.machine_configuration {
@@ -286,8 +434,17 @@ pub fn set(job: &mut CamJobV5, field: usize, v: Option<f64>) -> Result<(), Strin
     Ok(())
 }
 
+fn whole(v: Option<f64>) -> Result<usize, String> {
+    let n = v.ok_or("Planner limits cannot be unset")?;
+    if !n.is_finite() || !(0.0..=1_000_000.0).contains(&n) || n.fract() != 0. {
+        return Err("Planner limits require a whole number in the supported range".into());
+    }
+    Ok(n as usize)
+}
+
 pub fn group(field: usize) -> &'static [usize] {
     match field {
+        14 | 51 => &[14, 51],
         12 | 13 => &[12, 13],
         16..=19 => &[16, 17, 18, 19],
         30 | 31 => &[30, 31],
@@ -297,6 +454,16 @@ pub fn group(field: usize) -> &'static [usize] {
 }
 pub fn set_group(job: &mut CamJobV5, field: usize, values: &[f64]) -> Result<(), String> {
     match field {
+        14 | 51 => {
+            settings_mut(job)
+                .rough
+                .as_mut()
+                .ok_or("Choose a clearing strategy first")?
+                .entry = cam_core::pocket::EntryStrategy::Ramp {
+                max_angle_deg: values[0],
+                feed_mm_min: values[1],
+            };
+        }
         12 | 13 => {
             tool_mut(job, false)?.geometry = Some(ToolGeometry::Endmill(project::EndmillGeometry {
                 diameter_mm: values[0],

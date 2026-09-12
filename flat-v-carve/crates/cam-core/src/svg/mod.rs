@@ -34,6 +34,27 @@ impl Default for Placement {
     }
 }
 impl Placement {
+    /// Convert a page point through the same placement used by SVG import.
+    pub fn to_setup(&self, page: Point) -> Result<Point> {
+        if !page.finite() {
+            return Err(error("SVG_PLACEMENT", "point must be finite"));
+        }
+        Ok(self.matrix()?.apply(page))
+    }
+    /// Inverse of `scale * rotate(page - origin_mm)` for editor gestures.
+    pub fn to_page(&self, setup: Point) -> Result<Point> {
+        self.matrix()?;
+        if !setup.finite() {
+            return Err(error("SVG_PLACEMENT", "point must be finite"));
+        }
+        let (s, c) = self.rotation_deg.to_radians().sin_cos();
+        let x = setup.x / self.scale;
+        let y = setup.y / self.scale;
+        Ok(Point::new(
+            c * x + s * y + self.origin_mm.x,
+            -s * x + c * y + self.origin_mm.y,
+        ))
+    }
     fn matrix(&self) -> Result<Matrix> {
         if !self.origin_mm.finite()
             || !self.scale.is_finite()

@@ -113,6 +113,27 @@ pub struct DocumentInspection {
     pub machine: MachineReadout,
 }
 
+/// Planner-owned missing values, preserving the structured locations that
+/// an editor needs to repair a single Flat V-carve operation.
+pub fn inspect_flat_vcarve_fields(
+    job: &CamJobV5,
+    operation_id: &str,
+) -> Result<Vec<crate::operations::LocatedDiagnostic>> {
+    let operation = job
+        .operations
+        .iter()
+        .find(|op| op.id == operation_id)
+        .ok_or_else(|| super::error("OPERATION_NOT_FOUND", "Unknown operation"))?;
+    let OperationSettingsV5::FlatVcarve(settings) = &operation.settings else {
+        return Err(super::error("OPERATION_KIND", "Expected Flat V-carve"));
+    };
+    Ok(crate::operations::flat_vcarve::missing_fields_v5(
+        &crate::operations::PlanContext::from_v5(job),
+        operation_id,
+        settings,
+    ))
+}
+
 fn operation_kind(settings: &OperationSettingsV5) -> &'static str {
     match settings {
         OperationSettingsV5::FlatVcarve(_) => "flat_vcarve",

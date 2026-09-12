@@ -53,6 +53,8 @@ impl App {
             view,
             plan_fingerprint: self.plan_fingerprint.clone(),
             saved_job_hash: self.saved_job_hash.clone(),
+            selected_artwork: self.view.artwork.selected.clone(),
+            gesture: self.view.artwork.mode,
         }
     }
     pub fn recovery_snapshot(&self) -> Option<Snapshot> {
@@ -110,6 +112,8 @@ impl App {
         self.redo = snapshot.redo;
         let workspace = snapshot.workspace;
         self.saved_job_hash = workspace.saved_job_hash.clone();
+        self.view.artwork.selected = workspace.selected_artwork;
+        self.view.artwork.mode = workspace.gesture;
         self.inspector_tab = workspace.inspector;
         self.inspector_width = workspace.inspector_width;
         self.scroll = workspace.scroll;
@@ -163,6 +167,7 @@ mod tests {
             stage: 1,
             stock: true,
             prefix: 123,
+            inspection_xy: Some([9., 23.]),
         });
         app.plan = Some(("do-not-restore".into(), 0));
         app.prepared = Some((json!({"file":"do-not-restore"}), 0));
@@ -174,6 +179,7 @@ mod tests {
         assert_eq!(restored.inspector_tab, 0);
         assert_eq!(restored.search, "Rotation");
         assert!(restored.view.settings().isometric);
+        assert_eq!(restored.view.settings().inspection_xy, Some([9., 23.]));
         assert_eq!(restored.undo.len(), 2);
         assert!(restored.document.as_ref().unwrap().pending());
         assert!(restored.plan.is_none() && restored.prepared.is_none());

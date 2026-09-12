@@ -204,6 +204,25 @@ impl Picker {
         tolerance_px: f32,
         pixels_per_point: f32,
     ) -> Option<Pick> {
+        self.pick_visible(
+            cam,
+            rect_points,
+            cursor_points,
+            tolerance_px,
+            pixels_per_point,
+            0..self.motion_count(),
+        )
+    }
+
+    pub fn pick_visible(
+        &self,
+        cam: &Camera,
+        rect_points: [f32; 2],
+        cursor_points: [f32; 2],
+        tolerance_px: f32,
+        pixels_per_point: f32,
+        visible: std::ops::Range<usize>,
+    ) -> Option<Pick> {
         let tolerance_points = tolerance_px.max(0.) / pixels_per_point.max(1e-3);
         if self.endpoints.is_empty() {
             return None;
@@ -228,7 +247,7 @@ impl Picker {
         for row in lo[1]..=hi[1] {
             for col in lo[0]..=hi[0] {
                 for &motion in &self.cells[row * self.cols + col].members {
-                    if !seen.insert(motion) {
+                    if !visible.contains(&(motion as usize)) || !seen.insert(motion) {
                         continue;
                     }
                     let i = motion as usize * 2;
@@ -292,6 +311,26 @@ pub fn point_segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn coincident_hidden_stage_does_not_steal_motion_pick() {
+        let picker =
+            Picker::new(vec![[0., 0., 0.], [1., 0., 0.], [0., 0., 0.], [1., 0., 0.]]).unwrap();
+        let camera = Camera {
+            iso: false,
+            aspect: 1.,
+            zoom: 1.,
+            yaw: 0.,
+        };
+        let hit = picker
+            .pick_visible(&camera, [500., 500.], [100., 0.], 8., 1., 1..2)
+            .unwrap();
+        assert_eq!(hit.motion, 1);
+        assert!(
+            picker
+                .pick_visible(&camera, [500., 500.], [100., 0.], 8., 1., 0..0)
+                .is_none()
+        );
+    }
 
     fn fixture() -> Picker {
         let mut xyz = Vec::new();

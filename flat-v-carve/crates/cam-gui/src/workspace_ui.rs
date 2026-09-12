@@ -66,7 +66,11 @@ impl App {
                         .color(Color32::WHITE),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let export = button(ui, "Export…", idle && self.current());
+                        let export = button(
+                            ui,
+                            "Export…",
+                            idle && self.current() && self.view.export_ready(),
+                        );
                         observe_control("Prepare checked output", export.rect);
                         if export.clicked() {
                             self.navigate(3);
@@ -102,6 +106,9 @@ impl App {
                             observe_control(label, response.rect);
                             if response.clicked() {
                                 self.simulate = simulate;
+                                if simulate {
+                                    self.navigate(6);
+                                }
                             }
                         }
                     });
@@ -284,7 +291,7 @@ impl App {
             .exact_width(205.)
             .resizable(false)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                let area = egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_space(8.);
                     ui.strong("SETUP");
                     self.nav_item(ui, "Stock & work zero", "Setup", 1);
@@ -311,6 +318,7 @@ impl App {
                     ui.separator();
                     ui.strong("OPERATIONS");
                     self.nav_item(ui, "01  Flat V-carve", "Cutting", 2);
+                    self.nav_item(ui, "Inspect result", "Inspect result", 6);
                     if let Some(doc) = &self.document {
                         ui.small(format!(
                             "{} filled components",
@@ -319,7 +327,7 @@ impl App {
                     }
                     ui.add_space(16.);
                     ui.separator();
-                    ui.strong("JOB TOOLS (2)");
+                    ui.strong("ASSIGNED TOOLS");
                     self.nav_item(ui, "Endmill", "Endmill tool", 4);
                     self.nav_item(ui, "V-bit", "V-bit tool", 5);
                     ui.small("Geometry belongs to this job.");
@@ -327,6 +335,7 @@ impl App {
                         self.navigate(3);
                     }
                 });
+                observe_control("Navigator viewport", area.inner_rect);
             });
     }
 }

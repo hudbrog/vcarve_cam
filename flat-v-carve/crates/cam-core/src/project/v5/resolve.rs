@@ -346,7 +346,11 @@ pub(crate) fn to_flat_vcarve_settings(
         max_floor_ridge_mm: settings.max_floor_ridge_mm,
         max_detail_residual_mm: settings.max_detail_residual_mm,
         rough: settings.rough.clone(),
-        finish: settings.finish.clone(),
+        finish: if settings.mode == project::FlatVcarveMode::Combined {
+            settings.finish.clone()
+        } else {
+            None
+        },
     }
 }
 

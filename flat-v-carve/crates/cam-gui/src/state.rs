@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const FIELDS: [&str; 47] = [
+pub const FIELDS: [&str; 61] = [
     "Maximum depth",
     "Wall allowance",
     "Roughing feed",
@@ -49,6 +49,20 @@ pub const FIELDS: [&str; 47] = [
     "Work zero X",
     "Work zero Y",
     "Finish stepover",
+    "Top offset",
+    "Rough layer limit",
+    "Rough loop limit",
+    "Rough motion limit",
+    "Ramp feed",
+    "Finish path limit",
+    "Finish motion limit",
+    "Curve segment limit",
+    "Depth pass limit",
+    "Cleanup iterations",
+    "Quality sample spacing",
+    "Quality sample limit",
+    "Reachability cell limit",
+    "Stock slices",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

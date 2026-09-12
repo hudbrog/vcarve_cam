@@ -7,5 +7,5 @@ self.onmessage=async ({data})=>{
   // buffer instead of a JSON array of vertices and stock cells.
   const meta=compute(data.request);
   const payload=payload_view(); // Owned copy out of WASM memory.
-  self.postMessage({protocol:protocol(),gui2Protocol:"gui2-retained-2",meta,payload:payload.buffer},[payload.buffer]);
+  self.postMessage({protocol:protocol(),gui2Protocol:"gui2-retained-3",meta,payload:payload.buffer},[payload.buffer]);
 };

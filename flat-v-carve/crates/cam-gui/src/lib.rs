@@ -1,4 +1,5 @@
 pub mod app;
+pub mod artwork_view;
 pub mod authoring;
 pub mod clock;
 pub mod compute;

@@ -244,6 +244,8 @@ pub struct Callback {
     pub hashes: Arc<Vec<Option<u64>>>,
     /// Pages the current display needs, nearest the playhead first.
     pub required: Vec<usize>,
+    /// Exact stage and playback span, independent of resident page boundaries.
+    pub visible: std::ops::Range<usize>,
     pub budget_bytes: u64,
     pub contour_vertices: usize,
     pub contour_range: std::ops::Range<usize>,
@@ -370,11 +372,14 @@ impl egui_wgpu::CallbackTrait for Callback {
                 continue;
             }
             let motions = self.table.motions_in(*page);
-            let count = ((motions.end - motions.start) * 2) as u32;
+            let clipped = clip_motion_page(motions.clone(), self.visible.clone());
+            let count = (clipped.len() * 2) as u32;
             if count == 0 {
                 continue;
             }
-            let start = base_vertex + *page as u32 * page_vertices;
+            let start = base_vertex
+                + *page as u32 * page_vertices
+                + ((clipped.start - motions.start) * 2) as u32;
             pass.draw(start..start + count, 0..1);
         }
         if !self.triangles.is_empty() {
@@ -422,4 +427,26 @@ fn drain_error_scope(device: &wgpu::Device) -> Option<String> {
         std::thread::yield_now();
     }
     None
+}
+
+/// Empty intersections stay anchored inside the page, avoiding underflow.
+pub fn clip_motion_page(
+    page: std::ops::Range<usize>,
+    visible: std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    let start = visible.start.clamp(page.start, page.end);
+    start..visible.end.clamp(start, page.end)
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+    #[test]
+    fn stage_and_playhead_clip_inside_resident_pages() {
+        assert_eq!(clip_motion_page(0..8192, 4000..6000), 4000..6000);
+        assert_eq!(clip_motion_page(8192..16384, 4000..9000), 8192..9000);
+        assert_eq!(clip_motion_page(0..8192, 8192..9000), 8192..8192);
+        assert_eq!(clip_motion_page(8192..16384, 0..100), 8192..8192);
+        assert_eq!(clip_motion_page(0..8192, 0..0), 0..0);
+    }
 }

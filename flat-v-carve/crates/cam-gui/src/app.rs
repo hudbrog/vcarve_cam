@@ -14,6 +14,8 @@ use egui::{Color32, RichText};
 use serde_json::{Value, json};
 #[path = "inspector.rs"]
 mod inspector;
+#[path = "issues.rs"]
+mod issues;
 #[path = "resume.rs"]
 mod resume;
 #[path = "workspace_ui.rs"]
@@ -110,6 +112,10 @@ impl Document {
         }
         self.raw.raw.insert(self.raw.key(field), text.clone());
         let number = Draft::parse(&text).map_err(str::to_string)?;
+        // Inactive entry fields are an editor draft until the explicit Ramp action.
+        if matches!(field, 14 | 51) && !crate::authoring::active(&self.job, field) {
+            return Ok(());
+        }
         if group.is_empty() {
             self.job = set_value(&self.job, field, number)?;
         } else {
@@ -177,12 +183,14 @@ pub struct App {
     inspector_tab: usize,
     preview_dirty: bool,
     inspector_width: f32,
-    scroll: [f32; 6],
+    scroll: [f32; 7],
     simulate: bool,
     last_workspace: Option<crate::recovery::Workspace>,
     plan_fingerprint: Option<String>,
     resume_view: Option<(String, usize)>,
     cancelled_id: Option<u64>,
+    issues: Vec<cam_core::operations::LocatedDiagnostic>,
+    issue_focus: Option<String>,
 }
 #[derive(Clone, Copy)]
 enum IoKind {
@@ -221,12 +229,14 @@ impl Default for App {
             inspector_tab: 2,
             preview_dirty: false,
             inspector_width: 325.,
-            scroll: [0.; 6],
+            scroll: [0.; 7],
             simulate: false,
             last_workspace: None,
             plan_fingerprint: None,
             resume_view: None,
             cancelled_id: None,
+            issues: vec![],
+            issue_focus: None,
         }
     }
 }
@@ -248,6 +258,7 @@ impl App {
     }
     fn changed(&mut self, ctx: &egui::Context) {
         self.revision += 1;
+        self.issues.clear();
         self.prepared = None;
         self.preview_dirty = true;
         self.recovery.changed(ctx.input(|i| i.time));
@@ -329,9 +340,15 @@ impl App {
             return;
         }
         match reply["kind"].as_str() {
+            Some("issues") => {
+                self.issues = serde_json::from_value(reply["issues"].clone()).unwrap_or_default();
+                self.status = format!(
+                    "{} settings need attention. Select an issue to edit its field.",
+                    self.issues.len()
+                );
+            }
             Some("preview") => {
-                self.components =
-                    serde_json::from_value(reply["components"].clone()).unwrap_or_default();
+                self.adopt_artwork(reply);
                 self.preview_dirty = false;
                 self.view.load_scene(Ok((meta, payload)));
                 self.status =
@@ -375,16 +392,17 @@ impl App {
                 self.changed(ctx);
                 self.plan = None;
                 self.preview_dirty = false;
-                self.components =
-                    serde_json::from_value(reply["components"].clone()).unwrap_or_default();
+                self.adopt_artwork(reply);
                 if reply["kind"] == "imported" {
                     self.inspector_tab = 0;
                 } else if reply["kind"] == "opened" {
                     self.inspector_tab = 2;
                 }
                 if reply["kind"] != "profile" {
+                    self.view.reset_inspection();
+                    self.view.artwork.selected.clear();
                     self.search.clear();
-                    self.scroll = [0.; 6];
+                    self.scroll = [0.; 7];
                     self.simulate = false;
                     self.plan_fingerprint = None;
                     self.resume_view = None;
@@ -397,15 +415,35 @@ impl App {
                 }
             }
             Some("generated") => {
+                self.adopt_artwork(reply);
                 if let Some(handle) = reply["handle"].as_str() {
                     self.plan = Some((handle.into(), self.revision));
                     self.plan_fingerprint =
                         reply["executionFingerprint"].as_str().map(str::to_owned);
                     self.prepared = None;
-                    self.status = format!(
-                        "Generated {} motions · basic checks complete · ready to simulate or prepare output",
-                        meta.motions
-                    );
+                    self.issues = reply["generationIssues"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|i| cam_core::operations::LocatedDiagnostic {
+                            code: i["code"].as_str().unwrap_or("GENERATION").into(),
+                            message: i["message"].as_str().unwrap_or("Generation issue").into(),
+                            operation_id: i["operation_id"].as_str().map(str::to_owned),
+                            tool_id: None,
+                            field_path: None,
+                        })
+                        .collect();
+                    self.status = if reply["checks"]["exportReady"] == true {
+                        format!(
+                            "Generated {} motions · basic checks passed · ready to simulate or prepare output",
+                            meta.motions
+                        )
+                    } else {
+                        format!(
+                            "Generated {} motions with unresolved issues · inspect the partial result before export",
+                            meta.motions
+                        )
+                    };
                     self.view.load_scene(Ok((meta, payload)));
                     if let Some((fingerprint, prefix)) = self.resume_view.take()
                         && self.plan_fingerprint.as_ref() == Some(&fingerprint)
@@ -542,6 +580,19 @@ impl App {
         self.plan.as_ref().is_some_and(|(_, r)| *r == self.revision)
             && !self.document.as_ref().is_some_and(Document::pending)
     }
+    fn adopt_artwork(&mut self, reply: &Value) {
+        if !reply["components"].is_array() {
+            return;
+        }
+        self.components = serde_json::from_value(reply["components"].clone()).unwrap_or_default();
+        if let Some(doc) = &self.document {
+            self.view.update_artwork(
+                self.revision,
+                doc.job.artwork[0].placement.clone(),
+                self.components.clone(),
+            );
+        }
+    }
     pub fn ui(&mut self, ctx: &egui::Context) {
         CONTROLS.with(|c| c.borrow_mut().clear());
         self.poll(ctx);
@@ -577,6 +628,8 @@ impl App {
         }
         self.commands(ctx);
         self.navigator(ctx);
+        self.issue_panel(ctx);
+        self.view.result_current = self.current();
         self.inspector(ctx);
         if self.preview_dirty
             && self.plan.is_none()
@@ -593,7 +646,42 @@ impl App {
             );
         }
         self.view.stock_loading = self.active.is_some();
+        self.view.result_current = self.current();
+        self.view.artwork.enabled = !self.simulate
+            && self.active.is_none()
+            && self
+                .document
+                .as_ref()
+                .is_some_and(|d| self.view.artwork_matches(&d.job.artwork[0].placement));
+        self.view.artwork.revision = self.revision;
         self.view.show(ctx, self.simulate);
+        for event in self.view.take_artwork_events() {
+            match event {
+                crate::viewport::ArtworkEvent::Selection(_) => {
+                    self.status="Viewport selection only. Use, Add or Remove to change the carving assignment.".into();
+                    self.navigate(0);
+                }
+                crate::viewport::ArtworkEvent::Placement {
+                    revision,
+                    initial,
+                    value,
+                } => {
+                    if revision == self.revision
+                        && self
+                            .document
+                            .as_ref()
+                            .is_some_and(|d| d.job.artwork[0].placement == initial)
+                    {
+                        self.edit_job(ctx, &[26, 27, 28, 29], |job| {
+                            job.artwork[0].placement = value;
+                            Ok(())
+                        });
+                    } else {
+                        self.status = "Source changed during gesture; drag again.".into();
+                    }
+                }
+            }
+        }
         if self.active.is_none()
             && let Some(prefix) = self.view.take_stock_request()
             && let Some((handle, _)) = &self.plan
@@ -641,7 +729,7 @@ impl App {
                 ui.spinner();
             });
         }
-        crate::viewport::probe::publish(json!({"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":self.document.as_ref().map(|d|json!({"name":d.job.name,"depth":engine::settings(&d.job).max_depth_mm,"feed":engine::settings(&d.job).endmill.cutting_feed_mm_min,"machine":d.job.machine_configuration.is_some(),"rawDepth":d.text(0),"rawFeed":d.text(2),"components":engine::settings(&d.job).components.len(),"mode":engine::settings(&d.job).mode,"stock":d.job.setup.stock,"placement":d.job.artwork[0].placement,"workZero":d.job.setup.work_zero,"endmillGeometry":crate::authoring::tool(&d.job,false).and_then(|t|t.geometry.clone()),"vbitGeometry":crate::authoring::tool(&d.job,true).and_then(|t|t.geometry.clone())})),"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
+        crate::viewport::probe::publish(json!({"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":self.document.as_ref().map(|d|json!({"name":d.job.name,"depth":engine::settings(&d.job).max_depth_mm,"feed":engine::settings(&d.job).endmill.cutting_feed_mm_min,"machine":d.job.machine_configuration.is_some(),"rawDepth":d.text(0),"rawFeed":d.text(2),"components":engine::settings(&d.job).components.len(),"mode":engine::settings(&d.job).mode,"stock":d.job.setup.stock,"placement":d.job.artwork[0].placement,"workZero":d.job.setup.work_zero,"endmillGeometry":crate::authoring::tool(&d.job,false).and_then(|t|t.geometry.clone()),"vbitGeometry":crate::authoring::tool(&d.job,true).and_then(|t|t.geometry.clone())})),"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
     }
     fn save_output(&mut self, ctx: &egui::Context) {
         if let Some((prepared, revision)) = &self.prepared

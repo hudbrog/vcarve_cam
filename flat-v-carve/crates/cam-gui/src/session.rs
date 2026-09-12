@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cell::RefCell;
 
-pub const PROTOCOL: &str = "gui2-retained-2";
+pub const PROTOCOL: &str = "gui2-retained-3";
 pub const FLOWER: &str = include_str!("../../../fixtures/gui2/flower.job.json");
 pub const PROFILE: &str = include_str!("../../../fixtures/gui2/machine.json");
 pub const MOTION_LIMIT: usize = 100_000;
@@ -108,6 +108,20 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
         }
         Command::Generate { job } => {
             let job = open(&job)?;
+            let mut issues =
+                v5::inspection::inspect_flat_vcarve_fields(&job, &job.operations[0].id)
+                    .map_err(|e| e.to_string())?;
+            issues.extend(
+                v5::references::planning_readiness(
+                    &job,
+                    &v5::references::ReadinessScope::AllEnabled,
+                )
+                .map_err(|e| e.to_string())?
+                .blockers(),
+            );
+            if !issues.is_empty() {
+                return outline(&job, json!({"kind":"issues", "issues":issues}));
+            }
             let reply = service
                 .execute_driven(C::Generate {
                     job: json!(job),
@@ -127,7 +141,7 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 &job,
                 plan,
                 json!({"kind":"generated", "handle":handle,
-                "checks":retained.checks, "executionFingerprint":plan.execution_fingerprint, "retained":reply["retained"]}),
+                "checks":retained.checks, "generationIssues":plan.generation_diagnostics, "executionFingerprint":plan.execution_fingerprint, "retained":reply["retained"]}),
             )?;
             let scene = crate::compute::Scene {
                 meta: result.0.clone(),
@@ -216,6 +230,18 @@ fn outline(job: &CamJobV5, mut report: Value) -> Result<(SceneMeta, Vec<u8>), St
             if entry.kind == v5::GeometryRefKind::FilledComponent {
                 components.push(crate::authoring::Component {
                     reference: entry.reference.clone(),
+                    rings: item
+                        .catalogue
+                        .as_ref()
+                        .map(|catalogue| {
+                            catalogue
+                                .contours
+                                .iter()
+                                .filter(|c| c.component_id == entry.reference.local_geometry_id)
+                                .map(|c| c.vertices.iter().map(|p| [p.x, p.y]).collect())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                     bounds: [
                         entry.bounds.min_x_mm,
                         entry.bounds.min_y_mm,
@@ -317,9 +343,12 @@ fn outline(job: &CamJobV5, mut report: Value) -> Result<(SceneMeta, Vec<u8>), St
 pub fn scene(
     job: &CamJobV5,
     plan: &cam_core::sequence::OperationPlanV5,
-    report: Value,
+    mut report: Value,
 ) -> Result<(SceneMeta, Vec<u8>), String> {
     let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
+    report["components"] = json!(crate::authoring::catalogue_components(&catalogue));
+    report["inspection"] = json!(v5::inspection::inspect_plan(plan).map_err(|e| e.to_string())?);
+    report["detailResidual"] = json!(settings(job).max_detail_residual_mm);
     let region =
         v5::resolve::resolve_vcarve_region(job, &job.operations[0].id, settings(job), &catalogue)
             .map_err(|e| e.to_string())?;

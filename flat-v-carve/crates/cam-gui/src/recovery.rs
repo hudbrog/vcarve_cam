@@ -7,30 +7,37 @@ pub const MAX_BYTES: usize = 9_000_000;
 pub struct Workspace {
     pub inspector: usize,
     pub inspector_width: f32,
-    pub scroll: [f32; 6],
+    pub scroll: [f32; 7],
     pub search: String,
     pub simulate: bool,
     pub view: crate::viewport::ViewSettings,
     pub plan_fingerprint: Option<String>,
     pub saved_job_hash: Option<String>,
+    #[serde(default)]
+    pub selected_artwork: Vec<cam_core::project::v5::GeometryRef>,
+    #[serde(default)]
+    pub gesture: crate::artwork_view::GestureMode,
 }
 impl Default for Workspace {
     fn default() -> Self {
         Self {
             inspector: 2,
             inspector_width: 325.,
-            scroll: [0.; 6],
+            scroll: [0.; 7],
             search: String::new(),
             simulate: false,
             view: Default::default(),
             plan_fingerprint: None,
             saved_job_hash: None,
+            selected_artwork: vec![],
+            gesture: Default::default(),
         }
     }
 }
 impl Workspace {
     pub fn validate(&self) -> Result<(), String> {
-        if self.inspector > 5
+        if self.inspector > 6
+            || self.selected_artwork.len() > 10000
             || !self.inspector_width.is_finite()
             || !(240. ..=600.).contains(&self.inspector_width)
             || self
