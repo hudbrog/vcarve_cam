@@ -8,6 +8,7 @@ use cam_core::{geometry::Point, project::v5::GeometryRef, svg::Placement};
 #[derive(Clone)]
 pub enum ArtworkEvent {
     KnifeSelection(Vec<GeometryRef>),
+    ProfileSelection(Vec<GeometryRef>),
     CarveSelection(Vec<GeometryRef>),
     Placement {
         item: String,
@@ -88,12 +89,14 @@ impl Viewport {
         self.artwork.candidate_index = 0;
     }
     /// Every reference the displayed scene can resolve: filled components for
-    /// a carving operation and knife chains for a drag knife.
+    /// a carving operation, closed contours for a profile and knife chains for
+    /// a drag knife.
     fn available_references(&self) -> Vec<GeometryRef> {
         self.artwork
             .components
             .iter()
             .map(|c| c.reference.clone())
+            .chain(self.profile_contours.iter().map(|c| c.reference.clone()))
             .chain(self.knife_chains.iter().map(|c| c.reference.clone()))
             .collect()
     }
@@ -115,8 +118,10 @@ impl Viewport {
                 ("Rotate artwork", GestureMode::Rotate),
                 ("Scale artwork", GestureMode::Scale),
             ] {
-                let label = if self.is_knife() && mode == GestureMode::Select {
+                let label = if mode == GestureMode::Select && self.is_knife() {
                     "Select knife paths"
+                } else if mode == GestureMode::Select && self.is_profile() {
+                    "Select profile contours"
                 } else {
                     label
                 };
@@ -141,7 +146,7 @@ impl Viewport {
                 }
             }
         });
-        ui.small(if self.is_knife() && self.artwork.mode==GestureMode::Select {"Click a knife path to assign it to this operation · Shift-click adds/removes · or use Geometry to cut in the operation"} else if self.artwork.mode==GestureMode::Select {"Click a filled region to assign it to this operation · Shift-click adds/removes · or use Geometry to carve in the operation"} else {"Drag the whole source · rotate/scale about setup 0,0 (numeric page origin) · Esc cancels"});
+        ui.small(if self.artwork.mode != GestureMode::Select {"Drag the whole source · rotate/scale about setup 0,0 (numeric page origin) · Esc cancels"} else if self.is_knife() {"Click a knife path to assign it to this operation · Shift-click adds/removes · or use Geometry to cut in the operation"} else if self.is_profile() {"Click a closed contour to assign it to the profile with its suggested side · Shift-click adds/removes · choose Inside/Outside/On in the operation"} else {"Click a filled region to assign it to this operation · Shift-click adds/removes · or use Geometry to carve in the operation"});
     }
     pub(super) fn artwork_pointer(
         &mut self,
@@ -218,6 +223,66 @@ impl Viewport {
                         self.artwork
                             .events
                             .push(ArtworkEvent::KnifeSelection(selected));
+                    }
+                }
+                return;
+            }
+            if self.is_profile() {
+                if response.clicked()
+                    && let Some(p) = response.interact_pointer_pos()
+                {
+                    let mut nearest = None;
+                    let mut distance = 8.;
+                    for contour in self.profile_contours.iter().filter(|c| {
+                        !self.artwork.hidden.contains(&c.reference.artwork_item_id.0)
+                            && !self.artwork.locked.contains(&c.reference.artwork_item_id.0)
+                    }) {
+                        let count = contour.vertices.len();
+                        for i in 0..count {
+                            let screen = |xy: [f64; 2]| {
+                                artwork_view::screen_point(
+                                    camera,
+                                    bounds,
+                                    rect,
+                                    cam_core::geometry::Point::new(xy[0], xy[1]),
+                                )
+                            };
+                            let a = screen(contour.vertices[i]);
+                            let b = screen(contour.vertices[(i + 1) % count]);
+                            let ab = b - a;
+                            let t = if ab.length_sq() > 0. {
+                                ((p - a).dot(ab) / ab.length_sq()).clamp(0., 1.)
+                            } else {
+                                0.
+                            };
+                            let d = (p - (a + ab * t)).length();
+                            if d < distance {
+                                distance = d;
+                                nearest = Some(contour.reference.clone());
+                            }
+                        }
+                    }
+                    if let Some(reference) = nearest {
+                        let known = self.available_references();
+                        let mut selected: Vec<GeometryRef> = self
+                            .artwork
+                            .selected
+                            .iter()
+                            .filter(|r| known.contains(r))
+                            .cloned()
+                            .collect();
+                        if ui.input(|i| i.modifiers.shift) {
+                            if selected.contains(&reference) {
+                                selected.retain(|r| r != &reference);
+                            } else {
+                                selected.push(reference);
+                            }
+                        } else {
+                            selected = vec![reference];
+                        }
+                        self.artwork
+                            .events
+                            .push(ArtworkEvent::ProfileSelection(selected));
                     }
                 }
                 return;

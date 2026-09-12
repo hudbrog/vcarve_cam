@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const FIELDS: [&str; 89] = [
+pub const FIELDS: [&str; 109] = [
     "Maximum depth",
     "Wall allowance",
     "Roughing feed",
@@ -91,7 +91,51 @@ pub const FIELDS: [&str; 89] = [
     "Face top offset",
     "Face bottom offset",
     "Tool stepdown limit",
+    "Profile top offset",
+    "Profile bottom offset",
+    "Finish allowance",
+    "Finish feed",
+    "Tab height",
+    "Tab width",
+    "Tab count",
+    "Tab spacing",
+    "Tab anchor fraction",
+    "Entry ramp angle",
+    "Entry ramp feed",
+    "Lead-in length",
+    "Lead-in feed",
+    "Lead-in radius",
+    "Lead-in sweep",
+    "Lead-out length",
+    "Lead-out feed",
+    "Lead-out radius",
+    "Lead-out sweep",
+    "Start fraction",
 ];
+
+/// Fields whose raw text belongs to one qualified geometry reference rather
+/// than to the job: a profile start anchor and a manual tab anchor are
+/// addressed by the contour they parameterize, so reselecting or reordering a
+/// row never transfers its text to another anchor.
+pub const ANCHOR_FIELDS: [usize; 2] = [97, 108];
+
+pub fn is_placement(field: usize) -> bool {
+    matches!(field, 26..=29)
+}
+
+pub fn is_anchor(field: usize) -> bool {
+    ANCHOR_FIELDS.contains(&field)
+}
+
+/// Split a draft key into its scope, operation and field label. Every key the
+/// store writes has exactly this three-part shape.
+pub fn scope_of(key: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = key.splitn(3, '/');
+    let scope = parts.next()?;
+    let operation = parts.next()?;
+    let label = parts.next()?;
+    (!scope.is_empty() && !label.is_empty()).then_some((scope, operation, label))
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -134,6 +178,11 @@ impl Draft {
             FIELDS[field]
         )
     }
+    /// Key of a field whose text belongs to one qualified geometry reference
+    /// (a profile start or manual tab anchor) instead of the job.
+    pub fn key_scoped(&self, scope: &str, field: usize) -> String {
+        format!("{}/{}/{}", scope, self.operation, FIELDS[field])
+    }
     pub fn validate_job(&self, job: &cam_core::project::v5::CamJobV5) -> Result<(), String> {
         // The selected operation is editor state: it must be a valid ID, and
         // keys may keep drafts for operations this document no longer carries
@@ -151,12 +200,27 @@ impl Draft {
             if parts.len() != 3 {
                 return Err("Invalid draft key".into());
             }
-            let placement = FIELDS[26..=29].contains(&parts[2]);
-            if (placement && !job.artwork.iter().any(|i| i.id.0 == parts[0]))
-                || (!placement
-                    && (parts[0] != "job"
-                        || (!parts[1].is_empty() && !cam_core::preview::valid_id(parts[1]))))
-            {
+            let Some(field) = FIELDS.iter().position(|name| *name == parts[2]) else {
+                return Err("Invalid draft key".into());
+            };
+            if !parts[1].is_empty() && !cam_core::preview::valid_id(parts[1]) {
+                return Err("Draft field belongs to another artwork item".into());
+            }
+            // Placement text belongs to one artwork item; anchor text belongs
+            // to the qualified contour it parameterizes, whose owner must be a
+            // live item; everything else is job-scoped.
+            let owner = if is_placement(field) {
+                Some(parts[0].to_string())
+            } else if is_anchor(field) {
+                cam_core::project::v5::artwork::parse_wire_id(parts[0])
+                    .map(|pick| pick.artwork_item_id.0)
+            } else {
+                (parts[0] == "job").then(String::new)
+            };
+            let Some(owner) = owner else {
+                return Err("Draft field belongs to another artwork item".into());
+            };
+            if !owner.is_empty() && !job.artwork.iter().any(|item| item.id.0 == owner) {
                 return Err("Draft field belongs to another artwork item".into());
             }
         }
@@ -190,10 +254,19 @@ impl Draft {
         for (key, text) in &draft.raw {
             let parts: Vec<_> = key.splitn(3, '/').collect();
             if parts.len() != 3
-                || !cam_core::preview::valid_id(parts[0])
                 || (!parts[1].is_empty() && !cam_core::preview::valid_id(parts[1]))
-                || !FIELDS.contains(&parts[2])
                 || text.chars().count() > 4096
+            {
+                return Err("Unsupported recovery field identity or text limit".into());
+            }
+            let Some(field) = FIELDS.iter().position(|name| *name == parts[2]) else {
+                return Err("Unsupported recovery field identity or text limit".into());
+            };
+            let scoped = is_placement(field) || is_anchor(field);
+            if (is_anchor(field)
+                && cam_core::project::v5::artwork::parse_wire_id(parts[0]).is_none())
+                || (!scoped && parts[0] != "job")
+                || (!is_anchor(field) && !cam_core::preview::valid_id(parts[0]))
             {
                 return Err("Unsupported recovery field identity or text limit".into());
             }

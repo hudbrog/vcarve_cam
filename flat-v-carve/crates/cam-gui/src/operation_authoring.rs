@@ -18,6 +18,7 @@ pub const MAX_OPERATIONS: usize = 12;
 pub enum Kind {
     Face,
     FlatVcarve,
+    Profile,
     DragKnife,
 }
 
@@ -26,6 +27,7 @@ impl Kind {
         match self {
             Self::Face => v5::commands::NewOperationKind::Face,
             Self::FlatVcarve => v5::commands::NewOperationKind::FlatVcarve,
+            Self::Profile => v5::commands::NewOperationKind::Profile,
             Self::DragKnife => v5::commands::NewOperationKind::DragKnife,
         }
     }
@@ -33,6 +35,7 @@ impl Kind {
         match self {
             Self::Face => "face",
             Self::FlatVcarve => "carving",
+            Self::Profile => "profile",
             Self::DragKnife => "knife",
         }
     }

@@ -189,6 +189,7 @@ impl App {
             for (label, kind) in [
                 ("Add Face", Kind::Face),
                 ("Add Flat V-carve", Kind::FlatVcarve),
+                ("Add Profile", Kind::Profile),
                 ("Add drag knife", Kind::DragKnife),
             ] {
                 let label = format!("{label} — {}", operation_authoring::next_id(&job, kind));

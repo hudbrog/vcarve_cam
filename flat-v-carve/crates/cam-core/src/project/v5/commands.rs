@@ -815,12 +815,15 @@ pub fn apply_stock_rectangle(job: &CamJobV5, rect: RectXY) -> Result<CommandOutc
 // other document command instead of maintaining its own validator.
 // ---------------------------------------------------------------------------
 
-/// Operation kinds this slice can create. Geometry-bearing kinds (profile,
-/// tabs, entries) arrive with their own milestone.
+/// Operation kinds a document command can append. A new operation only binds
+/// the tool snapshot and the canonical height references: every machining
+/// value (including a profile's contour selection, sides, tabs and entries)
+/// stays unset until the user states it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NewOperationKind {
     FlatVcarve,
     Face,
+    Profile,
     DragKnife,
 }
 
@@ -829,6 +832,7 @@ impl NewOperationKind {
         match self {
             Self::FlatVcarve => "Flat V-carve",
             Self::Face => "Face",
+            Self::Profile => "Profile",
             Self::DragKnife => "Drag knife",
         }
     }
@@ -927,6 +931,26 @@ pub fn add_operation(
                 max_detail_residual_mm: None,
                 rough: None,
                 finish: None,
+            })
+        }
+        NewOperationKind::Profile => {
+            let tool = push_job_tool(&mut candidate, "endmill", "Endmill");
+            affected.push(AffectedEntity::JobTool(tool.clone()));
+            OperationSettingsV5::Profile(super::ProfileSettingsV5 {
+                contours: vec![],
+                assignment: new_milling_assignment(tool),
+                top: zero_top.clone(),
+                bottom: zero_top.clone(),
+                stepdown_mm: None,
+                through_cut_allowance_mm: None,
+                direction: None,
+                order: Default::default(),
+                start: Default::default(),
+                finish: Default::default(),
+                entry: Default::default(),
+                lead_in: Default::default(),
+                lead_out: Default::default(),
+                tabs: None,
             })
         }
         NewOperationKind::DragKnife => {

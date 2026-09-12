@@ -46,6 +46,9 @@ impl App {
         }
         match self.operation_kind() {
             Some(crate::session::OperationKind::Face) => return self.face_header(ui, ctx),
+            Some(crate::session::OperationKind::Profile) => {
+                return self.profile_header(ui, ctx);
+            }
             Some(crate::session::OperationKind::DragKnife) => {
                 let name = self
                     .document
@@ -541,7 +544,12 @@ impl App {
         }
     }
 
-    fn operation_capabilities(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, finish: bool) {
+    pub(super) fn operation_capabilities(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        finish: bool,
+    ) {
         for ramp in [false, true] {
             if finish && ramp {
                 continue;

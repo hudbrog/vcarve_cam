@@ -83,6 +83,7 @@ pub fn value(job: &CamJobV5, operation_id: &str, field: usize) -> Option<f64> {
     match engine::kind(job, operation_id) {
         None => crate::authoring::value_in(job, operation_id, field),
         Some(OperationKind::Face) => crate::face::value(job, operation_id, field),
+        Some(OperationKind::Profile) => crate::profile::value(job, operation_id, field),
         Some(OperationKind::DragKnife) => crate::knife::value_in(job, operation_id, field),
         Some(OperationKind::FlatVcarve) => {
             let s = engine::settings_in(job, operation_id)?;
@@ -100,7 +101,6 @@ pub fn value(job: &CamJobV5, operation_id: &str, field: usize) -> Option<f64> {
                 _ => crate::authoring::value_in(job, operation_id, field),
             }
         }
-        Some(OperationKind::Profile) => crate::authoring::value_in(job, operation_id, field),
     }
 }
 
@@ -125,6 +125,7 @@ pub fn set_value(
     }
     match engine::kind(&job, operation_id) {
         Some(OperationKind::Face) => crate::face::set(&mut job, operation_id, field, value)?,
+        Some(OperationKind::Profile) => crate::profile::set(&mut job, operation_id, field, value)?,
         Some(OperationKind::DragKnife) => {
             crate::knife::set_in(&mut job, operation_id, field, value)?;
         }
@@ -214,11 +215,27 @@ impl Document {
                 .map(|i| i.id.0.clone())
                 .unwrap_or_default();
         }
-        self.raw.raw.retain(|key, _| {
-            let parts: Vec<_> = key.splitn(3, '/').collect();
-            parts.len() == 3
-                && (!FIELDS[26..=29].contains(&parts[2])
-                    || self.job.artwork.iter().any(|i| i.id.0 == parts[0]))
+        self.prune_scoped_drafts();
+    }
+    /// Drop drafts whose scoped entity no longer exists: placement text for a
+    /// removed artwork item, and anchor text for an anchor the document no
+    /// longer carries. Undo restores the whole document, including this text.
+    pub fn prune_scoped_drafts(&mut self) {
+        let Document { job, raw, .. } = self;
+        raw.raw.retain(|key, _| {
+            let Some((scope, operation, label)) = crate::state::scope_of(key) else {
+                return false;
+            };
+            let Some(field) = FIELDS.iter().position(|name| *name == label) else {
+                return false;
+            };
+            if crate::state::is_placement(field) {
+                return job.artwork.iter().any(|item| item.id.0 == scope);
+            }
+            if crate::state::is_anchor(field) {
+                return crate::profile::anchor_value(job, operation, scope, field).is_some();
+            }
+            true
         });
     }
     pub fn field_value(&self, field: usize) -> Option<f64> {
@@ -302,6 +319,41 @@ impl Document {
         }
         Ok(())
     }
+    /// Raw text of one anchor-scoped field (a profile start or tab anchor).
+    /// The row supplies the committed value; the text is the editor's own.
+    pub fn anchor_text(&self, scope: &str, field: usize, value: Option<f64>) -> String {
+        self.raw
+            .raw
+            .get(&self.raw.key_scoped(scope, field))
+            .cloned()
+            .unwrap_or_else(|| value.map(|n| n.to_string()).unwrap_or_default())
+    }
+    /// Commit one anchor position. The anchor is addressed by the contour it
+    /// parameterizes, so the text always lands on that anchor.
+    pub fn edit_anchor(
+        &mut self,
+        scope: &str,
+        field: usize,
+        text: String,
+        target: crate::profile::AnchorKind,
+    ) -> Result<(), String> {
+        self.raw
+            .raw
+            .insert(self.raw.key_scoped(scope, field), text.clone());
+        let number = Draft::parse(&text).map_err(str::to_string)?;
+        let fraction = number.ok_or("An anchor position cannot be unset")?;
+        let mut candidate = self.job.clone();
+        crate::profile::set_anchor_fraction(
+            &mut candidate,
+            &self.raw.operation,
+            target,
+            scope,
+            fraction,
+        )?;
+        candidate.validate_structure().map_err(|e| e.to_string())?;
+        self.job = candidate;
+        Ok(())
+    }
     pub fn pending(&self) -> bool {
         let scalar_pending = crate::authoring::FIELDS
             .iter()
@@ -330,6 +382,22 @@ impl Document {
                             Draft::parse(text).ok() != Some(Some(n))
                         })
                 })
+            })
+            || self.raw.raw.iter().any(|(key, text)| {
+                let Some((scope, operation, label)) = crate::state::scope_of(key) else {
+                    return false;
+                };
+                let Some(field) = FIELDS.iter().position(|name| *name == label) else {
+                    return false;
+                };
+                if !crate::state::is_anchor(field) {
+                    return false;
+                }
+                match crate::profile::anchor_value(&self.job, operation, scope, field) {
+                    Some(value) => Draft::parse(text).ok() != Some(Some(value)),
+                    // A removed anchor keeps its text but cannot block a save.
+                    None => false,
+                }
             })
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -403,6 +471,7 @@ enum ResourceIntent {
 #[derive(Clone, Copy)]
 enum IoKind {
     KnifeSvg,
+    ProfileSvg,
     Svg,
     AddSvg,
     ReplaceSvg,
@@ -499,6 +568,9 @@ impl App {
         self.issues.clear();
         self.prepared = None;
         self.view.stale_knife_evidence();
+        if let Some(document) = &mut self.document {
+            document.prune_scoped_drafts();
+        }
         self.preview_dirty = true;
         self.recovery.changed(ctx.input(|i| i.time));
     }
@@ -530,7 +602,9 @@ impl App {
             });
         }
         self.status = match command {
-            Command::ImportSvg { .. } | Command::ImportKnifeSvg { .. } => "Importing SVG…",
+            Command::ImportSvg { .. }
+            | Command::ImportKnifeSvg { .. }
+            | Command::ImportProfileSvg { .. } => "Importing SVG…",
             Command::Artwork { .. } => "Updating artwork collection…",
             Command::Operation { .. } => "Updating operations…",
             Command::Resource { .. } => "Copying reviewed resource values…",
@@ -670,7 +744,11 @@ impl App {
             id,
             matches!(
                 kind,
-                IoKind::Svg | IoKind::KnifeSvg | IoKind::AddSvg | IoKind::ReplaceSvg
+                IoKind::Svg
+                    | IoKind::KnifeSvg
+                    | IoKind::ProfileSvg
+                    | IoKind::AddSvg
+                    | IoKind::ReplaceSvg
             ),
             matches!(kind, IoKind::AddSvg),
             ctx.clone(),
@@ -698,6 +776,8 @@ impl App {
             self.artwork_command(action, ctx);
         } else if matches!(kind, IoKind::KnifeSvg) {
             self.submit(Command::ImportKnifeSvg { filename, svg }, ctx);
+        } else if matches!(kind, IoKind::ProfileSvg) {
+            self.submit(Command::ImportProfileSvg { filename, svg }, ctx);
         } else {
             self.submit(Command::ImportSvg { filename, svg }, ctx);
         }
@@ -1296,6 +1376,8 @@ impl App {
         self.view.result_current = self.current();
         self.view
             .set_knife_selected(self.operation_kind() == Some(OperationKind::DragKnife));
+        self.view
+            .set_profile_selected(self.operation_kind() == Some(OperationKind::Profile));
         if let Some(doc) = &self.document {
             self.view.select_artwork(&doc.raw.artwork_item);
         }
@@ -1324,6 +1406,9 @@ impl App {
                     );
                     self.operation_tab = 0;
                     self.navigate(2);
+                }
+                crate::viewport::ArtworkEvent::ProfileSelection(references) => {
+                    self.viewport_profile_selection(references, ctx);
                 }
                 crate::viewport::ArtworkEvent::Placement {
                     item,

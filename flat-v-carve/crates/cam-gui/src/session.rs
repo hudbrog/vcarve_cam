@@ -35,6 +35,10 @@ pub enum Command {
         filename: String,
         svg: String,
     },
+    ImportProfileSvg {
+        filename: String,
+        svg: String,
+    },
     ImportSvg {
         filename: String,
         svg: String,
@@ -160,6 +164,11 @@ pub enum ArtworkCommand {
     KnifeSelection {
         references: Vec<v5::GeometryRef>,
     },
+    /// Replace a Profile operation's closed-contour selection with explicit
+    /// per-row sides.
+    ProfileSelection {
+        rows: Vec<crate::profile::SelectionRow>,
+    },
     AddMany {
         files: Vec<crate::platform::SvgFile>,
     },
@@ -260,6 +269,12 @@ fn artwork_command(
             return Ok((
                 crate::knife::select_in(job, &target, &references)?,
                 json!({"kind":"knife_selection"}),
+            ));
+        }
+        ArtworkCommand::ProfileSelection { rows } => {
+            return Ok((
+                crate::profile::select_in(job, &target, &rows)?,
+                json!({"kind":"profile_selection"}),
             ));
         }
         ArtworkCommand::AddMany { files } => {
@@ -390,6 +405,7 @@ pub fn open(text: &str) -> Result<CamJobV5, String> {
                 op.settings,
                 OperationSettingsV5::FlatVcarve(_)
                     | OperationSettingsV5::Face(_)
+                    | OperationSettingsV5::Profile(_)
                     | OperationSettingsV5::DragKnife(_)
             )
         })
@@ -399,7 +415,7 @@ pub fn open(text: &str) -> Result<CamJobV5, String> {
             .any(|item| !matches!(item.content, v5::ArtworkContent::Svg(_)))
     {
         return Err(format!(
-            "This workspace supports SVG artwork and up to {} ordered Flat V-carve, Face or Drag knife operations; the current document was retained",
+            "This workspace supports SVG artwork and up to {} ordered Flat V-carve, Face, Profile or Drag knife operations; the current document was retained",
             crate::operation_authoring::MAX_OPERATIONS
         ));
     }
@@ -533,6 +549,10 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
         }
         Command::ImportKnifeSvg { filename, svg } => (
             crate::knife::import_svg(filename, svg)?,
+            json!({"kind":"imported"}),
+        ),
+        Command::ImportProfileSvg { filename, svg } => (
+            crate::profile::import_svg(filename, svg)?,
             json!({"kind":"imported"}),
         ),
         Command::Operation { job, action } => {

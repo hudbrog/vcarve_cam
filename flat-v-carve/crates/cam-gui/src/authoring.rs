@@ -369,6 +369,16 @@ pub fn assign_tool_in(
             clear_milling(&mut face.assignment);
             return Ok(());
         }
+        Some(OperationKind::Profile) => {
+            let profile =
+                crate::profile::settings_in_mut(job, operation_id).ok_or("Expected Profile")?;
+            if profile.assignment.tool_id == id {
+                return Ok(());
+            }
+            profile.assignment.tool_id = id.into();
+            clear_milling(&mut profile.assignment);
+            return Ok(());
+        }
         Some(OperationKind::DragKnife) => {
             return crate::knife::assign_tool_in(job, operation_id, id);
         }
@@ -426,7 +436,8 @@ pub const FIELDS: &[usize] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22, 23, 25, 26, 27, 28,
     29, 30, 31, 32, 33, 38, 39, 40, 41, 42, 43, 44, 45, 46, 14, 47, 48, 49, 50, 51, 52, 53, 54, 55,
     56, 57, 58, 59, 60, 34, 35, 36, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76,
-    77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88,
+    77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99,
+    100, 101, 102, 103, 104, 105, 106, 107, 108,
 ];
 
 /// Face-editor field IDs (GUI7a/b). Reused IDs 2/8/9/10/11 are the operation's
@@ -449,6 +460,7 @@ pub fn active_in(job: &CamJobV5, operation_id: &str, field: usize) -> bool {
             return matches!(field, 6 | 7 | 23 | 25..=36 | 40..=45 | 61..=74);
         }
         Some(crate::session::OperationKind::Face) => return crate::face::active(field),
+        Some(crate::session::OperationKind::Profile) => return crate::profile::active(field),
         _ => {}
     }
     if field >= 61 {

@@ -178,7 +178,7 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
     })
 }
 
-const FIELD_HELP: [&str; 89] = [
+const FIELD_HELP: [&str; 109] = [
     "Total carving depth below the operation top, in millimeters. Stepdown controls how much is removed in each pass.",
     "Material left on walls by roughing, in millimeters, for a later finishing pass. Zero requests no extra allowance.",
     "Endmill cutting speed along the path, in mm/min. Choose for your cutter, material and machine; it is not spindle RPM.",
@@ -268,6 +268,26 @@ const FIELD_HELP: [&str; 89] = [
     "Signed height offset in millimeters from the selected face top reference. Positive is upward; the facing depth starts at this adjusted top.",
     "Signed height offset in millimeters from the selected face bottom reference. A negative stock-top offset sets how deeply the face removes material.",
     "Maximum depth increment allowed by this tool assignment. The requested face stepdown is clamped to this tool limit.",
+    "Signed height offset in millimeters from the selected profile top reference. Positive is upward; the cut depth is measured from this adjusted top.",
+    "Signed height offset in millimeters from the selected profile bottom reference. A negative stock-top offset sets how deeply the profile cuts, and a stock-bottom reference cuts through.",
+    "Radial material left on the wall by the rough pass, in millimeters, for the finish pass to remove. Zero is allowed and means the rough pass reaches the finished wall.",
+    "Cutting speed along the path for the finish pass, in mm/min. It is separate from the rough pass feed.",
+    "Height of the material bridge left under the tab, measured in millimeters up from the physical stock bottom. It must leave stock below the tab top.",
+    "Width of the protected band left around each tab, in millimeters. The rough and finish paths both stand off this band.",
+    "Number of automatically placed tabs evenly distributed around each selected contour. Use explicit anchors when the position matters.",
+    "Preferred distance between automatically placed tabs in millimeters, used when no count is given. A count takes precedence.",
+    "Position of one manual tab anchor as a fraction from 0 up to 1 along the contour's canonical start. It is the numeric equivalent of dragging the tab.",
+    "Maximum ramp angle for entering the cut at depth, in degrees. The tool must be marked ramp capable; a steeper angle needs a longer entry.",
+    "Feed for the ramp entry, in mm/min. It applies only while the tool descends along the loop.",
+    "Length of a tangent line lead-in in millimeters. The lead approaches the contour along its tangent, outside the retained side.",
+    "Feed for the lead-in, in mm/min. It applies only while the lead is being cut.",
+    "Radius of a tangent arc lead-in in millimeters. The arc bulges into the scrap side, so an on-contour selection cannot use it.",
+    "Sweep of the tangent arc lead-in in degrees, between 0 and 360. Together with the radius it sets the arc length.",
+    "Length of a tangent line lead-out in millimeters. The lead leaves the contour along its tangent after the cut.",
+    "Feed for the lead-out, in mm/min. It applies only while the lead is being cut.",
+    "Radius of a tangent arc lead-out in millimeters. The arc bulges into the scrap side.",
+    "Sweep of the tangent arc lead-out in degrees, between 0 and 360.",
+    "Position of the cut start as a fraction from 0 up to 1 along the selected contour's canonical start. It is the numeric equivalent of dragging the start.",
 ];
 
 #[cfg(test)]

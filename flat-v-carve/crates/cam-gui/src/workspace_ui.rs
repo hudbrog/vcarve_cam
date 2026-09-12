@@ -144,6 +144,10 @@ impl App {
                         );
                         ui.close();
                     }
+                    if button(ui, "New profile job from SVG", idle).clicked() {
+                        self.open(IoKind::ProfileSvg, ctx);
+                        ui.close();
+                    }
                     if button(ui, "New from SVG", idle).clicked() {
                         self.open(IoKind::Svg, ctx);
                         ui.close();

@@ -5,6 +5,8 @@ mod face_ui;
 mod knife_ui;
 #[path = "operation_ui.rs"]
 mod operation_ui;
+#[path = "profile_ui.rs"]
+mod profile_ui;
 use crate::authoring::{self, settings_mut};
 use cam_core::project::{FlatVcarveMode, SpindleDirection, WorkZeroXY, WorkZeroZ};
 
@@ -193,6 +195,11 @@ impl App {
                     }
                 } else if self.operation_kind() == Some(crate::session::OperationKind::DragKnife) && matches!(self.inspector_tab,0|2|4|5|6) {
                     self.knife_panel(ui,ctx);
+                } else if self.operation_kind() == Some(crate::session::OperationKind::Profile) && matches!(self.inspector_tab,0|2|4|5|6) {
+                    // One profile editor owns its contours, passes, tabs,
+                    // finishing and entries; the artwork, tool-geometry and
+                    // machine panels stay the shared ones.
+                    self.profile_panel(ui,ctx);
                 } else { match self.inspector_tab {0=>self.artwork_panel(ui,ctx),1=>self.setup_panel(ui,ctx),2=>self.cutting_panel(ui,ctx),3=>self.machine_panel(ui,ctx),6=>self.view.inspection_controls(ui),7=>self.job_settings_panel(ui,ctx),index=>{
                     let finish=index==5;
                     self.job_tool_panel(ui, ctx, finish);
@@ -272,6 +279,8 @@ impl App {
             "Defines the V-shaped target in both modes; executes finishing in Combined mode."
         } else if kind == Some(crate::session::OperationKind::DragKnife) {
             "Passive blade geometry: offset and maximum cutting depth."
+        } else if kind == Some(crate::session::OperationKind::Profile) {
+            "Cutter used by the profile's rough and finishing passes."
         } else {
             "Clearing and facing cutter"
         });

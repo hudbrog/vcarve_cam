@@ -177,6 +177,30 @@ pub fn inspect_face_fields(
     ))
 }
 
+/// Profile editor diagnostics: the profile planner's required-but-unset fields
+/// for one operation (contour selection with explicit sides, stepdown,
+/// direction, the milling assignment, and whichever tab/entry/lead values the
+/// current selection actually requires).
+pub fn inspect_profile_fields(
+    job: &CamJobV5,
+    operation_id: &str,
+) -> Result<Vec<crate::operations::LocatedDiagnostic>> {
+    let operation = job
+        .operations
+        .iter()
+        .find(|op| op.id == operation_id)
+        .ok_or_else(|| super::error("OPERATION_NOT_FOUND", "Unknown operation"))?;
+    let OperationSettingsV5::Profile(settings) = &operation.settings else {
+        return Err(super::error("OPERATION_KIND", "Expected Profile"));
+    };
+    Ok(crate::operations::profile::missing_fields_ctx(
+        &crate::operations::PlanContext::from_v5(job),
+        operation_id,
+        &super::resolve::to_profile_settings(settings),
+        "artwork",
+    ))
+}
+
 /// Planner-owned required fields for one operation, dispatched by kind. Every
 /// editor and the generation pre-check use this single entry so a new
 /// operation kind cannot silently skip its own requirement list.
@@ -193,9 +217,7 @@ pub fn inspect_operation_fields(
         OperationSettingsV5::FlatVcarve(_) => inspect_flat_vcarve_fields(job, operation_id),
         OperationSettingsV5::Face(_) => inspect_face_fields(job, operation_id),
         OperationSettingsV5::DragKnife(_) => inspect_knife_fields(job, operation_id),
-        // Profile editors arrive with their own milestone; its requirement
-        // list stays the planner's until then.
-        OperationSettingsV5::Profile(_) => Ok(vec![]),
+        OperationSettingsV5::Profile(_) => inspect_profile_fields(job, operation_id),
     }
 }
 

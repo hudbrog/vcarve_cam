@@ -11,6 +11,10 @@ impl Viewport {
     pub fn knife_chains(&self) -> Arc<Vec<crate::knife::Chain>> {
         self.knife_chains.clone()
     }
+    /// The closed contours a profile operation can select.
+    pub fn profile_contours(&self) -> Arc<Vec<crate::profile::Contour>> {
+        self.profile_contours.clone()
+    }
     /// The operation being edited is a drag knife. Picking follows the
     /// selected operation, so a mixed Face → knife sequence still assigns
     /// filled regions to the face and knife chains to the knife.
@@ -20,6 +24,16 @@ impl Viewport {
     pub fn set_knife_selected(&mut self, knife: bool) {
         if self.knife_selected != knife {
             self.knife_selected = knife;
+            self.overlay_signature = None;
+        }
+    }
+    /// The operation being edited is a profile.
+    pub fn is_profile(&self) -> bool {
+        self.profile_selected
+    }
+    pub fn set_profile_selected(&mut self, profile: bool) {
+        if self.profile_selected != profile {
+            self.profile_selected = profile;
             self.overlay_signature = None;
         }
     }

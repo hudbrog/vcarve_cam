@@ -46,6 +46,7 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
             "assignment.plunge_feed_mm_min" => Some((2, "Plunge feed".into())),
             "assignment.spindle_rpm" => Some((2, "Spindle speed".into())),
             "assignment.max_stepdown_mm" => Some((2, "Tool stepdown limit".into())),
+            "assignment.spindle_direction" => Some((2, "Face CW".into())),
             // The assignment's tool geometry is entered in the Face tool group.
             "assignment.tool" | "assignment.tool_id" => Some((2, "Endmill diameter".into())),
             "setup.stock.thickness_mm" => Some((1, "Stock thickness".into())),
@@ -61,6 +62,52 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
     }
     if local.starts_with("components[") {
         return Some((2, "Unresolved selections".into()));
+    }
+    if crate::session::kind(job, operation) == Some(crate::session::OperationKind::Profile) {
+        return match local {
+            "stepdown_mm" => Some((2, "Stepdown".into())),
+            "through_cut_allowance_mm" => Some((2, "Through-cut allowance".into())),
+            "top.offset_mm" => Some((2, "Profile top offset".into())),
+            "bottom.offset_mm" => Some((2, "Profile bottom offset".into())),
+            "direction" => Some((2, "Cut direction unset".into())),
+            "order" => Some((2, "Order: Inner before outer".into())),
+            "finish.enabled" | "finish" => Some((2, "Add radial finishing".into())),
+            "finish.radial_allowance_mm" => Some((2, "Finish allowance".into())),
+            "finish.feed_mm_min" => Some((2, "Finish feed".into())),
+            "entry" | "entry.max_angle_deg" => Some((2, "Entry ramp angle".into())),
+            "entry.feed_mm_min" => Some((2, "Entry ramp feed".into())),
+            "lead_in.length_mm" => Some((2, "Lead-in length".into())),
+            "lead_in.feed_mm_min" => Some((2, "Lead-in feed".into())),
+            "lead_in.radius_mm" => Some((2, "Lead-in radius".into())),
+            "lead_in.sweep_deg" => Some((2, "Lead-in sweep".into())),
+            "lead_out.length_mm" => Some((2, "Lead-out length".into())),
+            "lead_out.feed_mm_min" => Some((2, "Lead-out feed".into())),
+            "lead_out.radius_mm" => Some((2, "Lead-out radius".into())),
+            "lead_out.sweep_deg" => Some((2, "Lead-out sweep".into())),
+            "start" => Some((2, "Profile start".into())),
+            "tabs" => Some((2, "Add tabs".into())),
+            "tabs.height_mm" => Some((2, "Tab height".into())),
+            "tabs.width_mm" => Some((2, "Tab width".into())),
+            "tabs.placement" => Some((2, "Tab placement".into())),
+            "assignment.cutting_feed_mm_min" => Some((2, "Roughing feed".into())),
+            "assignment.plunge_feed_mm_min" => Some((2, "Plunge feed".into())),
+            "assignment.spindle_rpm" => Some((2, "Spindle speed".into())),
+            "assignment.max_stepdown_mm" => Some((2, "Tool stepdown limit".into())),
+            "assignment.spindle_direction" => Some((2, "Profile CW".into())),
+            // The assignment's tool geometry is entered in the tool group.
+            "assignment.tool" | "assignment.tool_id" => Some((2, "Endmill diameter".into())),
+            "setup.stock.thickness_mm" => Some((1, "Stock thickness".into())),
+            "setup.clearance_above_stock_mm" => Some((1, "Clearance".into())),
+            "setup.stock.xy" => Some((1, "Stock width".into())),
+            "tolerances.motion_tolerance_mm" => Some((7, "Motion tolerance".into())),
+            "tolerances.verification_tolerance_mm" => Some((7, "Verification tolerance".into())),
+            _ if local.starts_with("contours[") => Some((2, "Unresolved profile contours".into())),
+            "contours" | "artwork" => Some((2, "Select all profile contours".into())),
+            _ if local.starts_with("tools[") && local.contains("ramp_capable") => {
+                Some((2, "Ramp yes".into()))
+            }
+            _ => None,
+        };
     }
     let field = match local {
         "assignment.tool" | "assignment.tool_id" => 61,
@@ -250,5 +297,63 @@ mod tests {
                 "{path} → {label} (tab {tab})"
             );
         }
+    }
+
+    #[test]
+    fn profile_planner_fields_route_to_the_profile_editor() {
+        let job = crate::profile::import_svg(
+            "letters.svg".into(),
+            include_str!("../../../fixtures/gui3/lettering.svg").into(),
+        )
+        .unwrap();
+        let id = job.operations[0].id.clone();
+        let rows = crate::profile::contours(&job)
+            .unwrap()
+            .into_iter()
+            .map(|contour| crate::profile::SelectionRow {
+                reference: contour.reference,
+                side: contour.suggested_side,
+                traversal: None,
+            })
+            .collect::<Vec<_>>();
+        let job = crate::profile::select_in(&job, &id, &rows).unwrap();
+        let issues = cam_core::project::v5::inspection::inspect_profile_fields(&job, &id).unwrap();
+        assert!(issues.len() > 5, "{issues:?}");
+        for issue in issues {
+            let path = issue.field_path.as_deref().unwrap();
+            let (tab, label) = target(&job, path)
+                .unwrap_or_else(|| panic!("no destination for {path} ({})", issue.message));
+            assert!(
+                matches!(
+                    label.as_str(),
+                    "Stock thickness"
+                        | "Clearance"
+                        | "Stock width"
+                        | "Motion tolerance"
+                        | "Verification tolerance"
+                        | "Ramp yes"
+                        | "Cut direction unset"
+                        | "Select all profile contours"
+                        | "Unresolved profile contours"
+                        | "Add tabs"
+                        | "Add radial finishing"
+                        | "Profile start"
+                        | "Profile CW"
+                ) || FIELDS.contains(&label.as_str()),
+                "{path} → {label} (tab {tab})"
+            );
+        }
+        assert_eq!(
+            target(&job, &format!("operations[{id}].contours")),
+            Some((2, "Select all profile contours".into()))
+        );
+        assert_eq!(
+            target(&job, &format!("operations[{id}].stepdown_mm")),
+            Some((2, "Stepdown".into()))
+        );
+        assert_eq!(
+            target(&job, &format!("operations[{id}].direction")),
+            Some((2, "Cut direction unset".into()))
+        );
     }
 }

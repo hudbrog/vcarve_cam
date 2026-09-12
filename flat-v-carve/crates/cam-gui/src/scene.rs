@@ -239,6 +239,10 @@ pub fn build(
     let selected = selected_references(job);
     let components = crate::authoring::catalogue_components(&catalogue);
     let chains = crate::knife::chains(job)?;
+    // The closed contours a profile operation selects, with their advisory
+    // sides. This is the same catalogue the planner resolves against, projected
+    // once per scene so the editor never imports the SVG on the frame thread.
+    let profile_contours = crate::profile::contours(job)?;
     let mut bounds = job
         .setup
         .stock
@@ -315,6 +319,7 @@ pub fn build(
     }
     report["components"] = json!(components);
     report["chains"] = json!(chains);
+    report["profileContours"] = json!(profile_contours);
     report["artworkSpans"] = json!(spans);
     if let Some(xy) = job.setup.stock.xy {
         report["stockRect"] = json!([

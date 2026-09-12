@@ -89,7 +89,9 @@ impl Viewport {
             .as_ref()
             .is_some_and(|s| s.meta.report["gui2"]["checks"]["exportReady"] == true)
     }
-    fn plan_inspection(&self) -> Option<PlanInspection> {
+    /// The generated plan's read-only inspection, when a current scene carries
+    /// one. Editors read resolved heights and generated evidence from here.
+    pub fn plan_inspection(&self) -> Option<PlanInspection> {
         serde_json::from_value(self.scene.as_ref()?.meta.report["gui2"]["inspection"].clone()).ok()
     }
     fn stock_bytes(&self) -> Option<&[u8]> {

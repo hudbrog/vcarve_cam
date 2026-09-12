@@ -116,11 +116,17 @@ impl ViewSettings {
 
 pub struct Viewport {
     knife_chains: Arc<Vec<crate::knife::Chain>>,
+    /// Closed catalogue contours a profile operation can select, in document
+    /// order. Display/candidate data only; the document owns the selection.
+    profile_contours: Arc<Vec<crate::profile::Contour>>,
     /// One timeline entry per executed stage (or operation), in plan order.
     groups: Arc<Vec<DisplayGroup>>,
     /// Whether the operation the user is editing is a drag knife. Picking
     /// behavior follows the operation, not the whole scene.
     knife_selected: bool,
+    /// Whether the operation being edited is a profile: viewport selection
+    /// then addresses closed contours with their advisory sides.
+    profile_selected: bool,
     pub artwork: ArtworkInteraction,
     pub stock_loading: bool,
     pub result_current: bool,
@@ -167,8 +173,10 @@ impl Default for Viewport {
     fn default() -> Self {
         Self {
             knife_chains: Arc::new(Vec::new()),
+            profile_contours: Arc::new(Vec::new()),
             groups: Arc::new(Vec::new()),
             knife_selected: false,
+            profile_selected: false,
             artwork: ArtworkInteraction::default(),
             stock_loading: false,
             result_current: false,
@@ -245,6 +253,10 @@ impl Viewport {
     pub fn set_scene(&mut self, scene: Scene) {
         self.knife_chains = Arc::new(
             serde_json::from_value(scene.meta.report["gui2"]["chains"].clone()).unwrap_or_default(),
+        );
+        self.profile_contours = Arc::new(
+            serde_json::from_value(scene.meta.report["gui2"]["profileContours"].clone())
+                .unwrap_or_default(),
         );
         self.groups = Arc::new(
             serde_json::from_value(scene.meta.report["gui2"]["groups"].clone()).unwrap_or_default(),

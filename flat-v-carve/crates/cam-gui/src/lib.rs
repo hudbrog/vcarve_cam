@@ -15,6 +15,7 @@ pub mod pages;
 pub mod paging;
 pub mod pick;
 pub mod platform;
+pub mod profile;
 pub mod recovery;
 pub mod render;
 pub mod resources;
