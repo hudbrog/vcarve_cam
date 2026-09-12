@@ -433,6 +433,7 @@ use cam_core::tool_library::{KnifeCuttingPreset, LibraryGeometry};
 
 fn knife_tool() -> LibraryTool {
     LibraryTool {
+        spindle_direction: None,
         id: "blade".into(),
         name: "Drag knife".into(),
         geometry: LibraryGeometry::DragKnife(DragKnifeSpec {

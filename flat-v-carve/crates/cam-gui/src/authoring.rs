@@ -1,4 +1,4 @@
-//! Artwork and cutting authoring over the canonical model. No example-job defaults.
+//! Artwork and cutting authoring over the canonical model.
 use cam_core::{
     job::SourceSnapshot,
     project::{self, FlatVcarveMode, ToolGeometry, WorkZeroXY, v5::*},
@@ -46,7 +46,15 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
     let job = CamJobV5 {
         schema_version: 5,
         name: filename,
-        setup: Default::default(),
+        setup: project::SetupSettings {
+            stock: project::StockSetup {
+                thickness_mm: Some(18.),
+                xy: Some(svg_page_stock(&item)?),
+            },
+            clearance_above_stock_mm: Some(5.),
+            start_xy_mm: Some(cam_core::geometry::Point::new(0., 0.)),
+            ..Default::default()
+        },
         artwork: vec![item],
         tools: [("endmill", "Endmill"), ("vbit", "V-bit target")]
             .into_iter()
@@ -76,7 +84,10 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
                 finish: None,
             }),
         }],
-        tolerances: Default::default(),
+        tolerances: cam_core::job::PlanningTolerances {
+            motion_tolerance_mm: Some(0.01),
+            verification_tolerance_mm: Some(0.05),
+        },
         machine_configuration: None,
         legacy_machine_profile: None,
     };
@@ -85,6 +96,37 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
         return Err("Embedded SVG exceeds the 8 MB portable job limit".into());
     }
     Ok(job)
+}
+
+/// Capture the selected SVG's full page, including its placement, rather than
+/// the smaller bounds of the paths drawn on it. Runs on the compute worker.
+pub fn svg_page_stock(item: &ArtworkItem) -> Result<project::RectXY, String> {
+    let ArtworkContent::Svg(source) = &item.content;
+    let geometry = cam_core::svg::import_svg(&source.svg, &item.import_options(), None)
+        .map_err(|e| e.to_string())?;
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    for (x, y) in [
+        (0., 0.),
+        (geometry.page_width_mm, 0.),
+        (0., geometry.page_height_mm),
+        (geometry.page_width_mm, geometry.page_height_mm),
+    ] {
+        let p = item
+            .placement
+            .to_setup(cam_core::geometry::Point { x, y })
+            .map_err(|e| e.to_string())?;
+        min[0] = min[0].min(p.x);
+        min[1] = min[1].min(p.y);
+        max[0] = max[0].max(p.x);
+        max[1] = max[1].max(p.y);
+    }
+    Ok(project::RectXY {
+        min_x_mm: min[0],
+        min_y_mm: min[1],
+        width_mm: max[0] - min[0],
+        length_mm: max[1] - min[1],
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -223,6 +265,12 @@ pub const FIELDS: &[usize] = &[
 ];
 pub fn active(job: &CamJobV5, field: usize) -> bool {
     let s = crate::session::settings(job);
+    if matches!(field, 33 | 39) {
+        return (field == 33 || s.mode == FlatVcarveMode::Combined)
+            && job.machine_configuration.as_ref().is_some_and(|m| {
+                m.length_compensation == Some(cam_core::post::LengthCompensation::ToolTable)
+            });
+    }
     if matches!(field, 34..=36) {
         return job.machine_configuration.as_ref().is_some_and(|m| {
             field != 36

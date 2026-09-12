@@ -9,6 +9,23 @@ use cam_service::retained::Retained;
 const SVG: &str = include_str!("../../../fixtures/gui2/new-carving.svg");
 
 #[test]
+fn new_svg_has_origin_start_and_planning_defaults_without_invented_cutting_values() {
+    let job = authoring::import_svg("new.svg".into(), SVG.into()).unwrap();
+    assert_eq!(
+        job.setup.start_xy_mm,
+        Some(cam_core::geometry::Point::new(0., 0.))
+    );
+    assert_eq!(job.tolerances.motion_tolerance_mm, Some(0.01));
+    assert_eq!(job.tolerances.verification_tolerance_mm, Some(0.05));
+    assert!(
+        session::settings(&job)
+            .endmill
+            .cutting_feed_mm_min
+            .is_none()
+    );
+}
+
+#[test]
 fn gui3_policy_fields_preserve_siblings_and_portable_inactive_finish() {
     let mut doc = configured();
     authoring::set_mode(&mut doc.job, FlatVcarveMode::Combined);
@@ -289,11 +306,15 @@ fn configured() -> Document {
     doc
 }
 #[test]
-fn import_is_unset_saveable_and_selects_nothing() {
+fn import_has_stock_defaults_but_cutting_is_unset_and_selects_nothing() {
     let job = authoring::import_svg("new.svg".into(), SVG.into()).unwrap();
     assert!(session::settings(&job).components.is_empty());
-    assert!(job.setup.stock.thickness_mm.is_none());
-    assert!(job.setup.stock.xy.is_none());
+    assert_eq!(job.setup.stock.thickness_mm, Some(18.));
+    assert_eq!(job.setup.clearance_above_stock_mm, Some(5.));
+    assert_eq!(
+        job.setup.stock.xy,
+        Some(authoring::svg_page_stock(&job.artwork[0]).unwrap())
+    );
     assert!(
         job.tools
             .iter()

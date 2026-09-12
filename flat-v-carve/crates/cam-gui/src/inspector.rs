@@ -55,7 +55,16 @@ impl App {
             let mut text = doc.text(field);
             let response = ui
                 .horizontal(|ui| {
-                    let label = ui.add_sized([116., 20.], egui::Label::new(FIELDS[field]));
+                    let label = ui.add_sized(
+                        [116., 20.],
+                        egui::Label::new(match field {
+                            32 => "Endmill tool (T)",
+                            33 => "Length entry (H)",
+                            38 => "V-bit tool (T)",
+                            39 => "V-bit entry (H)",
+                            _ => FIELDS[field],
+                        }),
+                    );
                     let response = ui
                         .add(
                             egui::TextEdit::singleline(&mut text)
@@ -75,9 +84,12 @@ impl App {
                         11 | 22 => "RPM",
                         14 | 16 | 28 => "deg",
                         29 => "×",
+                        34 | 37 => "s",
+                        35 => "digits",
                         32 | 33 | 38 | 39 | 48..=50 | 52..=56 | 58..=60 => "",
                         _ => "mm",
                     });
+                    help::icon(ui, FIELDS[field]);
                     response
                 })
                 .inner;
@@ -121,7 +133,7 @@ impl App {
     pub(super) fn inspector(&mut self, ctx: &egui::Context) {
         let panel=egui::SidePanel::right("gui2-inspector").default_width(self.inspector_width).width_range(300.0..=480.0).resizable(true).show(ctx,|ui|{
             ui.add_space(8.);
-            ui.strong(["ARTWORK", "STOCK & WORK ZERO", "OPERATION", "MACHINE & EXPORT", "JOB TOOL · ENDMILL", "JOB TOOL · V-BIT", "RESULT INSPECTION"][self.inspector_tab]);
+            ui.strong(["ARTWORK", "STOCK & WORK ZERO", "OPERATION", "MACHINE & EXPORT", "JOB TOOL · ENDMILL", "JOB TOOL · V-BIT", "RESULT INSPECTION", "JOB SETTINGS"][self.inspector_tab]);
             ui.separator();
             if self.inspector_tab != 6 {
             let r=ui.add(egui::TextEdit::singleline(&mut self.search).id(egui::Id::new("gui2-search")).char_limit(512).hint_text("Filter fields"));observe_control("Filter fields",r.rect);
@@ -130,7 +142,7 @@ impl App {
             let area=egui::ScrollArea::vertical().id_salt(("inspector-scroll",self.inspector_tab)).vertical_scroll_offset(self.scroll[self.inspector_tab]).show(ui,|ui|{
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 if self.document.is_none(){ui.label("Import an SVG or open a saved job to begin.");return;}
-                match self.inspector_tab {0=>self.artwork_panel(ui,ctx),1=>self.setup_panel(ui,ctx),2=>self.cutting_panel(ui,ctx),3=>self.machine_panel(ui,ctx),6=>self.view.inspection_controls(ui),index=>{
+                match self.inspector_tab {0=>self.artwork_panel(ui,ctx),1=>self.setup_panel(ui,ctx),2=>self.cutting_panel(ui,ctx),3=>self.machine_panel(ui,ctx),6=>self.view.inspection_controls(ui),7=>self.job_settings_panel(ui,ctx),index=>{
                     let finish=index==5;
                     ui.heading(if finish {"V-bit geometry"}else{"Endmill geometry"});
                     self.numbers(ui,ctx,if finish {&[16,17,18,19]}else{&[12,13]});
@@ -382,6 +394,33 @@ impl App {
     }
     fn setup_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Physical stock");
+        if button(
+            ui,
+            "Stock XY from SVG page",
+            self.active.is_none()
+                && self
+                    .document
+                    .as_ref()
+                    .is_some_and(|d| d.active_artwork().is_some()),
+        )
+        .clicked()
+        {
+            let item = self
+                .document
+                .as_ref()
+                .unwrap()
+                .active_artwork()
+                .unwrap()
+                .id
+                .clone();
+            self.resource_command(crate::resources::ResourceCommand::StockPage { item }, ctx);
+        }
+        if let Some(item) = self.document.as_ref().and_then(|d| d.active_artwork()) {
+            ui.small(format!(
+                "Page source: {} (includes placement and scale)",
+                item.name
+            ));
+        }
         self.numbers(ui, ctx, &[6, 40, 41, 42, 43]);
         if button(ui, "Unset stock XY", true).clicked() {
             self.edit_job(ctx, &[40, 41, 42, 43], |job| {
@@ -389,9 +428,10 @@ impl App {
                 Ok(())
             });
         }
-        ui.small("Enter all four XY values to define the rectangle. Unset stock remains a saveable incomplete job.");
+        ui.small("New SVG jobs use the page size, 18 mm thickness and 5 mm clearance. Adjust these to your actual stock. Page capture changes only XY.");
         ui.separator();
         ui.heading("Work zero");
+        help::icon(ui, "Work zero");
         let custom = matches!(
             self.document.as_ref().unwrap().job.setup.work_zero.xy,
             WorkZeroXY::CustomPoint { .. }
@@ -445,18 +485,34 @@ impl App {
         });
         ui.small("Work zero affects output coordinates; simulation stays in setup coordinates. Applying a machine does not change this datum.");
         self.numbers(ui, ctx, &[7, 30, 31]);
+        if button(ui, "Use default start XY", true).clicked() {
+            self.edit_job(ctx, &[30, 31], |job| {
+                job.setup.start_xy_mm = Some(cam_core::geometry::Point::new(0., 0.));
+                Ok(())
+            });
+        }
         if button(ui, "Unset start XY", true).clicked() {
             self.edit_job(ctx, &[30, 31], |job| {
                 job.setup.start_xy_mm = None;
                 Ok(())
             });
         }
-        ui.separator();
+    }
+    fn job_settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Planning tolerances");
+        ui.small("Saved with this job and used by all its operations. Changing these values requires regenerating paths; they are independent of machine output precision.");
         self.numbers(ui, ctx, &[23, 25]);
+        if button(ui, "Use default planning tolerances", true).clicked() {
+            self.edit_job(ctx, &[23, 25], |job| {
+                job.tolerances.motion_tolerance_mm = Some(0.01);
+                job.tolerances.verification_tolerance_mm = Some(0.05);
+                Ok(())
+            });
+        }
     }
     fn cutting_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Flat V-carve");
+        help::label(ui, "Carving mode");
         ui.horizontal(|ui| {
             for (label, mode) in [
                 ("Endmill only", FlatVcarveMode::EndmillOnly),
@@ -475,7 +531,7 @@ impl App {
                 }
             }
         });
-        ui.label("Operation top");
+        help::label(ui, "Operation top");
         ui.horizontal(|ui| {
             for (label, reference) in [
                 (
@@ -510,6 +566,7 @@ impl App {
         ui.heading("Endmill assignment");
         self.assignment_tool(ui, ctx, false);
         ui.small("Choose the clearing strategy and confirm plunge capability explicitly.");
+        help::label(ui, "Clearing strategy");
         ui.horizontal(|ui| {
             for (label, strategy) in [
                 (
@@ -552,7 +609,7 @@ impl App {
         let mut plunge = authoring::tool(&self.document.as_ref().unwrap().job, false)
             .and_then(|t| t.capabilities.plunge_capable);
         let before = plunge;
-        ui.label("Endmill can plunge");
+        help::label(ui, "Endmill can plunge");
         ui.horizontal(|ui| {
             for (label, v) in [
                 ("Plunge unset", None),
@@ -585,6 +642,7 @@ impl App {
             let mut plunge = authoring::tool(&self.document.as_ref().unwrap().job, true)
                 .and_then(|t| t.capabilities.plunge_capable);
             let before = plunge;
+            help::label(ui, "V-bit can plunge");
             ui.horizontal(|ui| {
                 for (label, v) in [
                     ("V-bit plunge unset", None),
@@ -615,7 +673,7 @@ impl App {
                 .entry,
             EntryStrategy::Ramp { .. }
         );
-        ui.label("Endmill entry");
+        help::label(ui, "Endmill entry");
         ui.horizontal(|ui| {
             let r = ui.selectable_label(!ramp, "Plunge entry");
             observe_control("Plunge entry", r.rect);
@@ -655,7 +713,7 @@ impl App {
         let mut capable = authoring::tool(&self.document.as_ref().unwrap().job, false)
             .and_then(|t| t.capabilities.ramp_capable);
         let before = capable;
-        ui.label("Endmill can ramp");
+        help::label(ui, "Endmill can ramp");
         ui.horizontal(|ui| {
             for (label, value) in [
                 ("Ramp unset", None),
@@ -677,6 +735,7 @@ impl App {
     }
     fn assignment_tool(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, finish: bool) {
         self.assignment_profiles(ui, ctx, finish);
+        help::label(ui, "Assigned job tool");
         use cam_core::project::ToolGeometry;
         let job = &self.document.as_ref().unwrap().job;
         let assignment = if finish {
@@ -759,6 +818,14 @@ impl App {
         ui.small("Choosing another job tool clears this assignment’s cutting values; enter values for the chosen cutter.");
     }
     fn direction(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, finish: bool) {
+        help::label(
+            ui,
+            if finish {
+                "V-bit direction"
+            } else {
+                "Endmill direction"
+            },
+        );
         let s = engine::settings(&self.document.as_ref().unwrap().job);
         let mut direction = if finish {
             s.vbit.spindle_direction
@@ -791,6 +858,13 @@ impl App {
     }
     fn machine_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Applied machine");
+        if button(ui, "Create or choose machine profile", true).clicked() {
+            self.resources.machines_view = true;
+            self.resources.open = true;
+            if !self.resources.ready {
+                self.request_resources(ResourceIntent::Load, ctx);
+            }
+        }
         let idle = self.active.is_none() && self.io.is_none();
         if button(ui, "Load machine profile", idle).clicked() {
             self.open(IoKind::Profile, ctx);
@@ -813,12 +887,45 @@ impl App {
                 "Work offset: {}",
                 machine.work_offset.as_deref().unwrap_or("unset")
             ));
-            ui.small("Profile values are copied into this job. T/H mappings are explicit; cutter size never assigns a controller number.");
-            self.numbers(ui, ctx, &[7, 32, 33]);
+            ui.small("T = controller tool number. H = measured tool-length table entry, not a length in mm. A reusable machine profile may not yet map the cutters selected for this job.");
+            let table =
+                machine.length_compensation == Some(cam_core::post::LengthCompensation::ToolTable);
+            self.numbers(ui, ctx, &[7]);
+            let job = &self.document.as_ref().unwrap().job;
+            let tool_id = &engine::settings(job).endmill.tool_id;
+            ui.label(format!(
+                "Endmill: {}",
+                job.tools
+                    .iter()
+                    .find(|t| &t.id == tool_id)
+                    .map(|t| t.name.as_str())
+                    .unwrap_or(tool_id)
+            ));
+            self.numbers(ui, ctx, if table { &[32, 33] } else { &[32] });
             if engine::settings(&self.document.as_ref().unwrap().job).mode
                 == FlatVcarveMode::Combined
             {
-                self.numbers(ui, ctx, &[38, 39]);
+                self.numbers(ui, ctx, if table { &[38, 39] } else { &[38] });
+            }
+            if table && button(ui, "Use T numbers for H entries", true).clicked() {
+                self.edit_job(ctx, &[33, 39], |job| {
+                    let s = engine::settings(job);
+                    let mut used = vec![s.endmill.tool_id.clone()];
+                    if s.mode == FlatVcarveMode::Combined {
+                        used.push(s.vbit.tool_id.clone());
+                    }
+                    if let Some(m) = &mut job.machine_configuration {
+                        for row in &mut m.tools {
+                            if used.contains(&row.job_tool_id) {
+                                row.length_offset_number = row.tool_number;
+                            }
+                        }
+                    }
+                    Ok(())
+                });
+            }
+            if table {
+                ui.small("Use matching T/H only if your controller stores each tool's measured length at that same table number.");
             }
             ui.small("Setup owns the datum. Clearance is shared with Setup.");
             self.applied_machine_options(ui, ctx);
@@ -829,7 +936,7 @@ impl App {
         } else {
             ui.colored_label(
                 Color32::from_rgb(164, 83, 12),
-                "Import a schema-2 machine profile before checked export.",
+                "Create or choose a machine profile before checked export.",
             );
         }
         ui.separator();

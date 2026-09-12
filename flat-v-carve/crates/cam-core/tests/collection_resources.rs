@@ -287,6 +287,7 @@ fn resource_job() -> CamJobV5 {
 
 fn library() -> ToolLibrary {
     let endmill = LibraryTool {
+        spindle_direction: None,
         id: "lib-e".into(),
         name: "Library endmill".into(),
         geometry: LibraryGeometry::Endmill(EndmillSpec {
@@ -323,6 +324,7 @@ fn library() -> ToolLibrary {
         knife_cutting_presets: vec![],
     };
     let knife = LibraryTool {
+        spindle_direction: None,
         id: "lib-k".into(),
         name: "Library knife".into(),
         geometry: LibraryGeometry::DragKnife(DragKnifeSpec {
@@ -530,6 +532,7 @@ fn tool_application_clears_only_on_tool_change_and_copies_provenance() {
     .job;
     // A different tool without a preset: values and baseline clear.
     let other = LibraryTool {
+        spindle_direction: None,
         id: "lib-e2".into(),
         name: "Second endmill".into(),
         geometry: LibraryGeometry::Endmill(EndmillSpec {

@@ -60,6 +60,7 @@ export async function gui3Scenario({control,edit,state,waitFor,send,evaluate,sle
   await screenshot('gui3-lettering-placement.png');
   await control('Artwork');await control('Select artwork');await pick([9,23]);await control('Use picked');
   await waitFor(s=>s.job.components===1&&!s.active,'lettering subset assignment');
+  await control('Setup');await edit('Stock thickness','');
   await control('Generate');let issues=await waitFor(s=>s.issues?.length>10&&!s.active,'typed missing machining issues');
   const stockIssue=issues.issues.findIndex(i=>i.field_path==='setup.stock.thickness_mm');
   await control('Issue '+stockIssue);await sleep(350);
@@ -68,7 +69,8 @@ export async function gui3Scenario({control,edit,state,waitFor,send,evaluate,sle
   await pressKey('a','KeyA',2);await send('Input.insertText',{text:'10'});
   await waitFor(s=>s.job.stock.thickness_mm===10,'issue focuses stock thickness input');
   record('typed issue reveals and focuses owning field',await state());
-  for(const [label,value] of [['Stock minimum X','-10'],['Stock minimum Y','-10'],['Stock width','65'],['Stock length','50'],['Clearance','5'],['Start X','0'],['Start Y','0'],['Motion tolerance','0.01'],['Verification tolerance','0.05']])await edit(label,value);
+  for(const [label,value] of [['Stock minimum X','-10'],['Stock minimum Y','-10'],['Stock width','65'],['Stock length','50'],['Clearance','5'],['Start X','0'],['Start Y','0']])await edit(label,value);
+  await control('Job settings');await edit('Motion tolerance','0.01');await edit('Verification tolerance','0.05');
   await control('Endmill tool');await edit('Endmill diameter','2.5');await edit('Cutting length','15');
   await control('V-bit tool');for(const [label,value] of [['V-bit angle','90'],['Tip diameter','0.1'],['Cutting diameter','12'],['Cutting height','5']])await edit(label,value);
   await control('Cutting');await control('Depth-dependent clearing');

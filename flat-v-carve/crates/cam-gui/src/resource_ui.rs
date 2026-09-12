@@ -14,13 +14,18 @@ fn unique(base: &str, used: impl Iterator<Item = String>) -> String {
 }
 fn text(ui: &mut egui::Ui, label: &str, value: &mut String) -> bool {
     ui.horizontal(|ui| {
-        ui.label(label);
+        ui.label(if label == "Contract reference" {
+            "Tool-change notes / reference"
+        } else {
+            label
+        });
         let r = ui.add(
             egui::TextEdit::singleline(value)
                 .desired_width(240.)
                 .char_limit(1000),
         );
         observe_control(label, r.rect);
+        help::icon(ui, label);
         r.changed()
     })
     .inner
@@ -72,6 +77,7 @@ fn capability(ui: &mut egui::Ui, label: &str, value: &mut Option<bool>) -> bool 
     let before = *value;
     ui.horizontal(|ui| {
         ui.label(label);
+        help::icon(ui, label);
         for (name, v) in [("Unset", None), ("Yes", Some(true)), ("No", Some(false))] {
             let r = ui.selectable_value(value, v, name);
             observe_control(&format!("{label} {name}"), r.rect);
@@ -158,6 +164,19 @@ fn tool_form(
         g.plunge_capable = plunge;
     }
     e.dirty |= capability(ui, &format!("{prefix} ramp"), &mut tool.ramp_capable);
+    if prefix == "Library" && !matches!(tool.geometry, LibraryGeometry::DragKnife(_)) {
+        use cam_core::project::SpindleDirection::{Clockwise, Counterclockwise};
+        e.dirty |= choice(
+            ui,
+            &format!("{prefix} rotation"),
+            &mut tool.spindle_direction,
+            &[
+                ("Unset", None),
+                ("CW", Some(Clockwise)),
+                ("CCW", Some(Counterclockwise)),
+            ],
+        );
+    }
 }
 fn preset_form(
     ui: &mut egui::Ui,
@@ -207,7 +226,7 @@ impl App {
             &serde_json::to_vec(&(&self.resources.draft, &self.resources.raw)).unwrap(),
         )
     }
-    fn resource_command(&mut self, action: R, ctx: &egui::Context) {
+    pub(super) fn resource_command(&mut self, action: R, ctx: &egui::Context) {
         if let Some(doc) = &self.document {
             self.submit(
                 Command::Resource {
@@ -383,7 +402,23 @@ impl App {
                             "Library unchanged"
                         }
                     ));
-                    self.resource_role(ui);
+                    ui.horizontal(|ui| {
+                        let r = ui.selectable_value(
+                            &mut self.resources.machines_view,
+                            false,
+                            "Tools & profiles",
+                        );
+                        observe_control("Tools & profiles", r.rect);
+                        let r = ui.selectable_value(
+                            &mut self.resources.machines_view,
+                            true,
+                            "Machines",
+                        );
+                        observe_control("Machines", r.rect);
+                    });
+                    if !self.resources.machines_view {
+                        self.resource_role(ui);
+                    }
                     if let Some(other) = self.resources.conflict.clone() {
                         ui.collapsing(
                             format!("Compare with stored revision {}", other.revision),
@@ -451,9 +486,11 @@ impl App {
                             .id_salt("resources-content")
                             .max_height(430.)
                             .show(ui, |ui| {
-                                self.library_tools(ui, ctx);
-                                ui.separator();
-                                self.library_machines(ui, ctx);
+                                if self.resources.machines_view {
+                                    self.library_machines(ui, ctx);
+                                } else {
+                                    self.library_tools(ui, ctx);
+                                }
                             });
                         observe_control("Resource viewport", area.inner_rect);
                     });
@@ -507,6 +544,7 @@ impl App {
                         })
                     };
                     self.resources.draft.library.tools.push(LibraryTool {
+                        spindle_direction: Some(cam_core::project::SpindleDirection::Clockwise),
                         id: id.clone(),
                         name: label.into(),
                         geometry,
@@ -763,6 +801,7 @@ fn choice<T: PartialEq + Clone>(
     let before = value.clone();
     ui.horizontal_wrapped(|ui| {
         ui.label(label);
+        help::icon(ui, label);
         for (name, v) in options {
             let r = ui.selectable_value(value, v.clone(), *name);
             observe_control(&format!("{label} {name}"), r.rect);
@@ -821,7 +860,7 @@ fn machine_form(
         &mut m.spindle_spinup_seconds,
         e,
     );
-    e.dirty |= choice(
+    let compensation_changed = choice(
         ui,
         "Length compensation",
         &mut m.length_compensation,
@@ -830,6 +869,14 @@ fn machine_form(
             ("Tool table", LengthCompensation::ToolTable),
         ],
     );
+    e.dirty |= compensation_changed;
+    if compensation_changed && m.length_compensation == LengthCompensation::MacroManaged {
+        for row in &mut m.tools {
+            row.length_offset_number = None;
+            e.raw.remove(&format!("{key}/H/{}", row.tool_id));
+            e.invalid.remove(&format!("{key}/H/{}", row.tool_id));
+        }
+    }
     e.dirty |= choice(
         ui,
         "Coolant",
@@ -880,8 +927,13 @@ fn machine_form(
     }
     let mut startup = m.program_start_position_mm.is_some();
     if ui
-        .checkbox(&mut startup, "Explicit program start position")
-        .changed()
+        .horizontal(|ui| {
+            let r = ui.checkbox(&mut startup, "Explicit program start position");
+            observe_control("Explicit program start position", r.rect);
+            help::icon(ui, "Explicit program start position");
+            r.changed()
+        })
+        .inner
     {
         m.program_start_position_mm = startup.then_some(cam_core::motion::Position {
             x: 0.,
@@ -900,7 +952,9 @@ fn machine_form(
         }
     }
     ui.separator();
-    ui.label("M6 contract");
+    help::label(ui, "M6 contract");
+    ui.label("Tool-change behavior: describe what your controller or manual change procedure guarantees after changing and compensating the tool.");
+    ui.small("Reference = your notes, manual section, or macro filename/revision. Review the guarantees below against that procedure.");
     e.dirty |= text(ui, "Contract reference", &mut m.m6.reference);
     for (label, value) in [
         ("Contract reviewed", &mut m.m6.reviewed),
@@ -908,9 +962,14 @@ fn machine_form(
         ("Local offsets unused", &mut m.m6.local_offsets_unused),
         ("Z-only tool offsets", &mut m.m6.tool_offsets_z_only),
     ] {
-        let r = ui.checkbox(value, label);
-        observe_control(label, r.rect);
-        e.dirty |= r.changed();
+        e.dirty |= ui
+            .horizontal(|ui| {
+                let r = ui.checkbox(value, label);
+                observe_control(label, r.rect);
+                help::icon(ui, label);
+                r.changed()
+            })
+            .inner;
     }
     let mut mode = match m.m6.return_position {
         M6Return::CallerPosition => 0,
@@ -976,14 +1035,16 @@ fn machine_form(
             true,
             e,
         );
-        number(
-            ui,
-            &format!("Configuration H {}", row.tool_id),
-            &format!("{key}/H/{}", row.tool_id),
-            &mut h,
-            false,
-            e,
-        );
+        if m.length_compensation == LengthCompensation::ToolTable {
+            number(
+                ui,
+                &format!("Configuration H {}", row.tool_id),
+                &format!("{key}/H/{}", row.tool_id),
+                &mut h,
+                false,
+                e,
+            );
+        }
         if let Some(t) = t {
             if t.fract() == 0. && t > 0. && t <= u32::MAX as f64 {
                 row.tool_number = t as u32;
@@ -1001,6 +1062,41 @@ fn machine_form(
 impl App {
     fn library_machines(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Machine configurations");
+        text(ui, "New machine ID", &mut self.resources.new_machine_id);
+        let valid_id = cam_core::preview::valid_id(&self.resources.new_machine_id);
+        if !valid_id {
+            ui.small("Use letters, numbers, hyphens or underscores for the profile ID.");
+        }
+        if button(
+            ui,
+            "New machine profile",
+            valid_id && self.resources.draft.machines.len() < 100,
+        )
+        .clicked()
+        {
+            let requested = self.resources.new_machine_id.clone();
+            let id = if self
+                .resources
+                .draft
+                .machines
+                .iter()
+                .any(|m| m.id == requested)
+            {
+                unique(
+                    &requested,
+                    self.resources.draft.machines.iter().map(|m| m.id.clone()),
+                )
+            } else {
+                requested
+            };
+            self.resources.machine = id.clone();
+            self.resources
+                .draft
+                .machines
+                .push(crate::resources::new_machine(id));
+            self.resources.dirty = true;
+        }
+        ui.small("Create a profile, describe your machine's M6/tool-change behavior below, then Save library and Apply reviewed machine. Set each used tool's T/H mapping in the job's Machine panel.");
         ui.horizontal_wrapped(|ui| {
             for m in &self.resources.draft.machines {
                 let r = ui.selectable_value(&mut self.resources.machine, m.id.clone(), &m.id);
@@ -1043,6 +1139,9 @@ impl App {
         };
         let mut machine = self.resources.draft.machines[index].clone();
         machine_form(ui, &mut machine, &mut self.resources);
+        for error in crate::resources::machine_problems(&machine) {
+            ui.colored_label(Color32::DARK_RED, error);
+        }
         self.resources.machine = machine.id.clone();
         self.resources.draft.machines[index] = machine.clone();
         if button(ui, "Duplicate machine configuration", true).clicked() {
@@ -1113,6 +1212,7 @@ impl App {
         finish: bool,
     ) {
         let role = if finish { Role::Vbit } else { Role::Endmill };
+        self.assignment_library_picker(ui, ctx, role);
         let Some(doc) = &self.document else {
             return;
         };
@@ -1141,6 +1241,7 @@ impl App {
             .clicked()
             {
                 self.resources.role = role;
+                self.resources.machines_view = false;
                 self.resources.open = true;
                 if !self.resources.ready {
                     self.request_resources(ResourceIntent::Load, ctx);
@@ -1159,6 +1260,63 @@ impl App {
             {
                 self.resource_command(R::Reset { operation, role }, ctx);
             }
+        });
+    }
+    fn assignment_library_picker(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, role: Role) {
+        if !self.resources.picker_loaded {
+            self.resources.picker_loaded = true;
+            if !self.resources.ready && !self.resources.busy {
+                self.request_resources(ResourceIntent::Load, ctx);
+            }
+        }
+        let Some(catalog) = self.resources.base.as_ref().map(|s| s.snapshot.clone()) else {
+            ui.small(if self.resources.busy {
+                "Loading library tools…"
+            } else {
+                "No saved library tools yet. Open profiles below to add or import tools."
+            });
+            return;
+        };
+        let index = usize::from(role == Role::Vbit);
+        let prefix = if index == 1 { "Finish" } else { "Roughing" };
+        let operation = self.document.as_ref().unwrap().job.operations[0].id.clone();
+        ui.push_id(("assignment-library", &operation, index), |ui| {
+            help::label(ui, "From library");
+            let tools: Vec<_> = catalog.library.tools.iter().filter(|t| matches!((&t.geometry, role),
+                (LibraryGeometry::Endmill(_), Role::Endmill) | (LibraryGeometry::Vbit(_), Role::Vbit))).collect();
+            let selected = &mut self.resources.picker_tools[index];
+            let old = selected.clone();
+            let r = egui::ComboBox::from_id_salt("tool").selected_text(tools.iter().find(|t| t.id == *selected).map_or("Select tool…", |t| t.name.as_str()))
+                .show_ui(ui, |ui| { for t in &tools {
+                    let r = ui.selectable_value(selected, t.id.clone(), &t.name);
+                    observe_control(&format!("{prefix} library tool {}", t.id), r.rect);
+                } });
+            observe_control(&format!("{prefix} library tool"), r.response.rect);
+            if *selected != old { self.resources.picker_profiles[index].clear(); }
+            if let Some(tool) = tools.iter().find(|t| t.id == *selected) {
+                let preset = &mut self.resources.picker_profiles[index];
+                let r = egui::ComboBox::from_id_salt("profile").selected_text(tool.cutting_presets.iter().find(|p| p.id == *preset).map_or("Tool only (no profile)", |p| p.name.as_str()))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(preset, String::new(), "Tool only (no profile)");
+                        for p in &tool.cutting_presets {
+                            let r = ui.selectable_value(preset, p.id.clone(), &p.name);
+                            observe_control(&format!("{prefix} library profile {}", p.id), r.rect);
+                        }
+                    });
+                observe_control(&format!("{prefix} library profile"), r.response.rect);
+                let valid_profile = preset.is_empty() || tool.cutting_presets.iter().any(|p| p.id == *preset);
+                let apply = ui.add_enabled(valid_profile && self.active.is_none() && self.io.is_none(), egui::Button::new(if preset.is_empty() { "Use library tool" } else { "Apply tool & profile" }));
+                observe_control(&format!("Apply {prefix} library selection"), apply.rect);
+                if apply.clicked() {
+                    let action = if preset.is_empty() {
+                        R::SelectLibraryTool { catalog: catalog.clone(), tool: tool.id.clone(), operation: operation.clone(), role }
+                    } else {
+                        R::ApplyToolProfile { catalog: catalog.clone(), tool: tool.id.clone(), preset: preset.clone(), operation: operation.clone(), role }
+                    };
+                    self.resource_command(action, ctx);
+                }
+            }
+            if self.resources.dirty { ui.small("Selections use the saved library revision. Save library edits to use the new values."); }
         });
     }
     pub(super) fn applied_machine_options(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -1226,12 +1384,29 @@ impl App {
             });
         }
         if machine != before {
-            self.edit_job(ctx, &[36], |job| {
-                job.machine_configuration = Some(machine);
-                Ok(())
-            });
+            let compensation_changed = machine.length_compensation != before.length_compensation;
+            if compensation_changed
+                && machine.length_compensation == Some(LengthCompensation::MacroManaged)
+            {
+                for row in &mut machine.tools {
+                    row.length_offset_number = None;
+                }
+            }
+            self.edit_job(
+                ctx,
+                if compensation_changed {
+                    &[33, 39, 36]
+                } else {
+                    &[36]
+                },
+                |job| {
+                    job.machine_configuration = Some(machine);
+                    Ok(())
+                },
+            );
         }
         if button(ui, "Reusable machine settings", true).clicked() {
+            self.resources.machines_view = true;
             self.resources.open = true;
             if !self.resources.ready {
                 self.request_resources(ResourceIntent::Load, ctx);
@@ -1243,6 +1418,56 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn combined_library_action_fills_blank_geometry_capabilities_direction_and_raw_fields_atomically()
+     {
+        let ctx = egui::Context::default();
+        let mut a = app();
+        let d = a.document.as_mut().unwrap();
+        d.job.tools[0].geometry = None;
+        d.job.tools[0].capabilities.plunge_capable = None;
+        assert!(d.edit(12, String::new()).is_err());
+        assert!(d.edit(13, String::new()).is_err());
+        let before = d.job.clone();
+        let mut library = catalog();
+        library.library.tools[0].spindle_direction =
+            Some(cam_core::project::SpindleDirection::Counterclockwise);
+        let action = R::ApplyToolProfile {
+            catalog: library,
+            tool: "endmill".into(),
+            preset: "rough".into(),
+            operation: "carving".into(),
+            role: Role::Endmill,
+        };
+        a.active = Some((1, a.revision));
+        let result = engine::execute(
+            &mut cam_service::retained::Retained::new(),
+            Command::Resource {
+                job: before.to_json().unwrap(),
+                action: Box::new(action),
+            },
+        );
+        a.accept(1, result, &ctx);
+        let d = a.document.as_ref().unwrap();
+        assert_eq!(d.text(12), "2.5");
+        assert_eq!(d.text(13), "15");
+        let t = crate::authoring::tool(&d.job, false).unwrap();
+        assert_eq!(t.capabilities.plunge_capable, Some(true));
+        assert_eq!(t.capabilities.ramp_capable, Some(true));
+        assert_eq!(
+            engine::settings(&d.job).endmill.spindle_direction,
+            Some(cam_core::project::SpindleDirection::Counterclockwise)
+        );
+        assert_eq!(d.text(2), "1200");
+        assert_eq!(
+            engine::settings(&d.job).vbit,
+            engine::settings(&before).vbit
+        );
+        assert_eq!(a.undo.len(), 1);
+        a.undo(&ctx);
+        assert_eq!(a.document.as_ref().unwrap().job, before);
+        assert_eq!(a.document.as_ref().unwrap().text(12), "");
+    }
     fn app() -> App {
         App {
             document: Some(Document::new(

@@ -6,7 +6,8 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
         let field = FIELDS.iter().position(|f| *f == label)?;
         let tab = match field {
             26..=29 => 0,
-            6 | 7 | 23 | 25 | 30 | 31 | 40..=45 => 1,
+            6 | 7 | 30 | 31 | 40..=45 => 1,
+            23 | 25 => 7,
             32 | 33 | 38 | 39 => 3,
             _ => 2,
         };
@@ -54,7 +55,9 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
         "vbit.tool_id" => return Some((2, "V-bit assignment tool".into())),
         _ => return None,
     };
-    let tab = if matches!(field, 6 | 7 | 23 | 25 | 30) {
+    let tab = if matches!(field, 23 | 25) {
+        7
+    } else if matches!(field, 6 | 7 | 30) {
         1
     } else {
         2

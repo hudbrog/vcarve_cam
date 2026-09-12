@@ -11,6 +11,90 @@ use cam_gui_runtime::{
 use cam_service::retained::Retained;
 const JOB: &str = include_str!("../../../fixtures/gui4/lettering.job.json");
 const LIBRARY: &str = include_str!("../../../fixtures/gui5/library.json");
+
+#[test]
+fn page_stock_respects_physical_units_and_placement_without_changing_z_or_assignments() {
+    let mut job = authoring::import_svg(
+        "inch.svg".into(),
+        include_str!("../../../fixtures/gui2/new-carving.svg").into(),
+    )
+    .unwrap();
+    let rect = job.setup.stock.xy.as_ref().unwrap();
+    assert!((rect.width_mm - 50.8).abs() < 1e-9);
+    assert!((rect.length_mm - 25.4).abs() < 1e-9);
+    job.artwork[0].placement.origin_mm = cam_core::geometry::Point { x: 2., y: 3. };
+    job.artwork[0].placement.rotation_deg = 90.;
+    job.artwork[0].placement.scale = 2.;
+    job.setup.stock.thickness_mm = Some(22.);
+    let action = R::StockPage {
+        item: job.artwork[0].id.clone(),
+    };
+    assert_eq!(action.clear_fields(&job), vec![40, 41, 42, 43]);
+    let captured = action.execute(&job).unwrap();
+    let rect = captured.setup.stock.xy.as_ref().unwrap();
+    for (actual, expected) in [
+        (rect.min_x_mm, -44.8),
+        (rect.min_y_mm, -4.),
+        (rect.width_mm, 50.8),
+        (rect.length_mm, 101.6),
+    ] {
+        assert!((actual - expected).abs() < 1e-8, "{actual} != {expected}");
+    }
+    assert_eq!(captured.setup.stock.thickness_mm, Some(22.));
+    assert_eq!(captured.setup.work_zero, job.setup.work_zero);
+    assert_eq!(captured.operations, job.operations);
+}
+
+#[test]
+fn direct_library_tool_selection_copies_geometry_and_clears_only_changed_assignment() {
+    let before = job();
+    let action = R::SelectLibraryTool {
+        catalog: catalog(),
+        tool: "endmill".into(),
+        operation: "carving".into(),
+        role: Role::Endmill,
+    };
+    assert!(action.clear_fields(&before).contains(&2));
+    let after = action.clone().execute(&before).unwrap();
+    assert_ne!(
+        session::settings(&after).endmill.tool_id,
+        session::settings(&before).endmill.tool_id
+    );
+    assert_eq!(
+        session::settings(&after).vbit,
+        session::settings(&before).vbit
+    );
+    assert!(
+        session::settings(&after)
+            .endmill
+            .cutting_feed_mm_min
+            .is_none()
+    );
+    assert!(action.clear_fields(&after).is_empty());
+    assert_eq!(action.execute(&after).unwrap(), after);
+}
+
+#[test]
+fn new_machine_requires_real_contract_details_but_can_be_completed_saved_and_applied() {
+    let mut machine = cam_gui_runtime::resources::new_machine("my-router".into());
+    assert!(machine.validate_shape().is_err());
+    let problems = cam_gui_runtime::resources::machine_problems(&machine);
+    assert_eq!(problems.len(), 5, "{problems:?}");
+    assert!(problems[0].contains("notes/reference"));
+    assert!(machine.tools.is_empty());
+    machine.m6 = catalog().machines[0].m6.clone();
+    machine.validate_shape().unwrap();
+    assert!(cam_gui_runtime::resources::machine_problems(&machine).is_empty());
+    let mut library = Catalog::empty("machines".into());
+    library.machines.push(machine.clone());
+    let saved = StoredCatalog::next(None, library).unwrap();
+    saved.validate().unwrap();
+    let applied = R::Machine { profile: machine }.execute(&job()).unwrap();
+    assert_eq!(
+        applied.machine_configuration.unwrap().origin.name,
+        "my-router"
+    );
+}
 fn job() -> v5::CamJobV5 {
     session::open(JOB).unwrap()
 }

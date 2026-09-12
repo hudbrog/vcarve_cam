@@ -7,7 +7,7 @@ pub const MAX_BYTES: usize = 9_000_000;
 pub struct Workspace {
     pub inspector: usize,
     pub inspector_width: f32,
-    pub scroll: [f32; 7],
+    pub scroll: [f32; 8],
     pub search: String,
     pub simulate: bool,
     pub view: crate::viewport::ViewSettings,
@@ -27,7 +27,7 @@ impl Default for Workspace {
         Self {
             inspector: 2,
             inspector_width: 325.,
-            scroll: [0.; 7],
+            scroll: [0.; 8],
             search: String::new(),
             simulate: false,
             view: Default::default(),
@@ -42,7 +42,7 @@ impl Default for Workspace {
 }
 impl Workspace {
     pub fn validate(&self) -> Result<(), String> {
-        if self.inspector > 6
+        if self.inspector > 7
             || self
                 .hidden_artwork
                 .iter()

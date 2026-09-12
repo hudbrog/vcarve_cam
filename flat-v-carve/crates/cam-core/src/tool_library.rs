@@ -189,6 +189,9 @@ impl KnifeCuttingPreset {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LibraryTool {
+    /// Preferred milling spindle direction, copied explicitly into job assignments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spindle_direction: Option<crate::project::SpindleDirection>,
     pub id: String,
     pub name: String,
     pub geometry: LibraryGeometry,
@@ -219,6 +222,7 @@ impl LibraryTool {
     pub fn from_settings(id: String, name: String, settings: &ToolSettings) -> Result<Self> {
         settings.validate()?;
         let tool = Self {
+            spindle_direction: None,
             id,
             name,
             geometry: settings

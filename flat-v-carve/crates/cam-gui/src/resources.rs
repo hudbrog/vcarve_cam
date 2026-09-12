@@ -13,6 +13,71 @@ use std::collections::BTreeSet;
 
 pub const MAX_BYTES: usize = 8_000_000;
 
+/// Explain missing machine guarantees without relaxing the checked-output contract.
+pub fn machine_problems(machine: &SequenceProfile) -> Vec<String> {
+    let mut issues = Vec::new();
+    let m = &machine.m6;
+    for (missing, message) in [
+        (
+            m.reference.trim().is_empty(),
+            "Add tool-change notes/reference: a manual section, macro revision, or verified procedure.",
+        ),
+        (
+            !m.reviewed,
+            "Review the tool-change procedure and confirm Contract reviewed.",
+        ),
+        (
+            !m.preserves_work_datum,
+            "Confirm the same work zero is preserved without rotation after changing the tool.",
+        ),
+        (
+            !m.local_offsets_unused,
+            "Confirm the procedure leaves G52/G92 local coordinate shifts unused.",
+        ),
+        (
+            !m.tool_offsets_z_only,
+            "Confirm tool compensation changes Z only, with no X/Y offsets.",
+        ),
+    ] {
+        if missing {
+            issues.push(message.into());
+        }
+    }
+    if let Err(error) = machine.validate_shape() {
+        let message = error.to_string();
+        if issues.is_empty() || !message.starts_with("POST_M6_CONTRACT") {
+            issues.push(message);
+        }
+    }
+    issues
+}
+
+/// A new editable configuration, with no invented machine-specific M6 claims.
+pub fn new_machine(id: String) -> SequenceProfile {
+    use cam_core::post::{Coolant, LengthCompensation, M6Contract, M6Return, PathControl};
+    SequenceProfile {
+        schema_version: 2,
+        id,
+        work_offset: "G54".into(),
+        clearance_z_mm: 5.,
+        decimal_places: 3,
+        program_start_position_mm: None,
+        length_compensation: LengthCompensation::ToolTable,
+        path_control: PathControl::ExactPath,
+        tools: vec![],
+        spindle_spinup_seconds: 1.,
+        coolant: Coolant::Off,
+        m6: M6Contract {
+            reference: String::new(),
+            reviewed: false,
+            return_position: M6Return::CallerPosition,
+            preserves_work_datum: false,
+            local_offsets_unused: false,
+            tool_offsets_z_only: false,
+        },
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Catalog {
@@ -40,7 +105,10 @@ impl Catalog {
         }
         let mut ids = BTreeSet::new();
         for machine in &self.machines {
-            machine.validate_shape().map_err(|e| e.to_string())?;
+            let problems = machine_problems(machine);
+            if !problems.is_empty() {
+                return Err(format!("Machine {}: {}", machine.id, problems.join("\n")));
+            }
             if !ids.insert(&machine.id) {
                 return Err("Duplicate machine configuration ID".into());
             }
@@ -90,6 +158,22 @@ impl StoredCatalog {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ResourceCommand {
+    ApplyToolProfile {
+        catalog: Catalog,
+        tool: String,
+        preset: String,
+        operation: String,
+        role: AssignmentRole,
+    },
+    StockPage {
+        item: v5::ArtworkItemId,
+    },
+    SelectLibraryTool {
+        catalog: Catalog,
+        tool: String,
+        operation: String,
+        role: AssignmentRole,
+    },
     AddTool {
         catalog: Catalog,
         tool: String,
@@ -124,6 +208,32 @@ pub enum ResourceCommand {
 }
 impl ResourceCommand {
     pub fn clear_fields(&self, job: &CamJobV5) -> Vec<usize> {
+        if let Self::ApplyToolProfile { role, .. } = self {
+            return match role {
+                AssignmentRole::Endmill => vec![2, 8, 9, 10, 11, 12, 13, 32, 33],
+                AssignmentRole::Vbit => vec![3, 20, 21, 22, 46, 16, 17, 18, 19, 38, 39],
+                _ => vec![],
+            };
+        }
+        if matches!(self, Self::StockPage { .. }) {
+            return vec![40, 41, 42, 43];
+        }
+        if let Self::SelectLibraryTool {
+            catalog,
+            tool,
+            operation,
+            role,
+        } = self
+            && let Ok((added, id)) =
+                core::add_library_tool(job, &catalog.library, &catalog.id, tool)
+        {
+            return Self::UseTool {
+                operation: operation.clone(),
+                role: *role,
+                tool: id,
+            }
+            .clear_fields(&added.job);
+        }
         if let Self::UseTool {
             operation,
             role,
@@ -175,6 +285,69 @@ impl ResourceCommand {
     }
     pub fn execute(self, job: &CamJobV5) -> Result<CamJobV5, String> {
         let result = match self {
+            Self::ApplyToolProfile {
+                catalog,
+                tool,
+                preset,
+                operation,
+                role,
+            } => {
+                let selected = Self::SelectLibraryTool {
+                    catalog: catalog.clone(),
+                    tool: tool.clone(),
+                    operation: operation.clone(),
+                    role,
+                }
+                .execute(job)?;
+                return Self::Apply {
+                    catalog,
+                    tool,
+                    preset,
+                    operation,
+                    role,
+                }
+                .execute(&selected);
+            }
+            Self::StockPage { item } => {
+                let source = job
+                    .artwork
+                    .iter()
+                    .find(|a| a.id == item)
+                    .ok_or("Artwork no longer exists")?;
+                let mut candidate = job.clone();
+                candidate.setup.stock.xy = Some(crate::authoring::svg_page_stock(source)?);
+                candidate.validate_structure().map_err(|e| e.to_string())?;
+                return Ok(candidate);
+            }
+            Self::SelectLibraryTool {
+                catalog,
+                tool,
+                operation,
+                role,
+            } => {
+                catalog.validate()?;
+                let (added, id) = core::add_library_tool(job, &catalog.library, &catalog.id, &tool)
+                    .map_err(|e| e.to_string())?;
+                let mut selected = core::use_job_tool(&added.job, &operation, role, &id)
+                    .map_err(|e| e.to_string())?
+                    .job;
+                if let Some(direction) = catalog
+                    .library
+                    .tool(&tool)
+                    .map_err(|e| e.to_string())?
+                    .spindle_direction
+                {
+                    let settings = crate::authoring::settings_mut(&mut selected);
+                    match role {
+                        AssignmentRole::Endmill => {
+                            settings.endmill.spindle_direction = Some(direction)
+                        }
+                        AssignmentRole::Vbit => settings.vbit.spindle_direction = Some(direction),
+                        _ => return Err("Unsupported milling assignment".into()),
+                    }
+                }
+                return Ok(selected);
+            }
             Self::AddTool { catalog, tool } => {
                 catalog.validate()?;
                 core::add_library_tool(job, &catalog.library, &catalog.id, &tool).map(|v| v.0)
@@ -260,6 +433,7 @@ pub fn capture_tool(tool: &v5::JobToolV5, id: String, name: String) -> Result<Li
         ToolGeometry::DragKnife(g) => LibraryGeometry::DragKnife(g),
     };
     let result = LibraryTool {
+        spindle_direction: None,
         id,
         name,
         geometry,
@@ -300,6 +474,11 @@ pub fn capture_assignment(
 
 /// Editing state is deliberately outside Document and job Undo/recovery.
 pub struct Editor {
+    pub new_machine_id: String,
+    pub machines_view: bool,
+    pub picker_loaded: bool,
+    pub picker_tools: [String; 2],
+    pub picker_profiles: [String; 2],
     pub open: bool,
     pub jobs_open: bool,
     pub base: Option<StoredCatalog>,
@@ -338,6 +517,11 @@ impl Default for Editor {
             (js_sys::Math::random() * 1e15) as u64
         );
         Self {
+            new_machine_id: "my-machine".into(),
+            machines_view: false,
+            picker_loaded: false,
+            picker_tools: Default::default(),
+            picker_profiles: Default::default(),
             open: false,
             jobs_open: false,
             base: None,

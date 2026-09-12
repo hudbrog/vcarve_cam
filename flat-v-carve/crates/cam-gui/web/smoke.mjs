@@ -107,12 +107,12 @@ const control = async label => {
   for(let attempt=0;attempt<12;attempt++) {
     const current=await state(); const rect=current.controls?.[label];
     if(!rect)throw new Error(`Missing control ${label}`);
-    const nav=label.startsWith('Artwork ') || ['Setup','Machine','Artwork','Cutting','Inspect result','Endmill tool','V-bit tool','+ Import artwork','Tool library','Job tools'].includes(label);
+    const nav=label.startsWith('Artwork ') || ['Setup','Machine','Job settings','Artwork','Cutting','Inspect result','Endmill tool','V-bit tool','+ Import artwork','Tool library','Job tools'].includes(label);
     const resource=!nav&&current.resources?.open,jobTools=!nav&&current.resources?.jobsOpen;
     const clip=current.controls?.[nav?'Navigator viewport':resource?'Resource viewport':jobTools?'Job tools viewport':'Inspector viewport'];
     const bottom=clip?.[3]??await evaluate('innerHeight-65');
     const top=clip?.[1]??150;
-    if(rect[1]>=top && rect[3]<=bottom || !nav && !resource && !jobTools && rect[0]<(clip?.[0]??850) || ['Close library','Load library','Save library','Compare stored revision','Reload stored library','Overwrite reviewed revision','Import library','Export library','Import machine configuration','Close job tools','Roughing assignment','Finishing assignment','Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
+    if(rect[1]>=top && rect[3]<=bottom || !nav && !resource && !jobTools && rect[0]<(clip?.[0]??850) || ['Tools & profiles','Machines','Close library','Load library','Save library','Compare stored revision','Reload stored library','Overwrite reviewed revision','Import library','Export library','Import machine configuration','Close job tools','Roughing assignment','Finishing assignment','Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
       await click((rect[0]+rect[2])/2,(rect[1]+rect[3])/2); await sleep(120);return;
     }
     const x=nav?100:clip?(clip[0]+clip[2])/2:1100,y=(top+bottom)/2;

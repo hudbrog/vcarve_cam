@@ -303,6 +303,7 @@ impl App {
                     ui.strong("SETUP");
                     self.nav_item(ui, "Stock & work zero", "Setup", 1);
                     self.nav_item(ui, "Machine", "Machine", 3);
+                    self.nav_item(ui, "Job settings", "Job settings", 7);
                     if button(ui, "Tool library", true).clicked() {
                         self.resources.open = true;
                         if !self.resources.ready {

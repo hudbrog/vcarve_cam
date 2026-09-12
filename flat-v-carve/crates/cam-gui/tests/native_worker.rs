@@ -181,7 +181,9 @@ fn persistent_native_process_open_edit_generate_seek_prepare_save_reopen_and_sto
         svg: include_str!("../../../fixtures/gui2/new-carving.svg").into(),
     });
     let incomplete = gui::open(&imported.job).unwrap();
-    assert!(incomplete.setup.stock.thickness_mm.is_none());
+    assert_eq!(incomplete.setup.stock.thickness_mm, Some(18.));
+    assert_eq!(incomplete.setup.clearance_above_stock_mm, Some(5.));
+    assert!(incomplete.setup.stock.xy.is_some());
     assert!(gui::settings(&incomplete).components.is_empty());
     let (preview, _) = worker.request(Command::Preview {
         job: imported.job.clone(),

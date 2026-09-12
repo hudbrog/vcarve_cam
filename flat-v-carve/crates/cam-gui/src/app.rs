@@ -12,6 +12,8 @@ use crate::{
 use cam_core::project::v5::{CamJobV5, OperationSettingsV5};
 use egui::{Color32, RichText};
 use serde_json::{Value, json};
+#[path = "help.rs"]
+mod help;
 #[path = "inspector.rs"]
 mod inspector;
 #[path = "issues.rs"]
@@ -261,7 +263,7 @@ pub struct App {
     inspector_tab: usize,
     preview_dirty: bool,
     inspector_width: f32,
-    scroll: [f32; 7],
+    scroll: [f32; 8],
     simulate: bool,
     last_workspace: Option<crate::recovery::Workspace>,
     plan_fingerprint: Option<String>,
@@ -323,7 +325,7 @@ impl Default for App {
             inspector_tab: 2,
             preview_dirty: false,
             inspector_width: 325.,
-            scroll: [0.; 7],
+            scroll: [0.; 8],
             simulate: false,
             last_workspace: None,
             plan_fingerprint: None,
@@ -665,7 +667,7 @@ impl App {
                     self.view.artwork.hidden.clear();
                     self.view.artwork.locked.clear();
                     self.search.clear();
-                    self.scroll = [0.; 7];
+                    self.scroll = [0.; 8];
                     self.simulate = false;
                     self.plan_fingerprint = None;
                     self.resume_view = None;

@@ -1109,6 +1109,7 @@ fn knife_library() -> Value {
     use cam_core::tool_library::{KnifeCuttingPreset, LibraryGeometry, LibraryTool, ToolLibrary};
     let library = ToolLibrary {
         tools: vec![LibraryTool {
+            spindle_direction: None,
             id: "blade".into(),
             name: "Drag knife".into(),
             geometry: LibraryGeometry::DragKnife(DragKnifeSpec {
