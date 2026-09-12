@@ -4,7 +4,7 @@
 //! once per loop, full-retract heading retention, depth/swivel resolution,
 //! and the independent replay as the tip-error gate.
 use cam_core::{
-    checks::{CheckStatus, check_plan},
+    checks::{CheckStatus, check_plan, check_plan_v5},
     contours::ContourCatalogue,
     geometry::Point,
     job::{PlanningTolerances, SourceSnapshot},
@@ -18,8 +18,11 @@ use cam_core::{
         CamJob, ContourAnchor, DragKnifeSettings, DragKnifeSpec, HeightRef, HeightReference,
         JobTool, KnifeAlignment, KnifeAssignment, Operation, OperationSettings, SetupSettings,
         StartSelection, StockSetup, ToolCapabilities, ToolGeometry,
+        v5::{CamJobV5, ReadinessScope},
     },
-    sequence::{GenerationStatus, OperationPlan, PlanLimits, StageRole, TrustedPlan},
+    sequence::{
+        GenerationStatus, OperationPlan, OperationPlanV5, PlanLimits, StageRole, TrustedPlan,
+    },
     svg::{ImportMode, ImportOptions, Placement},
     toolpath::{MotionEffect, MotionPurpose, PlannedMotion, knife_tip},
 };
@@ -69,6 +72,13 @@ fn knife_settings(chains: &[&str]) -> DragKnifeSettings {
 }
 
 fn job(svg_body: &str, settings: DragKnifeSettings) -> CamJob {
+    job_with_offset(svg_body, settings, 1.)
+}
+
+/// The same fixture with an explicit blade offset. Every review fixture used
+/// exactly 1 mm until the real tracing job in `fixtures/knife` showed that
+/// the holder standoff at the entry was not scaled by the tool at all.
+fn job_with_offset(svg_body: &str, settings: DragKnifeSettings, blade_offset_mm: f64) -> CamJob {
     let job = CamJob {
         schema_version: 4,
         name: "knife-geometry".into(),
@@ -99,7 +109,7 @@ fn job(svg_body: &str, settings: DragKnifeSettings) -> CamJob {
             id: KNIFE.into(),
             name: "drag knife".into(),
             geometry: Some(ToolGeometry::DragKnife(DragKnifeSpec {
-                blade_offset_mm: 1.,
+                blade_offset_mm,
                 max_cut_depth_mm: 3.,
             })),
             capabilities: ToolCapabilities::default(),
@@ -121,11 +131,23 @@ fn job(svg_body: &str, settings: DragKnifeSettings) -> CamJob {
 }
 
 fn complete_plan(svg_body: &str, settings: DragKnifeSettings) -> OperationPlan {
-    let plan = OperationPlan::plan_job(&job(svg_body, settings), &PlanLimits::default()).unwrap();
+    complete_plan_with_offset(svg_body, settings, 1.)
+}
+
+fn complete_plan_with_offset(
+    svg_body: &str,
+    settings: DragKnifeSettings,
+    blade_offset_mm: f64,
+) -> OperationPlan {
+    let plan = OperationPlan::plan_job(
+        &job_with_offset(svg_body, settings, blade_offset_mm),
+        &PlanLimits::default(),
+    )
+    .unwrap();
     assert_eq!(
         plan.operation_results[0].generation_status,
         GenerationStatus::Complete,
-        "knife operation plans completely: {:?}",
+        "knife operation with a {blade_offset_mm} mm blade offset plans completely: {:?}",
         plan.generation_diagnostics
     );
     let checks = check_plan(&plan).unwrap();
@@ -350,6 +372,104 @@ fn concave_right_turn_swivels_clockwise_around_the_corner() {
             "each chord turns 7.5 degrees clockwise: {start} -> {end}"
         );
     }
+}
+
+#[test]
+fn blade_offset_scales_the_entry_tip_and_the_first_cut_pivot() {
+    // The importer keeps the near-degenerate lead a tracing tool leaves
+    // behind (the real `fixtures/knife` outline opens with a 0.0036 mm
+    // segment). A fixed 1 mm standoff planted the tip `1 - offset` mm along
+    // the chain, so the replay rejected the plan: the tip of the first cut
+    // sat past the end of that lead segment.
+    const SHORT_LEAD: &str = r##"<path id="cut" fill="none" stroke="#000" stroke-width="0.4" d="M5 15 L5.1 15 L15 15 L15 5"/>"##;
+    for offset in [0.25, 0.5, 0.75, 1., 1.5] {
+        let plan = complete_plan_with_offset(SHORT_LEAD, knife_settings(&["cut-chain-0"]), offset);
+        let motions = knife_motions(&plan);
+        // The blade enters in contact: the planted tip is the chain's first
+        // vertex whatever the offset is.
+        let entry = motions
+            .iter()
+            .find(|m| m.purpose == MotionPurpose::Entry && m.effect == MotionEffect::KnifeTrace)
+            .expect("the entry descends with the blade in contact");
+        let heading = entry.blade_heading_deg.unwrap().0;
+        let tip = knife_tip(entry.start.xy(), heading, offset);
+        assert!(
+            close(tip.x, 5., 1e-9) && close(tip.y, 15., 1e-9),
+            "{offset} mm blade offset: the tip plants on the chain start, not {tip:?}"
+        );
+        // The holder leads the planted tip by exactly one blade offset along
+        // the opening tangent (here +X), and the corner swivel still rides
+        // the offset arc around (15,15).
+        let first_cut = motions
+            .iter()
+            .find(|m| m.purpose == MotionPurpose::KnifeCut)
+            .expect("the lead segment is cut");
+        assert!(
+            close(first_cut.start.x, 5. + offset, 1e-9) && close(first_cut.start.y, 15., 1e-9),
+            "{offset} mm blade offset: the first cut pivots one offset ahead of the tip, not ({}, {})",
+            first_cut.start.x,
+            first_cut.start.y
+        );
+        let swivel: Vec<&PlannedMotion> = motions
+            .iter()
+            .filter(|m| m.purpose == MotionPurpose::KnifeSwivel)
+            .collect();
+        assert!(
+            close(swivel[0].start.x, 15. + offset, 1e-9) && close(swivel[0].start.y, 15., 1e-9),
+            "{offset} mm blade offset: the corner swivel starts at the incoming holder endpoint"
+        );
+        let last = swivel.last().unwrap();
+        assert!(
+            close(last.end.x, 15., 1e-9) && close(last.end.y, 15. + offset, 1e-9),
+            "{offset} mm blade offset: the corner swivel ends at the outgoing holder endpoint"
+        );
+    }
+}
+
+/// One traced outline of the real job that reported the offset defect:
+/// `real_data/knife`'s `outline-1` with its 0.25 mm Roland blade, trimmed to
+/// that single chain by `fixtures/knife/real-outline-0.25.job.json`. The
+/// trace opens with a 0.0036 mm segment, so the fixed 1 mm standoff planted
+/// the tip past the end of that segment, the replay gate rejected the plan
+/// and the collection pipeline published no motions at all.
+#[test]
+fn real_traced_outline_plans_with_a_quarter_millimetre_blade() {
+    let job = CamJobV5::from_json(include_str!(
+        "../../../fixtures/knife/real-outline-0.25.job.json"
+    ))
+    .unwrap();
+    let plan =
+        OperationPlanV5::plan_job_v5(&job, &ReadinessScope::AllEnabled, &PlanLimits::default())
+            .unwrap();
+    assert_eq!(
+        plan.operation_results[0].generation_status,
+        GenerationStatus::Complete,
+        "{:?}",
+        plan.generation_diagnostics
+    );
+    assert_eq!(check_plan_v5(&plan).unwrap().status, CheckStatus::Passed);
+    assert!(plan.motions.len() > 100, "the outline is really cut");
+    // Page (28.4835, 96.4051) at 210x297 flips to setup (28.4835, 200.5949).
+    let start = Point::new(28.4835, 200.5949);
+    let entry = plan
+        .motions
+        .iter()
+        .find(|m| m.purpose == MotionPurpose::Entry && m.effect == MotionEffect::KnifeTrace)
+        .expect("the entry descends with the blade in contact");
+    let tip = knife_tip(entry.start.xy(), entry.blade_heading_deg.unwrap().0, 0.25);
+    assert!(
+        tip.distance(start) < 1e-6,
+        "the 0.25 mm blade plants its tip on the chain start {start:?}, not {tip:?}"
+    );
+    let first_cut = plan
+        .motions
+        .iter()
+        .find(|m| m.purpose == MotionPurpose::KnifeCut)
+        .expect("the traced outline is cut");
+    assert!(
+        close(first_cut.start.xy().distance(start), 0.25, 1e-9),
+        "the first cut pivot leads the planted tip by one blade offset"
+    );
 }
 
 #[test]

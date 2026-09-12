@@ -306,12 +306,15 @@ fn tip_polyline(
 /// Analyze one chain into compensated path elements. Every turn becomes a
 /// swivel arc in the geometry; whether it executes as an explicit
 /// depth-lifted swivel or a continuous cutting arc is decided at emission
-/// from the corner threshold. Near-reversal turns are rejected here.
+/// from the corner threshold. The holder leads the first tip vertex by one
+/// blade offset along the opening tangent, so the offset is a parameter
+/// here, never a fixed standoff. Near-reversal turns are rejected here.
 fn build_path(
     chain_id: &str,
     vertices: &[Point],
     closed: bool,
     overlap_mm: f64,
+    blade_offset_mm: f64,
 ) -> Result<KnifePath> {
     let tip = tip_polyline(vertices, closed, overlap_mm, chain_id)?;
     let mut elements = vec![];
@@ -384,7 +387,10 @@ fn build_path(
     Ok(KnifePath {
         chain_id: chain_id.into(),
         elements,
-        start_pivot: Point::new(first_from.x + first_t.x, first_from.y + first_t.y),
+        start_pivot: Point::new(
+            first_from.x + blade_offset_mm * first_t.x,
+            first_from.y + blade_offset_mm * first_t.y,
+        ),
         first_heading: angle_of(Point::new(-first_t.x, -first_t.y)),
     })
 }
@@ -992,7 +998,7 @@ pub(crate) fn plan(
                 operation_id,
             )]));
         }
-        match build_path(&chain.id, &vertices, chain.closed, overlap) {
+        match build_path(&chain.id, &vertices, chain.closed, overlap, d) {
             Ok(path) => paths.push(path),
             Err(diag) => {
                 return Ok(incomplete(vec![issue(
