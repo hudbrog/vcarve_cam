@@ -345,9 +345,11 @@ these tests.
   `e6723d78efab93e7a863277ef005f9c00288c75f7121667c9910484e055e8297`), served
   by `artifacts/gui8/review/serve-package.mjs`; offline bundle
   `0ba368a67d8a4da83db983f144da664f4b283af21c0eabdbad1c5b2bc88c5e22`.
-- `artifacts/gui8/review/manifest.json` records the source-tree hash (286
-  source inputs) and both package identities. The slice was uncommitted while
-  the packages were built, so the manifest identifies the actual files.
+- `artifacts/gui8/review/manifest.json` records the per-file SHA-256 of every
+  source input it was built from (287 files, including these review documents,
+  so editing a document shifts that tree hash), the repository `head`, and both
+  package identities. The packages were built from exactly the committed
+  source content at `ac29c4b`; only the review documents changed afterwards.
 
 ### Implementing agent's end-to-end browser run
 
