@@ -13,6 +13,8 @@ import { computationDefaults, defaultVbitComputation, defaultTolerances } from '
 import { materialize, newDraft } from '../src/state/draft';
 import { missingPlanningSettings } from '../src/state/setupNeeds';
 import { applyLibraryToolToDraft, resolveDraftLibraryTool } from '../src/state/library';
+import { jobSchema } from '../src/contracts/job';
+import { toolLibrarySchema } from '../src/contracts/library';
 
 // Runs the actual Rust server and the same-engine CLI; no fixture HTTP responses.
 const workspace = fileURLToPath(new URL('../../', import.meta.url));
@@ -129,7 +131,12 @@ describe('persistent tool library and CLI parity', () => {
     expect(tool.geometry).toEqual(source.job.tools[1].geometry);
     const exported = `${output}/library-${crypto.randomUUID()}.json`;
     runCli(['tool-library','export',libraryDirectory,'--output',exported]);
-    expect(JSON.parse(readFileSync(exported,'utf8'))).toEqual(captured.data.library);
+    // The CLI writes the canonical Rust form, where an unset optional field is
+    // absent; the service returns the same record already normalized by the
+    // portable schema (unset optionals become null). Compare through the schema
+    // so the parity check is about content, not about which spelling of "unset"
+    // each producer happens to emit.
+    expect(toolLibrarySchema.parse(JSON.parse(readFileSync(exported,'utf8')))).toEqual(captured.data.library);
     const selection={...source,expectedRevision:1,slot:'endmill' as const,toolId:'test-mill',presetId:null};
     const candidate = await service.applyLibraryTool!(connection,selection);
     const draftSelection={connection,expectedRevision:1,draftRevision:12,slot:'endmill' as const,jobToolId:source.job.tools[1].id,toolId:tool.id,presetId:null};
@@ -140,7 +147,7 @@ describe('persistent tool library and CLI parity', () => {
     const jobPath=`${output}/library-source.job.json`; writeFileSync(jobPath,JSON.stringify(source.job));
     const appliedPath=`${output}/library-applied-${crypto.randomUUID()}.job.json`;
     runCli(['tool-library','apply',libraryDirectory,'--expected-revision','1','--job',jobPath,'--slot','endmill','--tool','test-mill','--output',appliedPath]);
-    expect(JSON.parse(readFileSync(appliedPath,'utf8'))).toEqual(candidate.data.job);
+    expect(jobSchema.parse(JSON.parse(readFileSync(appliedPath,'utf8')))).toEqual(candidate.data.job);
     const withPreset=await service.applyLibraryTool!(connection,{...selection,presetId:'test-preset'});
     expect(withPreset.data.job).toEqual(source.job);
     expect(resolveDraftLibraryTool(captured,{...draftSelection,presetId:'test-preset'}).settings).toEqual(withPreset.data.job.tools[1]);

@@ -20,24 +20,36 @@ choose a successful run, and download the `flat-v-carve-windows-x64` artifact.
 Extract `cam.exe` and run `cam.exe serve --open`, or use any CLI command. Each
 artifact includes `SHA256SUMS` and is retained for 30 days.
 
-CI uses the pinned Rust toolchain and pnpm version, Node.js 24, and frozen
-dependency lockfiles. It checks formatting, Clippy, Rust tests, frontend tests
-and contracts, then exercises CLI and HTTP behavior using the packaged EXE
-with its embedded UI. The build runs on a fresh Windows x64 runner.
+CI uses the pinned Rust toolchain and Node.js 24 (for the browser GUI build).
+It checks formatting, Clippy, and Rust tests, then builds the native GUI, the
+browser GUI, and the portable command-line EXE. The deprecated React workspace
+UI (`web/`) is no longer built or tested. The build runs on a fresh Windows x64
+runner.
 
-Build one executable containing the CLI, local HTTP service, compute-worker mode,
-and production browser assets:
+The test step runs `scripts/run-tests-parallel.ps1`, which executes the compiled
+test binaries with a worker pool instead of one after another: the workspace has
+68 binaries whose durations sum to roughly 50s while the longest single binary is
+about 12s, so the pool cuts the step from ~50s to ~20s on a 16-thread machine and
+from ~70s to ~50s on a 4-core runner. `scripts/measure-validation.ps1` records
+per-step wall time for the whole pipeline, and
+`scripts/validation-timing-report.mjs` turns that record into a summary and
+charts.
+
+Build the portable command-line executable:
 
 ```powershell
 ./scripts/build-portable.ps1
-# Add -Offline when frontend and Cargo dependencies are already cached.
-.\artifacts\portable\cam.exe serve --open
+# Add -Offline when Cargo dependencies are already cached.
+.\artifacts\portable\cam.exe --help
 ```
 
 Copy `artifacts/portable/cam.exe` to another directory or supported Windows x64
-machine. It needs no adjacent UI directory, Node.js, Rust, or separately installed
-Visual C++ runtime. Browser mode uses your default browser; CLI commands retain
-their existing arguments and exit codes. The EXE still uses Windows system DLLs.
+machine. It needs no Node.js, Rust, or separately installed Visual C++ runtime. It
+contains the CLI, the local HTTP service, and compute-worker mode. It no longer
+embeds the deprecated React UI, so `cam serve` needs `--ui-dir <directory>`; the
+native GUI ships separately as `cam-gui.exe` from `./scripts/build-gui.ps1`. CLI
+commands retain their existing arguments and exit codes. The EXE still uses
+Windows system DLLs.
 
 `cam serve` binds to `127.0.0.1:4848`; `--port 0` chooses an available port and
 prints the URL, and `--port <number>` requires that port to be free. `--open`
@@ -45,16 +57,17 @@ opens the browser. Ctrl+C cancels compute workers and stops the service. Job
 files, downloads, and tool-library data remain separate writable user data;
 `--library-dir <directory>` selects a portable library location.
 
-For development, ordinary Cargo builds retain `cam serve --ui-dir web/dist` and
-the `cam-web` alias. To embed assets directly with Cargo, first run `pnpm build`
-in `web`, then build `cam-app` with `--features bundled-ui`. The build checks
-source and asset hashes and refuses stale or incomplete UI bundles. The Windows
-release script also links the C runtime statically. See the
-[live UI guide](web/README.md) for validation commands and current capabilities.
+For development, `cam serve --ui-dir <directory>` and the `cam-web` alias still
+serve a prebuilt UI directory. The React workspace UI and the
+`cam-app/bundled-ui` embedding step are deprecated: they remain in the tree but
+are no longer built, embedded, or validated, so the bundle hash check and the
+`bundled-ui` build instructions no longer apply. The Windows release script links
+the C runtime statically. The [web workspace guide](web/README.md) is kept for
+reference only.
 
 ## Run
 
-Install [Rust with rustup](https://www.rust-lang.org/tools/install). The workspace pins Rust **1.95.0**; rustup selects it when running Cargo here. Tested native targets are **x86_64-pc-windows-msvc** on Windows and **x86_64-unknown-linux-gnu** on Ubuntu 24.04.4 under WSL2. See [Windows setup](#windows-setup) for prerequisites and PowerShell commands. The `cam-wasm` crate additionally builds the engine for **wasm32-unknown-unknown**; CI checks that target, and the [web UI plan](../docs/flat-v-carve/web-ui.md) records the browser deployment.
+Install [Rust with rustup](https://www.rust-lang.org/tools/install). The workspace pins Rust **1.95.0**; rustup selects it when running Cargo here. Tested native targets are **x86_64-pc-windows-msvc** on Windows and **x86_64-unknown-linux-gnu** on Ubuntu 24.04.4 under WSL2. See [Windows setup](#windows-setup) for prerequisites and PowerShell commands. The `cam-wasm` crate builds the deprecated React UI's engine for **wasm32-unknown-unknown**; CI no longer checks that target, and the [web UI plan](../docs/flat-v-carve/web-ui.md) remains a historical record of the browser deployment.
 
 From this directory:
 

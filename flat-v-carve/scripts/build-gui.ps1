@@ -1,5 +1,9 @@
 param(
     [ValidateSet('native','web')][string]$Target = 'native',
+    # --no-opt skips wasm-opt for the browser build: measured 1.3s instead of
+    # ~30s, at 9.9 MB instead of 8.35 MB of wasm. Keep optimization for
+    # artifacts that ship; use this for review/CI builds where speed matters.
+    [switch]$NoOpt,
     [switch]$Launch
 )
 $ErrorActionPreference = 'Stop'
@@ -7,7 +11,11 @@ $workspace = Split-Path $PSScriptRoot -Parent
 Push-Location $workspace
 try {
     if ($Target -eq 'native') {
-        cargo build -p cam-gui --release --locked
+        # --workspace keeps Cargo's feature resolution identical to the clippy and
+        # test steps. A bare `-p cam-gui` resolves shared dependencies with a
+        # different feature set, which makes every later workspace Cargo command
+        # rebuild cam-gui and cam-app (UnitDependencyInfoChanged).
+        cargo build --workspace --release --locked --bin cam-gui
         if ($LASTEXITCODE -ne 0) { throw 'GUI native build failed' }
         $metadata = cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed' }
@@ -26,7 +34,10 @@ try {
     } else {
         Push-Location (Join-Path $workspace 'crates/cam-gui')
         try {
-            wasm-pack build --target web --release --out-dir pkg --out-name cam_gui -- --locked
+            $wasmPackArgs = @('build', '--target', 'web', '--release', '--out-dir', 'pkg', '--out-name', 'cam_gui')
+            if ($NoOpt) { $wasmPackArgs += '--no-opt' }
+            $wasmPackArgs += @('--', '--locked')
+            & wasm-pack @wasmPackArgs
             if ($LASTEXITCODE -ne 0) { throw 'GUI browser build failed' }
             node web/write-offline-manifest.mjs
             if ($LASTEXITCODE -ne 0) { throw 'Offline manifest failed' }

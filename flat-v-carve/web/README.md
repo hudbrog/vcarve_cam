@@ -1,5 +1,11 @@
 # Flat V-carve web workspace
 
+> **Deprecated.** This React workspace is no longer built, embedded, or tested.
+> `scripts/build-portable.ps1` now produces a command-line executable without it
+> and CI no longer runs the steps below. The GUI is the `cam-gui` crate: a native
+> window plus a browser build. The notes here are kept for reference only, and
+> `cam serve` needs `--ui-dir <directory>` to serve this bundle.
+
 The local TypeScript workspace from the [web UI plan](../../docs/flat-v-carve/web-ui.md), connected to Rust for SVG import, job migration/opening, validation, cancellable background planning, recorded motion previews, 2D stock inspection, M5 continuous verification, M6 checked output, the local tool library, and the animated 3D stock simulator. Development can still use the deterministic fixture adapter, and the same bundle runs standalone through the in-browser WebAssembly engine.
 
 ## Run the portable application

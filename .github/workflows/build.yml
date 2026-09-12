@@ -1,5 +1,14 @@
 name: Build and test
 
+# The React workspace UI (flat-v-carve/web) is deprecated: it is no longer built
+# or exercised here. The GUI is the Rust cam-gui crate (native window plus a
+# browser build), and the portable artifact is the command-line cam.exe.
+#
+# Every Cargo command below selects --workspace, so Cargo resolves one feature
+# set for shared dependencies across all steps. Mixing `-p <package>` with
+# `--workspace` invocations makes Cargo rebuild cam-gui and cam-app on every run
+# (fingerprint dirty: UnitDependencyInfoChanged).
+
 on:
   push:
     branches: [main]
@@ -40,14 +49,6 @@ jobs:
           node-version: '24'
           package-manager-cache: false
 
-      - name: Set up pnpm and dependency cache
-        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
-        with:
-          package_json_file: flat-v-carve/web/package.json
-          run_install: false
-          cache: true
-          cache_dependency_path: flat-v-carve/web/pnpm-lock.yaml
-
       - name: Install pinned Rust toolchain
         run: rustup show
 
@@ -71,9 +72,6 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
-      - name: Check the WebAssembly engine build
-        run: cargo check -p cam-wasm --target wasm32-unknown-unknown --locked
-
       - name: Build new native GUI
         run: ./scripts/build-gui.ps1
 
@@ -88,30 +86,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # Build the frontend before any bundled-ui Cargo command so its asset
-      # manifest is available. This also installs both sets of locked dependencies.
-      - name: Build portable executable and embedded UI
+      - name: Build portable executable
         run: ./scripts/build-portable.ps1
 
       - name: Check Rust with Clippy
-        run: cargo clippy --workspace --all-targets --locked --features cam-app/bundled-ui -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Run Rust tests
-        run: cargo test --workspace --release --locked --features cam-app/bundled-ui
-
-      - name: Run frontend tests
-        working-directory: flat-v-carve/web
-        run: pnpm test
-
-      - name: Check frontend and backend contracts
-        working-directory: flat-v-carve/web
-        run: pnpm check:contracts
-
-      - name: Test CLI and local server from the packaged executable
-        working-directory: flat-v-carve/web
-        run: |
-          $env:CAM_TEST_EXE = (Resolve-Path ../artifacts/portable/cam.exe).Path
-          pnpm check:live
+        run: ./scripts/run-tests-parallel.ps1
 
       - name: Write executable checksum
         run: |
@@ -120,7 +102,8 @@ jobs:
           @"
           Built from commit $env:GITHUB_SHA on Windows x64.
           Download the flat-v-carve-windows-x64 artifact and extract cam.exe.
-          Run ``cam.exe serve --open`` for the browser UI, or use a CLI command.
+          Run ``cam.exe --help`` for the CLI commands. The native GUI is built
+          separately by ``scripts/build-gui.ps1``.
           SHA-256: ``$camHash``
           "@ | Add-Content $env:GITHUB_STEP_SUMMARY
 
