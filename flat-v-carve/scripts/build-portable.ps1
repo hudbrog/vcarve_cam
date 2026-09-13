@@ -1,8 +1,8 @@
 # Builds the portable Windows x64 command-line executable.
 #
-# The deprecated React web UI is no longer built or embedded, so this script no
-# longer runs pnpm and no longer passes cam-app/bundled-ui. `cam serve` therefore
-# needs --ui-dir or a separately built frontend; the native GUI is cam-gui.exe.
+# The React web UI has been removed, so this script neither builds nor embeds UI
+# assets. `cam serve` therefore needs --ui-dir with a prebuilt UI directory;
+# the native GUI is cam-gui.exe.
 #
 # Package selection is --workspace in every Rust step of the validation pipeline
 # so that Cargo resolves one feature set for shared dependencies. Mixing

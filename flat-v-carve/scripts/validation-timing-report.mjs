@@ -101,17 +101,6 @@ function cargoTestCounts(text) {
   };
 }
 
-function vitestSummary(text) {
-  const duration = text.match(/Duration\s+([\d.]+)s/);
-  const files = text.match(/Test Files\s+(?:(\d+) failed[^\n]*?)?(\d+) passed/);
-  const tests = text.match(/Tests\s+(?:(\d+) failed[^\n]*?)?(\d+) passed/);
-  return {
-    reportedSeconds: duration ? Number(duration[1]) : null,
-    testFiles: files ? Number(files[2]) : null,
-    tests: tests ? Number(tests[2]) : null,
-  };
-}
-
 const enriched = steps.map(step => {
   const text = logText(step);
   const testCounts = step.id.startsWith('rust-test') ? cargoTestCounts(text) : null;
@@ -121,7 +110,6 @@ const enriched = steps.map(step => {
     cargoReportedSeconds: cargoReportedSeconds(text),
     testExecSeconds: step.id.startsWith('rust-test') ? cargoTestExecSeconds(text) : null,
     testCounts,
-    vitest: step.id === 'frontend-test' || step.id === 'live-integration' ? vitestSummary(text) : null,
     compileLines: (text.match(/^\s+(?:Compiling|Checking)\s+\S+\s+v/gm) ?? []).length,
   };
 });
@@ -236,7 +224,7 @@ if (mergedIds.length) {
 }
 lines.push(`- Steps failing: ${failed.length}${failed.length ? ` (${failed.map(step => step.id).join(', ')})` : ''}`);
 lines.push(`- Host: ${environment.cpu ?? 'unknown CPU'} · ${environment.logicalProcessors ?? '?'} logical processors · ${environment.memoryGB ?? '?'} GB RAM`);
-lines.push(`- Commit: \`${(environment.gitCommit ?? '').slice(0, 12)}\` (${environment.gitDirtyFiles ?? '?'} dirty files) · rustc ${environment.rustc ?? '?'} · node ${environment.node ?? '?'} · pnpm ${environment.pnpm ?? '?'} · wasm-pack ${environment.wasmPack ?? '?'}`);
+lines.push(`- Commit: \`${(environment.gitCommit ?? '').slice(0, 12)}\` (${environment.gitDirtyFiles ?? '?'} dirty files) · rustc ${environment.rustc ?? '?'} · node ${environment.node ?? '?'} · wasm-pack ${environment.wasmPack ?? '?'}`);
 lines.push(`- Cargo profile: \`${environment.rustFlagsProfile}\` · offline: ${environment.offline}`);
 lines.push('');
 lines.push('## Per-step timings');
@@ -272,9 +260,6 @@ for (const step of enriched) {
   if (step.testExecSeconds !== null) reported.push(`${step.testExecSeconds.toFixed(2)}s in test binaries`);
   if (step.testCounts && step.testCounts.binaries) {
     reported.push(`${step.testCounts.passed} passed / ${step.testCounts.failed} failed / ${step.testCounts.ignored} ignored`);
-  }
-  if (step.vitest && step.vitest.reportedSeconds !== null) {
-    reported.push(`vitest ${step.vitest.reportedSeconds}s, ${step.vitest.tests ?? '?'} tests in ${step.vitest.testFiles ?? '?'} files`);
   }
   lines.push(`| \`${step.id}\` | ${step.seconds.toFixed(2)}s | ${step.cargoReportedSeconds ?? '—'} | ${step.testExecSeconds !== null ? step.testExecSeconds.toFixed(2) + 's' : '—'} | ${step.testCounts && step.testCounts.binaries ? step.testCounts.passed : '—'} | ${reported.join('; ') || '—'} |`);
 }

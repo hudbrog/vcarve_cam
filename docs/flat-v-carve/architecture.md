@@ -1,7 +1,7 @@
 # Flat V-carve CAM: architecture
 
 Date: 2026-09-05\
-Status: M0–M5 implemented and tested. M6 linear LinuxCNC export and numeric readback are implemented; actual controller integration remains pending. M7's browser workflow is implemented in software (local service plus a static WebAssembly build); M8 physical validation and release qualification remain.
+Status: M0–M5 implemented and tested. M6 linear LinuxCNC export and numeric readback are implemented; actual controller integration remains pending. M7's workflow is implemented in the shared `cam-gui` application (native window plus a browser build); M8 physical validation and release qualification remain.
 
 This document records the product boundaries, components, and language choices. See [technical design](technical-design.md) for geometry and data contracts, and [implementation plan](implementation-plan.md) for milestones and acceptance criteria.
 
@@ -23,15 +23,15 @@ The user should not have to coordinate independent pocket and engraving operatio
 | Topic | Status | Decision |
 | --- | --- | --- |
 | Application language | Agreed | Rust owns all machining logic. |
-| User interface | Planning baseline | Thin TypeScript browser interface using a local Rust process; CLI available first. |
+| User interface | Implemented | Shared Rust workspace application (`cam-gui`) built for native and browser targets; CLI available first. |
 | Input | Agreed | SVG; bitmap tracing remains an Inkscape task initially. |
 | Machine | Agreed | LinuxCNC with existing M6 macros. |
 | Finished shape | Agreed | Full sloped walls, depth cap, and shallower narrow details. |
 | Tools | MVP boundary | One flat endmill and one conical V-bit per job. |
 | Geometry libraries | Tested in M0 | `clipper2-rust` 1.1.0 and `boostvoronoi` 0.12.1 behind application-owned adapters. |
 | Units and datum | Agreed for export | Millimeters internally; stock top is Z = 0 and cutting Z is negative. The user's M6 TLO establishes work Z0 at stock bottom/worktable; export adds stock thickness. |
-| Distribution | Implemented | Native local executable with bundled browser assets, built and tested by CI. The same UI additionally builds statically with the in-browser engine. |
-| WebAssembly | Implemented | The engine core runs in the browser behind the same UI contracts; see the [web UI plan](web-ui.md). The native local service remains the everyday default. |
+| Distribution | Implemented | Portable CLI/service executable plus the `cam-gui` desktop and browser review builds, built and tested by CI. |
+| WebAssembly | Implemented | The engine core runs in the browser through the `cam-gui` WebAssembly build behind the same UI contracts. The native application remains the everyday default. |
 
 These documents live in `docs/flat-v-carve/`; the standalone CAM workspace now lives in `flat-v-carve/`. The planning baseline referenced an unrelated Astro website, but the M0 checkout contained only these docs. CAM development remains isolated from any website project.
 
@@ -63,7 +63,7 @@ Stock preview predicts geometric removal. It does not predict chip load, deflect
 ```mermaid
 flowchart TD
     CLI[CLI] --> APP[Application service]
-    WEB[TypeScript browser UI] --> APP
+    GUI[cam-gui native and browser UI] --> APP
     APP --> IMPORT[SVG normalization]
     IMPORT --> JOB[Validated job and regions]
     JOB --> TARGET[Target geometry]
@@ -84,7 +84,7 @@ Start with two Rust crates rather than a large collection of services:
 | --- | --- | --- |
 | `cam-core` | Job model, normalization, geometry adapters, target model, both planners, stock analysis, diagnostics, postprocessing | Accepts data in memory; no filesystem, HTTP, UI, or machine access. |
 | `cam-app` | CLI, file loading/saving, local browser service, task cancellation and progress | Calls the same core pipeline for CLI and browser jobs. |
-| `web` | Import workflow, region selection, settings, visual inspection | Displays core results; never reimplements toolpath rules. |
+| `cam-gui` | Workspace shell, editing, simulation and inspection for native and browser targets | Displays core results; never reimplements toolpath rules. |
 
 Within `cam-core`, keep modules for `model`, `svg`, `geometry`, `target`, `pocket`, `vcarve`, `stock`, `motion`, `verify`, and `post`. Split modules into crates only when a real dependency or compilation problem warrants it.
 
@@ -98,7 +98,7 @@ M4 adds `vcarve` with medial extraction, guarded XYZ path generation, combined p
 
 M5 adds `verification`: independent box distance bounds, analytical cutter-removal bounds, adaptive whole-surface and depth-band refinement, explicit maximum-error intervals, and located failed/inconclusive states. It authenticates plan identity and execution records, distinguishes reachable residue from cutter-limited detail, and rechecks decimal-formatted coordinates when precision is supplied. `cam verify` produces M5 JSON and an optional findings SVG; `inspect` retains the M4 planning preview. Acceptance uses the normalized polygon and actual motions, independently of repeated preview polygon unions.
 
-Layout inside `flat-v-carve/` (the `web` UI and the supporting crates below are implemented):
+Layout inside `flat-v-carve/` (the `cam-gui` application and the supporting crates below are implemented):
 
 ```text
 Cargo.toml
@@ -106,15 +106,15 @@ Cargo.lock
 rust-toolchain.toml
 crates/
   cam-core/src/       # geometry, planners, stock, verification, postprocessing
-  cam-service/src/    # DTOs shared by the HTTP service and the browser build
+  cam-gui/src/        # shared egui/wgpu application for native and browser targets
+  cam-service/src/    # DTOs shared by the CLI, HTTP service and the GUI
   cam-server/src/     # loopback HTTP service, task/worker supervision
   cam-storage/src/    # tool-library persistence
-  cam-wasm/src/       # wasm-bindgen entry points for the static web build
   cam-app/src/        # CLI + serve, portable executable
 fixtures/
 README.md
 artifacts/          # generated locally, ignored by Git
-web/                # TypeScript browser workspace
+experiments/gui1/   # completed framework experiment (historical)
 ```
 
 ## 5. Geometry dependencies
@@ -146,7 +146,7 @@ The browser workflow is: import, confirm dimensions/origin, select regions, set 
 
 The local service binds to loopback. Long computations run outside the request handler and report stage progress. Cancellation discards an incomplete result. Results carry a job fingerprint so an old calculation cannot replace a newer edit. Background computation must not freeze the interface.
 
-The CLI calls the same service functions in process. Native execution with the bundled UI is the everyday default; the browser-only WebAssembly deployment shipped as an additional option ([web UI plan](web-ui.md)).
+The CLI calls the same service functions in process. Native execution in `cam-gui` is the everyday default; the browser WebAssembly build of the same application is the additional deployment option.
 
 ## 8. Correctness and machine boundary
 

@@ -1,4 +1,5 @@
-//! Narrow display-only port of web/src/sim/engine.ts. Never used for CAM checks.
+//! Narrow display-only port of the retired TypeScript simulator
+//! (the former `web/src/sim/engine.ts`). Never used for CAM checks.
 //! Keep f64 expression order, tile traversal and downward quantization aligned
 //! with the reference. The comparison harness executes the original TypeScript.
 use serde::{Deserialize, Serialize};

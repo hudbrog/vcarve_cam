@@ -1,8 +1,8 @@
 name: Build and test
 
-# The React workspace UI (flat-v-carve/web) is deprecated: it is no longer built
-# or exercised here. The GUI is the Rust cam-gui crate (native window plus a
-# browser build), and the portable artifact is the command-line cam.exe.
+# The React workspace UI (flat-v-carve/web) has been removed. The GUI is the
+# Rust cam-gui crate (native window plus a browser build), and the portable
+# artifact is the command-line cam.exe.
 #
 # Every Cargo command below selects --workspace, so Cargo resolves one feature
 # set for shared dependencies across all steps. Mixing `-p <package>` with
@@ -72,13 +72,13 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
-      - name: Build new native GUI
+      - name: Build native GUI
         run: ./scripts/build-gui.ps1
 
-      - name: Build new browser GUI
+      - name: Build browser GUI
         run: ./scripts/build-gui.ps1 -Target web
 
-      - name: Upload new GUI review builds
+      - name: Upload GUI review builds
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: flat-v-carve-gui-windows-and-browser

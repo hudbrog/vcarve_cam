@@ -34,21 +34,6 @@ use tokio::sync::Semaphore;
 const WORKERS: usize = 2;
 pub type Assets = HashMap<String, (&'static str, Bytes)>;
 
-/// Assets compiled into the host executable; bytes are shared without copying.
-pub fn embedded_assets(files: &[(&'static str, &'static [u8])]) -> Assets {
-    files
-        .iter()
-        .map(|&(path, bytes)| {
-            let key = if path == "index.html" {
-                "/".into()
-            } else {
-                format!("/{path}")
-            };
-            (key, (content_type(path), Bytes::from_static(bytes)))
-        })
-        .collect()
-}
-
 fn content_type(path: &str) -> &'static str {
     match path.rsplit('.').next() {
         Some("html") => "text/html; charset=utf-8",
@@ -75,65 +60,65 @@ fn content_type(path: &str) -> &'static str {
 pub fn load_assets(directory: &Path) -> io::Result<Assets> {
     let mut assets = HashMap::new();
     let mut total = 0;
-    fn insert(
-        assets: &mut Assets,
-        total: &mut usize,
-        path: &Path,
-        key: String,
-        mime: &'static str,
-    ) -> io::Result<()> {
-        let metadata = fs::symlink_metadata(path)?;
-        if !metadata.is_file() || metadata.len() > 32_000_000 - *total as u64 {
-            return Err(io::Error::other(
-                "UI assets must be regular files totaling at most 32 MB",
-            ));
-        }
-        let mut bytes = Vec::new();
-        fs::File::open(path)?
-            .take((32_000_000 - *total + 1) as u64)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > 32_000_000 - *total {
-            return Err(io::Error::other(
-                "UI assets changed beyond the 32 MB size limit",
-            ));
-        }
-        *total += bytes.len();
-        assets.insert(key, (mime, bytes.into()));
-        Ok(())
-    }
-    insert(
-        &mut assets,
-        &mut total,
-        &directory.join("index.html"),
-        "/".into(),
-        "text/html; charset=utf-8",
-    )?;
-    let asset_dir = directory.join("assets");
-    if fs::symlink_metadata(&asset_dir)?.file_type().is_symlink() {
-        return Err(io::Error::other("UI assets directory cannot be a symlink"));
-    }
-    for entry in fs::read_dir(asset_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let mime = match path.extension().and_then(|e| e.to_str()) {
-            Some("js") => "text/javascript; charset=utf-8",
-            Some("css") => "text/css; charset=utf-8",
-            Some("png") => "image/png",
-            Some("woff2") => "font/woff2",
-            // The statically hostable engine rides along in the bundle so
-            // ?mode=wasm also works without the local service.
-            Some("wasm") => "application/wasm",
-            _ => continue,
-        };
-        insert(
-            &mut assets,
-            &mut total,
-            &path,
-            format!("/assets/{}", entry.file_name().to_string_lossy()),
-            mime,
-        )?;
-    }
+    collect_assets(directory, "", &mut assets, &mut total)?;
     Ok(assets)
+}
+
+/// Walks one prebuilt UI directory. Symlinks are refused so an asset directory
+/// cannot reach outside itself, and the whole tree stays within the service's
+/// fixed asset budget.
+fn collect_assets(
+    root: &Path,
+    relative: &str,
+    assets: &mut Assets,
+    total: &mut usize,
+) -> io::Result<()> {
+    let directory = if relative.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(relative)
+    };
+    for entry in fs::read_dir(&directory)? {
+        let name = entry?
+            .file_name()
+            .into_string()
+            .map_err(|_| io::Error::other("UI asset names must be UTF-8"))?;
+        let child = if relative.is_empty() {
+            name
+        } else {
+            format!("{relative}/{name}")
+        };
+        let path = root.join(&child);
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::other(format!(
+                "UI assets must not be symlinks: {child}"
+            )));
+        }
+        if metadata.is_dir() {
+            collect_assets(root, &child, assets, total)?;
+        } else if metadata.is_file() {
+            let mut bytes = Vec::new();
+            fs::File::open(&path)?
+                .take((32_000_000 - *total + 1) as u64)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > 32_000_000 - *total {
+                return Err(io::Error::other(
+                    "UI assets must be regular files totaling at most 32 MB",
+                ));
+            }
+            *total += bytes.len();
+            let key = if child == "index.html" {
+                "/".to_owned()
+            } else {
+                format!("/{child}")
+            };
+            assets.insert(key, (content_type(&child), bytes.into()));
+        } else {
+            return Err(io::Error::other("UI assets must be regular files"));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone)]

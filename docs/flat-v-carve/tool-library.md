@@ -3,8 +3,8 @@
 The Rust backend stores named endmill/V-bit definitions and their optional cutting
 presets. It supports create, read, replace, duplicate, delete, import/export,
 capture from a job, and explicit application to a job. The CLI and reusable Rust
-API are implemented, with [browser controls and local HTTP transport](web-ui.md)
-for the same records and revision checks.
+API are implemented, with `cam-gui` library controls and the local HTTP transport
+covering the same records and revision checks.
 
 ## Data ownership
 

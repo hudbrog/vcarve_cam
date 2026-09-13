@@ -1,30 +1,29 @@
 # Flat V-carve CAM
 
-An isolated Rust workspace for the combined endmill/V-bit planner described in the [project docs](../docs/flat-v-carve/architecture.md). M0–M5 implement geometry, SVG jobs, both planners, recorded-motion previews, and bounded continuous stock verification. M6 implements LinuxCNC output and numeric readback; actual controller validation remains pending. The M7 browser workflow is implemented: the local service and UI below cover import-to-export with background planning, verification, gated output, a tool library, and a 3D stock simulator, and the same UI runs statically through the in-browser WebAssembly engine.
+An isolated Rust workspace for the combined endmill/V-bit planner described in the [project docs](../docs/flat-v-carve/architecture.md). M0–M5 implement geometry, SVG jobs, both planners, recorded-motion previews, and bounded continuous stock verification. M6 implements LinuxCNC output and numeric readback; actual controller validation remains pending. The M7 workflow is implemented in `cam-gui`: import-to-export with background planning, verification, gated output, a tool library, and a 3D stock simulator, running either as a native window or as a browser application with the in-browser WebAssembly engine.
 
-## New desktop and browser GUI
+## Desktop and browser GUI
 
-[`crates/cam-gui`](crates/cam-gui/README.md) is the first-class replacement GUI,
-built in the main Cargo workspace with shared Rust state and wgpu rendering.
-Run `cargo run -p cam-gui --release --locked`, or use
+[`crates/cam-gui`](crates/cam-gui/README.md) is the only GUI, built in the main
+Cargo workspace with shared Rust state and wgpu rendering. Run
+`cargo run -p cam-gui --release --locked`, or use
 `./scripts/build-gui.ps1` and `./scripts/build-gui.ps1 -Target web` for review
-artifacts. GUI2a is under implementation and review. New GUI work belongs in
-this crate; `experiments/gui1` preserves the completed framework experiment.
-The existing CLI/service and browser UI below remain available until cutover.
+artifacts. New GUI work belongs in this crate; `experiments/gui1` preserves the
+completed framework experiment, and the former React workspace UI (`web/`) with
+its `cam-wasm` engine crate has been removed.
 
 ## Portable Windows application
 
 GitHub Actions builds and tests the portable app on pushes to `main`, pull
 requests targeting `main`, and manual runs. Open [Build and test](https://github.com/hudbrog/vcarve_cam/actions/workflows/build.yml),
 choose a successful run, and download the `flat-v-carve-windows-x64` artifact.
-Extract `cam.exe` and run `cam.exe serve --open`, or use any CLI command. Each
+Extract `cam.exe` and run any CLI command; the GUI is built separately. Each
 artifact includes `SHA256SUMS` and is retained for 30 days.
 
 CI uses the pinned Rust toolchain and Node.js 24 (for the browser GUI build).
 It checks formatting, Clippy, and Rust tests, then builds the native GUI, the
-browser GUI, and the portable command-line EXE. The deprecated React workspace
-UI (`web/`) is no longer built or tested. The build runs on a fresh Windows x64
-runner.
+browser GUI, and the portable command-line EXE. The build runs on a fresh
+Windows x64 runner.
 
 The test step runs `scripts/run-tests-parallel.ps1`, which executes the compiled
 test binaries with a worker pool instead of one after another: the workspace has
@@ -46,8 +45,8 @@ Build the portable command-line executable:
 Copy `artifacts/portable/cam.exe` to another directory or supported Windows x64
 machine. It needs no Node.js, Rust, or separately installed Visual C++ runtime. It
 contains the CLI, the local HTTP service, and compute-worker mode. It no longer
-embeds the deprecated React UI, so `cam serve` needs `--ui-dir <directory>`; the
-native GUI ships separately as `cam-gui.exe` from `./scripts/build-gui.ps1`. CLI
+embeds a UI, so `cam serve` needs `--ui-dir <directory>`; the native GUI ships
+separately as `cam-gui.exe` from `./scripts/build-gui.ps1`. CLI
 commands retain their existing arguments and exit codes. The EXE still uses
 Windows system DLLs.
 
@@ -57,17 +56,14 @@ opens the browser. Ctrl+C cancels compute workers and stops the service. Job
 files, downloads, and tool-library data remain separate writable user data;
 `--library-dir <directory>` selects a portable library location.
 
-For development, `cam serve --ui-dir <directory>` and the `cam-web` alias still
-serve a prebuilt UI directory. The React workspace UI and the
-`cam-app/bundled-ui` embedding step are deprecated: they remain in the tree but
-are no longer built, embedded, or validated, so the bundle hash check and the
-`bundled-ui` build instructions no longer apply. The Windows release script links
-the C runtime statically. The [web workspace guide](web/README.md) is kept for
-reference only.
+For development, `cam serve --ui-dir <directory>` and the `cam-web` alias serve a
+prebuilt UI directory; point it at `artifacts/gui/browser` after
+`./scripts/build-gui.ps1 -Target web`. The Windows release script links the C
+runtime statically.
 
 ## Run
 
-Install [Rust with rustup](https://www.rust-lang.org/tools/install). The workspace pins Rust **1.95.0**; rustup selects it when running Cargo here. Tested native targets are **x86_64-pc-windows-msvc** on Windows and **x86_64-unknown-linux-gnu** on Ubuntu 24.04.4 under WSL2. See [Windows setup](#windows-setup) for prerequisites and PowerShell commands. The `cam-wasm` crate builds the deprecated React UI's engine for **wasm32-unknown-unknown**; CI no longer checks that target, and the [web UI plan](../docs/flat-v-carve/web-ui.md) remains a historical record of the browser deployment.
+Install [Rust with rustup](https://www.rust-lang.org/tools/install). The workspace pins Rust **1.95.0**; rustup selects it when running Cargo here. Tested native targets are **x86_64-pc-windows-msvc** on Windows and **x86_64-unknown-linux-gnu** on Ubuntu 24.04.4 under WSL2. See [Windows setup](#windows-setup) for prerequisites and PowerShell commands. The browser GUI is built from `crates/cam-gui` for **wasm32-unknown-unknown**; the former React workspace and its `cam-wasm` engine crate are gone.
 
 From this directory:
 
@@ -98,16 +94,16 @@ Exit codes are `0` for successful import/inspection, valid editable jobs, or a c
 
 ## Local tool library
 
-The backend now stores reusable named tools and explicit cutting presets. Use
+The backend stores reusable named tools and explicit cutting presets. Use
 `cam tool-library --help` for initialization, record management, capture from a
 configured job, import/export, and application to a new job file. Library edits
 use revision checks and atomic file replacement. Applying a tool copies its
 settings into the existing job schema; later library edits never change saved
-jobs. The browser includes library management, job capture, and changed-value
-review under **Carve & tools → Manage tool library**. Start `cam-web` with
-`--library-dir <directory>` to use an existing library; otherwise it uses the
-platform's local application-data directory. The browser explicitly creates an
-empty library on first use.
+jobs. The GUI exposes the same operations under
+**Carve & tools → Manage tool library**, and `cam serve`/`cam-web` publish them
+over the local API. Pass `--library-dir <directory>` to use an existing library;
+otherwise the platform's local application-data directory is used, and an empty
+library is created explicitly on first use.
 
 See the [tool library guide](../docs/flat-v-carve/tool-library.md) for the Rust API,
 CLI examples, validation, persistence, and snapshot behavior.
@@ -202,7 +198,7 @@ cargo build --release --locked --workspace --examples --bins
 ./scripts/benchmark-import.ps1 -OutputDirectory artifacts/import-scalability-new
 ```
 
-The benchmark repeats the real path at unchanged physical size and tolerance. It records component/vertex counts, area, time, peak process working set, and source hash. It does not establish 100× full CAM or deeply connected artwork performance. Current bounds are 32 MB SVG, 200,000 XML nodes, two million flattened vertices, 64 MB job JSON, and 128 MB for legacy CLI/string-based saved-plan loading. Dense intersection arrangements and excessive spatial candidate pairs have separate guards. V-bit budgets remain explicit per job, up to 65,536 paths and one million motions/curve segments/quality samples; hitting a budget never means complete. The live browser service keeps full plans in temporary files without a separate plan byte cap, streams downloads, and reopens files for verification/export; its bounded previews and worker messages are independent of plan file size (see the [web UI plan](../docs/flat-v-carve/web-ui.md)).
+The benchmark repeats the real path at unchanged physical size and tolerance. It records component/vertex counts, area, time, peak process working set, and source hash. It does not establish 100× full CAM or deeply connected artwork performance. Current bounds are 32 MB SVG, 200,000 XML nodes, two million flattened vertices, 64 MB job JSON, and 128 MB for legacy CLI/string-based saved-plan loading. Dense intersection arrangements and excessive spatial candidate pairs have separate guards. V-bit budgets remain explicit per job, up to 65,536 paths and one million motions/curve segments/quality samples; hitting a budget never means complete. The local service keeps full plans in temporary files without a separate plan byte cap, streams downloads, and reopens files for verification/export; its bounded previews and worker messages are independent of plan file size.
 
 ## M6 LinuxCNC export
 
@@ -306,21 +302,21 @@ cargo fmt --all -- --check
 
 After dependencies have been fetched, these commands also accept `--offline` (except `cargo fmt`, which needs no network). `Cargo.lock` is part of the project. Both geometry crates have default features disabled, and all direct dependency versions are pinned.
 
-### Static web build
+### Static browser build
 
-The same UI can run without `cam.exe`: the engine is compiled to WebAssembly
-and embedded in the bundle. Build and preview it with:
+`cam-gui` also runs without `cam.exe`: the engine is compiled to WebAssembly
+and loaded by the browser application. Build and preview it with:
 
-```sh
-cd web
-pnpm build:wasm   # wasm-pack cam-wasm into src/wasm/gen (requires wasm-pack and rustup target wasm32-unknown-unknown)
-pnpm build        # static bundle in web/dist, engine module included
-pnpm preview      # serve it; the page auto-detects the missing local service
+```powershell
+./scripts/build-gui.ps1 -Target web
+node crates/cam-gui/web/serve.mjs
 ```
 
-Deploy `web/dist` to any static host. `?mode=wasm` forces the in-browser
-engine and `?mode=live` forces the local service. See the
-[web UI plan](../docs/flat-v-carve/web-ui.md) for the wasm architecture and limits.
+The artifact is `artifacts/gui/browser/`. Serve that directory over localhost or
+HTTPS and open `/web/index.html`, or open
+`http://127.0.0.1:5182/web/index.html` from the development server. Building it
+requires wasm-pack and the wasm32-unknown-unknown Rust target. See the
+[cam-gui README](crates/cam-gui/README.md) for the browser workflow and limits.
 
 `cam-core` contains in-memory geometry contracts, narrow dependency adapters, SVG normalization, portable jobs, cutter/target models, independent distance queries, both planners, linear motions, stock analysis, and preview calculations. It has no filesystem or process access. `cam-app` handles command arguments, fixtures, JSON/SVG output, and build metadata. The debug SVGs visualize source geometry, recorded paths, combined stock slices, and sampled finish quality; no G-code is generated.
 

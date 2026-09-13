@@ -9,9 +9,6 @@ publish.workspace = true
 name = "cam"
 path = "src/main.rs"
 
-[features]
-bundled-ui = []
-
 [dependencies]
 serde.workspace = true
 cam-core = { path = "../cam-core" }
@@ -19,10 +16,6 @@ cam-storage = { path = "../cam-storage" }
 cam-server = { path = "../cam-server" }
 cam-service = { path = "../cam-service" }
 serde_json.workspace = true
-
-[build-dependencies]
-serde_json.workspace = true
-sha2.workspace = true
 
 [dev-dependencies]
 sha2.workspace = true

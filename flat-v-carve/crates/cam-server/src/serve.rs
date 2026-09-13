@@ -1,12 +1,12 @@
 //! Shared startup for `cam serve` and the development `cam-web` executable.
-use crate::{Assets, library, load_assets, planning::Planning, router_with_library};
+use crate::{library, load_assets, planning::Planning, router_with_library};
 use std::{
     io::{self, Write},
     path::PathBuf,
     process::Command,
 };
 
-pub const HELP: &str = "Local browser workspace\nUsage: cam serve [--port <0..65535>] [--open] [--ui-dir <directory>] [--library-dir <directory>]\n\nBind is always 127.0.0.1; default port is 4848. Port 0 selects an available port.\n--open launches the default browser after the service is ready.\nPortable builds serve embedded UI assets. --ui-dir overrides them for development.\nThe library uses local application data unless --library-dir is supplied.\nLibrary creation is explicit in the UI. Ctrl+C cancels workers and stops the service.\n";
+pub const HELP: &str = "Local browser workspace\nUsage: cam serve --ui-dir <directory> [--port <0..65535>] [--open] [--library-dir <directory>]\n\nBind is always 127.0.0.1; default port is 4848. Port 0 selects an available port.\n--open launches the default browser after the service is ready.\n--ui-dir serves a prebuilt UI directory, for example the browser GUI build\nartifacts/gui/browser; the executable embeds no UI of its own.\nThe library uses local application data unless --library-dir is supplied.\nLibrary creation is explicit in the UI. Ctrl+C cancels workers and stops the service.\n";
 
 #[derive(Default, Debug)]
 struct Options {
@@ -44,21 +44,15 @@ impl Options {
     }
 }
 
-pub fn run(
-    args: impl Iterator<Item = String>,
-    embedded: Option<Assets>,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error::Error>> {
     let Some(options) = Options::parse(args)? else {
         print!("{HELP}");
         return Ok(());
     };
-    let assets = match (options.ui, embedded) {
-        (Some(path), _) => load_assets(&path).map_err(|e| format!("Cannot load {}: {e}", path.display()))?,
-        (None, Some(assets)) => assets,
-        (None, None) => load_assets(&PathBuf::from("web/dist")).map_err(|e| {
-            format!("This build has no embedded UI and web/dist could not be loaded: {e}. Use a portable build, or run pnpm build in web and supply --ui-dir <web/dist>.")
-        })?,
-    };
+    let ui = options.ui.ok_or(
+        "--ui-dir <directory> is required: this executable embeds no UI. Pass a prebuilt UI directory such as artifacts/gui/browser.",
+    )?;
+    let assets = load_assets(&ui).map_err(|e| format!("Cannot load {}: {e}", ui.display()))?;
     let directory = std::path::absolute(match options.library {
         Some(path) => path,
         None => library::default_directory()?,

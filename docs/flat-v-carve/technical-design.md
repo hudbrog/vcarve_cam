@@ -289,7 +289,7 @@ A saved job can be incomplete while the user is editing it. Planning validates a
 
 M2's schema-version-1 `Job` implements embedded artwork, import placement/precision, selected component IDs, nullable stock/operation/tool settings, tolerances, and an optional editable machine profile. It stores no trusted normalized-geometry cache. The implemented `import`, `inspect`, `select`, and `validate-job` commands rebuild/validate the source snapshot. M3 and M4 extend the job through schemas 2 and 3 and implement `plan`, `inspect`, and `verify` for endmill/combined artifacts. Export now requires M5 verification and a complete, separately versioned M6 LinuxCNC profile.
 
-CLI (`serve` implemented; it exposes the local browser service described in the [web UI plan](web-ui.md)):
+CLI (`serve` implemented; it exposes the loopback HTTP service described in the [architecture](architecture.md)):
 
 ```text
 cam import artwork.svg --output job.json

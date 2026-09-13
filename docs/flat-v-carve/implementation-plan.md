@@ -1,7 +1,7 @@
 # Flat V-carve CAM: implementation plan
 
 Date: 2026-09-05\
-Status: M0–M5 implemented; M6 postprocessor and numeric readback implemented on native Windows x64, with an initial physical CNC validation round addressed (path blending, spindle sequencing, feature-local V-bit routing) and full controller validation pending. M7's browser workflow is implemented in software (U1–U3, U5, U7–U9 slices: local service, background planning, verification, gated export, tool library, 3D simulator, and the static WebAssembly build); U4 section/inspection contracts, the U6 file-lifecycle/release work, and the M8 measured machining trial remain.
+Status: M0–M5 implemented; M6 postprocessor and numeric readback implemented on native Windows x64, with an initial physical CNC validation round addressed (path blending, spindle sequencing, feature-local V-bit routing) and full controller validation pending. M7's workflow is implemented in software in the shared `cam-gui` application: local and in-browser planning, verification, gated export, tool library, and 3D simulator in one native/browser codebase. The file-lifecycle and release qualification work and the M8 measured machining trial remain.
 
 Read [architecture](architecture.md) for agreed scope and [technical design](technical-design.md) for geometry and contracts. This plan orders work by uncertainty: establish the geometric foundation before investing in application polish or relying on machine output. The per-milestone capability reports and per-slice web-UI reports that originally evidenced the completed items below were consolidated on 2026-09-08; the originals remain in Git history under `docs/flat-v-carve/`.
 
@@ -28,7 +28,7 @@ No calendar estimate is assigned yet. The dependency and geometry spike should e
 | M4 ✓ | V-bit paths and combined rest machining | M3 | Complete: 108 tests, 13 release fixtures, curved/rising detail, floor ridges, and retained final finishing. |
 | M5 ✓ | Verification of continuous and rounded motions | M4 | Complete: 127 tests, bounded stock/quality checks, rounded-coordinate revalidation, and ten release expectations. |
 | M6 (software implemented) | LinuxCNC postprocessor and machine-profile contract | M5 | [Export and emitted-subset checks](m6-capability-report.md); actual LinuxCNC preview/simulation remains pending. |
-| M7 ✓ (software) | Local browser workflow | M2 and stable planning contracts; integrate M6 | Implemented through the web-UI delivery stages recorded in the [web UI plan](web-ui.md) (U1–U3, U5, U7–U9). Remaining release work is tracked as U4/U6 there. |
+| M7 ✓ (software) | Local browser workflow | M2 and stable planning contracts; integrate M6 | Implemented in the shared `cam-gui` application (native window plus browser build); see the [2.5D CAM UI plan](2.5d-cam-ui-plan.md) and its [implementation handoff](2.5d-cam-ui-implementation-plan.md). The predecessor TypeScript workspace UI and its U-stage plan were removed with it. |
 | M8 | Measured machining trial and usable release | M6, M7 | Test carving, measured deviations, reproducible installation and documented limits. |
 
 Verification is developed alongside each planner. M5 completes and challenges it; it is not the first time paths are checked. M8 can start with CLI output while browser integration finishes, but release completion requires both.
@@ -158,7 +158,7 @@ G-code review also exposed redundant V-bit floor rastering. Engine 0.7.1 restric
 
 **Exit:** an ordinary job can be imported, configured, inspected, saved, reopened, and exported without editing JSON. Calculation does not freeze the UI, and changing settings invalidates old output visibly.
 
-Completed 2026-09-08 in software through the U-stage delivery record in the [web UI plan](web-ui.md). The same UI runs without the local service through the in-browser WebAssembly engine. Native file open/save dialogs with conflict handling, durable cross-restart recovery, multi-tab document ownership, and release qualification (U4/U6) remain open and are folded into the M8 release work; see the web UI plan's delivery stages.
+Completed 2026-09-08 in software, originally through the U-stage delivery record of the TypeScript workspace UI. That UI has been removed; the workflow is now delivered by the shared `cam-gui` application, which runs natively and in the browser through the WebAssembly engine. Native file open/save dialogs with conflict handling, durable cross-restart recovery, and release qualification remain open and are folded into the M8 release work; see the [UI implementation handoff](2.5d-cam-ui-implementation-plan.md).
 
 ## 11. M8: physical validation and release
 
@@ -168,7 +168,7 @@ Completed 2026-09-08 in software through the U-stage delivery record in the [web
 - [ ] Machine the coupon and inspect the floor, all wall families, corner transitions, and residual ridges.
 - [ ] Measure deviations where practical and distinguish geometry errors from setup, cutter, and material effects.
 - [ ] Adjust the design or implementation for demonstrated failures and rerun affected fixtures.
-- [ ] Package the intended native target with browser assets and installation/startup instructions.
+- [ ] Package the intended native targets (`cam-gui` and the portable CLI) with installation/startup instructions.
 - [ ] Document supported SVG features, tool setup, verification meaning, and known limitations.
 
 **Exit:** the coupon demonstrates the intended combined operation, and the recorded measurements are consistent with the declared model/tolerances and real setup. Installation and job reproduction are tested on the intended everyday host.
@@ -201,6 +201,6 @@ Compare the target and actual sweeps through independent calculations where poss
 
 After the combined workflow is reliable, evaluate path ordering, verified in-stock links, accelerated stock analysis, multiple clearance tools, arc fitting, bounded LinuxCNC blending, and WebAssembly. Each optimization retains the same fixtures and verification requirements. A changed strategy must not silently weaken the user's finish tolerance or remove small details.
 
-Path ordering, verified in-stock links, and accelerated stock/verification analysis shipped across engines 0.7.3–0.7.7; the workspace README records the current flower measurements and profiling commands. The WebAssembly item shipped: the engine core also builds for the browser and the UI can be statically hosted (see the [web UI plan](web-ui.md)). Threaded wasm execution remains in this backlog — it needs cross-origin isolation (COOP/COEP headers) and a browser-compatible scoped-parallelism refactor of the engine's thread sites — as do multiple clearance tools, arc fitting, and bounded LinuxCNC blending.
+Path ordering, verified in-stock links, and accelerated stock/verification analysis shipped across engines 0.7.3–0.7.7; the workspace README records the current flower measurements and profiling commands. The WebAssembly item shipped: the engine core also builds for the browser and the application can be statically hosted (see the [architecture](architecture.md)). Threaded wasm execution remains in this backlog — it needs cross-origin isolation (COOP/COEP headers) and a browser-compatible scoped-parallelism refactor of the engine's thread sites — as do multiple clearance tools, arc fitting, and bounded LinuxCNC blending.
 
 Engine 0.7.2 started real-artwork scalability work ahead of M7: spatial topology/distance/stock indexes, batch and balanced unions, compact authenticated plan files, import measured through 994,300 vertices, and complete M4 planning for the unchanged flower artwork. The 100× result is import-only. Of the follow-up items, connected medial traversal with verified links, accelerated stock analysis, conclusive real-artwork M5 verification, and bounded paged preview/artifact output have since shipped; component-local planning work and measured 10×/100× full-pipeline acceptance on real connected and repeated artwork remain open.

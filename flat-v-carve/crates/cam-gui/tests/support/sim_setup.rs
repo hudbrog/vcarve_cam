@@ -1,4 +1,5 @@
-//! Same display setup policy as web/src/sim/setup.ts, using released projections.
+//! Same display setup policy as the retired TypeScript simulator
+//! (the former `web/src/sim/setup.ts`), using released projections.
 use cam_core::{
     job::{Job, ToolGeometry},
     vcarve::CombinedPlan,

@@ -753,19 +753,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cam-wasm"
-version = "0.7.7"
-dependencies = [
- "cam-core",
- "cam-service",
- "getrandom 0.3.4",
- "serde",
- "serde_json",
- "sha2",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "cc"
 version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

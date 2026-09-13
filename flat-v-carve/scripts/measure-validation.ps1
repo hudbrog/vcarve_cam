@@ -11,10 +11,9 @@ it is still going.
 
 The pipeline mirrors CI so its numbers are comparable with CI: the job-level
 environment (CARGO_BUILD_TARGET, crt-static RUSTFLAGS) is applied to every
-Cargo command, and steps run in the documented order. The deprecated React
-workspace UI (web/) is not measured; the GUI steps build the Rust cam-gui crate
-for its native and browser targets. The portable executable is built once by
-its own Cargo command and then again end to end through
+Cargo command, and steps run in the documented order. The GUI steps build the
+Rust cam-gui crate for its native and browser targets. The portable executable
+is built once by its own Cargo command and then again end to end through
 scripts/build-portable.ps1, which should be a cache hit.
 
 .PARAMETER OutputDirectory
@@ -42,7 +41,7 @@ Run only the listed step ids. Use -List to print the ids.
 ./scripts/measure-validation.ps1 -Label ci-profile
 
 .EXAMPLE
-./scripts/measure-validation.ps1 -Only rust-fmt,frontend-test -OutputDirectory artifacts/validation-timing/quick
+./scripts/measure-validation.ps1 -Only rust-fmt,gui-native-build -OutputDirectory artifacts/validation-timing/quick
 #>
 [CmdletBinding()]
 param(
@@ -83,8 +82,6 @@ function Resolve-CamTool {
 
 $camCargo = Resolve-CamTool -Name 'cargo'
 $camNode = Resolve-CamTool -Name 'node'
-# pnpm is only reported for context; the deprecated React UI is not measured.
-$camPnpm = Get-Command pnpm -ErrorAction SilentlyContinue
 
 # One entry per command. CiStep names the build.yml step each measurement maps to.
 $camSteps = @(
@@ -97,13 +94,13 @@ $camSteps = @(
     [pscustomobject]@{
         Id = 'gui-native-build'; Category = 'gui-build'; Kind = 'script'; Tool = (Join-Path $camWorkspace 'scripts/build-gui.ps1')
         Params = @{}; WorkDir = $camWorkspace
-        CiStep = 'Build new native GUI'
+        CiStep = 'Build native GUI'
         Description = 'scripts/build-gui.ps1 (cargo build --workspace --release --bin cam-gui)'
     }
     [pscustomobject]@{
         Id = 'gui-web-build'; Category = 'wasm-build'; Kind = 'script'; Tool = (Join-Path $camWorkspace 'scripts/build-gui.ps1')
         Params = @{ Target = 'web' }; WorkDir = $camWorkspace
-        CiStep = 'Build new browser GUI'
+        CiStep = 'Build browser GUI'
         Description = 'scripts/build-gui.ps1 -Target web (wasm-pack build cam-gui)'
     }
     [pscustomobject]@{
@@ -172,7 +169,6 @@ $camEnvironment = [ordered]@{
     offline = [bool]$Offline
     cargo = (& $camCargo --version)
     node = (& $camNode --version)
-    pnpm = if ($camPnpm) { (& $camPnpm.Source --version) } else { 'not installed' }
     rustc = (& (Join-Path (Split-Path $camCargo -Parent) 'rustc') --version 2>$null)
     wasmPack = (& (Resolve-CamTool -Name 'wasm-pack') --version 2>$null)
     jobEnvironment = $camJobEnvironment

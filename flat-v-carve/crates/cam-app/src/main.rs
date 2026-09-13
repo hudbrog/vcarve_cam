@@ -1,4 +1,3 @@
-mod bundled_ui;
 mod collection_cli;
 mod combined_svg;
 mod job_cli;
@@ -47,7 +46,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         return Ok(true);
     }
     if command == "serve" {
-        cam_server::serve::run(args, bundled_ui::assets())?;
+        cam_server::serve::run(args)?;
         return Ok(true);
     }
     if command == "tool-library" {
