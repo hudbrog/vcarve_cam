@@ -136,11 +136,13 @@ impl App {
             return;
         };
         let index = role_index(cutter.role);
-        let tool_name = job
-            .tools
-            .iter()
-            .find(|tool| tool.id == state.tool_id)
-            .map(|tool| tool.name.clone())
+        // Name the tool this assignment actually uses: a library copy reports
+        // its own name, and an unconfigured placeholder says so rather than
+        // showing the default name it was created with.
+        let assigned = crate::resources::AssignedTool::of(&job, &cutter.operation, cutter.role);
+        let tool_name = assigned
+            .as_ref()
+            .map(|tool| tool.tool_label())
             .unwrap_or_else(|| state.tool_id.clone());
         let heading = ui.strong(format!("{}: {tool_name}", cutter.heading));
         observe_control(&format!("{} picker", cutter.heading), heading.rect);
@@ -201,8 +203,19 @@ impl App {
             .tools
             .iter()
             .find(|tool| tool.id == selected)
-            .map(|tool| tool.name.as_str())
-            .unwrap_or("Missing tool");
+            .map(|tool| {
+                if tool.geometry.is_none() {
+                    // The placeholder an operation starts with is not a chosen
+                    // cutter: say so instead of showing its default name.
+                    "no tool chosen".into()
+                } else if let Some(origin) = &tool.library_origin {
+                    format!("{} · from {}", tool.name, origin.library_id)
+                } else {
+                    tool.name.clone()
+                }
+            })
+            .unwrap_or_else(|| "Missing tool".into());
+        let current = current.as_str();
         let response = egui::ComboBox::from_id_salt(("assignment-tool", role_index(cutter.role)))
             .selected_text(current)
             .show_ui(ui, |ui| {
@@ -219,7 +232,16 @@ impl App {
                     let r = ui.selectable_value(
                         &mut selected,
                         tool.id.clone(),
-                        format!("{} · {}", tool.name, tool.id),
+                        format!(
+                            "{} · {}{}",
+                            tool.name,
+                            tool.id,
+                            if tool.geometry.is_none() {
+                                " (never configured)"
+                            } else {
+                                ""
+                            }
+                        ),
                     );
                     observe_control(&format!("{}{}", cutter.assign_row_probe, tool.id), r.rect);
                 }

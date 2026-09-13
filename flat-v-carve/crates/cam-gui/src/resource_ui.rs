@@ -1041,6 +1041,13 @@ impl App {
         self.resources.machine = machine.id.clone();
         self.resources.draft.machines[index] = machine.clone();
     }
+    /// The tool the selected operation's assignment currently addresses,
+    /// resolved for display. `None` when there is no such assignment.
+    pub(super) fn assigned_tool(&self, role: Role) -> Option<crate::resources::AssignedTool> {
+        let document = self.document.as_ref()?;
+        crate::resources::AssignedTool::of(&document.job, &document.raw.operation, role)
+    }
+
     fn job_tools_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
         egui::Window::new("Job tools and assignments").id(egui::Id::new("job-tools-editor")).open(&mut open).default_width(640.).show(ctx,|ui|{
@@ -1052,8 +1059,18 @@ impl App {
             let statuses=core::assignment_statuses(&job);
             ui.small("These are copied physical tools. Editing geometry affects every listed assignment; cutting profiles remain assignment-specific.");
             for tool in &job.tools{
-                let users:Vec<_>=statuses.iter().filter(|s|s.tool_id==tool.id).map(|s|format!("{} / {:?}",s.operation_id,s.role)).collect();
-                ui.horizontal(|ui|{let r=ui.selectable_value(&mut self.resources.job_tool,tool.id.clone(),format!("{} · {}",tool.name,tool.id));observe_control(&format!("Job tool {}",tool.id),r.rect);ui.label(if users.is_empty(){"Unused".into()}else{users.join(", ")});});
+                let users:Vec<_>=statuses.iter().filter(|s|s.tool_id==tool.id).map(|s|format!("{} / {}",s.operation_id,crate::resources::role_word(s.role))).collect();
+                // A row names the physical tool and where it came from: the
+                // operation's placeholder is not a chosen cutter, and a
+                // library copy reports the library it was copied from.
+                let mut notes=vec![];
+                if tool.geometry.is_none(){notes.push("never configured".to_string());}
+                if let Some(origin)=&tool.library_origin{
+                    let renamed=origin.name_at_copy!=tool.name;
+                    notes.push(format!("from library '{}' · '{}' r{}{}",origin.library_id,origin.tool_id,origin.copied_revision,if renamed{" (renamed here)"}else{""}));
+                }
+                notes.push(if users.is_empty(){"unused".into()}else{users.join(", ")});
+                ui.horizontal(|ui|{let r=ui.selectable_value(&mut self.resources.job_tool,tool.id.clone(),format!("{} · {}",tool.name,tool.id));observe_control(&format!("Job tool {}",tool.id),r.rect);ui.label(notes.join(" · "));});
             }
             if let Some(tool)=job.tools.iter().find(|t|t.id==self.resources.job_tool){
                 // Address the operation the workspace has selected, not
@@ -1085,7 +1102,14 @@ impl App {
                             self.resource_command(R::EditTool{tool:target},ctx);
                     }
                 }
-            for status in statuses{ui.label(format!("{} / {:?}: {:?}",status.operation_id,status.role,status.status));}
+            for status in statuses{
+                let assignment=crate::resources::AssignedTool::of(&job,&status.operation_id,status.role);
+                let role=crate::resources::role_word(status.role);
+                ui.label(match assignment{
+                    Some(tool)=>format!("{} · {}: {} · {}",status.operation_id,role,tool.tool_label(),tool.profile_label()),
+                    None=>format!("{} · {}: no assignment",status.operation_id,role),
+                });
+            }
             });observe_control("Job tools viewport",area.inner_rect);
         });
         self.resources.jobs_open &= open;

@@ -261,6 +261,31 @@ impl App {
             });
         });
     }
+    /// One assigned-tool row: the assignment's role, then the tool and cutting
+    /// profile it actually addresses. The probe keeps the role's stable name
+    /// the browser tours address, so only the visible text follows the tool.
+    fn assigned_tool_item(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        probe: &str,
+        index: usize,
+        tool: Option<&crate::resources::AssignedTool>,
+    ) {
+        self.nav_item(ui, label, probe, index);
+        match tool {
+            Some(tool) => {
+                ui.small(tool.label());
+                if let Some(origin) = tool.origin_label() {
+                    ui.small(origin);
+                }
+            }
+            None => {
+                ui.small("No assignment");
+            }
+        }
+    }
+
     fn nav_item(&mut self, ui: &mut egui::Ui, label: &str, probe: &str, index: usize) {
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.), egui::Sense::click());
@@ -437,12 +462,43 @@ impl App {
                     if button(ui, "Job tools", has_operation).clicked() {
                         self.resources.jobs_open = true;
                     }
+                    // Each row names the tool the selected operation actually
+                    // addresses: a library copy shows its own name and cutting
+                    // profile, and an unconfigured placeholder says so instead
+                    // of passing its default name off as a chosen cutter.
+                    use cam_core::project::v5::resources::AssignmentRole as Role;
+                    let endmill = self.assigned_tool(Role::Endmill);
+                    let vbit = self.assigned_tool(Role::Vbit);
+                    let milling = self.assigned_tool(Role::Milling);
+                    let knife_tool = self.assigned_tool(Role::Knife);
+                    let tab = crate::resources::tool_tab(kind, false);
                     if knife {
-                        self.nav_item(ui, "Drag knife", "Knife tool", 4);
+                        if let Some(tab) = tab {
+                            self.assigned_tool_item(
+                                ui,
+                                tab.noun,
+                                "Knife tool",
+                                4,
+                                knife_tool.as_ref(),
+                            );
+                        }
                     } else if has_operation {
-                        self.nav_item(ui, "Endmill", "Endmill tool", 4);
-                        if kind == Some(crate::session::OperationKind::FlatVcarve) {
-                            self.nav_item(ui, "V-bit", "V-bit tool", 5);
+                        if let Some(tab) = tab {
+                            let tool = match tab.role {
+                                Role::Endmill => endmill.as_ref(),
+                                Role::Milling => milling.as_ref(),
+                                _ => knife_tool.as_ref(),
+                            };
+                            self.assigned_tool_item(ui, tab.noun, "Endmill tool", 4, tool);
+                        }
+                        if let Some(vbit_tab) = crate::resources::tool_tab(kind, true) {
+                            self.assigned_tool_item(
+                                ui,
+                                vbit_tab.noun,
+                                "V-bit tool",
+                                5,
+                                vbit.as_ref(),
+                            );
                         }
                     }
                     ui.small("Geometry belongs to this job.");

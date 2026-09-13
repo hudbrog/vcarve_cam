@@ -530,6 +530,137 @@ pub fn capture_assignment(
     Ok(preset)
 }
 
+/// One assignment's resolved display: the job tool it actually uses, the
+/// library copy that tool came from, and the cutting profile applied to it.
+///
+/// Every place that names the tool of an assignment — the navigator's
+/// assigned-tool rows, the job-tool inspector headings and the job tools list
+/// — reads this one resolution, so none of them repeat the placeholder name an
+/// operation is created with as if it were a chosen cutter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssignedTool {
+    pub tool_id: String,
+    pub tool_name: String,
+    /// `false` while the bound job tool still has no geometry: adding an
+    /// operation binds a named placeholder, which is not a chosen cutter.
+    pub chosen: bool,
+    /// The library copy recorded on the job tool, when it has one.
+    pub origin: Option<v5::LibraryOrigin>,
+    /// The applied profile's own name at the time it was applied.
+    pub profile: Option<String>,
+    /// The copied cutting values were edited after that profile was applied.
+    pub modified: bool,
+}
+
+impl AssignedTool {
+    /// The tool one assignment addresses, or `None` when the operation carries
+    /// no such assignment.
+    pub fn of(job: &CamJobV5, operation_id: &str, role: AssignmentRole) -> Option<Self> {
+        let status = core::assignment_statuses(job)
+            .into_iter()
+            .find(|status| status.operation_id == operation_id && status.role == role)?;
+        let tool = job.tools.iter().find(|tool| tool.id == status.tool_id);
+        Some(Self {
+            tool_id: status.tool_id.clone(),
+            tool_name: tool
+                .map(|tool| tool.name.clone())
+                .unwrap_or_else(|| status.tool_id.clone()),
+            chosen: tool.is_some_and(|tool| tool.geometry.is_some()),
+            origin: tool.and_then(|tool| tool.library_origin.clone()),
+            profile: status
+                .applied
+                .as_ref()
+                .map(|applied| applied.name_at_application.clone()),
+            modified: status.status == core::ProfileStatus::Modified,
+        })
+    }
+
+    /// The chosen tool's name, or an explicit "nothing chosen yet" instead of
+    /// the placeholder name.
+    pub fn tool_label(&self) -> String {
+        if self.chosen {
+            self.tool_name.clone()
+        } else {
+            "no tool chosen".into()
+        }
+    }
+
+    /// The applied library profile's name, `*` once its copied values were
+    /// edited, or `custom` while the values carry no library provenance.
+    pub fn profile_label(&self) -> String {
+        match (&self.profile, self.modified) {
+            (Some(name), true) => format!("{name} *"),
+            (Some(name), false) => name.clone(),
+            (None, _) => "custom".into(),
+        }
+    }
+
+    /// The one-line assignment label: "6 mm endmill · rough *", or
+    /// "no tool chosen · custom" while the operation is still unconfigured.
+    pub fn label(&self) -> String {
+        format!("{} · {}", self.tool_label(), self.profile_label())
+    }
+
+    /// Where the copied snapshot came from, when the document recorded it.
+    /// Provenance is never inferred from a matching name or geometry.
+    pub fn origin_label(&self) -> Option<String> {
+        let origin = self.origin.as_ref()?;
+        let renamed = origin.name_at_copy != self.tool_name;
+        Some(format!(
+            "copied from library '{}' · tool '{}' r{}{}",
+            origin.library_id,
+            origin.tool_id,
+            origin.copied_revision,
+            if renamed { " (renamed here)" } else { "" }
+        ))
+    }
+}
+
+/// The word the workspace uses for one assignment role in listings.
+pub fn role_word(role: AssignmentRole) -> &'static str {
+    match role {
+        AssignmentRole::Endmill => "endmill",
+        AssignmentRole::Vbit => "V-bit",
+        AssignmentRole::Milling => "cutter",
+        AssignmentRole::Knife => "knife",
+    }
+}
+
+/// Which assignment one job-tool surface addresses, and the word that surface
+/// uses for it. One definition keeps the navigator rows, the inspector
+/// headings and the tool panel titles in step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ToolTab {
+    pub noun: &'static str,
+    pub role: AssignmentRole,
+}
+
+/// The tool surface an operation kind publishes. `finish` selects the V-bit
+/// tab, which only a Flat V-carve operation owns; `None` is that tab for every
+/// other kind, where the panel reports that no V-bit is used.
+pub fn tool_tab(kind: Option<crate::session::OperationKind>, finish: bool) -> Option<ToolTab> {
+    use crate::session::OperationKind;
+    Some(match (kind?, finish) {
+        (OperationKind::DragKnife, _) => ToolTab {
+            noun: "Drag knife",
+            role: AssignmentRole::Knife,
+        },
+        (OperationKind::FlatVcarve, false) => ToolTab {
+            noun: "Endmill",
+            role: AssignmentRole::Endmill,
+        },
+        (OperationKind::FlatVcarve, true) => ToolTab {
+            noun: "V-bit",
+            role: AssignmentRole::Vbit,
+        },
+        (_, false) => ToolTab {
+            noun: "Cutter",
+            role: AssignmentRole::Milling,
+        },
+        (_, true) => return None,
+    })
+}
+
 /// Editing state is deliberately outside Document and job Undo/recovery.
 pub struct Editor {
     pub search: [String; 2],
@@ -605,5 +736,92 @@ impl Default for Editor {
             job_invalid: Default::default(),
             role: AssignmentRole::Endmill,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operation_authoring::{self, Kind};
+
+    fn profile_job() -> CamJobV5 {
+        let empty = operation_authoring::empty_job();
+        operation_authoring::apply(&empty, operation_authoring::add(Kind::Profile, &empty)).unwrap()
+    }
+
+    #[test]
+    fn a_fresh_operation_reports_no_chosen_tool_and_custom_values() {
+        let job = profile_job();
+        let id = job.operations[0].id.clone();
+        let tool = AssignedTool::of(&job, &id, AssignmentRole::Milling).unwrap();
+        // Adding an operation binds a named placeholder. It is not a cutter
+        // anyone chose, so the label never presents it as one.
+        assert_eq!(tool.tool_name, "Endmill");
+        assert!(!tool.chosen);
+        assert_eq!(tool.tool_label(), "no tool chosen");
+        assert_eq!(tool.profile_label(), "custom");
+        assert_eq!(tool.label(), "no tool chosen · custom");
+        assert_eq!(tool.origin_label(), None);
+    }
+
+    #[test]
+    fn a_library_copy_reports_its_own_name_profile_and_provenance() {
+        let catalog = Catalog::decode(include_str!("../../../fixtures/gui5/library.json")).unwrap();
+        let job = profile_job();
+        let id = job.operations[0].id.clone();
+        let job = ResourceCommand::ApplyToolProfile {
+            catalog,
+            tool: "endmill".into(),
+            preset: "rough".into(),
+            operation: id.clone(),
+            role: AssignmentRole::Milling,
+        }
+        .execute(&job)
+        .unwrap();
+        let tool = AssignedTool::of(&job, &id, AssignmentRole::Milling).unwrap();
+        assert!(tool.chosen);
+        // The copied snapshot keeps the library tool's own name, and the
+        // applied profile keeps the preset's own name.
+        assert_eq!(tool.tool_label(), "Endmill");
+        assert_eq!(tool.profile_label(), "Lettering rough");
+        assert_eq!(tool.label(), "Endmill · Lettering rough");
+        assert_eq!(
+            tool.origin_label().unwrap(),
+            "copied from library 'gui5-lettering-library' · tool 'endmill' r1"
+        );
+        let mut edited = job;
+        let v5::OperationSettingsV5::Profile(settings) = &mut edited.operations[0].settings else {
+            panic!("the fixture added a Profile operation")
+        };
+        settings.assignment.cutting_feed_mm_min = Some(999.);
+        let tool = AssignedTool::of(&edited, &id, AssignmentRole::Milling).unwrap();
+        assert_eq!(tool.profile_label(), "Lettering rough *");
+        assert_eq!(tool.label(), "Endmill · Lettering rough *");
+    }
+
+    #[test]
+    fn tool_tabs_name_the_assignment_each_surface_edits() {
+        use crate::session::OperationKind;
+        let endmill = |noun, role| Some(ToolTab { noun, role });
+        assert_eq!(
+            tool_tab(Some(OperationKind::FlatVcarve), false),
+            endmill("Endmill", AssignmentRole::Endmill)
+        );
+        assert_eq!(
+            tool_tab(Some(OperationKind::FlatVcarve), true),
+            endmill("V-bit", AssignmentRole::Vbit)
+        );
+        assert_eq!(
+            tool_tab(Some(OperationKind::Profile), false),
+            endmill("Cutter", AssignmentRole::Milling)
+        );
+        assert_eq!(
+            tool_tab(Some(OperationKind::DragKnife), false),
+            endmill("Drag knife", AssignmentRole::Knife)
+        );
+        // Only a Flat V-carve operation owns a V-bit stage, and a document
+        // without an operation owns no tool surface at all.
+        assert_eq!(tool_tab(Some(OperationKind::Profile), true), None);
+        assert_eq!(tool_tab(None, false), None);
     }
 }

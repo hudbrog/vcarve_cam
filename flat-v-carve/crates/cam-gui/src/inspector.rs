@@ -175,7 +175,11 @@ impl App {
         let panel=egui::SidePanel::right("gui2-inspector").default_width(self.inspector_width).width_range(300.0..=480.0).resizable(true).show(ctx,|ui|{
             ui.add_space(8.);
             if self.inspector_tab != 2 {
-                ui.strong(["ARTWORK", "STOCK & WORK ZERO", "OPERATION", "MACHINE", "JOB TOOL · ENDMILL", "JOB TOOL · V-BIT", "RESULT INSPECTION", "JOB SETTINGS"][self.inspector_tab]);
+                let title = self.inspector_heading();
+                let heading = ui.strong(title.clone());
+                // The text itself is the probe: what a job-tool tab is called
+                // is exactly what a reviewer needs to check.
+                observe_control(&format!("Inspector heading {title}"), heading.rect);
                 ui.separator();
             }
             if self.inspector_tab == 2 && self.document.is_some() { self.operation_header(ui,ctx); }
@@ -235,6 +239,34 @@ impl App {
         });
         self.inspector_width = panel.response.rect.width();
     }
+    /// The inspector's heading. A job-tool tab names the tool the selected
+    /// operation actually addresses, so a library copy reports its own name
+    /// and a fresh operation reports that nothing is chosen yet.
+    fn inspector_heading(&self) -> String {
+        if !matches!(self.inspector_tab, 4 | 5) {
+            return [
+                "ARTWORK",
+                "STOCK & WORK ZERO",
+                "OPERATION",
+                "MACHINE",
+                "",
+                "",
+                "RESULT INSPECTION",
+                "JOB SETTINGS",
+            ][self.inspector_tab]
+                .into();
+        }
+        let Some(tab) = crate::resources::tool_tab(self.operation_kind(), self.inspector_tab == 5)
+        else {
+            // Only a Flat V-carve operation owns a V-bit stage.
+            return "JOB TOOL · V-BIT".into();
+        };
+        match self.assigned_tool(tab.role) {
+            Some(tool) => format!("JOB TOOL · {}", tool.label()),
+            None => format!("JOB TOOL · {}", crate::resources::role_word(tab.role)),
+        }
+    }
+
     /// The geometry tab of one job tool. The assignment belongs to an
     /// operation, so the panel names the operation that uses it and edits only
     /// that operation's tool snapshot.
@@ -249,11 +281,21 @@ impl App {
             ui.label(format!("{label} does not use a V-bit."));
             return;
         }
-        ui.heading(if finish {
-            "V-bit geometry"
-        } else {
-            "Endmill geometry"
+        // A Flat V-carve spends an endmill and a V-bit; a Face operation spends
+        // one cutter. Name the tool this assignment actually addresses rather
+        // than the placeholder it was created with.
+        let tab = crate::resources::tool_tab(kind, finish).expect("a cutter tab exists here");
+        let assigned = self.assigned_tool(tab.role);
+        ui.heading(match &assigned {
+            Some(tool) => format!("{} geometry · {}", tab.noun, tool.tool_label()),
+            None => format!("{} geometry", tab.noun),
         });
+        if let Some(tool) = &assigned {
+            ui.small(format!("Profile: {}", tool.profile_label()));
+            if let Some(origin) = tool.origin_label() {
+                ui.small(origin);
+            }
+        }
         self.numbers(ui, ctx, if finish { &[16, 17, 18, 19] } else { &[12, 13] });
         if button(
             ui,
@@ -705,5 +747,78 @@ impl App {
                 "Create or choose a machine profile before checked export.",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operation_authoring::{self, Kind};
+    use cam_core::project::v5::resources::AssignmentRole;
+
+    fn profile_app() -> App {
+        let empty = operation_authoring::empty_job();
+        let job =
+            operation_authoring::apply(&empty, operation_authoring::add(Kind::Profile, &empty))
+                .unwrap();
+        App {
+            document: Some(Document::new(job)),
+            // The Profile operation's cutter tab.
+            inspector_tab: 4,
+            ..Default::default()
+        }
+    }
+
+    /// The rendered job-tool heading, read back from the input probe.
+    fn headings(app: &mut App, ctx: &egui::Context) -> Vec<String> {
+        for _ in 0..3 {
+            CONTROLS.with(|c| c.borrow_mut().clear());
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 900.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| app.inspector(ctx),
+            );
+        }
+        CONTROLS.with(|c| {
+            c.borrow()
+                .keys()
+                .filter(|key| key.starts_with("Inspector heading "))
+                .cloned()
+                .collect()
+        })
+    }
+
+    #[test]
+    fn the_job_tool_tab_names_the_tool_and_profile_the_assignment_uses() {
+        let ctx = egui::Context::default();
+        let mut app = profile_app();
+        assert_eq!(
+            headings(&mut app, &ctx),
+            ["Inspector heading JOB TOOL · no tool chosen · custom"]
+        );
+        // Apply a library tool and cutting profile exactly as the picker does.
+        let operation = app.document.as_ref().unwrap().job.operations[0].id.clone();
+        let library =
+            crate::resources::Catalog::decode(include_str!("../../../fixtures/gui5/library.json"))
+                .unwrap();
+        let applied = crate::resources::ResourceCommand::ApplyToolProfile {
+            catalog: library,
+            tool: "endmill".into(),
+            preset: "rough".into(),
+            operation,
+            role: AssignmentRole::Milling,
+        }
+        .execute(&app.document.as_ref().unwrap().job)
+        .unwrap();
+        app.document = Some(Document::new(applied));
+        assert_eq!(
+            headings(&mut app, &ctx),
+            ["Inspector heading JOB TOOL · Endmill · Lettering rough"]
+        );
     }
 }
