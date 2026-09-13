@@ -650,6 +650,55 @@ fn near_reversal_corners_are_rejected_not_guessed() {
     assert!(diagnostic.message.contains("reversal"));
 }
 
+/// A needle shorter than the planner's near-zero budget is flattening noise,
+/// not a corner: it is cleaned (plan section 12.4 step 2) instead of failing
+/// the operation. `real_data/knife_flower`'s `outline-12-chain-0` reported
+/// exactly this — a 0.3 µm backtrack at (127.774, 39.535) inside an
+/// otherwise smooth petal, rejected with "split or simplify the corner".
+#[test]
+fn sub_tolerance_needles_are_cleaned_not_rejected() {
+    // The drawn run turns back on itself by 170.2 degrees over 0.3 µm at
+    // (25, 15) — a quarter of the 0.01 mm motion tolerance, so no blade
+    // direction is resolvable from it.
+    const NEEDLE: &str = r##"<path id="cut" fill="none" stroke="#000" stroke-width="0.4" d="M5 15 L25 15 L24.9997035 15.0000511 L35 15.0000511"/>"##;
+    let plan = complete_plan(NEEDLE, knife_settings(&["cut-chain-0"]));
+    let motions = knife_motions(&plan);
+    assert_eq!(
+        motions
+            .iter()
+            .filter(|m| m.purpose == MotionPurpose::KnifeSwivel)
+            .count(),
+        0,
+        "the cleaned needle is not a corner and needs no swivel"
+    );
+    for motion in motions
+        .iter()
+        .filter(|m| m.effect == MotionEffect::KnifeTrace)
+    {
+        let tip = knife_tip(motion.start.xy(), motion.blade_heading_deg.unwrap().0, 1.);
+        assert!(
+            close(tip.y, 15., 1e-4) && (5. ..=35.).contains(&tip.x),
+            "tip {tip:?} of motion {} stays on the run",
+            motion.id
+        );
+    }
+    // The same turn with resolvable legs (0.5 mm) is a real reversal and is
+    // still rejected rather than guessed.
+    const REAL_REVERSAL: &str = r##"<path id="cut" fill="none" stroke="#000" stroke-width="0.4" d="M5 15 L25 15 L24.5 15.0001 L35 15.0001"/>"##;
+    let plan = OperationPlan::plan_job(
+        &job(REAL_REVERSAL, knife_settings(&["cut-chain-0"])),
+        &PlanLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        plan.operation_results[0].generation_status,
+        GenerationStatus::Incomplete
+    );
+    let diagnostic = &plan.generation_diagnostics[0];
+    assert_eq!(diagnostic.code, "KNIFE_CORNER_AMBIGUOUS");
+    assert!(diagnostic.message.contains("reversal"));
+}
+
 #[test]
 fn missing_settings_are_located_not_defaulted() {
     let mut settings = knife_settings(&["cut-chain-0"]);

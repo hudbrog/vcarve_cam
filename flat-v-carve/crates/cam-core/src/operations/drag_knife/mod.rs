@@ -39,8 +39,14 @@ fn error(code: &str, message: impl Into<String>) -> Diagnostic {
 const RESERVE_MM: f64 = 1e-6;
 /// Turns within this many degrees of a pure reversal have no trustworthy
 /// swivel direction; the first release rejects them instead of guessing
-/// (plan section 12.1).
+/// (plan section 12.1), unless the reversal sits on a degenerate segment the
+/// planner is allowed to clean (plan section 12.4 step 2).
 const AMBIGUOUS_REVERSAL_DEG: f64 = 170.;
+/// Share of the motion tolerance one planner error source may spend. Cleaning
+/// degenerate chain segments (plan section 12.4 step 2) and linearizing
+/// swivel arcs (section 8.4) each take one share, leaving the rest of the
+/// declared tip-path budget to the replay gate.
+const TOLERANCE_ERROR_SHARE: f64 = 4.;
 /// An alignment/contact swivel whose sweep is this close to 180 degrees is
 /// equally ambiguous and is rejected rather than arbitrarily sided.
 const AMBIGUOUS_ALIGNMENT_DEG: f64 = 0.5;
@@ -303,20 +309,83 @@ fn tip_polyline(
     Ok(path)
 }
 
+/// Clean degenerate segments out of one tip polyline (plan section 12.4 step
+/// 2), before any turn is interpreted as a corner.
+///
+/// Two kinds of vertex are removed:
+///
+/// - a vertex that duplicates a neighbour (within the numerical reserve),
+///   which carries no direction at all; and
+/// - a *needle*: a vertex whose turn is a near-reversal (the same threshold
+///   the corner check rejects at) and whose shorter adjacent segment lies
+///   within `budget_mm`. The blade cannot resolve a swivel direction from
+///   legs that short, and the excursion it describes is already inside the
+///   accuracy the plan claims, so flattening and rounding artifacts at
+///   smooth junctions are cleaned instead of failing the whole operation.
+///
+/// A real near-reversal — both legs resolvable — always survives and is
+/// still rejected by [`build_path`]'s corner check rather than guessed.
+/// Endpoints never move, so chain starts, anchors and the closed ring's seam
+/// keep their source identity, and a ring never drops below three vertices.
+fn clean_degenerate_segments(points: &mut Vec<Point>, closed: bool, budget_mm: f64) {
+    // A closed ring's tip polyline carries its seam vertex twice.
+    let minimum = if closed { 4 } else { 2 };
+    loop {
+        if points.len() <= minimum {
+            return;
+        }
+        let mut removed = false;
+        for index in 1..points.len() - 1 {
+            let previous = points[index - 1];
+            let candidate = points[index];
+            let next = points[index + 1];
+            let in_length = previous.distance(candidate);
+            let out_length = candidate.distance(next);
+            let duplicate = in_length <= RESERVE_MM || out_length <= RESERVE_MM;
+            let needle = !duplicate
+                && in_length.min(out_length) <= budget_mm
+                && signed_turn_deg(
+                    Point::new(
+                        (candidate.x - previous.x) / in_length,
+                        (candidate.y - previous.y) / in_length,
+                    ),
+                    Point::new(
+                        (next.x - candidate.x) / out_length,
+                        (next.y - candidate.y) / out_length,
+                    ),
+                )
+                .abs()
+                    > AMBIGUOUS_REVERSAL_DEG;
+            if duplicate || needle {
+                points.remove(index);
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            return;
+        }
+    }
+}
+
 /// Analyze one chain into compensated path elements. Every turn becomes a
 /// swivel arc in the geometry; whether it executes as an explicit
 /// depth-lifted swivel or a continuous cutting arc is decided at emission
 /// from the corner threshold. The holder leads the first tip vertex by one
 /// blade offset along the opening tangent, so the offset is a parameter
-/// here, never a fixed standoff. Near-reversal turns are rejected here.
+/// here, never a fixed standoff. Degenerate segments are cleaned first (plan
+/// section 12.4 step 2); near-reversal turns that survive that cleaning are
+/// rejected here rather than guessed.
 fn build_path(
     chain_id: &str,
     vertices: &[Point],
     closed: bool,
     overlap_mm: f64,
     blade_offset_mm: f64,
+    near_zero_mm: f64,
 ) -> Result<KnifePath> {
-    let tip = tip_polyline(vertices, closed, overlap_mm, chain_id)?;
+    let mut tip = tip_polyline(vertices, closed, overlap_mm, chain_id)?;
+    clean_degenerate_segments(&mut tip, closed, near_zero_mm);
     let mut elements = vec![];
     let mut previous_tangent: Option<Point> = None;
     for pair in tip.windows(2) {
@@ -834,11 +903,13 @@ pub(crate) fn plan(
     let spec = knife_geometry(ctx, settings)?;
     let d = spec.blade_offset_mm;
     let tolerance = ctx.tolerances.motion_tolerance_mm.expect("checked above");
-    // Error allocation: import flattening spent its share upstream; swivel
-    // linearization spends a quarter of the motion tolerance so the replay
-    // budget (the full tolerance, measured against the intended polyline)
-    // keeps headroom.
-    let linearization_error = tolerance / 4.;
+    // Error allocation: import flattening spent its share upstream; cleaning
+    // degenerate chain segments (plan section 12.4 step 2) and swivel
+    // linearization each spend one share of the motion tolerance so the
+    // replay budget (the full tolerance, measured against the intended
+    // polyline) keeps headroom.
+    let near_zero = tolerance / TOLERANCE_ERROR_SHARE;
+    let linearization_error = tolerance / TOLERANCE_ERROR_SHARE;
     let catalogue = geometry.catalogue()?;
     let selected = match catalogue.select_chains(&settings.chains) {
         Ok(selected) => selected,
@@ -998,7 +1069,7 @@ pub(crate) fn plan(
                 operation_id,
             )]));
         }
-        match build_path(&chain.id, &vertices, chain.closed, overlap, d) {
+        match build_path(&chain.id, &vertices, chain.closed, overlap, d, near_zero) {
             Ok(path) => paths.push(path),
             Err(diag) => {
                 return Ok(incomplete(vec![issue(
