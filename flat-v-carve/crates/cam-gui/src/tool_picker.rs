@@ -500,11 +500,21 @@ mod tests {
                 }
                 // The established carving fixture, so the Flat V-carve stages
                 // have a tool and an assignment to address.
-                None => crate::authoring::import_svg(
-                    "letters.svg".into(),
-                    include_str!("../../../fixtures/gui3/lettering.svg").into(),
-                )
-                .unwrap(),
+                None => {
+                    let artwork = crate::authoring::import_svg(
+                        "letters.svg".into(),
+                        include_str!("../../../fixtures/gui3/lettering.svg").into(),
+                    )
+                    .unwrap();
+                    crate::operation_authoring::apply(
+                        &artwork,
+                        crate::operation_authoring::add(
+                            crate::operation_authoring::Kind::FlatVcarve,
+                            &artwork,
+                        ),
+                    )
+                    .unwrap()
+                }
             };
             let index = match kind {
                 None | Some(Kind::FlatVcarve) => {

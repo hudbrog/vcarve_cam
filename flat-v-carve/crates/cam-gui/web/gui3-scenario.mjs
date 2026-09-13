@@ -17,11 +17,20 @@ export async function gui3Scenario({control,edit,state,waitFor,send,evaluate,sle
     for(const type of ['mousePressed','mouseReleased'])await send('Input.dispatchMouseEvent',{type,x:p[0],y:p[1],button:'left',clickCount:1,modifiers});
     await sleep(250);
   };
+  // Importing artwork never invents a machining step: every source this tour
+  // assigns geometry to needs the Flat V-carve operation added explicitly.
+  const addCarving=async label=>{
+    if((await state()).job?.operations?.length)throw new Error('Artwork import invented an operation');
+    await control('Add operation');await control('Add Flat V-carve — carving-1');
+    await waitFor(s=>s.job?.operations?.length===1&&!s.active,label);
+  };
   await control('File');await chooseFile('New from SVG','fixtures/gui3/overlap.svg');await waitFor(s=>s.job.name==='overlap.svg'&&!s.active,'overlap source');
+  await addCarving('carving operation for the overlap source');
   await pick([15,16]);const first=await waitFor(s=>s.job.components===1&&!s.active,'first coincident owner assigned');
   await control('Next overlap');const second=await waitFor(s=>s.job.components===1&&!s.active&&s.picked[0]?.local_geometry_id!==first.picked[0]?.local_geometry_id,'coincident owner cycle');
   record('coincident filled candidates cycle through explicit owners',second.picked);
   await control('File');await chooseFile('New from SVG','fixtures/gui3/lettering.svg');await waitFor(s=>s.job.name==='lettering.svg'&&!s.active,'lettering restored for tour');
+  await addCarving('carving operation for the lettering source');
   await pick([4,20]);let picked=await waitFor(s=>s.job?.components===1&&!s.active,'click assigns one filled region');
   if(picked.picked[0].local_geometry_id!=='letter-l::0')throw new Error('Viewport click assigned the wrong filled region');
   await pick([26,15]);const hole=await state();

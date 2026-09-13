@@ -214,13 +214,21 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Imported artwork plus the Flat V-carve operation the user adds to cut
+    /// it with; the import itself never creates one.
+    fn carving_job(svg: &str) -> CamJobV5 {
+        let artwork = crate::authoring::import_svg("letters.svg".into(), svg.into()).unwrap();
+        crate::operation_authoring::apply(
+            &artwork,
+            crate::operation_authoring::add(crate::operation_authoring::Kind::FlatVcarve, &artwork),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn every_planner_missing_field_has_a_typed_destination() {
-        let mut job = crate::authoring::import_svg(
-            "letters.svg".into(),
-            include_str!("../../../fixtures/gui3/lettering.svg").into(),
-        )
-        .unwrap();
+        let mut job = carving_job(include_str!("../../../fixtures/gui3/lettering.svg"));
         crate::authoring::set_mode(&mut job, cam_core::project::FlatVcarveMode::Combined);
         let issues = cam_core::project::v5::inspection::inspect_flat_vcarve_fields(
             &job,
@@ -241,11 +249,7 @@ mod tests {
 
     #[test]
     fn selection_issues_route_to_the_operation_geometry_group() {
-        let mut job = crate::authoring::import_svg(
-            "letters.svg".into(),
-            include_str!("../../../fixtures/gui3/lettering.svg").into(),
-        )
-        .unwrap();
+        let mut job = carving_job(include_str!("../../../fixtures/gui3/lettering.svg"));
         let operation = job.operations[0].id.clone();
         assert_eq!(
             target(&job, &format!("operations[{operation}].components[0]")),

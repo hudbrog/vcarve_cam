@@ -180,7 +180,10 @@ mod tests {
     }
     #[test]
     fn filled_picking_excludes_holes_and_returns_all_coincident_owners() {
+        // Artwork-only project: picking reads the shared catalogue, so no
+        // operation is needed for the viewport candidates.
         let job=crate::authoring::import_svg("letters.svg".into(),"<svg xmlns='http://www.w3.org/2000/svg' width='40mm' height='20mm' viewBox='0 0 40 20'><path id='letter-o' fill-rule='evenodd' d='M0 0H20V20H0Z M5 5V15H15V5Z'/><rect id='overlap' x='1' y='1' width='2' height='2'/></svg>".into()).unwrap();
+        assert!(job.operations.is_empty());
         let (meta, _) = crate::session::execute(
             &mut cam_service::retained::Retained::new(),
             crate::session::Command::Preview {

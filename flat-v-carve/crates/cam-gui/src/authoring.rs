@@ -5,6 +5,11 @@ use cam_core::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Start a project from one SVG: the artwork item, its page stock and the
+/// planning tolerances. The ordered operation list and the job tools are
+/// deliberately left empty — an import is artwork, not a machining step — so
+/// Face, Flat V-carve, Profile and drag knife are only ever added by an
+/// explicit user action, and each added operation brings the tool it needs.
 pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
     if svg.len() > 8_000_000 {
         return Err("SVG exceeds 8 MB".into());
@@ -19,30 +24,14 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
         import_settings: SvgInterpretation::default(),
         placement: Default::default(),
     };
-    // Actual import admission belongs to the core, including units and fills.
+    // Actual import admission belongs to the core: units, geometry
+    // interpretation and unsupported content are resolved by the one SVG
+    // importer, so a source without usable geometry is refused there instead
+    // of by a gate shaped around one operation kind.
     let catalogue = artwork::resolve_artwork_item(&item).map_err(|e| e.to_string())?;
     if let Some(error) = catalogue.import_error {
         return Err(error);
     }
-    if !catalogue
-        .entries
-        .iter()
-        .any(|c| c.kind == GeometryRefKind::FilledComponent)
-    {
-        return Err(
-            "SVG has no supported filled components. Convert text and strokes to paths.".into(),
-        );
-    }
-    let assignment = |id: &str| MillingAssignmentV5 {
-        tool_id: id.into(),
-        spindle_rpm: None,
-        spindle_direction: None,
-        cutting_feed_mm_min: None,
-        plunge_feed_mm_min: None,
-        max_stepdown_mm: None,
-        stepover_mm: None,
-        applied_profile: None,
-    };
     let job = CamJobV5 {
         schema_version: 5,
         name: filename,
@@ -56,34 +45,11 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
             ..Default::default()
         },
         artwork: vec![item],
-        tools: [("endmill", "Endmill"), ("vbit", "V-bit target")]
-            .into_iter()
-            .map(|(id, name)| JobToolV5 {
-                id: id.into(),
-                name: name.into(),
-                geometry: None,
-                capabilities: Default::default(),
-                library_origin: None,
-            })
-            .collect(),
-        operations: vec![OperationV5 {
-            id: "carving".into(),
-            name: "Flat V-carve".into(),
-            enabled: true,
-            settings: OperationSettingsV5::FlatVcarve(FlatVcarveSettingsV5 {
-                components: vec![],
-                mode: FlatVcarveMode::EndmillOnly,
-                endmill: assignment("endmill"),
-                vbit: assignment("vbit"),
-                top: Default::default(),
-                max_depth_mm: None,
-                wall_allowance_mm: None,
-                max_floor_ridge_mm: None,
-                max_detail_residual_mm: None,
-                rough: None,
-                finish: None,
-            }),
-        }],
+        tools: vec![],
+        // Importing artwork never invents a machining step: the ordered
+        // operation list stays empty until the user adds an operation, exactly
+        // as it does for artwork added to an open job.
+        operations: vec![],
         tolerances: cam_core::job::PlanningTolerances {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.05),

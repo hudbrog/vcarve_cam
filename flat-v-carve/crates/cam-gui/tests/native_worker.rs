@@ -207,7 +207,8 @@ fn persistent_native_process_open_edit_generate_seek_prepare_save_reopen_and_sto
     assert_eq!(incomplete.setup.stock.thickness_mm, Some(18.));
     assert_eq!(incomplete.setup.clearance_above_stock_mm, Some(5.));
     assert!(incomplete.setup.stock.xy.is_some());
-    assert!(gui::settings(&incomplete).components.is_empty());
+    // The import is artwork only: the ordered operation list stays empty.
+    assert!(incomplete.operations.is_empty());
     let (preview, _) = worker.request(Command::Preview {
         job: imported.job.clone(),
     });

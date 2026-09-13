@@ -1103,7 +1103,17 @@ impl App {
                 }
                 self.view.load_scene(Ok((meta, payload)));
                 if self.inspector_tab == 0 {
-                    self.status="SVG imported. In the operation's Geometry to carve, or by clicking filled regions in the viewport, select the components to cut; no machining defaults were copied.".into();
+                    // Importing artwork adds artwork only: the operation list
+                    // stays empty until the user adds an operation to cut with.
+                    self.status = if self
+                        .document
+                        .as_ref()
+                        .is_some_and(|d| d.job.operations.is_empty())
+                    {
+                        "SVG imported. Add an operation from the Operations list, then select the geometry it cuts; no machining defaults were copied.".into()
+                    } else {
+                        "SVG imported. In the operation's Geometry to carve, or by clicking filled regions in the viewport, select the components to cut; no machining defaults were copied.".into()
+                    };
                 }
             }
             Some("generated" | "revalidated") => {

@@ -610,9 +610,14 @@ mod tests {
     use super::*;
 
     fn app() -> App {
-        let job = crate::authoring::import_svg(
+        let artwork = crate::authoring::import_svg(
             "letters.svg".into(),
             include_str!("../../../fixtures/gui3/lettering.svg").into(),
+        )
+        .unwrap();
+        let job = crate::operation_authoring::apply(
+            &artwork,
+            crate::operation_authoring::add(crate::operation_authoring::Kind::FlatVcarve, &artwork),
         )
         .unwrap();
         App {

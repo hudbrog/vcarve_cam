@@ -3,6 +3,7 @@ use cam_gui_runtime::{
     app::Document,
     authoring::{self, settings_mut},
     compute,
+    operation_authoring::{self, Kind},
     session::{self, Command},
 };
 use cam_service::retained::Retained;
@@ -17,12 +18,10 @@ fn new_svg_has_origin_start_and_planning_defaults_without_invented_cutting_value
     );
     assert_eq!(job.tolerances.motion_tolerance_mm, Some(0.01));
     assert_eq!(job.tolerances.verification_tolerance_mm, Some(0.05));
-    assert!(
-        session::settings(&job)
-            .endmill
-            .cutting_feed_mm_min
-            .is_none()
-    );
+    // An import is artwork, not a machining step: no operation exists yet, so
+    // there is no cutting assignment that could hold an invented value.
+    assert!(job.operations.is_empty());
+    assert_eq!(job.artwork.len(), 1);
 }
 
 #[test]
@@ -149,13 +148,10 @@ fn gui3_ramp_requires_explicit_values_and_tool_changes_clear_only_one_assignment
 #[test]
 fn gui3_lettering_subset_supports_complete_combined_export() {
     let base = configured();
-    let mut doc = Document::new(
-        authoring::import_svg(
-            "lettering.svg".into(),
-            include_str!("../../../fixtures/gui3/lettering.svg").into(),
-        )
-        .unwrap(),
-    );
+    let mut doc = Document::new(carving_job(
+        "lettering.svg",
+        include_str!("../../../fixtures/gui3/lettering.svg"),
+    ));
     doc.job.setup = base.job.setup;
     doc.job.tools = base.job.tools;
     doc.job.tolerances = base.job.tolerances;
@@ -240,9 +236,20 @@ fn gui3_readiness_keeps_output_only_reference_repairs_out_of_generation() {
 fn edit(doc: &mut Document, field: usize, text: &str) {
     let _ = doc.edit(field, text.into());
 }
+
+/// The established carving fixture: artwork imported into a fresh project,
+/// then the Flat V-carve operation the user adds to cut it with.
+fn carving_job(filename: &str, svg: &str) -> v5::CamJobV5 {
+    let artwork = authoring::import_svg(filename.into(), svg.into()).unwrap();
+    operation_authoring::apply(
+        &artwork,
+        operation_authoring::add(Kind::FlatVcarve, &artwork),
+    )
+    .unwrap()
+}
+
 fn configured() -> Document {
-    let mut doc =
-        Document::new(authoring::import_svg("new-carving.svg".into(), SVG.into()).unwrap());
+    let mut doc = Document::new(carving_job("new-carving.svg", SVG));
     let catalogue = v5::artwork::inspect_artwork(&doc.job).unwrap();
     settings_mut(&mut doc.job).components = vec![
         catalogue.items[0]
@@ -313,25 +320,17 @@ fn configured() -> Document {
     doc
 }
 #[test]
-fn import_has_stock_defaults_but_cutting_is_unset_and_selects_nothing() {
+fn import_starts_a_project_with_artwork_and_stock_but_no_machining_state() {
     let job = authoring::import_svg("new.svg".into(), SVG.into()).unwrap();
-    assert!(session::settings(&job).components.is_empty());
+    // Importing artwork never invents a machining step: the ordered operation
+    // list and the job tools stay empty until the user adds an operation.
+    assert!(job.operations.is_empty());
+    assert!(job.tools.is_empty());
     assert_eq!(job.setup.stock.thickness_mm, Some(18.));
     assert_eq!(job.setup.clearance_above_stock_mm, Some(5.));
     assert_eq!(
         job.setup.stock.xy,
         Some(authoring::svg_page_stock(&job.artwork[0]).unwrap())
-    );
-    assert!(
-        job.tools
-            .iter()
-            .all(|t| t.geometry.is_none() && t.capabilities.plunge_capable.is_none())
-    );
-    assert!(
-        session::settings(&job)
-            .endmill
-            .cutting_feed_mm_min
-            .is_none()
     );
     assert!(job.machine_configuration.is_none());
     assert_eq!(session::open(&job.to_json().unwrap()).unwrap(), job);
@@ -354,7 +353,57 @@ fn import_has_stock_defaults_but_cutting_is_unset_and_selects_nothing() {
             .len(),
         2
     );
+    // Adding the operation is what brings the tools and selects geometry; both
+    // start unset.
+    let carving =
+        operation_authoring::apply(&job, operation_authoring::add(Kind::FlatVcarve, &job)).unwrap();
+    assert_eq!(carving.operations.len(), 1);
+    assert_eq!(
+        carving
+            .tools
+            .iter()
+            .map(|tool| tool.id.as_str())
+            .collect::<Vec<_>>(),
+        ["endmill", "vbit"]
+    );
+    assert!(
+        carving
+            .tools
+            .iter()
+            .all(|t| t.geometry.is_none() && t.capabilities.plunge_capable.is_none())
+    );
+    assert!(session::settings(&carving).components.is_empty());
+    assert!(
+        session::settings(&carving)
+            .endmill
+            .cutting_feed_mm_min
+            .is_none()
+    );
     assert!(authoring::import_svg("bad.svg".into(), "<svg>broken".into()).is_err());
+}
+
+#[test]
+fn starting_a_project_admits_artwork_and_refuses_sources_without_geometry() {
+    // Both artwork entry points read one core catalogue, and neither assumes
+    // the Flat V-carve operation the import used to carry.
+    for (filename, svg) in [
+        ("new-carving.svg", SVG),
+        (
+            "lettering.svg",
+            include_str!("../../../fixtures/gui3/lettering.svg"),
+        ),
+    ] {
+        let job = authoring::import_svg(filename.into(), svg.into()).unwrap();
+        assert!(job.operations.is_empty() && job.tools.is_empty());
+    }
+    let empty = "<svg xmlns='http://www.w3.org/2000/svg' width='10mm' height='10mm'></svg>";
+    let error = authoring::import_svg("empty.svg".into(), empty.into()).unwrap_err();
+    // The refusal is the core importer's own diagnostic, not a Flat V-carve
+    // shaped gate in the workspace.
+    assert!(
+        error.contains("no supported visible filled regions"),
+        "{error}"
+    );
 }
 #[test]
 fn units_placement_selection_and_partial_geometry_round_trip() {

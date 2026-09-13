@@ -9,8 +9,12 @@ export async function authoringScenario({control,edit,state,waitFor,send,evaluat
   record('new SVG is unset with no selected components',imported.job);
   await control('Save job');await waitFor(s=>s.status.includes('Download requested'),'incomplete job download');
   await sleep(500);const incomplete=JSON.parse(readFileSync(path.join(out,'carving.gui2.job.json'),'utf8'));
-  if(incomplete.setup.stock.thickness_mm!==18 || !incomplete.setup.stock.xy || incomplete.operations[0].settings.settings.endmill.cutting_feed_mm_min)throw new Error('Incomplete save lost stock defaults or invented cutting values');
+  if(incomplete.setup.stock.thickness_mm!==18 || !incomplete.setup.stock.xy || incomplete.operations.length!==0 || incomplete.tools.length!==0)throw new Error('Incomplete save lost stock defaults or invented machining state');
   if(incomplete.setup.start_xy_mm?.x!==0||incomplete.setup.start_xy_mm?.y!==0||incomplete.tolerances.motion_tolerance_mm!==0.01||incomplete.tolerances.verification_tolerance_mm!==0.05)throw new Error('New SVG missing start or tolerance defaults');
+  // The import is artwork only: the tour adds the Flat V-carve operation it
+  // selects geometry into.
+  await control('Add operation');await control('Add Flat V-carve — carving-1');
+  await waitFor(s=>s.job?.operations?.length===1&&!s.active,'carving operation added to the imported artwork');
   await control('Cutting');await control('Select all filled components');await waitFor(s=>s.job?.components===2&&!s.active,'explicit component selection');
   record('selected artwork visible before generation',selectedArtworkPixels(await screenshot('imported-artwork.png'),(await state()).controls['Artwork viewport']));
   await control('Artwork');

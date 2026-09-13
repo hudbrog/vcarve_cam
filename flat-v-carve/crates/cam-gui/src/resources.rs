@@ -214,12 +214,16 @@ pub enum ResourceCommand {
 }
 impl ResourceCommand {
     pub fn clear_fields(&self, job: &CamJobV5) -> Vec<usize> {
+        // Page capture rewrites the stock rectangle, which belongs to the job
+        // rather than to any operation: it clears with an empty operation list.
+        if matches!(self, Self::StockPage { .. }) {
+            return vec![40, 41, 42, 43];
+        }
         if job.operations.is_empty() {
             return vec![];
         }
         if let Some(s) = crate::knife::settings(job) {
             return match self {
-                Self::StockPage { .. } => vec![40, 41, 42, 43],
                 Self::Machine { .. } => vec![7, 32, 33, 34, 35, 36],
                 Self::ApplyToolProfile { .. }
                 | Self::SelectLibraryTool { .. }
@@ -248,9 +252,6 @@ impl ResourceCommand {
                 AssignmentRole::Milling => vec![2, 10, 11, 88],
                 AssignmentRole::Knife => vec![63, 64, 65, 66],
             };
-        }
-        if matches!(self, Self::StockPage { .. }) {
-            return vec![40, 41, 42, 43];
         }
         if let Self::SelectLibraryTool {
             catalog,
