@@ -339,12 +339,17 @@ these tests.
 ### Review builds
 
 - Native release: `artifacts/gui8/review/profile-native/cam-gui.exe`, SHA-256
-  `f41f439c3e8c4fa8afe48beb2b22a015b5fb6a0e6f6b9145bc677754a33dbda7`
+  `8ba832268730cfe5de285408d2cbbb64020ec1605ada9196beb7dcf3b5c063b7`
   (recorded in its `SHA256SUMS`).
 - Browser package: `artifacts/gui8/review/browser` (WASM SHA-256
-  `e6723d78efab93e7a863277ef005f9c00288c75f7121667c9910484e055e8297`), served
+  `d57c25d25e6c71df92ae8e6fd62ee13275816b4ec6c9a4ddfe26a1f1bb9d21be`), served
   by `artifacts/gui8/review/serve-package.mjs`; offline bundle
-  `0ba368a67d8a4da83db983f144da664f4b283af21c0eabdbad1c5b2bc88c5e22`.
+  `9c5d18c9f1477783a27a506fa9da3ce3c3b16ee5d7c9826d9e2a262feb474623`.
+  Both binaries were rebuilt from the committed source on 2026-09-13: the
+  first packages predated the final formatting pass over `app.rs` and
+  `profile_ui.rs`, so their hashes no longer identified the built source.
+  Rebuilding did not change the machining result: the tour's prepared program
+  is the same `065bbdc3…` hash.
 - `artifacts/gui8/review/manifest.json` records the per-file SHA-256 of every
   source input it was built from (287 files, including these review documents,
   so editing a document shifts that tree hash), the repository `head`, and both
@@ -357,7 +362,8 @@ these tests.
 real Chromium 152.0.7977.83 on Windows x86_64 with an NVIDIA Ampere WebGPU
 adapter, zero console errors. Log: `artifacts/gui/gui8-browser-smoke.txt`;
 evidence directory
-`artifacts/gui/browser-smoke/2026-09-12T22-14-52.830Z` with screenshots of the
+`artifacts/gui/browser-smoke/2026-09-13T05-41-58.389Z` (and the earlier
+`2026-09-12T22-14-52.830Z` run) with screenshots of the
 new job, contour selection, generated profile, rough stock, the refused tab,
 the tabbed result, the finishing stock, the ramp requirement, the ramp entry,
 the prepared output, the reopened job and the pending-text state.
