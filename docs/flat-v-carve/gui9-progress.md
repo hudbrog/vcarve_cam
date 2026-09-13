@@ -209,8 +209,8 @@ does not involve a window, a GPU or input devices, so the interactive tour in
   the manual recipe is the first full native run.
 
 `artifacts/gui9/review/manifest.json` records which sources and packages the
-review build was made from: `67168094…` native, `d2c5373f…` WASM, offline bundle
-`96de2239…`, and the 296 hashed source files (now including
+review build was made from: `2d7d3852…` native, `abe25cb9…` WASM, offline bundle
+`7c4725d0…`, and the 296 hashed source files (now including
 `scripts/native-smoke.mjs`), covering the GUI9b and GUI9c
 changes. The binaries were built from the milestone commit `cf5d798`; the
 manifest also names the head commit, the hashed source tree and whether the
@@ -225,6 +225,10 @@ build carrying embedded paths and timestamps. The shipped hashes and
 `SHA256SUMS` are therefore the identity a review should compare against; a
 local rebuild is the same program but not the same file, and the WASM artifact
 was not tested for byte-reproducibility.
+
+This paragraph and the manifest are regenerated together, so **the manifest is
+the authority**: if a later rebuild changes the package, its hashes win over
+the prefixes quoted here.
 
 ### Limits
 
