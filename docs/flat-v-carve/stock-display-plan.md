@@ -11,7 +11,9 @@ approach must not block later work.
 **Status: plan only.** Nothing below is implemented. What has landed so far is
 recorded in [preview-display-progress.md](preview-display-progress.md): the one
 display frame, the free camera, and the stock's boundary walls following the
-material that is left.
+material that is left. The five questions in §12 were answered by the tester on
+2026-09-13; §3–§9 fold those answers in, and §12 keeps them with the
+consequences and the smaller questions they raise.
 
 ---
 
@@ -106,10 +108,10 @@ bits 24..31  tool index         (u8, 0 = none, ≤ 256 by the plan's tool cap)
 
 **Detection.** For each pair of adjacent cells along X and Y, a step exists
 when the depth difference exceeds `wall_threshold` (default
-`max(0.25 × display cell, 0.05 mm)`, a style value). The wall quad stands on
-the boundary between the higher and lower cell, runs from the **lower** cell's
-surface up to the **higher** cell's surface, and carries the lower cell's
-stage/tool.
+`max(0.25 × display cell, 0.05 mm)`, a style value that ships as the default and
+is not exposed as a control yet). The wall quad stands on the boundary between
+the higher and lower cell, runs from the **lower** cell's surface up to the
+**higher** cell's surface, and carries the lower cell's stage/tool.
 
 **Merging.** Consecutive steps along a row or column with the same top, bottom
 and identity merge into one quad, so a facing pass yields a handful of long
@@ -155,29 +157,40 @@ and nothing for flat neighbourhoods.
 
 | Mode | Floor | Walls |
 |---|---|---|
-| Plain | stock colour + shading | same, slightly darker |
+| **Plain (default)** | stock colour + shading | same, slightly darker |
 | By operation | the stage that last deepened the cell | the stage that removed the material beside it |
 | By tool | that stage's tool | same |
-| By depth | the ramp evaluated at the cell's depth | the ramp evaluated at the **fragment's** z, so a wall reads as a gradient from its top to its bottom |
+| By depth | the ramp evaluated at the cell's absolute depth | the ramp evaluated at the **fragment's** z, so a wall reads as a gradient |
+
+The depth ramp spans the **stock thickness**, not each surface's own extent:
+both floors and walls sample one ramp parameterised by absolute z from the
+original stock top (`0 mm`) to the stock bottom (`thickness`). A 2 mm wall
+therefore shows only the slice of the ramp between its two levels, which is what
+keeps depth comparable across the part — a wall and the floor beside it read as
+the same depth when they are the same depth.
+
+The three identity/depth modes colour the state that is displayed; there is no
+mode relative to a single operation's own depth ("depth cut by this operation")
+for now. It remains a possible later variant of the same palette lookup, not a
+separate code path.
 
 Palettes: one RGBA per stage (≤ 32) and per tool (≤ 256) in a single storage
 buffer. Defaults come from a stable hash of the stage/tool **id**, with explicit
 per-id overrides in the style; the buffer is rebuilt when the plan or an
 override changes, never per frame. A mode that needs history ("show only what
-operation 3 removed") uses the timeline's checkpoint replay; the colour mode
-only ever colours the state that is displayed.
+operation 3 removed") uses the timeline's checkpoint replay.
 
 ## 7. Display style, toggles and transparency
 
 ```rust
 pub struct StockStyle {
-    surface: ColorMode,        // Plain | ByStage | ByTool | ByDepth
+    surface: ColorMode,        // Plain (default) | ByStage | ByTool | ByDepth
     walls: WallMode,           // MatchSurface | OwnStage | ByDepth
-    ramp: [Rgb; 3],            // depth gradient: two stops now, mid stops later
+    ramp: [Rgb; 3],            // gradient over the stock thickness; 2 stops now
     stage_colors: BTreeMap<StageId, Rgb>,   // explicit overrides only
     tool_colors: BTreeMap<ToolId, Rgb>,
-    wall_threshold_mm: f32,
-    opacity: f32,              // 1.0 = opaque
+    wall_threshold_mm: f32,    // default max(0.25 * cell, 0.05); no control yet
+    appearance: Appearance,    // Opaque (default) | XRay { opacity: f32 }
     show_stock: bool,
     show_artwork: bool,
     show_paths: bool,
@@ -191,10 +204,17 @@ pub struct StockStyle {
 * Artwork and path toggles are draw-range decisions in the existing scene
   callback — an empty contour range and an empty visible motion range — so they
   need no shader work and can ship ahead of the walls.
-* Opacity adds alpha to the style and a transparent stock pass after the opaque
-  one (depth write off). Self-overlapping transparent geometry will still sort
-  imperfectly until an OIT/depth-peeling slice lands; that limitation is
-  reported in the UI rather than hidden.
+* **X-ray** is the requested translucency: the stock is drawn so that artwork
+  and paths read **across** it. That fixes the pass order — artwork and paths
+  first (opaque, depth-writing), the stock last — with the stock writing depth
+  in `Opaque` and **not** writing it in `XRay`. Material behind a path therefore
+  no longer hides it, while material in front of it still tints it by the x-ray
+  opacity, which is what makes an internal path readable inside a cut. Drawing
+  the stock last is also correct in `Opaque` mode: geometry above the surface
+  keeps the nearer depth it already wrote.
+* The walls are part of the same translucent pass. Self-overlapping translucent
+  geometry still sorts imperfectly until an OIT/depth-peeling slice lands (S3
+  follow-up); the limitation is reported in the UI rather than hidden.
 
 ## 8. Options considered
 
@@ -211,7 +231,8 @@ pub struct StockStyle {
 
 Pack stage/tool into the cell, add the palette buffer and `StockStyle` with
 `Plain` as the default, add normals + light to `stock.wgsl`, add the artwork and
-path toggles.
+path toggles. The depth ramp is parameterised over the stock thickness from the
+start, even while the default mode does not read it.
 
 *Buys:* the three colour modes, toggles, and the shading that every later slice
 needs. *Evidence:* packing round-trip tests; a colour-resolution test per mode
@@ -235,12 +256,15 @@ bug, a positional test that asserts each instance's placed corners lie on its
 own edge inside the stock and span the right heights. *Visual:* a facing job, a
 pocket, and the flower job.
 
-### S3 — Opacity and an x-ray mode
+### S3 — X-ray stock
 
-Style alpha, the transparent stock pass after the opaque one, and a "see the
-paths through the stock" preset.
+The `Appearance::XRay { opacity }` style value, the artwork/paths-first pass
+order with the stock drawn last and no depth writes, and a viewport control for
+the opacity.
 
-*Buys:* inspecting a path inside a cut without hiding the stock.
+*Buys:* reading artwork and paths across the material — inspecting a path inside
+a cut, or checking how a perimeter relates to the part, without hiding the
+stock or turning it off.
 *Evidence:* pass-order and style round-trip tests, and a documented statement of
 what still sorts incorrectly. *Follow-up:* OIT/depth peeling as its own slice if
 the artifacts matter.
@@ -283,21 +307,46 @@ so the style, palette and shading layers do not change.
 * **Incremental rebuild complexity.** Halos, per-tile wall versions and
   checkpoint swaps are the subtle part; the mitigation is to key wall versions
   on the same counters the cells use and to test a seek that changes one tile.
-* **Transparency.** Without OIT, overlapping transparent surfaces sort wrong;
-  the plan states that rather than discovering it later.
+* **Transparency.** The x-ray appearance is the one mode where draw order is
+  visible: overlapping translucent surfaces (the walls in particular) sort wrong
+  without OIT/depth peeling. S3 states the limitation instead of discovering it
+  later, and the pass order it fixes is the one OIT needs anyway.
 * **Expectation of smooth walls.** A heightfield wall is quantised at the
   display cell; a user expecting a V-bit's smooth flank should see a shaded
   slope (threshold rule + shading), and only S5 can give a true smooth face.
 * **Palette stability.** Auto colours must be derived from ids, or regenerating
   a plan would recolour the part.
 
-## 12. Open questions for the tester
+## 12. Answers, consequences and what they raise
 
-1. Default colour mode: plain (current look) or by operation?
-2. Wall gradient range: over the wall's own height (each wall shows the full
-   ramp) or over the stock thickness (walls are comparable across the part)?
-3. Wall threshold: the `max(0.25 × cell, 0.05 mm)` default, and should it be a
-   user control or a fixed display constant?
-4. Is a "depth cut by this operation" mode wanted, or is absolute depth enough?
-5. For the semi-transparent stock: a uniformly translucent envelope, or an
-   x-ray that keeps the paths readable through the material?
+The tester answered the plan's five questions on 2026-09-13:
+
+1. **Default colour mode: plain.** `Plain` is the shipped default, so the stock
+   keeps today's look (plus the new shading); the identity and depth modes are
+   opt-in.
+2. **Wall gradient: across the stock.** One ramp parameterised by absolute z
+   from the stock top to the stock bottom, sampled by floors and walls alike, so
+   depths stay comparable across the part (§6).
+3. **Wall threshold: keep the default.** `max(0.25 × display cell, 0.05 mm)`
+   stays a style value with no control for now (§4).
+4. **Absolute depth is enough for now.** No "depth cut by this operation" mode;
+   it stays a possible later variant of the same palette lookup (§6).
+5. **The translucent stock should be an x-ray** that keeps artwork and paths
+   readable across the material, which is what fixes the pass order in §7: the
+   scene's artwork and paths first with depth writes, the stock last without
+   them in `XRay`, and the x-ray opacity controls how much the material in
+   front tints what is behind it.
+
+Consequences already folded in: the default mode in §6 and the `StockStyle`
+sketch in §7, the ramp's parameterisation, the threshold note in §4, and S3's
+scope. Nothing here changes S1 or S2, which is the point of answering them
+before the plumbing is built.
+
+Smaller questions these answers raise, none blocking S1:
+
+* Is x-ray a toggle beside plain, or a third appearance with its own preset
+  ("see-through", "ghost", ...) that also sets which layers stay visible?
+* In x-ray, should the walls keep a higher opacity than the floors so the part's
+  shape still reads while the interior stays visible?
+* In x-ray, should artwork and paths be drawn fully undistorted (never tinted)
+  so a path is unambiguous, with only the *stock* carrying the transparency?
