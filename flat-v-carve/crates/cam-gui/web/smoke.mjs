@@ -216,6 +216,9 @@ try {
   } else if(process.argv.includes('--gui8')) {
     const {gui8Scenario}=await import('./gui8-scenario.mjs');
     await gui8Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,path,out,chooseFile,click});
+  } else if(process.argv.includes('--gui9')) {
+    const {gui9Scenario}=await import('./gui9-scenario.mjs');
+    await gui9Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,click,path,out});
   } else if(process.argv.includes('--gui5')) {
     const {gui5Scenario}=await import('./gui5-scenario.mjs');
     await gui5Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out,chooseFile});
@@ -278,7 +281,7 @@ try {
   const gpuResult=await send('Runtime.evaluate',{expression:'(async()=>{const a=await navigator.gpu.requestAdapter();return a?{vendor:a.info.vendor,architecture:a.info.architecture,device:a.info.device,description:a.info.description}:null})()',awaitPromise:true,returnByValue:true});
   const offlineBuild=readFileSync('crates/cam-gui/web/offline-manifest.js','utf8').match(/"version":"([a-f0-9]+)"/)?.[1];
   writeFileSync(path.join(out,'evidence.json'),JSON.stringify({url:base,browserVersion,gpu:gpuResult.result?.value,offlineBuild,checks,consoleErrors:problems,note:'Real Chromium/WebGPU UI and WASM Worker. Checks list the exercised workflow; saved download bytes are verified where recorded. Browser terminate does not measure stopped CPU latency.'},null,2));
-  console.log((process.argv.includes('--gui8')?'GUI8':process.argv.includes('--gui7')?'GUI7':process.argv.includes('--gui6')?'GUI6':process.argv.includes('--gui5')?'GUI5':process.argv.includes('--gui4')?'GUI4':process.argv.includes('--gui3')?'GUI3':'GUI2')+' browser workflow passed');
+  console.log((process.argv.includes('--gui9')?'GUI9':process.argv.includes('--gui8')?'GUI8':process.argv.includes('--gui7')?'GUI7':process.argv.includes('--gui6')?'GUI6':process.argv.includes('--gui5')?'GUI5':process.argv.includes('--gui4')?'GUI4':process.argv.includes('--gui3')?'GUI3':'GUI2')+' browser workflow passed');
 } catch(error) {const screenshot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(path.join(out,'failure.png'),Buffer.from(screenshot.data,'base64'));writeFileSync(path.join(out,'failure-state.json'),JSON.stringify(await state(),null,2));if(process.argv.includes('--trace-io'))writeFileSync(path.join(out,'io-trace.json'),JSON.stringify(await evaluate('globalThis.GUI_IO_TRACE'),null,2));console.error(error);console.error(await state());console.error(problems);process.exitCode=1;}
 finally {
   await Promise.race([send('Browser.close'),sleep(1500)]);

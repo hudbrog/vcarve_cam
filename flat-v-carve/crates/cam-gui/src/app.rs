@@ -47,6 +47,50 @@ fn button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
     response
 }
 
+/// A user action that arrived while the worker was busy. It is an *intent*, not
+/// the command that was refused: it is rebuilt from the current document when
+/// it runs, so a queued edit or generation never replays a stale snapshot.
+#[derive(Clone, Debug)]
+enum Pending {
+    Operation(Box<crate::operation_authoring::Action>),
+    Artwork {
+        operation_id: String,
+        action: Box<engine::ArtworkCommand>,
+    },
+    Resource(Box<crate::resources::ResourceCommand>),
+    Generate(GenerateScope),
+}
+
+impl Pending {
+    /// Only actions that can be rebuilt from the current document are queued.
+    /// Anything else keeps the pre-GUI9 behaviour of refusing while busy, but
+    /// says so instead of doing nothing.
+    fn from_command(command: &Command) -> Option<Self> {
+        match command {
+            Command::Operation { action, .. } => Some(Self::Operation(Box::new(action.clone()))),
+            Command::Artwork {
+                operation_id,
+                action,
+                ..
+            } => Some(Self::Artwork {
+                operation_id: operation_id.clone(),
+                action: Box::new(action.clone()),
+            }),
+            Command::Resource { action, .. } => Some(Self::Resource(action.clone())),
+            Command::Generate { scope, .. } => Some(Self::Generate(scope.clone())),
+            _ => None,
+        }
+    }
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Operation(_) => "operation edit",
+            Self::Artwork { .. } => "artwork edit",
+            Self::Resource(_) => "resource edit",
+            Self::Generate(_) => "generation",
+        }
+    }
+}
+
 /// The geometry the current operation owns. Every operation keeps its own
 /// explicit selection; artwork never assigns geometry on its own.
 pub fn operation_selection(
@@ -433,6 +477,13 @@ pub struct App {
     port: Port,
     next: u64,
     active: Option<(u64, u64)>,
+    /// Status line of the command currently in the worker, so a queued action
+    /// can say what it is waiting for.
+    busy: Option<String>,
+    /// One user action that arrived while the worker was busy. Bounded to one:
+    /// a later action replaces an earlier one, because a queue of stale edits
+    /// is worse than doing the latest thing the user asked for.
+    pending: Option<Pending>,
     plan: Option<(String, u64)>,
     plan_scope: Option<GenerateScope>,
     prepared: Option<(Value, u64)>,
@@ -504,6 +555,8 @@ impl Default for App {
             port: Port::default(),
             next: 0,
             active: None,
+            busy: None,
+            pending: None,
             plan: None,
             plan_scope: None,
             prepared: None,
@@ -597,6 +650,30 @@ impl App {
             return;
         }
         if self.active.is_some() {
+            // The worker holds one command at a time. A user action that can be
+            // rebuilt from the current document waits; anything else is refused
+            // out loud rather than dropped in silence.
+            let busy = self
+                .busy
+                .clone()
+                .unwrap_or_else(|| "A task is still running.".into());
+            match Pending::from_command(&command) {
+                Some(intent) => {
+                    let replaced = self.pending.replace(intent.clone()).is_some();
+                    self.status = format!(
+                        "{busy} The queued {} will run when it finishes{}.",
+                        intent.label(),
+                        if replaced {
+                            ", replacing the earlier queued action"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+                None => {
+                    self.status = format!("{busy} Finish or cancel it before doing that.");
+                }
+            }
             return;
         }
         let id = self.id();
@@ -621,6 +698,7 @@ impl App {
                 "Checking whether the retained execution still matches…"
             }
             Command::Seek { .. } => "Loading stock position…",
+            Command::DisplayPreset { .. } => "Rebuilding the display raster…",
             Command::Open { .. } => "Opening document…",
             Command::Migrate { .. } => "Importing older job into the portable format…",
             Command::ApplyProfile { .. } => "Applying machine configuration…",
@@ -630,11 +708,83 @@ impl App {
             }
         }
         .into();
+        self.busy = Some(self.status.clone());
         self.port
             .start(id, Request::Gui2(Box::new(command)), ctx.clone());
     }
 
     /// Generate the whole enabled list, or the prefix ending at one operation.
+    /// The command a queued intent means *now*, rebuilt from the current
+    /// document rather than replayed from the snapshot that was refused.
+    fn pending_command(&self, pending: &Pending) -> Option<Command> {
+        let document = self.document.as_ref()?;
+        if document.pending() {
+            return None;
+        }
+        let job = document.job.to_json().ok()?;
+        Some(match pending {
+            Pending::Operation(action) => Command::Operation {
+                job,
+                action: (**action).clone(),
+            },
+            Pending::Artwork {
+                operation_id,
+                action,
+            } => Command::Artwork {
+                job,
+                operation_id: operation_id.clone(),
+                action: (**action).clone(),
+            },
+            Pending::Resource(action) => Command::Resource {
+                job,
+                action: action.clone(),
+            },
+            Pending::Generate(scope) => Command::Generate {
+                job,
+                scope: scope.clone(),
+                preset: self.view.desired_preset(),
+            },
+        })
+    }
+
+    /// Run the queued action once the worker is free. The status keeps saying
+    /// Cancel the command in the worker. The worker — and with it the retained
+    /// execution — stops, so the plan handle is dropped and the display is
+    /// stale until the next generation. The document, the last displayed result
+    /// and any checked bundle already read back survive, and a queued action
+    /// still runs when the worker is free.
+    pub(crate) fn cancel_compute(&mut self) {
+        self.cancelled_id = self.active.map(|active| active.0);
+        self.port.cancel();
+        self.active = None;
+        self.busy = None;
+        self.plan = None;
+        self.plan_scope = None;
+        self.status = match &self.pending {
+            Some(intent) => format!(
+                "Compute cancelled. Draft retained. The queued {} runs next.",
+                intent.label()
+            ),
+            None => "Compute cancelled. Draft retained.".into(),
+        };
+    }
+
+    /// what is happening, so a queued action is never a silent deferral.
+    fn run_pending(&mut self, ctx: &egui::Context) {
+        let Some(intent) = self.pending.take() else {
+            return;
+        };
+        match self.pending_command(&intent) {
+            Some(command) => {
+                self.status = format!("Running the queued {}.", intent.label());
+                self.submit(command, ctx);
+            }
+            None => {
+                self.status = "The queued action no longer applies to the current document.".into();
+            }
+        }
+    }
+
     /// A prefix plan is what the retained service later prepares and exports:
     /// the GUI never re-plans a subset at export time.
     pub(super) fn generate(&mut self, scope: GenerateScope, ctx: &egui::Context) {
@@ -647,7 +797,14 @@ impl App {
             return;
         }
         let job = doc.job.to_json().unwrap();
-        self.submit(Command::Generate { job, scope }, ctx);
+        self.submit(
+            Command::Generate {
+                job,
+                scope,
+                preset: self.view.desired_preset(),
+            },
+            ctx,
+        );
     }
 
     /// The scope the retained plan was generated for, if one is current.
@@ -860,6 +1017,10 @@ impl App {
             return;
         }
         self.active = None;
+        self.busy = None;
+        // The submitted command is finished, whatever its outcome: a pending
+        // "requested" playhead must not outlive the request that asked for it.
+        self.view.finish_stock_request();
         let exporting = self
             .export_dialog
             .as_ref()
@@ -1031,6 +1192,27 @@ impl App {
                 Ok(()) => self.status = "Stock position loaded from retained execution.".into(),
                 Err(e) => self.status = e,
             },
+            Some("preset") => {
+                // The rebuilt raster belongs to the plan we asked about. A
+                // response for another execution is refused instead of being
+                // shown next to the current one.
+                let expected = self.plan.as_ref().map(|(handle, _)| handle.clone());
+                let answered = reply["handle"].as_str().map(str::to_owned);
+                let preset = reply["preset"].as_str().unwrap_or("standard").to_owned();
+                if expected != answered {
+                    self.status =
+                        "The rebuilt display belongs to another execution; generate again.".into();
+                } else {
+                    match self.view.adopt_preset(meta, payload) {
+                        Ok(()) => {
+                            self.status = format!(
+                                "Display rebuilt at the {preset} resolution for the same execution."
+                            )
+                        }
+                        Err(e) => self.status = e,
+                    }
+                }
+            }
             Some("opened" | "profile" | "imported") => {
                 let job = match CamJobV5::from_json(&meta.job) {
                     Ok(job) => job,
@@ -1177,8 +1359,20 @@ impl App {
         }
     }
     fn poll(&mut self, ctx: &egui::Context) {
-        while let Some(event) = self.port.poll() {
+        // Events one frame consumes. A burst is finished on later frames instead
+        // of starving the frame; nothing is dropped, because the rest stay in
+        // the channel and the repaint below comes straight back for them.
+        const EVENTS_PER_FRAME: usize = 64;
+        let mut consumed = 0;
+        while consumed < EVENTS_PER_FRAME {
+            let Some(event) = self.port.poll() else {
+                break;
+            };
             self.event(event, ctx);
+            consumed += 1;
+        }
+        if consumed == EVENTS_PER_FRAME {
+            ctx.request_repaint();
         }
     }
     fn event(&mut self, event: Event, ctx: &egui::Context) {
@@ -1403,6 +1597,11 @@ impl App {
         self.view.result_current = self.current();
         self.inspector(ctx);
         self.resource_windows(ctx);
+        // A user action that arrived while the worker was busy runs first, once
+        // the worker is free: it was the click the user actually made.
+        if self.active.is_none() && self.io.is_none() && self.export_dialog.is_none() {
+            self.run_pending(ctx);
+        }
         if self.preview_dirty
             && self.active.is_none()
             && self.io.is_none()
@@ -1416,6 +1615,7 @@ impl App {
                     job,
                     handle: handle.clone(),
                     scope: self.plan_scope.clone().unwrap_or(GenerateScope::AllEnabled),
+                    preset: self.view.desired_preset(),
                 },
                 None => Command::Preview { job },
             };
@@ -1554,6 +1754,23 @@ impl App {
                 ctx,
             );
         }
+        // A display resolution change re-derives the raster from the retained
+        // execution. It waits for the same idle point a seek does, so a slow
+        // rebuild cannot overlap a stock request.
+        if self.active.is_none()
+            && self.export_dialog.is_none()
+            && !self.view.stock_request_pending()
+            && let Some(preset) = self.view.take_preset_request()
+            && let Some((handle, _)) = &self.plan
+        {
+            self.submit(
+                Command::DisplayPreset {
+                    handle: handle.clone(),
+                    preset,
+                },
+                ctx,
+            );
+        }
         let files = ctx.input(|i| i.raw.dropped_files.clone());
         if !files.is_empty() && self.export_dialog.is_none() {
             if files.len() != 1 || self.io.is_some() || self.active.is_some() {
@@ -1607,7 +1824,10 @@ impl App {
         }
         let resources_probe = json!({"open":self.resources.open,"jobsOpen":self.resources.jobs_open,"ready":self.resources.ready,"busy":self.resources.busy,"dirty":self.resources.dirty,"status":self.resources.status,"revision":self.resources.base.as_ref().map(|s|s.revision),"catalog":self.resources.draft,"selectedTool":self.resources.tool,"selectedProfile":self.resources.preset,"role":self.resources.role,"conflictRevision":self.resources.conflict.as_ref().map(|s|s.revision)});
         let job_probe = self.document.as_ref().map(|d| self.job_probe(d));
-        crate::viewport::probe::publish(json!({"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
+        let stock_transfer = self.view.last_stock_transfer();
+        let display = self.view.display_probe();
+        let renderer = self.view.renderer_probe();
+        crate::viewport::probe::publish(json!({"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"busy":self.busy,"queued":self.pending.as_ref().map(Pending::label),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"requestedStock":self.view.requested_stock_prefix(),"stockTransferBytes":stock_transfer.0,"stockReplayed":stock_transfer.1,"timelineRows":self.view.timeline_rows(),"display":display,"renderer":renderer,"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
     }
     fn save_output(&mut self, ctx: &egui::Context) {
         if let Some((prepared, revision)) = &self.prepared
@@ -1654,5 +1874,292 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.ui(ctx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job() -> CamJobV5 {
+        CamJobV5::from_json(engine::FLOWER).unwrap()
+    }
+
+    fn app_with_document() -> App {
+        let mut app = App::default();
+        let job = job();
+        app.document = Some(Document {
+            raw: Draft::for_job(&job),
+            job,
+            finish_draft: None,
+        });
+        if let Some(document) = &mut app.document {
+            document.raw.operation = document
+                .job
+                .operations
+                .first()
+                .map(|operation| operation.id.clone())
+                .unwrap_or_default();
+        }
+        app
+    }
+
+    /// A scene with a motion count and no geometry: enough for the display
+    /// request paths, which only need the motion range.
+    fn scene_with_motions(motions: usize) -> crate::compute::Scene {
+        let motion_len = motions * 2 * 28;
+        crate::compute::Scene {
+            meta: crate::compute::SceneMeta {
+                protocol: crate::compute::PROTOCOL.into(),
+                name: "flower".into(),
+                report: json!({"gui2": {"kind": "generated"}}),
+                job: engine::FLOWER.into(),
+                programs: vec![],
+                bounds: [0., 0., 10., 10.],
+                contour_vertices: 0,
+                rough_vertices: 0,
+                motions,
+                page_motions: crate::pages::PAGE_MOTIONS,
+                motion_offset: 0,
+                motion_len,
+                payload_bytes: motion_len,
+                payload_sha256: "0".repeat(64),
+                sections: vec![],
+                stock: None,
+                sim: None,
+                transport: Default::default(),
+            },
+            payload: std::sync::Arc::new(vec![0u8; motion_len]),
+        }
+    }
+
+    /// A user action that arrives while the worker is busy is queued as an
+    /// intent, and the queue is bounded to one: the newest action wins instead
+    /// of piling up stale snapshots.
+    #[test]
+    fn a_command_that_arrives_while_busy_is_queued_once_and_replaced_by_the_newest() {
+        let mut app = app_with_document();
+        let operation = app.document.as_ref().unwrap().raw.operation.clone();
+        app.active = Some((1, app.revision));
+        app.busy = Some("Generating toolpaths…".into());
+        app.submit(
+            Command::Operation {
+                job: app.document.as_ref().unwrap().job.to_json().unwrap(),
+                action: crate::operation_authoring::Action::SetEnabled {
+                    operation_id: operation.clone(),
+                    enabled: false,
+                },
+            },
+            &egui::Context::default(),
+        );
+        assert!(matches!(app.pending, Some(Pending::Operation(_))));
+        assert!(
+            app.status.contains("Generating toolpaths"),
+            "{}",
+            app.status
+        );
+        assert!(
+            app.active.is_some(),
+            "the running command was not disturbed"
+        );
+
+        // A later action replaces the earlier one rather than queueing behind it.
+        app.submit(
+            Command::Generate {
+                job: app.document.as_ref().unwrap().job.to_json().unwrap(),
+                scope: GenerateScope::AllEnabled,
+                preset: crate::stock_preview::DisplayPreset::Standard,
+            },
+            &egui::Context::default(),
+        );
+        assert!(matches!(app.pending, Some(Pending::Generate(_))));
+        assert!(app.status.contains("replacing the earlier queued action"));
+
+        // Something that cannot be rebuilt from the document is refused out
+        // loud instead of being dropped in silence.
+        app.submit(
+            Command::Open {
+                json: engine::FLOWER.into(),
+            },
+            &egui::Context::default(),
+        );
+        assert!(matches!(app.pending, Some(Pending::Generate(_))));
+        assert!(app.status.contains("Finish or cancel"), "{}", app.status);
+    }
+
+    /// The queued generation is rebuilt from the document as it is *now*, so an
+    /// edit made while the worker was busy is included.
+    #[test]
+    fn a_queued_generation_uses_the_current_document_and_resolution() {
+        let mut app = app_with_document();
+        let operation = app.document.as_ref().unwrap().raw.operation.clone();
+        app.document.as_mut().unwrap().job = set_value(&job(), &operation, 6, Some(12.)).unwrap();
+        let current = app.document.as_ref().unwrap().job.to_json().unwrap();
+        app.view
+            .set_display_preset(crate::stock_preview::DisplayPreset::Fine);
+        let command = app
+            .pending_command(&Pending::Generate(GenerateScope::AllEnabled))
+            .unwrap();
+        match command {
+            Command::Generate { job, preset, .. } => {
+                assert_eq!(preset, crate::stock_preview::DisplayPreset::Fine);
+                assert_eq!(
+                    job, current,
+                    "the queued generation carries the current edit, not a stale snapshot"
+                );
+            }
+            other => panic!("expected a generation, got {other:?}"),
+        }
+        // The same intent for a document with uncommitted raw text is not run.
+        let mut app = app_with_document();
+        let key = app.document.as_ref().unwrap().raw.key(2);
+        app.document
+            .as_mut()
+            .unwrap()
+            .raw
+            .raw
+            .insert(key, "7".into());
+        assert!(
+            app.pending_command(&Pending::Generate(GenerateScope::AllEnabled))
+                .is_none()
+        );
+    }
+
+    /// The renderer drill is a display drill: injecting a failure and rebuilding
+    /// Cancelling stops the worker, so the retained execution is gone; the
+    /// Display requests coalesce: a scrub sets one pending target, and each new
+    /// request replaces it, so the worker is never asked for a position the
+    /// user has already moved past. A completion for another request id is
+    /// ignored rather than shown.
+    #[test]
+    fn display_requests_coalesce_and_late_answers_are_ignored() {
+        let mut app = app_with_document();
+        app.view.set_scene(scene_with_motions(2_000));
+        app.view.seek(10);
+        app.view.seek(2_000);
+        app.view.seek(600);
+        assert_eq!(
+            app.view.take_stock_request(),
+            Some(600),
+            "only the latest scrub target is submitted"
+        );
+        assert_eq!(app.view.requested_stock_prefix(), Some(600));
+        app.view
+            .set_display_preset(crate::stock_preview::DisplayPreset::Fine);
+        app.view
+            .set_display_preset(crate::stock_preview::DisplayPreset::Coarse);
+        assert_eq!(
+            app.view.take_preset_request(),
+            Some(crate::stock_preview::DisplayPreset::Coarse),
+            "only the latest resolution is rebuilt"
+        );
+
+        // A completion that belongs to another request cannot touch this one.
+        app.active = Some((7, app.revision));
+        app.status = "Loading stock position…".into();
+        app.accept(
+            6,
+            Err("late answer for another request".into()),
+            &egui::Context::default(),
+        );
+        assert_eq!(app.active, Some((7, app.revision)));
+        assert_eq!(app.status, "Loading stock position…");
+    }
+
+    /// Cancelling stops the worker, so the retained execution is gone; the
+    /// document, the last displayed result and any checked bundle are not, and
+    /// a queued action still runs.
+    #[test]
+    fn cancelling_a_computation_keeps_the_draft_and_the_checked_bundle() {
+        let mut app = app_with_document();
+        app.revision = 3;
+        app.saved_revision = Some(3);
+        app.plan = Some(("handle-1".into(), 3));
+        app.plan_scope = Some(GenerateScope::AllEnabled);
+        app.prepared = Some((json!({"file": {"sha256": "abc"}}), 3));
+        app.active = Some((9, 3));
+        app.busy = Some("Generating toolpaths…".into());
+        app.pending = Some(Pending::Generate(GenerateScope::AllEnabled));
+        app.cancel_compute();
+        assert!(app.active.is_none());
+        assert!(app.busy.is_none());
+        assert!(
+            app.plan.is_none(),
+            "the retained execution died with the worker"
+        );
+        assert!(app.plan_scope.is_none());
+        assert!(
+            app.prepared.is_some(),
+            "a checked bundle read back before the cancellation is still retryable"
+        );
+        assert!(app.document.is_some(), "the draft survives a cancellation");
+        assert!(app.status.contains("cancelled"), "{}", app.status);
+        assert!(
+            app.pending.is_some(),
+            "the queued action still runs once the worker is free"
+        );
+        assert!(app.status.contains("queued generation"), "{}", app.status);
+    }
+
+    /// the resources must not touch the document, the retained result, the
+    /// playhead, the raster resolution or the camera.
+    #[test]
+    fn the_renderer_drill_preserves_the_document_result_and_view() {
+        let mut app = app_with_document();
+        app.revision = 7;
+        app.saved_revision = Some(7);
+        app.plan = Some(("handle-1".into(), 7));
+        app.prepared = Some((json!({"file": {"sha256": "abc"}}), 7));
+        app.view.set_scene(crate::compute::Scene {
+            meta: crate::compute::SceneMeta {
+                protocol: crate::compute::PROTOCOL.into(),
+                name: "flower".into(),
+                report: json!({"gui2": {"kind": "generated"}}),
+                job: engine::FLOWER.into(),
+                programs: vec![],
+                bounds: [0., 0., 10., 10.],
+                contour_vertices: 0,
+                rough_vertices: 0,
+                motions: 0,
+                page_motions: crate::pages::PAGE_MOTIONS,
+                motion_offset: 0,
+                motion_len: 0,
+                payload_bytes: 0,
+                payload_sha256: "0".repeat(64),
+                sections: vec![],
+                stock: None,
+                sim: None,
+                transport: Default::default(),
+            },
+            payload: std::sync::Arc::new(Vec::new()),
+        });
+        app.view.restore_settings(&crate::viewport::ViewSettings {
+            isometric: true,
+            zoom: 1.4,
+            yaw: 0.3,
+            stage: 1,
+            stock: true,
+            prefix: 123,
+            inspection_xy: Some([9., 23.]),
+            preset: crate::stock_preview::DisplayPreset::Fine,
+        });
+        app.view.inject_renderer_failure();
+        assert!(app.view.renderer_probe()["unavailable"] == true);
+        let settings = app.view.settings();
+        let revision = app.revision;
+        let plan = app.plan.clone();
+        let prepared = app.prepared.clone();
+
+        app.view.rebuild_renderer_resources();
+        let probe = app.view.renderer_probe();
+        assert!(probe["unavailable"] == false);
+        assert_eq!(app.view.settings(), settings, "the view is unchanged");
+        assert_eq!(app.revision, revision);
+        assert_eq!(app.plan, plan);
+        assert_eq!(app.prepared, prepared);
+        assert!(
+            app.document.is_some(),
+            "the document survives a renderer failure"
+        );
     }
 }

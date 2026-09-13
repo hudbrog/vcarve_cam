@@ -14,6 +14,10 @@ use std::sync::{Arc, Mutex};
 
 pub const VERTEX_BYTES: usize = std::mem::size_of::<Vertex>();
 pub const DEFAULT_PAGE_BUDGET: u64 = 64 * 1024 * 1024;
+/// Motion bytes one frame may copy. A cold scene load continues on the next
+/// frames instead of copying the whole resident budget in a single `prepare`,
+/// and the display asks for another frame while anything is still deferred.
+pub const PAGE_UPLOAD_BUDGET_PER_FRAME: u64 = 4 * crate::pages::PAGE_BYTES as u64;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +37,11 @@ pub struct Stats {
     pub injected_errors: u64,
     pub last_error: Option<String>,
     pub scene_buffer_bytes: u64,
+    /// Needed pages the last frame's copy budget pushed to a later frame.
+    pub pages_deferred: usize,
+    /// Frames that ended with pages still deferred, i.e. how long a cold load
+    /// took. Zero on an idle scene.
+    pub frames_loading: u64,
 }
 
 pub type SharedStats = Arc<Mutex<Stats>>;
@@ -276,6 +285,9 @@ impl egui_wgpu::CallbackTrait for Callback {
             r.pager.set_budget(self.budget_bytes);
             r.overlay_revision = u64::MAX;
         }
+        if r.pager.frame_budget() != PAGE_UPLOAD_BUDGET_PER_FRAME {
+            r.pager.set_frame_budget(PAGE_UPLOAD_BUDGET_PER_FRAME);
+        }
         let base_bytes = page_base_bytes(self.contour_vertices);
         r.ensure_scene(device, base_bytes as u64 + self.table.buffer_bytes() as u64);
         let contour_identity = (
@@ -338,6 +350,10 @@ impl egui_wgpu::CallbackTrait for Callback {
             stats.upload_bytes += plan.upload_bytes();
             stats.evictions += plan.evicted as u64;
             stats.budget_omitted = plan.omitted;
+            stats.pages_deferred = plan.deferred;
+            if plan.deferred > 0 {
+                stats.frames_loading += 1;
+            }
             stats.admitted_pages = plan.admitted;
             stats.resident_pages = plan.resident_pages;
             stats.resident_bytes = plan.resident_bytes;

@@ -192,13 +192,7 @@ impl App {
                 if self.active.is_some() {
                     ui.spinner();
                     if button(ui, "Cancel", true).clicked() {
-                        self.cancelled_id = self.active.map(|a| a.0);
-                        self.port.cancel();
-                        self.active = None;
-                        self.plan = None;
-                        self.plan_scope = None;
-                        self.prepared = None;
-                        self.status = "Compute cancelled. Draft retained.".into();
+                        self.cancel_compute();
                     }
                 }
                 if self.view.motion_count() > 0 && !self.current() {

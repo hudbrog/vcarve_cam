@@ -30,6 +30,9 @@ pub struct Plan {
     pub evicted: usize,
     pub admitted: usize,
     pub omitted: usize,
+    /// Needed pages the per-frame copy budget pushed to a later frame. They are
+    /// not omitted: the next frame asks for them again.
+    pub deferred: usize,
     pub resident_pages: usize,
     pub resident_bytes: u64,
 }
@@ -45,6 +48,7 @@ pub struct Pager {
     slots: Vec<Slot>,
     clock: u64,
     budget: u64,
+    frame_budget: u64,
     resident_bytes: u64,
 }
 
@@ -55,6 +59,7 @@ impl Pager {
             slots: Vec::new(),
             clock: 0,
             budget,
+            frame_budget: u64::MAX,
             resident_bytes: 0,
         }
     }
@@ -63,6 +68,14 @@ impl Pager {
     }
     pub fn set_budget(&mut self, budget: u64) {
         self.budget = budget;
+    }
+    /// Bytes one frame may copy. Larger loads continue on later frames instead
+    /// of stalling a single frame; the resident budget is unaffected.
+    pub fn set_frame_budget(&mut self, frame_budget: u64) {
+        self.frame_budget = frame_budget.max(1);
+    }
+    pub fn frame_budget(&self) -> u64 {
+        self.frame_budget
     }
     pub fn resident_bytes(&self) -> u64 {
         self.resident_bytes
@@ -94,6 +107,7 @@ impl Pager {
         self.clock += 1;
         let mut plan = Plan::default();
         let mut used = 0_u64;
+        let mut frame_used = 0_u64;
         for (order, page) in required.iter().enumerate() {
             if *page >= self.slots.len() {
                 continue;
@@ -119,6 +133,13 @@ impl Pager {
                 self.slots[*page].last_used = self.clock + order as u64;
                 continue;
             }
+            // Copy this frame only what the frame budget allows. A page larger
+            // than the budget still goes alone, so progress is always possible.
+            if frame_used > 0 && frame_used + len > self.frame_budget {
+                plan.deferred += 1;
+                continue;
+            }
+            frame_used += len;
             plan.uploads.push(PageUpload {
                 page: *page,
                 slot_offset: table.slot_of(*page),
@@ -229,5 +250,51 @@ mod tests {
         let subset: Vec<usize> = (0..3).collect();
         let revisit = pager.plan(1, &table, &hashes, &subset, page_len(&table));
         assert!(revisit.uploads.is_empty());
+    }
+
+    /// One frame copies at most its frame budget. The rest of the load is
+    /// deferred, not omitted-by-budget: the same pages come back next frame and
+    /// the load finishes without dropping anything.
+    #[test]
+    fn the_frame_budget_spreads_a_large_load_over_several_frames() {
+        let table = table(40_000);
+        let hashes: Vec<Option<u64>> = (0..table.page_count())
+            .map(|page| Some(page as u64 + 1))
+            .collect();
+        let required: Vec<usize> = (0..table.page_count()).collect();
+        let cap = (PAGE_BYTES * 2) as u64;
+        let mut pager = Pager::new(u64::MAX);
+        pager.set_frame_budget(cap);
+
+        let first = pager.plan(1, &table, &hashes, &required, page_len(&table));
+        assert_eq!(first.uploads.len(), 2, "two pages fit the frame budget");
+        assert!(first.upload_bytes() <= cap);
+        assert_eq!(first.deferred, table.page_count() - 2);
+        assert_eq!(first.omitted, 0, "deferred is not omitted");
+
+        // Each following frame copies another bounded batch until every page
+        // has been copied exactly once.
+        let mut frames = 1;
+        let mut copied = first.uploads.len();
+        while copied < table.page_count() {
+            let plan = pager.plan(1, &table, &hashes, &required, page_len(&table));
+            assert!(plan.upload_bytes() <= cap);
+            assert!(
+                !plan.uploads.is_empty(),
+                "a deferred frame still progresses"
+            );
+            copied += plan.uploads.len();
+            frames += 1;
+            assert!(frames <= table.page_count(), "the load must finish");
+        }
+        assert_eq!(frames, table.page_count().div_ceil(2));
+        assert_eq!(
+            pager
+                .plan(1, &table, &hashes, &required, page_len(&table))
+                .uploads
+                .len(),
+            0,
+            "a finished load copies nothing"
+        );
     }
 }

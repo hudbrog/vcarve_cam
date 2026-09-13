@@ -70,7 +70,24 @@ struct StockView {
     cell_versions: Arc<Vec<u32>>,
     stats: sim::Stats,
     prefix: usize,
+    /// Bytes the last stock response carried and the replay work it caused.
+    /// Quoted by the playback bar so the display accounts for its own transfer
+    /// instead of leaving the reviewer to guess.
+    last_transfer_bytes: usize,
+    last_replayed: usize,
 }
+
+/// Stage buttons the playback bar lays out at once. Every review build before
+/// GUI9 fits inside this window, so the established timeline is unchanged; a
+/// job with more stages scrolls the window instead of laying out one widget per
+/// stage in the job.
+const TIMELINE_WINDOW: usize = 8;
+
+/// Frame intervals kept for the diagnostics percentiles. Long gaps are not
+/// sampled: an event-driven application legitimately sleeps between frames, and
+/// mixing those with real work frames would make the numbers meaningless.
+const FRAME_SAMPLES: usize = 120;
+const IDLE_GAP_MS: f64 = 250.;
 
 /// One visible path range of the timeline. `index` is the stage's simulation
 /// tool so the overlay can draw the right cutter glyph.
@@ -96,6 +113,10 @@ pub struct ViewSettings {
     pub prefix: usize,
     #[serde(default)]
     pub inspection_xy: Option<[f64; 2]>,
+    /// Display resolution preset. Older saved views fall back to the preset
+    /// every review before GUI9 used.
+    #[serde(default)]
+    pub preset: crate::stock_preview::DisplayPreset,
 }
 impl Default for ViewSettings {
     fn default() -> Self {
@@ -107,6 +128,7 @@ impl Default for ViewSettings {
             stock: true,
             prefix: 0,
             inspection_xy: None,
+            preset: crate::stock_preview::DisplayPreset::Standard,
         }
     }
 }
@@ -151,6 +173,13 @@ pub struct Viewport {
     pub result_current: bool,
     inspection: inspection::Inspection,
     requested_stock: Option<usize>,
+    /// Prefix a pending stock request asked for. Retained (unlike
+    /// `requested_stock`, which the application consumes when it submits the
+    /// command) so the display can say which position it is still showing.
+    requested_prefix: Option<usize>,
+    /// Display resolution the user asked for, waiting for the current command
+    /// to finish before the application submits it.
+    requested_preset: Option<crate::stock_preview::DisplayPreset>,
     pub status: String,
     scene: Option<Scene>,
     // Viewport and selection
@@ -160,6 +189,10 @@ pub struct Viewport {
     playhead: usize,
     playing: bool,
     stage: usize,
+    /// First stage index the playback bar lays out, and how many rows it laid
+    /// out last frame. The count is published as measurement evidence.
+    stage_window: usize,
+    timeline_rows: usize,
     picker: Option<Picker>,
     picker_build_ms: f64,
     pub selection: Option<pick::Pick>,
@@ -183,6 +216,11 @@ pub struct Viewport {
     drill: render::Drill,
     gpu: bool,
     last_frame: Option<f64>,
+    /// Intervals between frames that did real work, for the diagnostics view.
+    frame_ms: Vec<f64>,
+    frames_seen: u64,
+    /// Adapter identity, so the diagnostics state which backend they measured.
+    backend: String,
     pub render_stats: render::SharedStats,
     pub stock_stats: stock_render::SharedStats,
     scene_revision: u64,
@@ -205,6 +243,8 @@ impl Default for Viewport {
             result_current: false,
             inspection: Default::default(),
             requested_stock: None,
+            requested_prefix: None,
+            requested_preset: None,
             status: "Open a job to begin.".into(),
             scene: None,
             iso: false,
@@ -213,6 +253,8 @@ impl Default for Viewport {
             playhead: 0,
             playing: false,
             stage: 0,
+            stage_window: 0,
+            timeline_rows: 0,
             picker: None,
             picker_build_ms: 0.,
             selection: None,
@@ -233,6 +275,9 @@ impl Default for Viewport {
             drill: render::Drill::None,
             gpu: false,
             last_frame: None,
+            frame_ms: Vec::new(),
+            frames_seen: 0,
+            backend: "not initialized".into(),
             render_stats: Arc::new(std::sync::Mutex::new(render::Stats::default())),
             stock_stats: Arc::new(std::sync::Mutex::new(stock_render::Stats::default())),
             scene_revision: 0,
@@ -250,6 +295,10 @@ impl Viewport {
             stock: self.show_stock,
             prefix: self.stock_prefix,
             inspection_xy: self.inspection.point,
+            // Persist the user's chosen resolution, not just what happens to be
+            // displayed: a saved context that has not generated yet must keep
+            // the choice it was made with.
+            preset: self.desired_preset(),
         }
     }
     pub fn restore_settings(&mut self, settings: &ViewSettings) {
@@ -261,6 +310,11 @@ impl Viewport {
         self.show_stock = settings.stock;
         self.playing = false;
         self.requested_stock = None;
+        self.requested_prefix = None;
+        // A restored view keeps its resolution: the stored preset is requested
+        // once the application is idle, exactly like a user's own choice.
+        self.requested_preset = Some(settings.preset);
+        self.stage_window = 0;
     }
     /// Adopt a compute result: metadata plus its binary payload.
     pub fn load_scene(&mut self, result: Result<(SceneMeta, Vec<u8>), String>) {
@@ -289,11 +343,15 @@ impl Viewport {
         }
         self.playhead = scene.motion_count();
         self.stock_prefix = scene.motion_count();
+        self.requested_prefix = None;
+        self.stage_window = 0;
+        self.timeline_rows = 0;
         self.selection = None;
         self.picker = None;
         self.overlay_signature = None;
         let stock = self.build_stock(&scene);
         self.stock = stock;
+        self.settle_preset_request(self.display_preset());
         self.page_hashes = Arc::new(vec![None; page_table(&scene).page_count()]);
         self.hash_cursor = 0;
         let required = self.compute_required(&scene);
@@ -309,7 +367,10 @@ impl Viewport {
 
     fn build_stock(&mut self, scene: &Scene) -> Option<StockView> {
         let meta = scene.meta.stock.clone()?;
-        let identity = scene.identity();
+        // The stock tiles are keyed by the simulation key, not by the scene
+        // payload: geometry pages and raster checkpoints have different
+        // lifetimes, and a preset change must invalidate only the raster.
+        let identity = meta.identity();
         let ranges: Vec<_> = scene
             .stock_sections()
             .map(|section| section.offset..section.offset + section.len)
@@ -334,6 +395,8 @@ impl Viewport {
             local: None,
             stats,
             prefix,
+            last_transfer_bytes: 0,
+            last_replayed: 0,
         })
     }
 
@@ -355,6 +418,7 @@ impl Viewport {
                 ));
             drop(renderer);
             app.gpu = true;
+            app.backend = format!("{:?}", state.adapter.get_info());
             app.status = format!("Renderer · {:?}", state.adapter.get_info());
         }
         app
@@ -625,15 +689,31 @@ impl Viewport {
                 let play=ui.button(if self.playing {"Pause"} else {"Play"});crate::app::observe_control(if self.playing {"Pause"} else {"Play"},play.rect);if play.clicked() { self.playing = !self.playing; if self.playing && self.stock_prefix==self.motion_count(){self.stock_seek(0);} }
                 let start=ui.button("Start");crate::app::observe_control("Start",start.rect);if start.clicked() {self.playing=false;self.stock_seek(0);}
                 let groups = self.groups.clone();
-                for (index, group) in groups.iter().enumerate() {
+                let (first, last) = self.timeline_window(groups.len());
+                self.timeline_rows = 0;
+                if first > 0 {
+                    let earlier = ui.button(format!("◀ {first} earlier stages"));
+                    crate::app::observe_control("Earlier stages", earlier.rect);
+                    if earlier.clicked() {
+                        self.stage_window = first.saturating_sub(TIMELINE_WINDOW);
+                    }
+                }
+                for group in &groups[first..last] {
                     let target = group.end;
                     let response = ui.button(&group.jump);
                     crate::app::observe_control(&group.jump, response.rect);
+                    self.timeline_rows += 1;
                     if response.clicked() {
                         self.playing = false;
                         self.stock_seek(target);
                     }
-                    let _ = index;
+                }
+                if last < groups.len() {
+                    let later = ui.button(format!("{} later stages ▶", groups.len() - last));
+                    crate::app::observe_control("Later stages", later.rect);
+                    if later.clicked() {
+                        self.stage_window = last.min(groups.len().saturating_sub(1));
+                    }
                 }
                 if self.knife_selected {
                     ui.label("Knife traces keep the preceding stock; pivot paths are paged.");
@@ -650,6 +730,27 @@ impl Viewport {
                             ui.selectable_value(&mut self.stage, index + 1, &group.label);
                         }
                     });
+                // Display resolution. It changes only the raster the simulator
+                // shows; the plan, its motions and every machining value stay.
+                let current = self.display_preset();
+                let combo = egui::ComboBox::from_id_salt("display-resolution")
+                    .selected_text(format!("Display: {}", current.label()))
+                    .show_ui(ui, |ui| {
+                        for preset in crate::stock_preview::DisplayPreset::ALL {
+                            let response = ui.selectable_label(
+                                preset == current,
+                                format!("{} · {}", preset.label(), preset.summary()),
+                            );
+                            crate::app::observe_control(
+                                &format!("Display resolution {}", preset.label()),
+                                response.rect,
+                            );
+                            if response.clicked() {
+                                self.set_display_preset(preset);
+                            }
+                        }
+                    });
+                crate::app::observe_control("Display resolution", combo.response.rect);
             });
             ui.horizontal(|ui| {
                 ui.spacing_mut().slider_width=(ui.available_width()-160.).max(80.);
@@ -658,6 +759,28 @@ impl Viewport {
             });
             if let Some(stock)=&self.stock {
                 ui.label(format!("Display simulation · {:.4} mm cells (reference {:.4}) · {} / {} motions · {:.2} mm³ removed",stock.meta.cell_mm,stock.meta.reference_cell_mm,stock.prefix,self.motion_count(),stock.stats.removed_volume_mm3));
+                if let Some(transport)=self.scene.as_ref().map(|scene|&scene.meta.transport) {
+                    let (bytes,replayed)=self.last_stock_transfer();
+                    let checkpoints=stock.meta.ladder_frames.max(transport.stock_checkpoints);
+                    ui.label(format!("Display transfer · scene {:.1} MiB · {} motion pages · {} checkpoints ({:.1} MiB retained) · last stock update {:.0} KiB after replaying {} motions",transport.payload_bytes as f64/1048576.,transport.motion_pages,checkpoints,stock.meta.retained_bytes as f64/1048576.,bytes as f64/1024.,replayed));
+                }
+                // A path page the resident budget refused is not drawn. Say so
+                // instead of letting a partial scene look complete.
+                if let Ok(stats) = self.render_stats.lock()
+                    && stats.budget_omitted > 0
+                {
+                    let omitted = stats.budget_omitted;
+                    let response = ui.colored_label(
+                        Color32::from_rgb(164, 83, 12),
+                        format!(
+                            "{omitted} requested path page(s) are outside the resident budget and are not drawn; the stock field and the timeline are unaffected."
+                        ),
+                    );
+                    crate::app::observe_control("Path pages omitted", response.rect);
+                }
+                if let Some(target)=self.requested_prefix {
+                    ui.label(format!("Requested stock motion {target} of {} — still showing motion {}.", self.motion_count(), self.stock_prefix));
+                }
                 if stock.meta.dropped_stage_marks > 0 {
                     let response = ui.colored_label(Color32::from_rgb(164,83,12), format!("{} stage boundaries are beyond the display checkpoint budget; the timeline still seeks them by replaying from the nearest earlier checkpoint.", stock.meta.dropped_stage_marks));
                     crate::app::observe_control("Dropped stage boundaries", response.rect);
@@ -668,6 +791,23 @@ impl Viewport {
             self.playing = false;
         }
         self.viewport(ctx);
+        // The recovery drill is one frame: the callbacks captured it when they
+        // were built above, and painting happens after this returns.
+        self.drill = render::Drill::None;
+        // A bounded upload that did not finish this frame asks for the next
+        // one. Nothing is dropped: the deferred pages and tiles keep their
+        // fingerprints and are copied when the next frame runs.
+        let loading = self
+            .render_stats
+            .lock()
+            .is_ok_and(|stats| stats.pages_deferred > 0)
+            || self
+                .stock_stats
+                .lock()
+                .is_ok_and(|stats| stats.pending_tiles > 0);
+        if loading && !self.gpu_unavailable {
+            ctx.request_repaint();
+        }
         let now = ctx.input(|i| i.time);
         if self.playing && !self.stock_loading && self.requested_stock.is_none() {
             let step = (self.motion_count() / 120).max(1);
@@ -677,13 +817,111 @@ impl Viewport {
             }
             ctx.request_repaint();
         }
+        // Frame instrumentation: sample the interval since the previous frame,
+        // ignoring the legitimate silence between event-driven frames.
+        if let Some(previous) = self.last_frame {
+            let interval = (now - previous) * 1000.;
+            if (0.5..=IDLE_GAP_MS).contains(&interval) {
+                if self.frame_ms.len() == FRAME_SAMPLES {
+                    self.frame_ms.remove(0);
+                }
+                self.frame_ms.push(interval);
+                self.frames_seen += 1;
+            }
+        }
         self.last_frame = Some(now);
     }
     pub fn stock_prefix(&self) -> usize {
         self.stock_prefix
     }
+    /// Display preset the shown raster was derived from.
+    pub fn display_preset(&self) -> crate::stock_preview::DisplayPreset {
+        self.stock
+            .as_ref()
+            .map_or(crate::stock_preview::DisplayPreset::Standard, |stock| {
+                stock.meta.preset
+            })
+    }
+    /// The preset a new scene must be built at: the user's pending choice, or
+    /// whatever the shown raster already uses.
+    pub fn desired_preset(&self) -> crate::stock_preview::DisplayPreset {
+        self.requested_preset
+            .unwrap_or_else(|| self.display_preset())
+    }
+    /// The raster's simulation key. A tile or checkpoint from another key must
+    /// not be shown even when the stock rectangle matches.
+    pub fn simulation_key(&self) -> Option<&str> {
+        Some(self.stock.as_ref()?.meta.key.as_str())
+    }
+    /// Ask for another display resolution. The application submits this once
+    /// the current command finishes, exactly like a stock seek.
+    pub fn set_display_preset(&mut self, preset: crate::stock_preview::DisplayPreset) {
+        let shown = self.stock.as_ref().map(|stock| stock.meta.preset);
+        if Some(preset) != shown {
+            self.requested_preset = Some(preset);
+        }
+    }
+    pub fn take_preset_request(&mut self) -> Option<crate::stock_preview::DisplayPreset> {
+        self.requested_preset.take()
+    }
+    pub fn requested_display_preset(&self) -> Option<crate::stock_preview::DisplayPreset> {
+        self.requested_preset
+    }
+    /// The request is satisfied once the displayed raster uses that preset; a
+    /// newer request keeps waiting.
+    fn settle_preset_request(&mut self, shown: crate::stock_preview::DisplayPreset) {
+        if self.requested_preset == Some(shown) {
+            self.requested_preset = None;
+        }
+    }
+    /// Adopt a raster rebuilt at another display resolution for the same
+    /// retained execution. The scene geometry and its pages are untouched; the
+    /// stock identity changes, so every resident tile is re-uploaded.
+    pub fn adopt_preset(&mut self, meta: SceneMeta, payload: Vec<u8>) -> Result<(), String> {
+        let preview = meta.stock.ok_or("Missing stock response")?;
+        let frame = preview.frames.first().ok_or("Missing stock frame")?;
+        let section = meta
+            .sections
+            .iter()
+            .find(|s| s.kind == pages::SECTION_STOCK)
+            .ok_or("Missing stock cells")?;
+        let cells = payload
+            .get(section.offset..section.offset + section.len)
+            .ok_or("Invalid stock payload")?;
+        let identity = preview.identity();
+        let cell_versions = Arc::new(frame.versions.clone());
+        let stats = frame.stats.clone();
+        let prefix = frame.prefix;
+        self.stock = Some(StockView {
+            meta: preview,
+            identity,
+            range: section.offset..section.offset + section.len,
+            local: Some(Arc::new(cells.to_vec())),
+            cell_versions,
+            stats,
+            prefix,
+            last_transfer_bytes: payload.len(),
+            last_replayed: 0,
+        });
+        self.stock_prefix = prefix;
+        self.playhead = prefix;
+        self.requested_prefix = None;
+        self.requested_stock = None;
+        self.settle_preset_request(self.display_preset());
+        self.stock_loading = false;
+        Ok(())
+    }
+    /// Position a pending stock request asked for, while the display still
+    /// shows [`Viewport::stock_prefix`].
+    pub fn requested_stock_prefix(&self) -> Option<usize> {
+        self.requested_prefix
+    }
     pub fn take_stock_request(&mut self) -> Option<usize> {
         self.requested_stock.take()
+    }
+    /// Whether a stock seek is still waiting for the application to submit it.
+    pub fn stock_request_pending(&self) -> bool {
+        self.requested_stock.is_some()
     }
     pub fn accept_stock(&mut self, meta: SceneMeta, payload: Vec<u8>) -> Result<(), String> {
         let stock = self.stock.as_mut().ok_or("No displayed stock")?;
@@ -702,10 +940,122 @@ impl Viewport {
         stock.cell_versions = Arc::new(frame.versions.clone());
         stock.stats = frame.stats.clone();
         stock.prefix = frame.prefix;
+        // The response names its own simulation key. If it differs (a rebuild
+        // landed between requests) the renderer must re-upload every tile
+        // instead of mixing cells from two resolutions.
+        stock.identity = preview.identity();
+        stock.last_transfer_bytes = payload.len();
+        stock.last_replayed = meta.report["gui2"]["replayed"].as_u64().unwrap_or(0) as usize;
         self.stock_prefix = frame.prefix;
         self.playhead = frame.prefix;
+        self.requested_prefix = None;
         self.stock_loading = false;
         Ok(())
+    }
+    /// A stock request finished, successfully or not. The application calls this
+    /// when the command it submitted for a seek completes, so a refused or
+    /// failed seek cannot leave "requested" pointing at a position the display
+    /// is no longer going to reach.
+    pub fn finish_stock_request(&mut self) {
+        self.requested_prefix = None;
+    }
+    /// Bytes carried by the last stock response, for the display's own
+    /// transfer accounting.
+    pub fn last_stock_transfer(&self) -> (usize, usize) {
+        self.stock.as_ref().map_or((0, 0), |stock| {
+            (stock.last_transfer_bytes, stock.last_replayed)
+        })
+    }
+    /// Stage rows the playback bar laid out on the last frame. Reported so the
+    /// review can see that a large job does not lay out one row per stage.
+    pub fn timeline_rows(&self) -> usize {
+        self.timeline_rows
+    }
+    /// Read-only display state for the browser probe: which raster resolution is
+    /// on screen, what the plan asked for, and the simulation key that keeps the
+    /// two from being confused.
+    pub fn display_probe(&self) -> serde_json::Value {
+        let Some(stock) = &self.stock else {
+            return serde_json::json!({"preset": self.desired_preset().wire(), "raster": null});
+        };
+        serde_json::json!({
+            "preset": stock.meta.preset.wire(),
+            "requestedPreset": self.requested_preset.map(|preset| preset.wire()),
+            "cellMm": stock.meta.cell_mm,
+            "referenceCellMm": stock.meta.reference_cell_mm,
+            "retainedBytes": stock.meta.retained_bytes,
+            "checkpoints": stock.meta.ladder_frames.max(stock.meta.frames.len()),
+            "key": stock.meta.key,
+            "sectionSamples": self.section_sample_count(),
+        })
+    }
+    /// Diagnostics drill: stop drawing through the custom renderer callbacks
+    /// and say so. The document, the retained result, the playhead, the raster
+    /// resolution and the camera are untouched — only the GPU-side drawing
+    /// stops, which is what a lost device or a failed resource looks like from
+    /// the application's side.
+    pub fn inject_renderer_failure(&mut self) {
+        self.gpu_unavailable = true;
+        self.status = "Renderer failure injected: viewport callbacks stop drawing. The document, retained result and view are unchanged; use Rebuild renderer resources to recover.".into();
+    }
+    /// Rebuild every persistent GPU resource from the retained CPU data. The
+    /// next frames re-copy the resident motion pages and stock tiles, so the
+    /// same document, playhead and display resolution come back.
+    pub fn rebuild_renderer_resources(&mut self) {
+        self.gpu_unavailable = false;
+        self.drill = render::Drill::Recover;
+        self.status = "Rebuilding renderer resources from the retained scene and stock…".into();
+    }
+    /// Renderer state and load progress for the browser probe and the review.
+    pub fn renderer_probe(&self) -> serde_json::Value {
+        let scene = self.render_stats.lock().ok();
+        let stock = self.stock_stats.lock().ok();
+        let mut sorted = self.frame_ms.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let percentile = |quantile: f64| {
+            if sorted.is_empty() {
+                return 0.;
+            }
+            let index = ((sorted.len() - 1) as f64 * quantile).round() as usize;
+            sorted[index]
+        };
+        serde_json::json!({
+            "build": {
+                "version": env!("CARGO_PKG_VERSION"),
+                "protocol": crate::compute::PROTOCOL,
+            },
+            "backend": self.backend,
+            "unavailable": self.gpu_unavailable,
+            "gpu": self.gpu,
+            "recoveries": scene.as_ref().map_or(0, |stats| stats.recoveries)
+                + stock.as_ref().map_or(0, |stats| stats.recoveries),
+            "injectedErrors": scene.as_ref().map_or(0, |stats| stats.injected_errors),
+            "lastError": scene.as_ref().and_then(|stats| stats.last_error.clone()),
+            "pagesDeferred": scene.as_ref().map_or(0, |stats| stats.pages_deferred),
+            "framesLoading": scene.as_ref().map_or(0, |stats| stats.frames_loading),
+            "pendingTiles": stock.as_ref().map_or(0, |stats| stats.pending_tiles),
+            "stockFramesLoading": stock.as_ref().map_or(0, |stats| stats.frames_loading),
+            "residentPages": scene.as_ref().map_or(0, |stats| stats.resident_pages),
+            "residentBytes": scene.as_ref().map_or(0, |stats| stats.resident_bytes),
+            "pagesOmittedByBudget": scene.as_ref().map_or(0, |stats| stats.budget_omitted),
+            "pageUploads": scene.as_ref().map_or(0, |stats| stats.page_uploads),
+            "pagesSkipped": scene.as_ref().map_or(0, |stats| stats.uploads_skipped),
+            "uploadBytes": scene.as_ref().map_or(0, |stats| stats.upload_bytes),
+            "evictions": scene.as_ref().map_or(0, |stats| stats.evictions),
+            "requiredPages": self.required_pages.len(),
+            "requiredPageRange": match (self.required_pages.first(), self.required_pages.last()) {
+                (Some(first), Some(last)) => serde_json::json!([first, last]),
+                _ => serde_json::json!([]),
+            },
+            "framesSeen": self.frames_seen,
+            "frameMs": {
+                "samples": sorted.len(),
+                "last": self.frame_ms.last().copied().unwrap_or(0.),
+                "p50": percentile(0.5),
+                "p95": percentile(0.95),
+                "max": sorted.last().copied().unwrap_or(0.),
+            },
+        })
     }
     pub fn seek(&mut self, prefix: usize) {
         self.stock_seek(prefix);
@@ -744,10 +1094,36 @@ impl Viewport {
         })
     }
 
+    /// Stage rows the playback bar lays out: every stage when the job fits the
+    /// window, otherwise a window of [`TIMELINE_WINDOW`] rows that follows the
+    /// selected stage. Layout cost stays bounded no matter how many operations
+    /// the job has, and the established labels are unchanged inside the window.
+    fn timeline_window(&self, total: usize) -> (usize, usize) {
+        if total <= TIMELINE_WINDOW {
+            return (0, total);
+        }
+        let first = self.stage_window.min(total - TIMELINE_WINDOW);
+        // "All paths" selects no stage, so the window is the user's own scroll
+        // position rather than a re-centre on row zero.
+        if self.stage == 0 {
+            return (first, first + TIMELINE_WINDOW);
+        }
+        let selected = (self.stage - 1).min(total - 1);
+        if selected < first {
+            (selected, selected + TIMELINE_WINDOW)
+        } else if selected >= first + TIMELINE_WINDOW {
+            let start = selected + 1 - TIMELINE_WINDOW;
+            (start, start + TIMELINE_WINDOW)
+        } else {
+            (first, first + TIMELINE_WINDOW)
+        }
+    }
+
     fn stock_seek(&mut self, target: usize) {
         let target = target.min(self.motion_count());
         if target != self.stock_prefix {
             self.requested_stock = Some(target);
+            self.requested_prefix = Some(target);
         }
     }
     /// Display picking entry point. Exposed so the interaction harness can
@@ -958,4 +1334,36 @@ fn visible_range(
     };
     let start = group.start.min(end);
     start..group.end.clamp(start, end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_timeline_lays_out_a_bounded_window_around_the_selected_stage() {
+        let mut view = Viewport::default();
+        // Every established review build fits the window unchanged.
+        assert_eq!(view.timeline_window(0), (0, 0));
+        assert_eq!(view.timeline_window(TIMELINE_WINDOW), (0, TIMELINE_WINDOW));
+        assert_eq!(
+            view.timeline_window(TIMELINE_WINDOW + 1).1
+                - view.timeline_window(TIMELINE_WINDOW + 1).0,
+            TIMELINE_WINDOW
+        );
+        // Selecting a stage outside the window moves it instead of growing the
+        // row count; the selected stage is always inside.
+        view.stage = 500;
+        let (first, last) = view.timeline_window(1_000);
+        assert_eq!(last - first, TIMELINE_WINDOW);
+        assert!((first..last).contains(&499));
+        view.stage = 1_000;
+        let (first, last) = view.timeline_window(1_000);
+        assert_eq!(last - first, TIMELINE_WINDOW);
+        assert!((first..last).contains(&999));
+        // The window control scrolls by one window without leaving the list.
+        view.stage = 0;
+        view.stage_window = 1_000;
+        assert_eq!(view.timeline_window(1_000), (992, 1_000));
+    }
 }

@@ -15,6 +15,11 @@ pub struct Stats {
     pub tile_uploads: u64,
     pub tile_bytes: u64,
     pub skipped_tiles: u64,
+    /// Changed tiles the last frame's copy budget pushed to a later frame.
+    pub pending_tiles: usize,
+    /// Frames that ended with tiles still pending, i.e. how long a cold load
+    /// took. Zero on an idle scene.
+    pub frames_loading: u64,
     pub full_frame_bytes: u64,
     pub buffer_bytes: u64,
     pub recoveries: u64,
@@ -252,12 +257,18 @@ impl egui_wgpu::CallbackTrait for Callback {
             (None, Some(payload)) => &payload[self.cells.clone()],
             (None, None) => return Vec::new(),
         };
-        for tile in 0..tiles {
-            let version = self.versions.get(tile).copied().unwrap_or(u32::MAX);
-            if r.uploaded_versions[tile] == version {
-                skipped += 1;
-                continue;
-            }
+        // One frame copies a bounded number of changed tiles. Everything else
+        // keeps its version mismatch and is copied on the following frames, so
+        // a cold load at the finest preset cannot stall a frame.
+        let batch = crate::stock_preview::next_tile_batch(
+            &self.versions,
+            &r.uploaded_versions,
+            crate::stock_preview::TILE_UPLOADS_PER_FRAME,
+        );
+        let pending_before =
+            crate::stock_preview::dirty_tiles(&self.versions, &r.uploaded_versions).len();
+        skipped += (tiles as u64).saturating_sub(pending_before as u64);
+        for tile in batch.iter().map(|tile| *tile as usize) {
             let offset = tile * TILE_BYTES;
             let start = offset;
             let end = (start + TILE_BYTES).min(source.len());
@@ -266,14 +277,21 @@ impl egui_wgpu::CallbackTrait for Callback {
                 continue;
             }
             queue.write_buffer(&r.cells, offset as u64, &source[start..end]);
+            let version = self.versions.get(tile).copied().unwrap_or(u32::MAX);
             r.uploaded_versions[tile] = version;
             uploaded += 1;
         }
         {
             let mut stats = r.stats.lock().unwrap();
+            let remaining =
+                crate::stock_preview::dirty_tiles(&self.versions, &r.uploaded_versions).len();
             stats.tile_uploads += uploaded;
             stats.skipped_tiles += skipped;
             stats.tile_bytes += uploaded * TILE_BYTES as u64;
+            stats.pending_tiles = remaining;
+            if remaining > 0 {
+                stats.frames_loading += 1;
+            }
             stats.full_frame_bytes = (self.cols * self.rows * 4) as u64;
             stats.buffer_bytes = r.capacity;
             stats.grid = [self.cols, self.rows];

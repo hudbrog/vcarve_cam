@@ -584,6 +584,18 @@ pub struct Playback {
     budget: usize,
     limit: usize,
 }
+
+/// What one seek actually did. The display quotes this instead of guessing how
+/// much stock work a scrub caused.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeekReport {
+    /// Prefix the replay started from (a checkpoint, the pristine field or the
+    /// current position).
+    pub from: usize,
+    /// Motions re-integrated after that prefix.
+    pub replayed: usize,
+}
+
 impl Playback {
     pub fn new(field: Field, checkpoint_budget: usize) -> Self {
         Self {
@@ -631,20 +643,27 @@ impl Playback {
             .map(|(_, f, _)| f.allocated_bytes())
             .sum()
     }
-    pub fn seek(&mut self, motions: &[Motion], target: usize) -> Result<(), String> {
+    /// Seek to `target`, starting from whichever exact prefix costs the least
+    /// replay work. A forward jump across a checkpoint restores it instead of
+    /// re-integrating every motion in between; a backward jump always restores
+    /// the nearest earlier checkpoint. Either way the restored field is an
+    /// exact prefix state, so the result is identical to a cold replay.
+    pub fn seek(&mut self, motions: &[Motion], target: usize) -> Result<SeekReport, String> {
         if target > motions.len() {
             return Err("Simulator playhead exceeds retained motions".into());
         }
-        if target < self.position {
-            let saved = self
-                .checkpoints
-                .iter()
-                .filter(|(p, _, _)| *p <= target)
-                .max_by_key(|(p, _, _)| *p);
+        let saved = self
+            .checkpoints
+            .iter()
+            .filter(|(p, _, _)| *p <= target)
+            .max_by_key(|(p, _, _)| *p);
+        let saved_prefix = saved.map_or(0, |(p, _, _)| *p);
+        if target < self.position || saved_prefix > self.position {
             let (p, f) = saved.map_or((0, &self.pristine), |(p, f, _)| (*p, f));
             self.field = f.clone();
             self.position = p;
         }
+        let from = self.position;
         for motion in &motions[self.position..target] {
             self.field.apply(motion, 0., 1.)?;
             self.position += 1;
@@ -670,7 +689,10 @@ impl Playback {
                 self.checkpoints.push((target, self.field.clone(), false));
             }
         }
-        Ok(())
+        Ok(SeekReport {
+            from,
+            replayed: target - from,
+        })
     }
 }
 
@@ -855,5 +877,67 @@ mod tests {
         assert_eq!(rebuilt.checksum(), field.checksum());
         assert_eq!(rebuilt.cell_bytes(), field.cell_bytes());
         assert_eq!(rebuilt.allocated_bytes(), field.allocated_bytes());
+    }
+
+    /// A forward jump that crosses a checkpoint restores it instead of
+    /// re-integrating every motion between the playhead and the target. Both
+    /// paths must land on the same field.
+    #[test]
+    fn a_forward_jump_restores_the_nearest_checkpoint_before_replaying() {
+        let stock = Stock {
+            x0: -10.,
+            y0: -10.,
+            x1: 10.,
+            y1: 10.,
+            thickness_mm: 4.,
+        };
+        let tools = [ToolSpec::Endmill { diameter: 1. }];
+        let motions: Vec<Motion> = (0..400)
+            .map(|i| Motion {
+                kind: "cut".into(),
+                tool: 0,
+                x0: -8. + (i % 20) as f64 * 0.8,
+                y0: -8. + (i / 20) as f64 * 0.8,
+                z0: -0.5,
+                x1: -8. + (i % 20) as f64 * 0.8 + 0.4,
+                y1: -8. + (i / 20) as f64 * 0.8,
+                z1: -0.5,
+            })
+            .collect();
+        let mut cold = Field::new(stock, &tools, 0.2).unwrap();
+        let pristine = cold.clone();
+        let mut frames = vec![(0, cold.clone())];
+        for (index, motion) in motions.iter().enumerate() {
+            cold.apply(motion, 0., 1.).unwrap();
+            // Deliberately not every 100: the ladder has to be reached by
+            // choosing among the checkpoints that exist.
+            if matches!(index + 1, 200 | 300 | 400) {
+                frames.push((index + 1, cold.clone()));
+            }
+        }
+        let latest = frames.last().unwrap().1.clone();
+        let mut playback = Playback::seed(latest, pristine, frames, usize::MAX);
+        assert_eq!(playback.position, 400);
+
+        // Backward to 100: the playhead itself becomes the cheap start.
+        let back = playback.seek(&motions, 100).unwrap();
+        assert_eq!((back.from, back.replayed), (0, 100));
+        // Forward to 350 crosses the 200 and 300 checkpoints. Replaying from
+        // the playhead would re-integrate 250 motions; the checkpoint at 300
+        // leaves 50.
+        let forward = playback.seek(&motions, 350).unwrap();
+        assert_eq!(
+            (forward.from, forward.replayed),
+            (300, 50),
+            "the nearest earlier checkpoint is the cheapest exact start"
+        );
+        assert_eq!(playback.position, 350);
+
+        let mut reference = Field::new(stock, &tools, 0.2).unwrap();
+        for motion in &motions[..350] {
+            reference.apply(motion, 0., 1.).unwrap();
+        }
+        assert_eq!(playback.field.checksum(), reference.checksum());
+        assert_eq!(playback.field.cell_bytes(), reference.cell_bytes());
     }
 }

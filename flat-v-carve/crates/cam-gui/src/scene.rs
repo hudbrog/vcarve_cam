@@ -243,7 +243,23 @@ fn role_color(role: StageRole) -> [f32; 4] {
 pub fn build(
     job: &CamJobV5,
     plan: Option<&OperationPlanV5>,
+    report: Value,
+) -> Result<(crate::compute::SceneMeta, Vec<u8>), String> {
+    build_with_preset(
+        job,
+        plan,
+        report,
+        crate::stock_preview::DisplayPreset::Standard,
+    )
+}
+
+/// The display resolution the caller asked for. It changes only the raster
+/// preset; the plan, its motions and every machining value are untouched.
+pub fn build_with_preset(
+    job: &CamJobV5,
+    plan: Option<&OperationPlanV5>,
     mut report: Value,
+    preset: crate::stock_preview::DisplayPreset,
 ) -> Result<(crate::compute::SceneMeta, Vec<u8>), String> {
     let catalogue = artwork_inputs(job)?;
     let selected = selected_references(job);
@@ -530,8 +546,10 @@ pub fn build(
             prefixes: vec![],
         },
         &marks,
-        crate::stock_preview::CHECKPOINTS,
-        crate::stock_preview::MAX_PREVIEW_BYTES,
+        preset,
+        // The execution fingerprint is the display's identity for this plan: a
+        // revalidated or regenerated execution must not inherit these tiles.
+        &plan.execution_fingerprint,
     )?;
     if let Some(offset) = knife_offset {
         let knife_tools: Vec<Option<&cam_core::project::DragKnifeSpec>> = job

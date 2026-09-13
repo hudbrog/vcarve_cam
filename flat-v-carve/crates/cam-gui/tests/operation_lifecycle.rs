@@ -216,6 +216,7 @@ fn prefix_generation_and_export_bind_the_selected_scope() {
             scope: session::GenerateScope::ThroughOperation {
                 operation_id: carving.clone(),
             },
+            preset: cam_gui_runtime::stock_preview::DisplayPreset::Standard,
         },
     )
     .unwrap();

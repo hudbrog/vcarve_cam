@@ -13,9 +13,31 @@ use std::cell::RefCell;
 pub const PROTOCOL: &str = "gui2-retained-5";
 pub const FLOWER: &str = include_str!("../../../fixtures/gui2/flower.job.json");
 pub const PROFILE: &str = include_str!("../../../fixtures/gui2/machine.json");
-pub const MOTION_LIMIT: usize = 100_000;
+/// Motions one retained execution may publish to the display.
+///
+/// The whole execution travels to the display process as one payload: the
+/// motion section (two 28-byte vertices per motion) plus the replayable motion
+/// stream (56 bytes per motion) is 112 bytes per motion, and the bounded stock
+/// checkpoints add at most `MAX_PREVIEW_BYTES`. The native worker refuses a
+/// response above 128 MB, so the derived ceiling is about a million motions;
+/// 250,000 is the measured display bound (the M workload plus headroom) rather
+/// than the transfer ceiling. Above it the job is refused by name instead of
+/// being truncated.
+pub const MOTION_LIMIT: usize = 250_000;
 /// Bound on the timeline's visible path groups (one per executed stage).
 pub const MAX_DISPLAY_GROUPS: usize = 32;
+
+/// Display admission for a generated execution. The comparison is the
+/// transport/display bound only; it never weakens a machining limit.
+pub fn admit_motions(motions: usize) -> Result<(), String> {
+    if motions > MOTION_LIMIT {
+        return Err(format!(
+            "This plan has {motions} motions; the display admits at most {MOTION_LIMIT} \
+             without truncation. Split the job into smaller operations before simulating."
+        ));
+    }
+    Ok(())
+}
 thread_local! { static SERVICE: RefCell<Retained> = RefCell::new(Retained::new()); }
 thread_local! { static DISPLAY: RefCell<Option<Display>> = const { RefCell::new(None) }; }
 struct Display {
@@ -23,6 +45,14 @@ struct Display {
     playback: crate::sim::Playback,
     motions: Vec<Motion>,
     meta: crate::stock_preview::PreviewMeta,
+    /// What a display-preset change needs to re-derive the raster from the same
+    /// retained execution: the stock, the tools, the plan's requested
+    /// resolution and the stage boundaries the timeline seeks to.
+    stock: crate::sim::Stock,
+    tools: Vec<crate::sim::ToolSpec>,
+    resolution: crate::sim::Resolution,
+    marks: Vec<usize>,
+    preset: crate::stock_preview::DisplayPreset,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,10 +91,18 @@ pub enum Command {
         job: String,
         handle: String,
         scope: GenerateScope,
+        #[serde(default)]
+        preset: crate::stock_preview::DisplayPreset,
     },
     Seek {
         handle: String,
         prefix: usize,
+    },
+    /// Re-derive the display raster from the retained execution at another
+    /// resolution. Nothing is replanned and no machining value changes.
+    DisplayPreset {
+        handle: String,
+        preset: crate::stock_preview::DisplayPreset,
     },
     Open {
         json: String,
@@ -79,6 +117,8 @@ pub enum Command {
     Generate {
         job: String,
         scope: GenerateScope,
+        #[serde(default)]
+        preset: crate::stock_preview::DisplayPreset,
     },
     Prepare {
         job: String,
@@ -127,6 +167,18 @@ impl Command {
         Command::Generate {
             job: job.into(),
             scope: GenerateScope::AllEnabled,
+            preset: crate::stock_preview::DisplayPreset::Standard,
+        }
+    }
+    /// Generate at the display resolution the session asked for.
+    pub fn generate_at(
+        job: impl Into<String>,
+        preset: crate::stock_preview::DisplayPreset,
+    ) -> Self {
+        Command::Generate {
+            job: job.into(),
+            scope: GenerateScope::AllEnabled,
+            preset,
         }
     }
     /// An artwork command for the whole job (the operation-scoped selection
@@ -144,6 +196,7 @@ impl Command {
             job: job.into(),
             handle: handle.into(),
             scope: GenerateScope::AllEnabled,
+            preset: crate::stock_preview::DisplayPreset::Standard,
         }
     }
 }
@@ -595,13 +648,90 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 let mut display = display.borrow_mut();
                 let display = display.as_mut().filter(|d| d.fingerprint == plan.trusted.plan().execution_fingerprint).ok_or("Display execution expired; generate again")?;
                 if prefix > display.motions.len() { return Err("Stock motion outside retained execution".into()); }
-                display.playback.seek(&display.motions, prefix)?;
+                let seek = display.playback.seek(&display.motions, prefix)?;
                 let field = &display.playback.field;
                 let cells = field.packed_tile_bytes();
                 let mut meta = display.meta.clone();
                 meta.frames = vec![crate::stock_preview::FrameMeta { prefix, stats:field.stats.clone(),checksum:field.checksum(),versions:field.versions.clone(),allocated:field.versions.iter().enumerate().filter(|(i,_)|field.tile_allocated(*i)).map(|(i,_)|i as u32).collect() }];
-                meta.retained_bytes = cells.len();
-                package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"seek","prefix":prefix,"handle":handle}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None})
+                package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"seek","prefix":prefix,"handle":handle,"replayed":seek.replayed,"replayedFrom":seek.from,"preset":meta.preset.wire(),"key":meta.key,"cellMm":meta.cell_mm}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None})
+            });
+        }
+        // Another display resolution for the same retained execution. The plan,
+        // its motions and every machining value are untouched; only the raster,
+        // its checkpoints and the simulation key change.
+        Command::DisplayPreset { handle, preset } => {
+            let plan = service.generated_plan(&handle).map_err(|e| e.to_string())?;
+            let fingerprint = plan.trusted.plan().execution_fingerprint.clone();
+            return DISPLAY.with(|display| {
+                let mut display = display.borrow_mut();
+                let display = display
+                    .as_mut()
+                    .filter(|d| d.fingerprint == fingerprint)
+                    .ok_or("Display execution expired; generate again")?;
+                let position = display.playback.position;
+                if display.preset == preset {
+                    let field = &display.playback.field;
+                    let cells = field.packed_tile_bytes();
+                    let mut meta = display.meta.clone();
+                    meta.frames = vec![crate::stock_preview::FrameMeta { prefix: position, stats: field.stats.clone(), checksum: field.checksum(), versions: field.versions.clone(), allocated: field.versions.iter().enumerate().filter(|(i, _)| field.tile_allocated(*i)).map(|(i, _)| i as u32).collect() }];
+                    return package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"preset","handle":handle,"preset":preset.wire(),"key":meta.key,"cellMm":meta.cell_mm,"prefix":position,"retainedBytes":meta.retained_bytes,"checkpoints":1,"changed":false}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None});
+                }
+                let input = crate::sim::Input {
+                    stock: display.stock,
+                    tools: display.tools.clone(),
+                    resolution: display.resolution,
+                    motions: display.motions.clone(),
+                    prefixes: vec![],
+                };
+                let preview = crate::stock_preview::build_with_marks(
+                    &input,
+                    &display.marks,
+                    preset,
+                    &display.fingerprint,
+                )?;
+                let mut seed = Vec::with_capacity(preview.meta.frames.len());
+                for (index, frame) in preview.meta.frames.iter().enumerate() {
+                    let field = crate::sim::Field::from_packed(
+                        preview.meta.stock,
+                        &input.tools,
+                        preview.meta.cell_mm,
+                        preview.cells.get(index).ok_or("Missing rebuilt checkpoint")?,
+                        &frame.versions,
+                        &frame.allocated,
+                        frame.stats.clone(),
+                    )?;
+                    seed.push((frame.prefix, field));
+                }
+                let mut playback = crate::sim::Playback::seed(
+                    seed.last().ok_or("No rebuilt checkpoints")?.1.clone(),
+                    seed[0].1.clone(),
+                    seed,
+                    preset.budget(),
+                );
+                // The comparison the review asks for keeps the same playhead.
+                playback.seek(&display.motions, position)?;
+                let checkpoints = preview.meta.frames.len();
+                let cells = playback.field.packed_tile_bytes();
+                let frame = crate::stock_preview::FrameMeta {
+                    prefix: position,
+                    stats: playback.field.stats.clone(),
+                    checksum: playback.field.checksum(),
+                    versions: playback.field.versions.clone(),
+                    allocated: playback
+                        .field
+                        .versions
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| playback.field.tile_allocated(*i))
+                        .map(|(i, _)| i as u32)
+                        .collect(),
+                };
+                display.playback = playback;
+                display.preset = preset;
+                let mut meta = preview.meta;
+                meta.frames = vec![frame];
+                display.meta = meta.clone();
+                package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"preset","handle":handle,"preset":preset.wire(),"key":meta.key,"cellMm":meta.cell_mm,"prefix":position,"retainedBytes":meta.retained_bytes,"checkpoints":checkpoints,"changed":true}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None})
             });
         }
         Command::ImportKnifeSvg { filename, svg } => (
@@ -645,7 +775,12 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             )
         }
         Command::Preview { job } => (open(&job)?, json!({"kind":"preview"})),
-        Command::ValidatePlan { job, handle, scope } => {
+        Command::ValidatePlan {
+            job,
+            handle,
+            scope,
+            preset,
+        } => {
             let job = open(&job)?;
             let retained = service.generated_plan(&handle).ok();
             let identity =
@@ -659,6 +794,7 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                     &job,
                     plan,
                     json!({"kind":"revalidated","handle":handle,"scope":scope,"executionFingerprint":plan.execution_fingerprint,"checks":retained.checks,"generationIssues":plan.generation_diagnostics}),
+                    preset,
                 );
             }
             return outline(&job, json!({"kind":"stale"}));
@@ -684,7 +820,7 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             job.setup.clearance_above_stock_mm = Some(machine.clearance_z_mm);
             (job, json!({"kind":"profile"}))
         }
-        Command::Generate { job, scope } => {
+        Command::Generate { job, scope, preset } => {
             let job = open(&job)?;
             if job.operations.is_empty() {
                 return Err("Add an operation before generating".into());
@@ -717,14 +853,13 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 .ok_or("Missing retained plan handle")?;
             let retained = service.generated_plan(handle).map_err(|e| e.to_string())?;
             let plan = retained.trusted.plan();
-            if plan.motions.len() > MOTION_LIMIT {
-                return Err("GUI2 exceeds 100,000 motions; no truncated scene admitted".into());
-            }
+            admit_motions(plan.motions.len())?;
             let result = scene(
                 &job,
                 plan,
                 json!({"kind":"generated", "handle":handle, "scope":scope,
                 "checks":retained.checks, "generationIssues":plan.generation_diagnostics, "executionFingerprint":plan.execution_fingerprint, "retained":reply["retained"]}),
+                preset,
             )?;
             let scene = crate::compute::Scene {
                 meta: result.0.clone(),
@@ -753,14 +888,28 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 seed.last().ok_or("No checkpoints")?.1.clone(),
                 seed[0].1.clone(),
                 seed,
-                crate::stock_preview::MAX_PREVIEW_BYTES,
+                preset.budget(),
             );
+            // The stage boundaries the timeline seeks to. Kept in the worker so
+            // a display-preset change can re-derive the raster without
+            // replanning: the same execution, at another resolution.
+            let marks: Vec<usize> = plan
+                .stages
+                .iter()
+                .map(|stage| stage.motion_range.1)
+                .chain(std::iter::once(0))
+                .collect();
             DISPLAY.with(|d| {
                 *d.borrow_mut() = Some(Display {
                     fingerprint: plan.execution_fingerprint.clone(),
                     playback,
                     motions: input.motions,
                     meta: meta.clone(),
+                    stock: meta.stock,
+                    tools: input.tools,
+                    resolution: input.resolution,
+                    marks,
+                    preset,
                 })
             });
             return Ok(result);
@@ -812,6 +961,7 @@ pub fn scene(
     job: &CamJobV5,
     plan: &cam_core::sequence::OperationPlanV5,
     report: Value,
+    preset: crate::stock_preview::DisplayPreset,
 ) -> Result<(SceneMeta, Vec<u8>), String> {
-    crate::scene::build(job, Some(plan), report)
+    crate::scene::build_with_preset(job, Some(plan), report, preset)
 }

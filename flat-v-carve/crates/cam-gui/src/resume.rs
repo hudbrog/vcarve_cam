@@ -209,6 +209,7 @@ mod tests {
             stock: true,
             prefix: 123,
             inspection_xy: Some([9., 23.]),
+            preset: crate::stock_preview::DisplayPreset::Fine,
         });
         app.plan = Some(("do-not-restore".into(), 0));
         app.prepared = Some((json!({"file":"do-not-restore"}), 0));
@@ -224,6 +225,29 @@ mod tests {
         assert_eq!(restored.search, "Rotation");
         assert!(restored.view.settings().isometric);
         assert_eq!(restored.view.settings().inspection_xy, Some([9., 23.]));
+        // "Re-open the prior view" means the whole working view, including the
+        // display resolution, not only the camera flag. The playhead is stored
+        // with the snapshot and re-applied when a scene loads, because the
+        // retained execution itself is never restored from a draft, so a
+        // context that was saved before its first generation reports the
+        // default playhead here and keeps the resolution the user chose.
+        assert_eq!(
+            restored.view.settings(),
+            crate::viewport::ViewSettings {
+                isometric: true,
+                zoom: 1.4,
+                yaw: 0.3,
+                stage: 1,
+                stock: true,
+                prefix: 0,
+                inspection_xy: Some([9., 23.]),
+                preset: crate::stock_preview::DisplayPreset::Fine,
+            }
+        );
+        assert!(
+            text.contains("\"preset\":\"fine\""),
+            "the chosen display resolution is part of the saved view: {text}"
+        );
         assert_eq!(restored.undo.len(), 2);
         assert!(restored.document.as_ref().unwrap().pending());
         assert!(restored.plan.is_none() && restored.prepared.is_none());
