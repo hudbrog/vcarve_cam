@@ -213,55 +213,70 @@ pub fn depth_layers(heights: &ResolvedHeights, stepdown: f64) -> Vec<f64> {
     values
 }
 
-/// Raster rows: scan positions spaced by the stepover, extended so the union
-/// of cutter sweeps covers the rectangle including corners, plus the
-/// requested travel overrun beyond coverage.
-pub fn raster_rows(
-    geometry: &FaceGeometry,
-    stepover: f64,
-    radius: f64,
+/// One raster row: the cross coordinates the pass sweeps (already dilated by
+/// the cutter radius) and the scan position it runs at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceRow {
+    /// Cross coordinate of the low side: `coverage.min - radius`.
+    pub low: f64,
+    /// Cross coordinate of the high side: `coverage.max + radius`.
+    pub high: f64,
+    pub scan: f64,
+}
+
+/// Pass endpoints in travel order. The side a pass starts from carries the
+/// entry overrun and the side it leaves carries the exit overrun, so a
+/// reversed pass starts inside *its own* entry clearance instead of
+/// inheriting whatever the other end was given (plan section 11).
+pub fn pass_span(
+    row: &FaceRow,
+    reversed: bool,
     entry_overrun: f64,
     exit_overrun: f64,
-) -> Vec<(f64, f64, f64)> {
+) -> (f64, f64) {
+    if reversed {
+        (row.high + entry_overrun, row.low - exit_overrun)
+    } else {
+        (row.low - entry_overrun, row.high + exit_overrun)
+    }
+}
+
+/// Raster rows: scan positions spaced by the stepover, extended so the union
+/// of cutter sweeps covers the rectangle including corners. The travel
+/// overruns are applied per pass by [`pass_span`], because which end of a row
+/// is the entry depends on the pass direction.
+pub fn raster_rows(geometry: &FaceGeometry, stepover: f64, radius: f64) -> Vec<FaceRow> {
     let span = geometry.scan_max - geometry.scan_min;
     let first = geometry.scan_min + radius;
     let last_target = geometry.scan_max - radius;
+    let row = |scan: f64| FaceRow {
+        low: geometry.cross_min - radius,
+        high: geometry.cross_max + radius,
+        scan,
+    };
     if last_target <= first {
         // The cutter covers the whole cross extent in one row.
-        return vec![(
-            geometry.cross_min - radius - entry_overrun,
-            geometry.cross_max + radius + exit_overrun,
-            geometry.scan_min + span / 2.,
-        )];
+        return vec![row(geometry.scan_min + span / 2.)];
     }
     let count = ((last_target - first) / stepover).floor() as usize + 1;
     let mut rows = vec![];
     for index in 0..count {
-        rows.push((
-            geometry.cross_min - radius - entry_overrun,
-            geometry.cross_max + radius + exit_overrun,
-            first + index as f64 * stepover,
-        ));
+        rows.push(row(first + index as f64 * stepover));
     }
-    let last = rows.last().map(|r| r.2).unwrap_or(first);
+    let last = rows.last().map(|r| r.scan).unwrap_or(first);
     if last_target - last > RESERVE_MM {
-        rows.push((
-            geometry.cross_min - radius - entry_overrun,
-            geometry.cross_max + radius + exit_overrun,
-            last_target,
-        ));
+        rows.push(row(last_target));
     }
     rows
 }
 
 /// Verify the swept bands cover the requested rectangle; report missed strips.
-pub fn coverage_gaps(
-    geometry: &FaceGeometry,
-    rows: &[(f64, f64, f64)],
-    radius: f64,
-) -> Vec<(f64, f64)> {
+pub fn coverage_gaps(geometry: &FaceGeometry, rows: &[FaceRow], radius: f64) -> Vec<(f64, f64)> {
     let mut gaps = vec![];
-    let mut bands: Vec<(f64, f64)> = rows.iter().map(|r| (r.2 - radius, r.2 + radius)).collect();
+    let mut bands: Vec<(f64, f64)> = rows
+        .iter()
+        .map(|r| (r.scan - radius, r.scan + radius))
+        .collect();
     bands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
     let mut covered_to = geometry.scan_min;
     for (low, high) in bands {
@@ -276,13 +291,13 @@ pub fn coverage_gaps(
     gaps
 }
 
-fn footprint_wholly_outside_stock(ctx: &PlanContext, x: f64, y: f64, radius: f64) -> bool {
+/// Distance from a cutter centre to the closest point of the physical stock
+/// rectangle, or `None` when no physical stock is known.
+fn stock_distance(ctx: &PlanContext, x: f64, y: f64) -> Option<f64> {
     match ctx.setup.stock.xy {
         Some(rect) => {
             let max_x = rect.min_x_mm + rect.width_mm;
             let max_y = rect.min_y_mm + rect.length_mm;
-            // Distance from the circle center to the rectangle; wholly
-            // outside when the closest rectangle point is beyond the radius.
             let dx = if x < rect.min_x_mm {
                 rect.min_x_mm - x
             } else if x > max_x {
@@ -297,10 +312,19 @@ fn footprint_wholly_outside_stock(ctx: &PlanContext, x: f64, y: f64, radius: f64
             } else {
                 0.
             };
-            dx.hypot(dy) > radius
+            Some(dx.hypot(dy))
         }
-        None => false,
+        None => None,
     }
+}
+
+/// Whether a descent at this point can reach stock *material*. A cutter whose
+/// sweep only touches the stock boundary has zero overlap with the material —
+/// descending there is a side entry, not a plunge — so tangent contact counts
+/// as clear. Anything that reaches inside must be authorized by the tool's
+/// plunge capability. An unknown stock rectangle is never claimed clear.
+fn entry_clear_of_stock(ctx: &PlanContext, x: f64, y: f64, radius: f64) -> bool {
+    stock_distance(ctx, x, y).is_some_and(|distance| distance + RESERVE_MM >= radius)
 }
 
 fn stage_id(operation_id: &str) -> String {
@@ -395,7 +419,7 @@ pub(crate) fn plan(
     };
     let entry_overrun = settings.entry_overrun_mm.unwrap_or(0.);
     let exit_overrun = settings.exit_overrun_mm.unwrap_or(0.);
-    let rows = raster_rows(&geometry, stepover, radius, entry_overrun, exit_overrun);
+    let rows = raster_rows(&geometry, stepover, radius);
     let gaps = coverage_gaps(&geometry, &rows, radius);
     if !gaps.is_empty() {
         return Ok(incomplete(
@@ -413,16 +437,17 @@ pub(crate) fn plan(
             )],
         ));
     }
-    // Allowed envelope: coverage expanded by the travel overruns, then
-    // dilated by the cutter radius plus the numerical reserve. Generated
-    // paths are checked against it below; a bug cannot widen the envelope.
+    // Either overrun can land on either end of the coverage, because a
+    // reversed pass enters where the previous one left. The envelope reserves
+    // the larger of the two on both sides; it is dilated by the cutter radius
+    // plus the numerical reserve. Generated paths are checked against it
+    // below; a bug cannot widen the envelope.
+    let travel = entry_overrun.max(exit_overrun);
     let envelope = RectXY {
-        min_x_mm: coverage.min_x_mm - entry_overrun - radius - RESERVE_MM,
-        min_y_mm: coverage.min_y_mm - entry_overrun - radius - RESERVE_MM,
-        width_mm: coverage.width_mm
-            + (entry_overrun + exit_overrun + 2. * radius + 2. * RESERVE_MM),
-        length_mm: coverage.length_mm
-            + (entry_overrun + exit_overrun + 2. * radius + 2. * RESERVE_MM),
+        min_x_mm: coverage.min_x_mm - travel - radius - RESERVE_MM,
+        min_y_mm: coverage.min_y_mm - travel - radius - RESERVE_MM,
+        width_mm: coverage.width_mm + (2. * travel + 2. * radius + 2. * RESERVE_MM),
+        length_mm: coverage.length_mm + (2. * travel + 2. * radius + 2. * RESERVE_MM),
     };
     let clearance = ctx.setup.clearance_above_stock_mm.expect("checked above");
     let cutting_feed = settings
@@ -435,6 +460,68 @@ pub(crate) fn plan(
         .expect("checked above");
     let rpm = settings.assignment.spindle_rpm.expect("checked above");
     let zigzag = settings.pattern == crate::project::FacePattern::ZigZag;
+
+    // A point on one row at a given depth. Rows run along X (0 degrees) or
+    // Y (90 degrees), so a cross coordinate maps to the other axis.
+    let cut_position = |cross: f64, scan: f64, z: f64| Position {
+        x: if geometry.along_y { scan } else { cross },
+        y: if geometry.along_y { cross } else { scan },
+        z,
+    };
+    // Every pass that descends to cutting depth must do so where the cutter is
+    // clear of the stock. A zig-zag row after the first is entered by a
+    // cutting link that is already at depth; the first row of each layer and
+    // every one-way row descend instead, so those are the entries this
+    // operation has to prove. A tool that cannot plunge must never be sent
+    // down through material, whatever the preview appears to show.
+    let mut unclear_entry: Option<Position> = None;
+    'layers: for (layer_index, &cut_z) in layers.iter().enumerate() {
+        for (row_index, row) in rows.iter().enumerate() {
+            if zigzag && row_index != 0 {
+                continue;
+            }
+            let reversed = zigzag && (layer_index + row_index) % 2 == 1;
+            let (start_cross, _) = pass_span(row, reversed, entry_overrun, exit_overrun);
+            let entry = cut_position(start_cross, row.scan, cut_z);
+            if !entry_clear_of_stock(ctx, entry.x, entry.y, radius) {
+                unclear_entry = Some(entry);
+                break 'layers;
+            }
+        }
+    }
+    if let Some(entry) = unclear_entry {
+        let capability = ctx
+            .tool(&settings.assignment.tool_id)
+            .and_then(|tool| tool.capabilities.plunge_capable);
+        if capability != Some(true) {
+            let gap = stock_distance(ctx, entry.x, entry.y)
+                .map_or(radius, |distance| (radius - distance).max(0.));
+            let suggested = (gap + 1.).ceil();
+            let (code, message) = match capability {
+                Some(false) => (
+                    "FACE_ENTRY_UNSAFE",
+                    format!(
+                        "the tool is marked as unable to plunge and the pass entry at ({:.3}, {:.3}) still overlaps the stock (the Ø{:.3} cutter is {:.3} mm short of clearing it): add entry clearance with an entry overrun of at least {suggested:.0} mm, or mark the tool as able to plunge",
+                        entry.x,
+                        entry.y,
+                        radius * 2.,
+                        gap
+                    ),
+                ),
+                _ => (
+                    "MISSING_MACHINING_SETTING",
+                    format!(
+                        "set operations[{operation_id}].assignment.tool.capabilities.plunge_capable before planning operation '{operation_id}': the pass entry at ({:.3}, {:.3}) descends through material, so the planner must know whether this tool can plunge",
+                        entry.x, entry.y
+                    ),
+                ),
+            };
+            return Ok(incomplete(
+                operation_id,
+                vec![issue(code, message, operation_id)],
+            ));
+        }
+    }
 
     let stage = stage_id(operation_id);
     let mut motions: Vec<PlannedMotion> = vec![];
@@ -468,18 +555,10 @@ pub(crate) fn plan(
 
     let mut previous_end: Option<Position> = None;
     for (layer_index, &cut_z) in layers.iter().enumerate() {
-        for (row_index, &(cross_start, cross_end, scan)) in rows.iter().enumerate() {
+        for (row_index, row) in rows.iter().enumerate() {
             let reversed = zigzag && (layer_index + row_index) % 2 == 1;
-            let (start_cross, end_cross) = if reversed {
-                (cross_end, cross_start)
-            } else {
-                (cross_start, cross_end)
-            };
-            let start_xy = |c: f64| Position {
-                x: if geometry.along_y { scan } else { c },
-                y: if geometry.along_y { c } else { scan },
-                z: cut_z,
-            };
+            let (start_cross, end_cross) = pass_span(row, reversed, entry_overrun, exit_overrun);
+            let start_xy = |c: f64| cut_position(c, row.scan, cut_z);
             let entry = start_xy(start_cross);
             let exit = start_xy(end_cross);
             // Entry: cross-row link (zigzag), or retract/rapid/descend.
@@ -524,7 +603,7 @@ pub(crate) fn plan(
                         },
                         None,
                     ));
-                    let air = footprint_wholly_outside_stock(ctx, entry.x, entry.y, radius);
+                    let air = entry_clear_of_stock(ctx, entry.x, entry.y, radius);
                     let descend_from = if air {
                         clearance
                     } else {
@@ -581,7 +660,7 @@ pub(crate) fn plan(
                 None => {
                     // First motion of the stage: assume clearance above the
                     // entry point; nothing about the prior position is claimed.
-                    let air = footprint_wholly_outside_stock(ctx, entry.x, entry.y, radius);
+                    let air = entry_clear_of_stock(ctx, entry.x, entry.y, radius);
                     let start_z = clearance;
                     let mid_z = if air { cut_z } else { heights.top_z.max(cut_z) };
                     if start_z > mid_z {

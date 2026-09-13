@@ -462,3 +462,182 @@ fn margins_and_overruns_extend_coverage_and_travel_separately() {
     );
     assert!(row.end.x >= 8. + 32. + 5. + 2. - 1e-9);
 }
+
+#[test]
+fn an_overrun_belongs_to_the_side_its_pass_starts_from() {
+    // Two passes of one zig-zag layer, the second running the other way. The
+    // entry overrun must precede whichever end a pass starts from; applying
+    // it to a fixed side of the rectangle is what used to leave every second
+    // pass entering from the side that had only the exit overrun.
+    let rect = RectXY {
+        min_x_mm: 10.,
+        min_y_mm: 10.,
+        width_mm: 30.,
+        length_mm: 20.,
+    };
+    let mut job = face_job(Some(rect), None, Some(6.), None);
+    let OperationSettings::Face(settings) = &mut job.operations[0].settings else {
+        panic!("face settings expected");
+    };
+    settings.entry_overrun_mm = Some(30.);
+    settings.exit_overrun_mm = Some(0.);
+    settings.pattern = FacePattern::ZigZag;
+    let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    assert_eq!(
+        plan.operation_results[0].generation_status,
+        GenerationStatus::Complete
+    );
+    // Rows run along X at a constant Y; links between them run along Y.
+    let rows: Vec<&PlannedMotion> = plan
+        .motions
+        .iter()
+        .filter(|m| {
+            m.purpose == MotionPurpose::Rough
+                && (m.start.y - m.end.y).abs() < 1e-12
+                && (m.start.x - m.end.x).abs() > 1e-12
+        })
+        .collect();
+    assert!(rows.len() >= 2, "the fixture has several rows: {rows:?}");
+    let radius = 5.;
+    let low = rect.min_x_mm - radius;
+    let high = rect.min_x_mm + rect.width_mm + radius;
+    for (index, row) in rows.iter().enumerate() {
+        // A forward pass enters at the low side, a reversed one at the high
+        // side; the entry overrun precedes whichever side that is, and the
+        // exit overrun (zero here) trails the other.
+        let (start, end) = if index % 2 == 0 {
+            (low - 30., high)
+        } else {
+            (high + 30., low)
+        };
+        assert!(
+            (row.start.x - start).abs() < 1e-9,
+            "row {index} starts at {} — the entry overrun must precede the pass start ({start})",
+            row.start.x
+        );
+        assert!(
+            (row.end.x - end).abs() < 1e-9,
+            "row {index} ends at {} instead of {end}",
+            row.end.x
+        );
+    }
+    assert!(check_plan(&plan).unwrap().export_ready);
+}
+
+#[test]
+fn a_cutter_that_cannot_plunge_is_never_sent_into_the_material() {
+    // An interior rectangle: every pass entry stands on real stock, so the
+    // descent is a plunge and the tool has to be marked able to make it.
+    let interior = RectXY {
+        min_x_mm: 20.,
+        min_y_mm: 20.,
+        width_mm: 60.,
+        length_mm: 20.,
+    };
+    let mut job = face_job(Some(interior), None, Some(6.), None);
+    job.tools[0].capabilities.plunge_capable = Some(false);
+    let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    assert_eq!(
+        plan.operation_results[0].generation_status,
+        GenerationStatus::Incomplete
+    );
+    let issue = plan
+        .generation_diagnostics
+        .iter()
+        .find(|d| d.code == "FACE_ENTRY_UNSAFE")
+        .unwrap_or_else(|| panic!("{:?}", plan.generation_diagnostics));
+    assert!(
+        issue.message.contains("entry overrun"),
+        "the refusal must say how to clear the stock: {}",
+        issue.message
+    );
+
+    // Real entry clearance moves every descent into the air, and the same
+    // tool plans completely.
+    let OperationSettings::Face(settings) = &mut job.operations[0].settings else {
+        panic!("face settings expected");
+    };
+    settings.entry_overrun_mm = Some(60.);
+    let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    assert_eq!(
+        plan.operation_results[0].generation_status,
+        GenerationStatus::Complete,
+        "{:?}",
+        plan.generation_diagnostics
+    );
+    assert!(check_plan(&plan).unwrap().export_ready);
+}
+
+#[test]
+fn an_undeclared_plunge_capability_is_reported_before_the_plunge() {
+    let interior = RectXY {
+        min_x_mm: 20.,
+        min_y_mm: 20.,
+        width_mm: 60.,
+        length_mm: 20.,
+    };
+    let mut job = face_job(Some(interior), None, Some(6.), None);
+    job.tools[0].capabilities.plunge_capable = None;
+    let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    assert_eq!(
+        plan.operation_results[0].generation_status,
+        GenerationStatus::Incomplete
+    );
+    assert!(
+        plan.generation_diagnostics.iter().any(|d| {
+            d.code == "MISSING_MACHINING_SETTING" && d.message.contains("plunge_capable")
+        }),
+        "{:?}",
+        plan.generation_diagnostics
+    );
+}
+
+#[test]
+fn the_basic_checks_refuse_an_entry_into_material_no_tool_may_make() {
+    let interior = RectXY {
+        min_x_mm: 20.,
+        min_y_mm: 20.,
+        width_mm: 60.,
+        length_mm: 20.,
+    };
+    let job = face_job(Some(interior), None, Some(6.), None);
+    // The planner admits this job: the tool is marked able to plunge.
+    let mut plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    assert!(check_plan(&plan).unwrap().export_ready);
+
+    // A rapid straight down through material is never authorized, whatever the
+    // tool claims — the check must catch a plan that says otherwise.
+    let entry = plan
+        .motions
+        .iter()
+        .find(|m| m.purpose == MotionPurpose::Entry)
+        .expect("the interior face has an entry");
+    let index = entry.id;
+    plan.motions[index].interpolation = Interpolation::Rapid;
+    plan.motions[index].feed_mm_min = None;
+    let report = check_plan(&plan).unwrap();
+    assert!(!report.export_ready);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.code == "PLAN_ENTRY_UNVERIFIED"),
+        "{:?}",
+        report.findings
+    );
+
+    // The same descent, as a feed, is refused for a tool marked unable to
+    // plunge: the check reads the plan's own tool snapshot, not the planner.
+    let mut plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    plan.job_snapshot.tools[0].capabilities.plunge_capable = Some(false);
+    let report = check_plan(&plan).unwrap();
+    assert!(!report.export_ready);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.code == "PLAN_ENTRY_UNVERIFIED"),
+        "{:?}",
+        report.findings
+    );
+}

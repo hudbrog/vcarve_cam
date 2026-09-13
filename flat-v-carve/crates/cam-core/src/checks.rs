@@ -15,6 +15,11 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Numerical reserve for the sampled cleared-space test, in millimeters. A
+/// sample may land exactly on the boundary of a swept region rather than
+/// inside it.
+const SAMPLE_RESERVE_MM: f64 = 1e-9;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckStatus {
@@ -54,6 +59,17 @@ fn finding(code: &str, message: impl Into<String>) -> CheckFinding {
     }
 }
 
+/// Distance from a point to a segment, in the plane.
+fn segment_distance(ax: f64, ay: f64, bx: f64, by: f64, px: f64, py: f64) -> f64 {
+    let (dx, dy) = (bx - ax, by - ay);
+    let length2 = dx * dx + dy * dy;
+    if length2 <= f64::EPSILON {
+        return (px - ax).hypot(py - ay);
+    }
+    let t = (((px - ax) * dx + (py - ay) * dy) / length2).clamp(0., 1.);
+    (px - (ax + t * dx)).hypot(py - (ay + t * dy))
+}
+
 impl BasicCheckReport {
     /// First blocking finding when the report failed.
     pub fn first_failure(&self) -> Option<&CheckFinding> {
@@ -75,23 +91,278 @@ enum Expected<'a> {
 
 /// Run the automatic basic checks over a finished schema-4 plan.
 pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
+    let safety = Safety::of_job(&plan.job_snapshot);
     check_assembly(
         &plan.operation_results,
         &plan.stages,
         &plan.motions,
         &plan.execution,
+        &safety,
     )
 }
 
 /// The same automatic checks over a schema-5 collection plan (H3): the
 /// assembly invariants are identical; only the embedded document differs.
 pub fn check_plan_v5(plan: &crate::sequence::OperationPlanV5) -> Result<BasicCheckReport> {
+    let safety = Safety::of_job_v5(&plan.job_snapshot);
     check_assembly(
         &plan.operation_results,
         &plan.stages,
         &plan.motions,
         &plan.execution,
+        &safety,
     )
+}
+
+/// Physical stock and cutter facts the entry-safety pass needs. The plan's own
+/// job snapshot supplies both, so the pass never depends on the caller and a
+/// hand-built plan cannot dodge it.
+struct Safety {
+    stock: Option<crate::project::RectXY>,
+    tools: Vec<(String, CutterSafety)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CutterSafety {
+    /// Cutter radius at the stock top: half the diameter for an endmill, half
+    /// the tip diameter for a V-bit.
+    tip_radius_mm: Option<f64>,
+    /// Radius gained per millimeter of depth (the V-bit half-angle tangent).
+    slope: Option<f64>,
+    /// Largest radius the cutter can present, when its geometry bounds one.
+    cutting_radius_mm: Option<f64>,
+    plunge_capable: Option<bool>,
+    ramp_capable: Option<bool>,
+}
+
+impl CutterSafety {
+    fn of(
+        geometry: Option<&crate::project::ToolGeometry>,
+        capabilities: &crate::project::ToolCapabilities,
+    ) -> Self {
+        use crate::project::ToolGeometry;
+        let (tip_radius_mm, slope, cutting_radius_mm) = match geometry {
+            Some(ToolGeometry::Endmill(g)) => {
+                (Some(g.diameter_mm / 2.), Some(0.), Some(g.diameter_mm / 2.))
+            }
+            Some(ToolGeometry::Vbit(v)) => {
+                let slope = (v.included_angle_deg / 2.).to_radians().tan();
+                (
+                    Some(v.tip_diameter_mm / 2.),
+                    slope.is_finite().then_some(slope),
+                    Some(v.max_cutting_diameter_mm / 2.),
+                )
+            }
+            // A passive knife is pressed into its material by design and its
+            // stage role is exempt from this pass; unknown geometry cannot
+            // prove anything about clearance.
+            Some(ToolGeometry::DragKnife(_)) | None => (None, None, None),
+        };
+        Self {
+            tip_radius_mm,
+            slope,
+            cutting_radius_mm,
+            plunge_capable: capabilities.plunge_capable,
+            ramp_capable: capabilities.ramp_capable,
+        }
+    }
+
+    /// Cutter radius where it reaches `depth_mm` below the stock top.
+    fn radius_at(&self, depth_mm: f64) -> Option<f64> {
+        let radius = self.tip_radius_mm? + self.slope.unwrap_or(0.) * depth_mm.max(0.);
+        Some(match self.cutting_radius_mm {
+            Some(cap) => radius.min(cap),
+            None => radius,
+        })
+    }
+}
+
+impl Safety {
+    fn of_job(job: &crate::project::CamJob) -> Self {
+        Self {
+            stock: job.setup.stock.xy,
+            tools: job
+                .tools
+                .iter()
+                .map(|tool| {
+                    (
+                        tool.id.clone(),
+                        CutterSafety::of(tool.geometry.as_ref(), &tool.capabilities),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn of_job_v5(job: &crate::project::v5::CamJobV5) -> Self {
+        Self {
+            stock: job.setup.stock.xy,
+            tools: job
+                .tools
+                .iter()
+                .map(|tool| {
+                    (
+                        tool.id.clone(),
+                        CutterSafety::of(tool.geometry.as_ref(), &tool.capabilities),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn cutter(&self, tool_id: &str) -> Option<&CutterSafety> {
+        self.tools
+            .iter()
+            .find(|(id, _)| id == tool_id)
+            .map(|(_, cutter)| cutter)
+    }
+
+    /// Distance from a point to the stock rectangle, or `None` without stock.
+    fn distance(&self, x: f64, y: f64) -> Option<f64> {
+        let rect = self.stock?;
+        let max_x = rect.min_x_mm + rect.width_mm;
+        let max_y = rect.min_y_mm + rect.length_mm;
+        let dx = if x < rect.min_x_mm {
+            rect.min_x_mm - x
+        } else if x > max_x {
+            x - max_x
+        } else {
+            0.
+        };
+        let dy = if y < rect.min_y_mm {
+            rect.min_y_mm - y
+        } else if y > max_y {
+            y - max_y
+        } else {
+            0.
+        };
+        Some(dx.hypot(dy))
+    }
+
+    /// Whether a descent between two points can reach the stock at all.
+    fn descent_clear(
+        &self,
+        start: crate::motion::Position,
+        end: crate::motion::Position,
+        radius: f64,
+    ) -> bool {
+        // Tangent contact is not material engagement: a cutter that only
+        // touches the stock boundary has zero overlap with the material, so
+        // descending there is a side entry rather than a plunge.
+        let clear = |p: crate::motion::Position| {
+            self.distance(p.x, p.y)
+                .is_some_and(|d| d + SAMPLE_RESERVE_MM >= radius)
+        };
+        if !clear(start) || !clear(end) {
+            return false;
+        }
+        // The distance to a convex rectangle is convex along the move, so an
+        // endpoint-only test would miss a span that dips across a corner.
+        !self.crosses_stock(start, end)
+    }
+
+    /// Whether the part of a descending cutter's footprint that lies inside
+    /// the stock was already cut to this depth or deeper by the given earlier
+    /// cutting motions of the same stage — a deeper layer of one loop
+    /// re-enters the corridor its own earlier passes opened.
+    ///
+    /// Sampled at the centre, half radius and full radius. This is a bound,
+    /// not a heightfield: the basic checks have to stay cheap, and the planner
+    /// remains the authority on where material is. A missed sample can only
+    /// make this pass stricter, never looser.
+    fn footprint_cleared(
+        &self,
+        cleared: &[&PlannedMotion],
+        surface: f64,
+        descent: &PlannedMotion,
+        radius: f64,
+    ) -> bool {
+        if self.stock.is_none() || cleared.is_empty() {
+            return false;
+        }
+        let target = descent.end.z;
+        let inside = |x: f64, y: f64| {
+            self.stock.is_some_and(|rect| {
+                x >= rect.min_x_mm
+                    && x <= rect.min_x_mm + rect.width_mm
+                    && y >= rect.min_y_mm
+                    && y <= rect.min_y_mm + rect.length_mm
+            })
+        };
+        let cut = |x: f64, y: f64| {
+            // Most recent first: a deeper layer's covered space was cut by the
+            // passes immediately before it.
+            cleared.iter().rev().any(|prior| {
+                let prior_cut = prior.start.z.min(prior.end.z);
+                if prior_cut > target + 1e-9 {
+                    return false;
+                }
+                let Some(prior_radius) = self
+                    .cutter(&prior.tool_id)
+                    .and_then(|cutter| cutter.radius_at((surface - prior_cut).max(0.)))
+                else {
+                    return false;
+                };
+                // The sample sits exactly on a swept boundary when a layer
+                // re-enters its own corridor; compare with a numerical
+                // reserve rather than deciding the boundary by one ulp.
+                segment_distance(prior.start.x, prior.start.y, prior.end.x, prior.end.y, x, y)
+                    <= prior_radius + SAMPLE_RESERVE_MM
+            })
+        };
+        // Unit offsets scaled by the radius: centre, cardinal and diagonal
+        // points on the full circle, and the cardinal points at half radius.
+        const UNIT: f64 = std::f64::consts::FRAC_1_SQRT_2;
+        let offsets = [
+            (0., 0.),
+            (1., 0.),
+            (-1., 0.),
+            (0., 1.),
+            (0., -1.),
+            (0.5, 0.),
+            (-0.5, 0.),
+            (0., 0.5),
+            (0., -0.5),
+            (UNIT, UNIT),
+            (-UNIT, UNIT),
+            (UNIT, -UNIT),
+            (-UNIT, -UNIT),
+        ];
+        offsets.iter().all(|(dx, dy)| {
+            let x = descent.end.x + dx * radius;
+            let y = descent.end.y + dy * radius;
+            !inside(x, y) || cut(x, y)
+        })
+    }
+
+    /// Whether the XY span of a move intersects the stock rectangle.
+    fn crosses_stock(&self, start: crate::motion::Position, end: crate::motion::Position) -> bool {
+        let Some(rect) = self.stock else {
+            return false;
+        };
+        let (dx, dy) = (end.x - start.x, end.y - start.y);
+        let mut low = 0.0_f64;
+        let mut high = 1.0_f64;
+        for (origin, delta, min, max) in [
+            (start.x, dx, rect.min_x_mm, rect.min_x_mm + rect.width_mm),
+            (start.y, dy, rect.min_y_mm, rect.min_y_mm + rect.length_mm),
+        ] {
+            if delta.abs() <= f64::EPSILON {
+                if origin < min || origin > max {
+                    return false;
+                }
+                continue;
+            }
+            let (t0, t1) = ((min - origin) / delta, (max - origin) / delta);
+            let (t0, t1) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+            low = low.max(t0);
+            high = high.min(t1);
+            if low > high {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 fn check_assembly(
@@ -99,6 +370,7 @@ fn check_assembly(
     stages: &[ExecutionStage],
     motions: &[PlannedMotion],
     execution: &[ExecutionItem],
+    safety: &Safety,
 ) -> Result<BasicCheckReport> {
     let mut findings = vec![];
     let mut failed = false;
@@ -338,6 +610,103 @@ fn check_assembly(
             f.operation_id = Some(motion.operation_id.clone());
             findings.push(f);
             failed = true;
+        }
+    }
+
+    // The surface each stage cuts from: the highest Z at which that stage's
+    // own cutting motions start. A stage that follows a facing pass starts at
+    // the faced plane, so measuring a descent from the original stock top
+    // would report material an earlier operation already removed.
+    let mut stage_tops: Vec<(&str, f64)> = vec![];
+    for stage in stages {
+        let top = motions
+            .get(stage.motion_range.0..stage.motion_range.1)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|motion| motion.effect == MotionEffect::MillingSweep)
+            .map(|motion| motion.start.z)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if top.is_finite() {
+            stage_tops.push((stage.stage_id.as_str(), top));
+        }
+    }
+    let stage_top = |stage_id: &str| {
+        stage_tops
+            .iter()
+            .find(|(id, _)| *id == stage_id)
+            .map_or(0., |(_, top)| *top)
+    };
+
+    // Entry safety (field-test finding 1.1): a motion that descends below the
+    // surface its stage cuts from may only do so where the cutter is clear of
+    // the stock, where this stage already cleared that space, or with a
+    // capability that authorizes the descent. A rapid is never authorized, so
+    // no G0 can be emitted into material. This keeps a cutter that cannot
+    // plunge out of the stock whatever planner produced the motions.
+    for stage in stages {
+        // A passive knife is pressed into its material by design.
+        if stage.role == StageRole::Knife {
+            continue;
+        }
+        // Never lower the reference *above* the original stock top: an
+        // operation that starts in the air (a positive top offset) descends
+        // through nothing, and material exists only from Z = 0 downward.
+        let surface = stage_top(&stage.stage_id).min(0.);
+        // Cutting motions of this stage that already ran, for the cleared
+        // space test below.
+        let mut cleared: Vec<&PlannedMotion> = vec![];
+        for motion in &motions[stage.motion_range.0..stage.motion_range.1] {
+            if motion.start.z > motion.end.z {
+                let depth = surface - motion.end.z;
+                if depth > 0. {
+                    let cutter = safety.cutter(&motion.tool_id);
+                    let radius = cutter.and_then(|cutter| cutter.radius_at(depth));
+                    let in_air = radius.is_some_and(|radius| {
+                        safety.descent_clear(motion.start, motion.end, radius)
+                    });
+                    let axial = (motion.end.x - motion.start.x).abs() <= 1e-9
+                        && (motion.end.y - motion.start.y).abs() <= 1e-9;
+                    // A rapid is never a licensed entry. A feed descent needs a
+                    // tool that may make it: declared plunge capability, or
+                    // ramp capability for a non-axial entry. An undeclared
+                    // capability is tolerated here because the planners that
+                    // depend on the answer (facing, flat v-carve) report the
+                    // missing field themselves, and treating silence as a
+                    // refusal would stop every saved profile job that never
+                    // declared it. Requiring the declaration for profile and
+                    // pocket entries is the recorded follow-up.
+                    let authorized = motion.interpolation == Interpolation::LinearFeed
+                        && cutter.is_some_and(|cutter| match cutter.plunge_capable {
+                            Some(true) => true,
+                            Some(false) => !axial && cutter.ramp_capable == Some(true),
+                            None => true,
+                        });
+                    // A deeper layer of the same loop re-enters the corridor
+                    // its own earlier passes already opened; only ask when the
+                    // cheaper answers have not settled it.
+                    let allowed = in_air
+                        || authorized
+                        || radius.is_some_and(|radius| {
+                            safety.footprint_cleared(&cleared, surface, motion, radius)
+                        });
+                    if !allowed {
+                        let mut f = finding(
+                            "PLAN_ENTRY_UNVERIFIED",
+                            format!(
+                                "motion {} descends {depth:.3} mm into the material at ({:.3}, {:.3}) where the cutter is neither clear of the stock nor entering space this stage already cut, and tool '{}' is not declared able to enter the material there",
+                                motion.id, motion.end.x, motion.end.y, motion.tool_id
+                            ),
+                        );
+                        f.stage_id = Some(motion.stage_id.clone());
+                        f.operation_id = Some(motion.operation_id.clone());
+                        findings.push(f);
+                        failed = true;
+                    }
+                }
+            }
+            if motion.effect == MotionEffect::MillingSweep {
+                cleared.push(motion);
+            }
         }
     }
 

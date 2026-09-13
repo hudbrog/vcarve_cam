@@ -208,6 +208,11 @@ impl App {
             ui.separator();
             app.operation_numbers(ui, ctx, &[12, 13]);
             ui.separator();
+            // Where the passes enter the cut: a face mill that cannot plunge
+            // needs entry clearance instead, and the planner refuses to
+            // descend through material without this answer (plan section 11).
+            app.operation_capabilities(ui, ctx, false);
+            ui.separator();
             help::label(ui, "Feeds & speed");
             app.operation_numbers(ui, ctx, &[2, 10, 11]);
             let direction = crate::session::face(&app.document.as_ref().unwrap().job, &app.operation_id())

@@ -49,6 +49,7 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
             "assignment.spindle_direction" => Some((2, "Face CW".into())),
             // The assignment's tool geometry is entered in the Face tool group.
             "assignment.tool" | "assignment.tool_id" => Some((2, "Endmill diameter".into())),
+            "assignment.tool.capabilities.plunge_capable" => Some((2, "Endmill can plunge".into())),
             "setup.stock.thickness_mm" => Some((1, "Stock thickness".into())),
             "setup.clearance_above_stock_mm" => Some((1, "Clearance".into())),
             "setup.stock.xy" => Some((1, "Stock width".into())),
