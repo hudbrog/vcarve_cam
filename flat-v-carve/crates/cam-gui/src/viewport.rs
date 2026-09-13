@@ -221,6 +221,13 @@ pub struct Viewport {
     frames_seen: u64,
     /// Adapter identity, so the diagnostics state which backend they measured.
     backend: String,
+    /// CPU display memory the worker reported for the current execution: the
+    /// live simulation field, its seeded checkpoint copies and the decoded
+    /// motion stream. The plan's budget names CPU field storage, so it is
+    /// counted rather than left implicit.
+    worker_field_bytes: usize,
+    worker_checkpoint_bytes: usize,
+    worker_motion_bytes: usize,
     pub render_stats: render::SharedStats,
     pub stock_stats: stock_render::SharedStats,
     scene_revision: u64,
@@ -278,6 +285,9 @@ impl Default for Viewport {
             frame_ms: Vec::new(),
             frames_seen: 0,
             backend: "not initialized".into(),
+            worker_field_bytes: 0,
+            worker_checkpoint_bytes: 0,
+            worker_motion_bytes: 0,
             render_stats: Arc::new(std::sync::Mutex::new(render::Stats::default())),
             stock_stats: Arc::new(std::sync::Mutex::new(stock_render::Stats::default())),
             scene_revision: 0,
@@ -286,6 +296,23 @@ impl Default for Viewport {
 }
 
 impl Viewport {
+    /// Record the CPU display memory the worker reported with a scene or stock
+    /// response. A response that carries none leaves the previous numbers: an
+    /// unknown value must not silently read as zero.
+    fn adopt_display_memory(&mut self, value: &serde_json::Value) {
+        let field = value["fieldBytes"].as_u64();
+        let checkpoints = value["checkpointBytes"].as_u64();
+        let motions = value["motionBytes"].as_u64();
+        if let Some(field) = field {
+            self.worker_field_bytes = field as usize;
+        }
+        if let Some(checkpoints) = checkpoints {
+            self.worker_checkpoint_bytes = checkpoints as usize;
+        }
+        if let Some(motions) = motions {
+            self.worker_motion_bytes = motions as usize;
+        }
+    }
     pub fn settings(&self) -> ViewSettings {
         ViewSettings {
             isometric: self.iso,
@@ -328,6 +355,7 @@ impl Viewport {
     }
 
     pub fn set_scene(&mut self, scene: Scene) {
+        self.adopt_display_memory(&scene.meta.report["gui2"]["displayMemory"]);
         self.knife_chains = Arc::new(
             serde_json::from_value(scene.meta.report["gui2"]["chains"].clone()).unwrap_or_default(),
         );
@@ -878,6 +906,7 @@ impl Viewport {
     /// retained execution. The scene geometry and its pages are untouched; the
     /// stock identity changes, so every resident tile is re-uploaded.
     pub fn adopt_preset(&mut self, meta: SceneMeta, payload: Vec<u8>) -> Result<(), String> {
+        self.adopt_display_memory(&meta.report["gui2"]["displayMemory"]);
         let preview = meta.stock.ok_or("Missing stock response")?;
         let frame = preview.frames.first().ok_or("Missing stock frame")?;
         let section = meta
@@ -924,6 +953,7 @@ impl Viewport {
         self.requested_stock.is_some()
     }
     pub fn accept_stock(&mut self, meta: SceneMeta, payload: Vec<u8>) -> Result<(), String> {
+        self.adopt_display_memory(&meta.report["gui2"]["displayMemory"]);
         let stock = self.stock.as_mut().ok_or("No displayed stock")?;
         let preview = meta.stock.ok_or("Missing stock response")?;
         let frame = preview.frames.first().ok_or("Missing stock frame")?;
@@ -1024,8 +1054,16 @@ impl Viewport {
             .map_or(0, |stock| stock.meta.retained_bytes);
         let stock_buffer_bytes = stock.as_ref().map_or(0, |stats| stats.buffer_bytes);
         let gpu_page_bytes = scene.as_ref().map_or(0, |stats| stats.resident_bytes);
-        let declared_display_bytes =
-            scene_bytes as u64 + checkpoint_bytes as u64 + stock_buffer_bytes + gpu_page_bytes;
+        let worker_field = self.worker_field_bytes as u64;
+        let worker_checkpoints = self.worker_checkpoint_bytes as u64;
+        let worker_motions = self.worker_motion_bytes as u64;
+        let declared_display_bytes = scene_bytes as u64
+            + checkpoint_bytes as u64
+            + stock_buffer_bytes
+            + gpu_page_bytes
+            + worker_field
+            + worker_checkpoints
+            + worker_motions;
         let mut sorted = self.frame_ms.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let percentile = |quantile: f64| {
@@ -1059,6 +1097,9 @@ impl Viewport {
                 "checkpointBytes": checkpoint_bytes,
                 "gpuPageBytes": gpu_page_bytes,
                 "stockTileBytes": stock_buffer_bytes,
+                "workerFieldBytes": worker_field,
+                "workerCheckpointBytes": worker_checkpoints,
+                "workerMotionBytes": worker_motions,
                 "declaredDisplayBytes": declared_display_bytes,
                 "displayBudgetBytes": crate::render::BROWSER_DISPLAY_BUDGET_BYTES,
                 "withinBudget": declared_display_bytes <= crate::render::BROWSER_DISPLAY_BUDGET_BYTES,

@@ -169,9 +169,12 @@ impl Viewport {
                     probe["pagesSkipped"].as_u64().unwrap_or(0),
                 ));
                 ui.small(format!(
-                    "Memory · scene {:.1} MiB · checkpoints {:.1} MiB · GPU pages {:.1} MiB · stock tiles {:.1} MiB = {:.1} MiB of the {:.0} MiB display budget{}",
+                    "Memory · scene {:.1} MiB · packed checkpoints {:.1} MiB · worker field {:.1} MiB · worker checkpoints {:.1} MiB · decoded motions {:.1} MiB · GPU pages {:.1} MiB · stock tiles {:.1} MiB = {:.1} MiB of the {:.0} MiB display budget{}",
                     probe["memory"]["sceneBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
                     probe["memory"]["checkpointBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
+                    probe["memory"]["workerFieldBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
+                    probe["memory"]["workerCheckpointBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
+                    probe["memory"]["workerMotionBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
                     probe["memory"]["gpuPageBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
                     probe["memory"]["stockTileBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
                     probe["memory"]["declaredDisplayBytes"].as_f64().unwrap_or(0.) / 1_048_576.,

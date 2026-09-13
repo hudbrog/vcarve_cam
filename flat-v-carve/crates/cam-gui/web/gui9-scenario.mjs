@@ -332,6 +332,9 @@ export async function gui9Scenario({control,edit,state,waitFor,send,evaluate,sle
   record('display memory categories', {
     sceneBytes: memory.sceneBytes,
     checkpointBytes: memory.checkpointBytes,
+    workerFieldBytes: memory.workerFieldBytes,
+    workerCheckpointBytes: memory.workerCheckpointBytes,
+    workerMotionBytes: memory.workerMotionBytes,
     gpuPageBytes: memory.gpuPageBytes,
     stockTileBytes: memory.stockTileBytes,
     declaredDisplayBytes: memory.declaredDisplayBytes,

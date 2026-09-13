@@ -337,7 +337,7 @@ The GUI9c run on the same package added the load and recovery records:
 | Camera-only frames (plan §2.5 M target: p95 ≤ 33 ms) | 120 sampled frames while the camera moved over the settled scene: p50 15.7 ms, p95 16.3 ms, max 17.3 ms, with **0** page uploads and **0** uploaded bytes |
 | Idle behavior (plan §2.5: at least 30 s with no animation, task or input) | 30 s observed at a fixed playhead: **0** additional page uploads, **0** additional uploaded bytes, playhead unchanged |
 | Build identity | The run records `cam-gui 0.7.7` on protocol `cam-gui-retained-5`, so the numbers name the build they came from |
-| Browser display-memory categories (plan §2.5 budget: 256 MiB) | Batch at Fine: scene 33,446,512 B + retained checkpoints 58,720,256 B + GPU pages 7,712,152 B + stock tiles 2,097,152 B = **101,976,072 B (97.3 MiB)**, inside the budget and asserted by the run. The JS heap is read where the browser exposes it (Edge: 2.6 MB used) and the categories a page cannot see — WASM linear memory and total GPU memory — are recorded as an explicit unknown, not as zero |
+| Browser display-memory categories (plan §2.5 budget: 256 MiB) | Batch at Fine, at that moment's playhead: scene 33,446,512 B + packed checkpoints 58,720,256 B + worker field 32 B + worker checkpoint copies 10,617,728 B + decoded motions 8,813,888 B + GPU pages 7,712,152 B + stock tiles 2,097,152 B = **121,407,720 B (115.8 MiB)**, inside the budget and asserted by the run. The JS heap is read where the browser exposes it (Edge: 2.7 MB used); WASM linear memory and total GPU memory are recorded as an explicit unknown, not as zero. The declaration is the state at the moment it is read — the worker field is 32 B because the playhead is at 0 — so it is a measured point, not a peak |
 
 Native outcome, recorded separately: the same tour through the shipped
 executable's worker mailbox (generate → seek → resolution rebuild → seek →
@@ -458,6 +458,11 @@ The memory line adds those categories up and compares the total against the
 plan's 256 MiB browser display budget (`render::BROWSER_DISPLAY_BUDGET_BYTES`),
 and states plainly that WASM linear memory, the JS heap and total GPU memory
 are not visible to the panel — an unknown rather than a zero.
+The worker reports its own CPU display memory with every scene, seek and preset
+response (`displayMemory`: the live field's allocated tiles, the seeded
+checkpoint copies and the decoded motion stream), so the declared total includes
+the CPU field storage the plan names instead of counting only the transferred
+bytes.
 
 **No silently dropped actions** (`crates/cam-gui/src/app.rs`). A command that
 arrives while the worker is busy is no longer ignored. `Pending` holds one

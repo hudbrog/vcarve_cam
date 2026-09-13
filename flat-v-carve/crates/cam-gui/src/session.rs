@@ -653,7 +653,12 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 let cells = field.packed_tile_bytes();
                 let mut meta = display.meta.clone();
                 meta.frames = vec![crate::stock_preview::FrameMeta { prefix, stats:field.stats.clone(),checksum:field.checksum(),versions:field.versions.clone(),allocated:field.versions.iter().enumerate().filter(|(i,_)|field.tile_allocated(*i)).map(|(i,_)|i as u32).collect() }];
-                package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"seek","prefix":prefix,"handle":handle,"replayed":seek.replayed,"replayedFrom":seek.from,"preset":meta.preset.wire(),"key":meta.key,"cellMm":meta.cell_mm}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None})
+                let display_memory = json!({
+                    "fieldBytes": display.playback.field.allocated_bytes(),
+                    "checkpointBytes": display.playback.checkpoint_bytes(),
+                    "motionBytes": display.motions.len() * std::mem::size_of::<Motion>(),
+                });
+                package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"seek","prefix":prefix,"handle":handle,"replayed":seek.replayed,"replayedFrom":seek.from,"preset":meta.preset.wire(),"key":meta.key,"cellMm":meta.cell_mm,"displayMemory":display_memory}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None})
             });
         }
         // Another display resolution for the same retained execution. The plan,
@@ -674,7 +679,12 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                     let cells = field.packed_tile_bytes();
                     let mut meta = display.meta.clone();
                     meta.frames = vec![crate::stock_preview::FrameMeta { prefix: position, stats: field.stats.clone(), checksum: field.checksum(), versions: field.versions.clone(), allocated: field.versions.iter().enumerate().filter(|(i, _)| field.tile_allocated(*i)).map(|(i, _)| i as u32).collect() }];
-                    return package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"preset","handle":handle,"preset":preset.wire(),"key":meta.key,"cellMm":meta.cell_mm,"prefix":position,"retainedBytes":meta.retained_bytes,"checkpoints":1,"changed":false}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None});
+                    let display_memory = json!({
+                        "fieldBytes": display.playback.field.allocated_bytes(),
+                        "checkpointBytes": display.playback.checkpoint_bytes(),
+                        "motionBytes": display.motions.len() * std::mem::size_of::<Motion>(),
+                    });
+                    return package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"preset","handle":handle,"preset":preset.wire(),"key":meta.key,"cellMm":meta.cell_mm,"prefix":position,"retainedBytes":meta.retained_bytes,"checkpoints":1,"changed":false,"displayMemory":display_memory}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None});
                 }
                 let input = crate::sim::Input {
                     stock: display.stock,
@@ -731,7 +741,12 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 let mut meta = preview.meta;
                 meta.frames = vec![frame];
                 display.meta = meta.clone();
-                package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"preset","handle":handle,"preset":preset.wire(),"key":meta.key,"cellMm":meta.cell_mm,"prefix":position,"retainedBytes":meta.retained_bytes,"checkpoints":checkpoints,"changed":true}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None})
+                let display_memory = json!({
+                    "fieldBytes": display.playback.field.allocated_bytes(),
+                    "checkpointBytes": display.playback.checkpoint_bytes(),
+                    "motionBytes": display.motions.len() * std::mem::size_of::<Motion>(),
+                });
+                package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"preset","handle":handle,"preset":preset.wire(),"key":meta.key,"cellMm":meta.cell_mm,"prefix":position,"retainedBytes":meta.retained_bytes,"checkpoints":checkpoints,"changed":true,"displayMemory":display_memory}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None})
             });
         }
         Command::ImportKnifeSvg { filename, svg } => (
@@ -854,7 +869,7 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             let retained = service.generated_plan(handle).map_err(|e| e.to_string())?;
             let plan = retained.trusted.plan();
             admit_motions(plan.motions.len())?;
-            let result = scene(
+            let mut result = scene(
                 &job,
                 plan,
                 json!({"kind":"generated", "handle":handle, "scope":scope,
@@ -890,6 +905,15 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 seed,
                 preset.budget(),
             );
+            // CPU-side display memory the worker holds for this execution: the
+            // live field plus the seeded checkpoint copies. The packed frames in
+            // the payload are counted separately by the display.
+            let display_memory = json!({
+                "fieldBytes": playback.field.allocated_bytes(),
+                "checkpointBytes": playback.checkpoint_bytes(),
+                "motionBytes": input.motions.len() * std::mem::size_of::<Motion>(),
+            });
+            result.0.report["gui2"]["displayMemory"] = display_memory;
             // The stage boundaries the timeline seeks to. Kept in the worker so
             // a display-preset change can re-derive the raster without
             // replanning: the same execution, at another resolution.
