@@ -2144,6 +2144,7 @@ mod tests {
             zoom: 1.4,
             yaw: 0.3,
             pan: [0., 0.],
+            stock_style: crate::stock_style::StockStyle::default(),
             stage: 1,
             stock: true,
             prefix: 123,

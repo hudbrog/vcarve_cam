@@ -564,6 +564,17 @@ pub fn build_with_preset(
             .iter()
             .find(|span| index >= span.start && index < span.end)
     };
+    // Stage index per motion. The simulated stock records this index per cell,
+    // so it is the identity the palette and every colour mode resolve against;
+    // `report["stages"]` publishes the same index space with its operation and
+    // tool ids.
+    let mut stage_of_motion = vec![0_usize; plan.motions.len()];
+    for (index, span) in spans.iter().enumerate() {
+        let end = span.end.min(plan.motions.len());
+        for slot in &mut stage_of_motion[span.start.min(end)..end] {
+            *slot = index;
+        }
+    }
     let mut motions = Vec::with_capacity(plan.motions.len());
     for (index, motion) in plan.motions.iter().enumerate() {
         let stage = stage_of(index).ok_or("Plan motion outside every stage")?;
@@ -571,6 +582,7 @@ pub fn build_with_preset(
         motions.push(Motion {
             kind: if cutting { "cut" } else { "rapid_xy" }.into(),
             tool: stage.tool_index,
+            stage: stage_of_motion.get(index).copied().unwrap_or(0) as u16,
             x0: motion.start.x,
             y0: motion.start.y,
             z0: motion.start.z,
@@ -678,6 +690,30 @@ pub fn build_with_preset(
                 "operation": group.operation,
                 "role": group.role,
             }))
+            .collect::<Vec<_>>()
+    );
+    // Stage identity table: the index the simulated stock stores per cell, with
+    // the operation and tool ids a colour mode keys on. Kept separate from the
+    // timeline's group labels, which have their own historical spelling.
+    report["stages"] = json!(
+        spans
+            .iter()
+            .enumerate()
+            .map(|(index, span)| {
+                let tool_id = plan
+                    .stages
+                    .iter()
+                    .find(|stage| stage.stage_id == span.stage_id)
+                    .map(|stage| stage.tool_id.clone())
+                    .unwrap_or_default();
+                json!({
+                    "index": index,
+                    "operation": span.operation_id,
+                    "tool": span.tool_index,
+                    "toolId": tool_id,
+                    "role": span.role_word(),
+                })
+            })
             .collect::<Vec<_>>()
     );
     report["executionFingerprint"] = json!(plan.execution_fingerprint);

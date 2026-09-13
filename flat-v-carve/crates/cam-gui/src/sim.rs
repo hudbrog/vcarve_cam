@@ -86,6 +86,11 @@ impl ToolSpec {
 pub struct Motion {
     pub kind: String,
     pub tool: usize,
+    /// Executed plan stage this motion belongs to. The display colours a cell
+    /// by the stage that last deepened it, so the identity has to travel with
+    /// the motion rather than being re-derived from the tool.
+    #[serde(default)]
+    pub stage: u16,
     pub x0: f64,
     pub y0: f64,
     pub z0: f64,
@@ -144,7 +149,10 @@ pub struct Stats {
 #[derive(Clone)]
 struct Tile {
     depth: Vec<u16>,
-    owner: Vec<u8>,
+    /// Stage that last deepened the cell, and the job tool it used. Both are
+    /// indices into the executed plan the display is showing.
+    stage: Vec<u8>,
+    tool: Vec<u8>,
 }
 #[derive(Clone)]
 pub struct Field {
@@ -213,23 +221,28 @@ impl Field {
         })
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.tiles.iter().filter(|t| t.is_some()).count() * TILE * TILE * 3
+        self.tiles.iter().filter(|t| t.is_some()).count() * TILE * TILE * 4
             + self.versions.len() * 4
     }
     pub fn tile_allocated(&self, tile: usize) -> bool {
         self.tiles.get(tile).is_some_and(|t| t.is_some())
     }
-    pub fn cell_at(&self, col: usize, row: usize) -> (u16, u8) {
+    /// `(removed depth, stage, tool)` for one cell; stage and tool are 0 for
+    /// material no cutter has touched.
+    pub fn cell_at(&self, col: usize, row: usize) -> (u16, u8, u8) {
         if col >= self.cols || row >= self.rows {
-            return (0, 0);
+            return (0, 0, 0);
         }
         let index = ((row & 255) << 8) | (col & 255);
         self.tiles[(row >> 8) * self.tiles_x + (col >> 8)]
             .as_ref()
-            .map_or((0, 0), |t| (t.depth[index], t.owner[index]))
+            .map_or((0, 0, 0), |t| {
+                (t.depth[index], t.stage[index], t.tool[index])
+            })
     }
     /// Tile-major packed grid for incremental tile upload: every 256×256 tile
     /// is one contiguous 256 KiB block, so a dirty tile is a single copy.
+    /// One `u32` per cell: `depth | stage << 16 | tool << 24`.
     pub fn packed_tile_bytes(&self) -> Vec<u8> {
         let mut bytes = vec![0u8; self.tiles.len() * TILE * TILE * 4];
         for (tile, data) in self.tiles.iter().enumerate() {
@@ -238,7 +251,9 @@ impl Field {
             };
             let base = Self::tile_byte_offset(tile);
             for local in 0..TILE * TILE {
-                let packed = data.depth[local] as u32 | ((data.owner[local] as u32) << 16);
+                let packed = data.depth[local] as u32
+                    | ((data.stage[local] as u32) << 16)
+                    | ((data.tool[local] as u32) << 24);
                 bytes[base + local * 4..base + local * 4 + 4]
                     .copy_from_slice(&packed.to_le_bytes());
             }
@@ -250,7 +265,8 @@ impl Field {
         tile * TILE * TILE * 4
     }
     /// Rebuild a field from a transported packed grid (`u32` per cell: low 16
-    /// bits depth, next 8 bits cutting role) and its per-tile versions. Used by
+    /// bits depth, next 8 bits stage, top 8 bits tool) and its per-tile
+    /// versions. Used by
     /// the display process so a checkpoint arrives as bytes, not as a JSON
     /// array, and can be extended into an interactive scrub range.
     pub fn from_packed(
@@ -279,7 +295,8 @@ impl Field {
             field.tiles[index].get_or_insert_with(|| {
                 Arc::new(Tile {
                     depth: vec![0; TILE * TILE],
-                    owner: vec![0; TILE * TILE],
+                    stage: vec![0; TILE * TILE],
+                    tool: vec![0; TILE * TILE],
                 })
             });
         }
@@ -301,20 +318,23 @@ impl Field {
                     let at = base + (local_row * TILE + local_col) * 4;
                     let value = u32::from_le_bytes(packed[at..at + 4].try_into().unwrap());
                     let depth = (value & 0xffff) as u16;
-                    let owner = ((value >> 16) & 0xff) as u8;
-                    if depth == 0 && owner == 0 {
+                    let stage = ((value >> 16) & 0xff) as u8;
+                    let tool = ((value >> 24) & 0xff) as u8;
+                    if depth == 0 && stage == 0 && tool == 0 {
                         continue;
                     }
                     let data = field.tiles[tile].get_or_insert_with(|| {
                         Arc::new(Tile {
                             depth: vec![0; TILE * TILE],
-                            owner: vec![0; TILE * TILE],
+                            stage: vec![0; TILE * TILE],
+                            tool: vec![0; TILE * TILE],
                         })
                     });
                     let data = Arc::make_mut(data);
                     let local = local_row * TILE + local_col;
                     data.depth[local] = depth;
-                    data.owner[local] = owner;
+                    data.stage[local] = stage;
+                    data.tool[local] = tool;
                 }
             }
         }
@@ -339,31 +359,34 @@ impl Field {
                 if d != 0 {
                     mix(j as u32);
                     mix(d as u32);
-                    mix(t.owner[j] as u32);
+                    mix(t.stage[j] as u32);
+                    mix(t.tool[j] as u32);
                 }
             }
         }
         format!("{hash:x}")
     }
-    /// Explicit little-endian depth + owner per cell, for full-cell parity tests.
+    /// Explicit little-endian depth + stage + tool per cell, for full-cell
+    /// parity tests.
     pub fn cell_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.cols * self.rows * 3);
+        let mut out = Vec::with_capacity(self.cols * self.rows * 4);
         for row in 0..self.rows {
             for col in 0..self.cols {
-                let (d, o) = self.cell_at(col, row);
+                let (d, stage, tool) = self.cell_at(col, row);
                 out.extend_from_slice(&d.to_le_bytes());
-                out.push(o);
+                out.push(stage);
+                out.push(tool);
             }
         }
         out
     }
-    /// GPU storage: low 16 bits depth, next 8 bits cutting role.
+    /// GPU storage: low 16 bits depth, next 8 bits stage, top 8 bits tool.
     pub fn packed_cells(&self) -> Vec<u32> {
         let mut cells = Vec::with_capacity(self.cols * self.rows);
         for row in 0..self.rows {
             for col in 0..self.cols {
-                let (depth, owner) = self.cell_at(col, row);
-                cells.push(depth as u32 | ((owner as u32) << 16));
+                let (depth, stage, tool) = self.cell_at(col, row);
+                cells.push(depth as u32 | ((stage as u32) << 16) | ((tool as u32) << 24));
             }
         }
         cells
@@ -409,6 +432,8 @@ impl Field {
             Tool::Endmill { radius } => (radius, 1),
             Tool::Vbit { radius, .. } => (radius, 2),
         };
+        let stage = motion.stage.min(u8::MAX as u16) as u8;
+        let tool_index = motion.tool.min(u8::MAX as usize) as u8;
         let Some((c0, c1)) = range(
             self.stock.x0,
             self.cell,
@@ -525,7 +550,8 @@ impl Field {
                         let data = self.tiles[tile].get_or_insert_with(|| {
                             Arc::new(Tile {
                                 depth: vec![0; TILE * TILE],
-                                owner: vec![0; TILE * TILE],
+                                stage: vec![0; TILE * TILE],
+                                tool: vec![0; TILE * TILE],
                             })
                         });
                         let local = ((row & 255) << 8) | (col & 255);
@@ -533,7 +559,8 @@ impl Field {
                         if level > previous {
                             let data = Arc::make_mut(data);
                             data.depth[local] = level;
-                            data.owner[local] = role;
+                            data.stage[local] = stage;
+                            data.tool[local] = tool_index;
                             let delta =
                                 (level - previous) as f64 * self.quantum * (self.cell * self.cell);
                             self.stats.dirty_cells += usize::from(previous == 0);
@@ -699,7 +726,7 @@ impl Playback {
 /// Binary motion stream. `Motion` is field tuples and a tool index, so the
 /// display process can rebuild the exact replay input without parsing a JSON
 /// array of positions.
-/// kind u8 | pad 3 | tool u32 | six f64 coordinates.
+/// kind u8 | stage u16 | pad 1 | tool u32 | six f64 coordinates.
 pub const MOTION_BYTES: usize = 56;
 
 pub fn kind_code(kind: &str) -> u8 {
@@ -724,7 +751,8 @@ pub fn encode_motions(motions: &[Motion]) -> Vec<u8> {
     let mut out = Vec::with_capacity(motions.len() * MOTION_BYTES);
     for motion in motions {
         out.push(kind_code(&motion.kind));
-        out.extend_from_slice(&[0u8; 3]);
+        out.extend_from_slice(&motion.stage.to_le_bytes());
+        out.push(0);
         out.extend_from_slice(&(motion.tool as u32).to_le_bytes());
         for value in [
             motion.x0, motion.y0, motion.z0, motion.x1, motion.y1, motion.z1,
@@ -742,6 +770,7 @@ pub fn decode_motions(bytes: &[u8], tools: usize) -> Result<Vec<Motion>, String>
     let mut motions = Vec::with_capacity(bytes.len() / MOTION_BYTES);
     for record in bytes.chunks_exact(MOTION_BYTES) {
         let kind = code_kind(record[0]).to_string();
+        let stage = u16::from_le_bytes(record[1..3].try_into().unwrap());
         let tool = u32::from_le_bytes(record[4..8].try_into().unwrap()) as usize;
         let mut values = [0_f64; 6];
         for (i, value) in values.iter_mut().enumerate() {
@@ -757,6 +786,7 @@ pub fn decode_motions(bytes: &[u8], tools: usize) -> Result<Vec<Motion>, String>
         motions.push(Motion {
             kind,
             tool,
+            stage,
             x0: values[0],
             y0: values[1],
             z0: values[2],
@@ -786,6 +816,7 @@ mod tests {
         Motion {
             kind: kind.into(),
             tool,
+            stage: 0,
             x0: x,
             y0: x + 1.,
             z0: -x,
@@ -809,6 +840,7 @@ mod tests {
         assert_eq!(decoded.len(), motions.len());
         for (decoded, original) in decoded.iter().zip(&motions) {
             assert_eq!(decoded.tool, original.tool);
+            assert_eq!(decoded.stage, original.stage);
             // Non-cutting kinds collapse to "rapid"; the simulator treats every
             // other kind identically.
             assert_eq!(
@@ -848,6 +880,7 @@ mod tests {
                     &Motion {
                         kind: "cut".into(),
                         tool: 0,
+                        stage: 0,
                         x0: x,
                         y0: -2.5,
                         z0: -0.5,
@@ -879,6 +912,74 @@ mod tests {
         assert_eq!(rebuilt.allocated_bytes(), field.allocated_bytes());
     }
 
+    /// The cell identity the colour modes resolve against: the stage and tool
+    /// that removed the deepest material in a cell, carried through the packed
+    /// grid the display uploads.
+    #[test]
+    fn packed_cells_carry_the_stage_and_tool_that_created_the_surface() {
+        let stock = Stock {
+            x0: -2.,
+            y0: -2.,
+            x1: 2.,
+            y1: 2.,
+            thickness_mm: 6.,
+        };
+        let tools = [
+            ToolSpec::Endmill { diameter: 2. },
+            ToolSpec::Vbit {
+                angle: 90.,
+                tip: 0.,
+                diameter: 6.,
+                height: 3.,
+            },
+        ];
+        let mut field = Field::new(stock, &tools, 0.25).unwrap();
+        let cut = |tool: usize, stage: u16, z: f64| Motion {
+            kind: "cut".into(),
+            tool,
+            stage,
+            x0: -1.5,
+            y0: -1.5,
+            z0: z,
+            x1: 1.5,
+            y1: -1.5,
+            z1: z,
+        };
+        // Stage 3 cuts 1 mm with tool 0, then stage 7 cuts deeper with tool 1.
+        field.apply(&cut(0, 3, -1.), 0., 1.).unwrap();
+        // Cell (8, 3) sits inside the first pass's band.
+        let cell = (8, 3);
+        let shallow = field.cell_at(cell.0, cell.1);
+        assert_eq!(shallow.1, 3, "the endmill stage owns the first floor");
+        assert_eq!(shallow.2, 0);
+        field.apply(&cut(1, 7, -2.5), 0., 1.).unwrap();
+        let deep = field.cell_at(cell.0, cell.1);
+        assert_eq!(deep.1, 7, "the deeper cut takes the floor");
+        assert_eq!(deep.2, 1);
+        assert!(deep.0 > shallow.0);
+        let allocated: Vec<u32> = (0..field.versions.len())
+            .filter(|tile| field.tile_allocated(*tile))
+            .map(|tile| tile as u32)
+            .collect();
+        let rebuilt = Field::from_packed(
+            stock,
+            &tools,
+            0.25,
+            &field.packed_tile_bytes(),
+            &field.versions,
+            &allocated,
+            field.stats.clone(),
+        )
+        .unwrap();
+        assert_eq!(rebuilt.cell_at(cell.0, cell.1), deep);
+        assert_eq!(rebuilt.packed_cells(), field.packed_cells());
+        // The packed word the shader reads: depth | stage << 16 | tool << 24.
+        let word = field.packed_cells()[cell.1 * field.cols + cell.0];
+        assert_eq!((word & 0xffff) as u16, deep.0);
+        assert_eq!((word >> 16) as u8, deep.1);
+        assert_eq!((word >> 24) as u8, deep.2);
+    }
+
     /// A forward jump that crosses a checkpoint restores it instead of
     /// re-integrating every motion between the playhead and the target. Both
     /// paths must land on the same field.
@@ -896,6 +997,7 @@ mod tests {
             .map(|i| Motion {
                 kind: "cut".into(),
                 tool: 0,
+                stage: 0,
                 x0: -8. + (i % 20) as f64 * 0.8,
                 y0: -8. + (i / 20) as f64 * 0.8,
                 z0: -0.5,

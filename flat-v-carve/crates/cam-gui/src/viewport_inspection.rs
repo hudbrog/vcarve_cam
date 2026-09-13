@@ -649,6 +649,7 @@ mod tests {
                 &sim::Motion {
                     kind: "cut".into(),
                     tool: 0,
+                    stage: 0,
                     x0: 27.,
                     y0: 27.,
                     z0: -2.,
@@ -704,6 +705,7 @@ mod tests {
                 &sim::Motion {
                     kind: "cut".into(),
                     tool: 0,
+                    stage: 0,
                     x0: 10.,
                     y0: 2.,
                     z0: -3.,

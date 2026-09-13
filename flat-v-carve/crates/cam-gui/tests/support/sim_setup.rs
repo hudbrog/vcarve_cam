@@ -55,6 +55,9 @@ pub fn build(job: &Job, plan: &CombinedPlan, slices: &[SliceInfo]) -> Result<Inp
                     .unwrap()
                     .into(),
                 tool,
+                // The legacy combined reference has one endmill stage and one
+                // V-bit stage; the endmill motions come first.
+                stage: tool as u16,
                 x0: m.start.x,
                 y0: m.start.y,
                 z0: m.start.z,

@@ -531,6 +531,9 @@ pub fn scene(
             .map(|m| crate::sim::Motion {
                 kind: "rapid_xy".into(),
                 tool: 0,
+                // A knife removes no material, so no cell ever records this
+                // stage; the index only has to exist for the wire format.
+                stage: 0,
                 x0: m.start.x,
                 y0: m.start.y,
                 z0: m.start.z,

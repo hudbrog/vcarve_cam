@@ -176,6 +176,39 @@ impl Camera {
     pub fn points_per_unit(&self, rect_points: [f32; 2]) -> f32 {
         self.zoom * rect_points[1].max(1.) / 2.
     }
+
+    /// World-space screen basis of this view: `(right, up, to_camera)`.
+    ///
+    /// Derived from the same projection the shader applies, so a light or a
+    /// two-sided normal test built from it stays consistent with what the
+    /// viewer actually sees. All three are unit length.
+    pub fn screen_basis(&self) -> ([f32; 3], [f32; 3], [f32; 3]) {
+        let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
+        let (sin_tilt, cos_tilt) = self.tilt.sin_cos();
+        let right = [cos_yaw, -sin_yaw, 0.];
+        let up = [sin_yaw * cos_tilt, cos_yaw * cos_tilt, sin_tilt];
+        let to_camera = [-sin_yaw * sin_tilt, -cos_yaw * sin_tilt, cos_tilt];
+        (right, up, to_camera)
+    }
+
+    /// The key light for the stock pass: a headlight tilted up and to the
+    /// right of the screen, with the ambient term carried in `w`.
+    pub fn stock_light(&self) -> [f32; 4] {
+        let (right, up, to_camera) = self.screen_basis();
+        let mut light = [0.; 3];
+        for axis in 0..3 {
+            light[axis] = to_camera[axis] + 0.45 * up[axis] + 0.35 * right[axis];
+        }
+        let length = (light[0] * light[0] + light[1] * light[1] + light[2] * light[2])
+            .sqrt()
+            .max(1e-6);
+        [
+            light[0] / length,
+            light[1] / length,
+            light[2] / length,
+            0.42,
+        ]
+    }
 }
 
 #[cfg(test)]
@@ -342,5 +375,40 @@ mod tests {
         camera.zoom = 1.4;
         camera.pan = [-0.2, 0.4];
         assert_eq!(camera.uniform(), [0.3, 0.7, 1.4, -0.2, 0.4, 2., 0., 0.]);
+    }
+
+    /// The stock pass lights itself from this basis and flips a normal that
+    /// faces away from the viewer; both have to agree with the projection.
+    #[test]
+    fn the_screen_basis_matches_the_projection() {
+        for yaw in [0., 0.7, -2.1] {
+            for tilt in [0., ISO_TILT, -1.2] {
+                let mut camera = Camera::new(1.3);
+                camera.yaw = yaw;
+                camera.tilt = tilt;
+                let (right, up, to_camera) = camera.screen_basis();
+                for axis in [right, up, to_camera] {
+                    let length = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+                    assert!((length - 1.).abs() < 1e-5, "unit length: {axis:?}");
+                }
+                // A point offset along `right` moves only across the screen, one
+                // along `up` moves only up it, and one along `to_camera` comes
+                // toward the viewer without moving on screen.
+                let scale = 0.05;
+                let along_right: [f32; 3] = right.map(|v| v * scale);
+                let along_up: [f32; 3] = up.map(|v| v * scale);
+                let along_camera: [f32; 3] = to_camera.map(|v| v * scale);
+                assert!(camera.ndc(along_right)[0] > 0.);
+                assert!(camera.ndc(along_up)[1] > 0.);
+                assert!(camera.ndc(along_camera)[1].abs() < 1e-5);
+                assert!(camera.depth(along_camera) < camera.depth([0., 0., 0.]));
+            }
+        }
+        // The key light always leans toward the viewer, so nothing is unlit.
+        let camera = Camera::new(1.);
+        let light = camera.stock_light();
+        let (_, _, to_camera) = camera.screen_basis();
+        assert!(light[0] * to_camera[0] + light[1] * to_camera[1] + light[2] * to_camera[2] > 0.5);
+        assert!((light[3] - 0.42).abs() < 1e-6);
     }
 }

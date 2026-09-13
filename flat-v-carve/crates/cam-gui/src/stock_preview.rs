@@ -410,6 +410,7 @@ mod tests {
                 .map(|i| Motion {
                     kind: "cut".into(),
                     tool: 0,
+                    stage: 0,
                     x0: -4. + (i % 80) as f64 * 0.1,
                     y0: -4. + (i / 80) as f64 * 0.1,
                     z0: -0.5,

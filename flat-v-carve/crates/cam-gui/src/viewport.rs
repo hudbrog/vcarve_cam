@@ -6,6 +6,7 @@ use crate::{
     render, sim,
     stock_preview::PreviewMeta,
     stock_render,
+    stock_style::{self, StageIdentity, StockStyle},
 };
 use egui::Color32;
 use std::sync::Arc;
@@ -118,6 +119,10 @@ pub struct ViewSettings {
     /// View-target offset in normalized scene units, as `camera::Camera` uses.
     #[serde(default)]
     pub pan: [f32; 2],
+    /// Display-only appearance of the simulated stock (colour mode, ramps,
+    /// x-ray, artwork/path toggles). Never part of the job.
+    #[serde(default)]
+    pub stock_style: StockStyle,
     pub stage: usize,
     pub stock: bool,
     pub prefix: usize,
@@ -136,6 +141,7 @@ impl Default for ViewSettings {
             zoom: 1.,
             yaw: 0.,
             pan: [0., 0.],
+            stock_style: StockStyle::default(),
             stage: 0,
             stock: true,
             prefix: 0,
@@ -155,6 +161,20 @@ impl ViewSettings {
             || !self.yaw.is_finite()
             || !tilt.is_finite()
             || !self.pan.iter().all(|v| v.is_finite())
+            || !self.stock_style.xray_opacity.is_finite()
+            || self
+                .stock_style
+                .wall_threshold_mm
+                .is_some_and(|value| !value.is_finite() || value <= 0.)
+            || !self
+                .stock_style
+                .ramp_top
+                .iter()
+                .chain(self.stock_style.ramp_bottom.iter())
+                .chain(self.stock_style.plain.iter())
+                .chain(self.stock_style.plain_wall.iter())
+                .chain(self.stock_style.overrides.values().flatten())
+                .all(|v| v.is_finite())
             || self.stage > crate::session::MAX_DISPLAY_GROUPS
             || self.prefix > crate::session::MOTION_LIMIT
         {
@@ -201,6 +221,18 @@ pub struct Viewport {
     /// The orbit camera shared by the renderer, the picker and every overlay.
     /// `aspect` is refreshed from the viewport rect on each use.
     camera: Camera,
+    /// Display-only stock appearance. Resolved into a uniform and a palette
+    /// when the stock callback is built; never sent to the planner.
+    stock_style: StockStyle,
+    /// Stage identity table of the displayed plan, in the index space the
+    /// field stores per cell.
+    stages: Arc<Vec<StageIdentity>>,
+    /// Tool ids by simulation tool index, for `ByTool` colours.
+    tool_ids: Arc<Vec<String>>,
+    /// Palette cache, rebuilt when the style or the stage identities change.
+    palette: Option<Arc<Vec<[f32; 4]>>>,
+    /// Revision the renderer keys its palette upload on.
+    palette_revision: u64,
     playhead: usize,
     playing: bool,
     stage: usize,
@@ -270,6 +302,11 @@ impl Default for Viewport {
             status: "Open a job to begin.".into(),
             scene: None,
             camera: Camera::default(),
+            stock_style: StockStyle::default(),
+            stages: Arc::new(Vec::new()),
+            tool_ids: Arc::new(Vec::new()),
+            palette: None,
+            palette_revision: 0,
             playhead: 0,
             playing: false,
             stage: 0,
@@ -336,6 +373,7 @@ impl Viewport {
             zoom: self.camera.zoom,
             yaw: self.camera.yaw,
             pan: self.camera.pan,
+            stock_style: self.stock_style.clone(),
             stage: self.stage,
             stock: self.show_stock,
             prefix: self.stock_prefix,
@@ -365,6 +403,9 @@ impl Viewport {
         camera.set_tilt(tilt);
         camera.set_zoom(settings.zoom);
         self.camera = camera;
+        self.stock_style = settings.stock_style.clone();
+        self.palette = None;
+        self.palette_revision = self.palette_revision.wrapping_add(1);
         self.stage = settings.stage;
         self.show_stock = settings.stock;
         self.playing = false;
@@ -398,6 +439,32 @@ impl Viewport {
         self.groups = Arc::new(
             serde_json::from_value(scene.meta.report["gui2"]["groups"].clone()).unwrap_or_default(),
         );
+        // Stage identity for the colour modes: the index the field stores per
+        // cell, with the operation and tool ids a palette keys on.
+        let stages: Vec<StageIdentity> = scene.meta.report["gui2"]["stages"]
+            .as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        Some(StageIdentity {
+                            index: entry["index"].as_u64()? as u16,
+                            operation: entry["operation"].as_str()?.to_string(),
+                            tool: entry["tool"].as_u64()? as usize,
+                            tool_id: entry["toolId"].as_str().unwrap_or_default().to_string(),
+                            role: entry["role"].as_str().unwrap_or_default().to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tool_ids = stage_tool_ids(&stages);
+        if self.stages != Arc::new(stages.clone()) || self.tool_ids != Arc::new(tool_ids.clone()) {
+            self.palette_revision = self.palette_revision.wrapping_add(1);
+        }
+        self.stages = Arc::new(stages);
+        self.tool_ids = Arc::new(tool_ids);
+        self.palette = None;
         if self.stage > self.groups.len() {
             self.stage = 0;
         }
@@ -598,6 +665,59 @@ impl Viewport {
                 }
                 crate::app::help::icon(ui, "View controls");
             });
+            // Display-only stock appearance: colour mode, appearance and the
+            // layer toggles. None of it reaches the job.
+            ui.horizontal(|ui| {
+                let mut surface = self.stock_style.surface;
+                egui::ComboBox::from_id_salt("stock-color-mode")
+                    .selected_text(surface.label())
+                    .show_ui(ui, |ui| {
+                        for mode in stock_style::ColorMode::ALL {
+                            ui.selectable_value(&mut surface, mode, mode.label());
+                        }
+                    });
+                if surface != self.stock_style.surface {
+                    self.stock_style.surface = surface;
+                    self.palette = None;
+                }
+                let mut appearance = self.stock_style.appearance;
+                let solid =
+                    ui.selectable_value(&mut appearance, stock_style::Appearance::Opaque, "Solid");
+                crate::app::observe_control("Solid stock", solid.rect);
+                let xray =
+                    ui.selectable_value(&mut appearance, stock_style::Appearance::XRay, "X-ray");
+                crate::app::observe_control("X-ray stock", xray.rect);
+                if appearance != self.stock_style.appearance {
+                    self.stock_style.appearance = appearance;
+                }
+                if self.stock_style.appearance == stock_style::Appearance::XRay {
+                    let mut opacity = self.stock_style.xray_opacity;
+                    if ui
+                        .add(egui::Slider::new(&mut opacity, 0.05..=1.).text("Opacity"))
+                        .changed()
+                    {
+                        self.stock_style.xray_opacity = opacity;
+                    }
+                }
+                let mut walls = self.stock_style.walls;
+                egui::ComboBox::from_id_salt("stock-wall-mode")
+                    .selected_text(walls.label())
+                    .show_ui(ui, |ui| {
+                        for mode in stock_style::WallMode::ALL {
+                            ui.selectable_value(&mut walls, mode, mode.label());
+                        }
+                    });
+                if walls != self.stock_style.walls {
+                    self.stock_style.walls = walls;
+                }
+                if ui
+                    .checkbox(&mut self.stock_style.show_artwork, "Artwork")
+                    .changed()
+                {
+                    self.overlay_signature = None;
+                }
+                ui.checkbox(&mut self.stock_style.show_paths, "Paths");
+            });
             self.artwork_toolbar(ui);
             ui.label(
                 self.scene
@@ -668,6 +788,9 @@ impl Viewport {
                 }
             }
             self.build_overlay(rect, ctx.pixels_per_point());
+            // Style inputs are resolved before the scene borrow: the palette
+            // is cached and only rebuilt when the style or the plan changes.
+            let (style_uniform, palette, palette_revision) = self.stock_style_inputs(rect);
             if self.gpu_unavailable {
                 ui.painter().text(
                     rect.center(),
@@ -719,6 +842,9 @@ impl Viewport {
                                     stock.meta.tiles_x as f32,
                                     0.,
                                 ],
+                                style: style_uniform,
+                                palette: palette.clone(),
+                                palette_revision,
                                 drill: stock_drill(self.drill),
                             },
                         ));
@@ -732,11 +858,18 @@ impl Viewport {
                             table: page_table(scene),
                             hashes: self.page_hashes.clone(),
                             required: self.required_pages.clone(),
-                            visible: self.visible_motion_range(),
+                            // Path display is a draw-range decision: an empty
+                            // span hides the paths without touching the plan.
+                            visible: if self.stock_style.show_paths {
+                                self.visible_motion_range()
+                            } else {
+                                0..0
+                            },
                             budget_bytes: self.page_budget,
                             contour_vertices: scene.meta.contour_vertices,
                             contour_draw_ranges: scene.meta.report["gui2"]["artworkSpans"]
                                 .as_array()
+                                .filter(|_| self.stock_style.show_artwork)
                                 .map(|spans| {
                                     spans
                                         .iter()
@@ -1088,7 +1221,11 @@ impl Viewport {
     /// two from being confused.
     pub fn display_probe(&self) -> serde_json::Value {
         let Some(stock) = &self.stock else {
-            return serde_json::json!({"preset": self.desired_preset().wire(), "raster": null});
+            return serde_json::json!({
+                "preset": self.desired_preset().wire(),
+                "raster": null,
+                "style": self.style_probe(),
+            });
         };
         serde_json::json!({
             "preset": stock.meta.preset.wire(),
@@ -1099,6 +1236,21 @@ impl Viewport {
             "checkpoints": stock.meta.ladder_frames.max(stock.meta.frames.len()),
             "key": stock.meta.key,
             "sectionSamples": self.section_sample_count(),
+            "style": self.style_probe(),
+        })
+    }
+    /// Display-only stock appearance, as the review harness sees it.
+    fn style_probe(&self) -> serde_json::Value {
+        serde_json::json!({
+            "surface": self.stock_style.surface.wire(),
+            "walls": self.stock_style.walls.wire(),
+            "appearance": self.stock_style.appearance.wire(),
+            "xrayOpacity": self.stock_style.xray_opacity,
+            "showStock": self.stock_style.show_stock,
+            "showArtwork": self.stock_style.show_artwork,
+            "showPaths": self.stock_style.show_paths,
+            "paletteRevision": self.palette_revision,
+            "stages": self.stages.len(),
         })
     }
     /// Diagnostics drill: stop drawing through the custom renderer callbacks
@@ -1337,6 +1489,35 @@ impl Viewport {
         self.camera.pan = [0., 0.];
     }
 
+    /// The palette the stock pass reads, rebuilt only when the style or the
+    /// displayed plan's stage identities change.
+    fn stock_palette(&mut self) -> Arc<Vec<[f32; 4]>> {
+        if let Some(palette) = &self.palette {
+            return palette.clone();
+        }
+        let palette = Arc::new(self.stock_style.palette(&self.stages, &self.tool_ids));
+        self.palette = Some(palette.clone());
+        self.palette_revision = self.palette_revision.wrapping_add(1);
+        palette
+    }
+
+    /// Everything the stock pass needs from the display style: the uniform
+    /// (with the camera's key light), the palette and its revision.
+    fn stock_style_inputs(
+        &mut self,
+        rect: egui::Rect,
+    ) -> (stock_style::StockUniform, Arc<Vec<[f32; 4]>>, u64) {
+        let palette = self.stock_palette();
+        let camera = self.camera(rect);
+        let (_, _, to_camera) = camera.screen_basis();
+        let uniform = self.stock_style.uniform(
+            camera.stock_light(),
+            [to_camera[0], to_camera[1], to_camera[2], 0.],
+            stock_style::FLAG_WALLS,
+        );
+        (uniform, palette, self.palette_revision)
+    }
+
     /// Zoom about a viewport point, keeping the scene point under it fixed.
     fn zoom_at(&mut self, cursor: egui::Pos2, rect: egui::Rect, factor: f32) {
         let mut camera = self.camera(rect);
@@ -1459,6 +1640,20 @@ impl Viewport {
         }
         self.hash_ms += timer.elapsed_ms();
     }
+}
+
+/// Tool ids by simulation tool index, from the stage table, so a `ByTool`
+/// palette keys on the id rather than the index.
+fn stage_tool_ids(stages: &[StageIdentity]) -> Vec<String> {
+    let count = stages.iter().map(|stage| stage.tool + 1).max().unwrap_or(0);
+    let mut ids = vec![String::new(); count];
+    for stage in stages {
+        let slot = &mut ids[stage.tool];
+        if slot.is_empty() {
+            *slot = stage.tool_id.clone();
+        }
+    }
+    ids
 }
 
 fn stock_drill(drill: render::Drill) -> stock_render::Drill {
@@ -1780,5 +1975,71 @@ mod tests {
         assert_eq!(view.camera.tilt, 0.);
         assert_eq!(view.camera.yaw, 0.4);
         assert!(!view.settings().isometric);
+    }
+
+    /// The stock pass reads one uniform and one palette; both have to follow
+    /// the display style, the camera and the displayed plan, and the palette
+    /// must only be rebuilt when one of those changes.
+    #[test]
+    fn the_stock_style_drives_the_uniform_and_the_palette() {
+        let mut view = Viewport::default();
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.));
+        view.stages = Arc::new(vec![StageIdentity {
+            index: 0,
+            operation: "op-a".into(),
+            tool: 0,
+            tool_id: "tool-a".into(),
+            role: "Endmill".into(),
+        }]);
+        view.tool_ids = Arc::new(vec!["tool-a".into()]);
+
+        let (uniform, palette, revision) = view.stock_style_inputs(rect);
+        assert_eq!(uniform.mode, 0, "plain is the shipped default");
+        assert_eq!(palette[0][3], 1., "the stage slot carries a colour");
+        assert_eq!(palette[stock_style::PALETTE_STAGES][3], 1., "tool slot");
+        assert_eq!(
+            palette[stock_style::PALETTE_STAGES + 1][3],
+            0.,
+            "an unused slot stays empty rather than borrowing a colour"
+        );
+        // The light leans toward the viewer and carries the ambient term.
+        assert!(uniform.light[3] > 0. && uniform.light[3] < 1.);
+        let (_, _, to_camera) = view.camera.screen_basis();
+        assert!(uniform.to_camera[0] == to_camera[0] && uniform.to_camera[1] == to_camera[1]);
+        assert_eq!(uniform.wall_mode, 0);
+        assert_eq!(uniform.appearance, 0);
+        assert_eq!(
+            uniform.flags & stock_style::FLAG_WALLS,
+            stock_style::FLAG_WALLS
+        );
+
+        // A cached palette is not rebuilt, and its revision does not move.
+        let (_, cached, cached_revision) = view.stock_style_inputs(rect);
+        assert_eq!(cached_revision, revision);
+        assert!(Arc::ptr_eq(&palette, &cached));
+
+        // Changing the mode changes the uniform but not the palette.
+        view.stock_style.surface = stock_style::ColorMode::ByOperation;
+        let (uniform, same_palette, same_revision) = view.stock_style_inputs(rect);
+        assert_eq!(uniform.mode, 1);
+        assert!(Arc::ptr_eq(&palette, &same_palette));
+        assert_eq!(same_revision, revision);
+
+        // Changing the palette's inputs rebuilds it and moves the revision, so
+        // the renderer knows to upload.
+        view.palette = None;
+        let (_, rebuilt, rebuilt_revision) = view.stock_style_inputs(rect);
+        assert!(rebuilt_revision > revision);
+        assert!(!Arc::ptr_eq(&palette, &rebuilt));
+
+        // The appearance and the toggles reach the probe the harness reads.
+        view.stock_style.appearance = stock_style::Appearance::XRay;
+        view.stock_style.show_paths = false;
+        view.stock_style.show_artwork = false;
+        let probe = view.display_probe();
+        assert_eq!(probe["style"]["appearance"], "xray");
+        assert_eq!(probe["style"]["showPaths"], false);
+        assert_eq!(probe["style"]["showArtwork"], false);
+        assert_eq!(probe["style"]["surface"], "by_operation");
     }
 }

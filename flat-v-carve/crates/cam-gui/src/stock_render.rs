@@ -2,12 +2,15 @@
 //! last upload are copied, so switching checkpoints transfers the changed part
 //! of the field instead of the whole grid.
 use crate::sim::TILE;
+use crate::stock_style::{PALETTE_ENTRIES, StockUniform};
 use eframe::egui_wgpu::{self, wgpu};
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 pub const TILE_BYTES: usize = TILE * TILE * 4;
+/// Bytes of one palette entry (RGBA).
+const PALETTE_BYTES: u64 = (PALETTE_ENTRIES * 16) as u64;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +45,9 @@ pub struct Resources {
     camera: wgpu::Buffer,
     grid: wgpu::Buffer,
     cells: wgpu::Buffer,
+    style: wgpu::Buffer,
+    palette: wgpu::Buffer,
+    palette_revision: Option<u64>,
     capacity: u64,
     format: wgpu::TextureFormat,
     identity: u64,
@@ -69,7 +75,20 @@ impl Resources {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let (pipeline, layout, bind) = build_gpu(device, format, &camera, &grid, &cells);
+        let style = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("CAM GUI stock style"),
+            size: std::mem::size_of::<StockUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let palette = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("CAM GUI stock palette"),
+            size: PALETTE_BYTES,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let (pipeline, layout, bind) =
+            build_gpu(device, format, &camera, &grid, &cells, &style, &palette);
         Self {
             pipeline,
             layout,
@@ -77,6 +96,9 @@ impl Resources {
             camera,
             grid,
             cells,
+            style,
+            palette,
+            palette_revision: None,
             capacity: TILE_BYTES as u64,
             format,
             identity: u64::MAX,
@@ -86,8 +108,15 @@ impl Resources {
     }
 
     fn rebuild(&mut self, device: &wgpu::Device) {
-        let (pipeline, layout, bind) =
-            build_gpu(device, self.format, &self.camera, &self.grid, &self.cells);
+        let (pipeline, layout, bind) = build_gpu(
+            device,
+            self.format,
+            &self.camera,
+            &self.grid,
+            &self.cells,
+            &self.style,
+            &self.palette,
+        );
         self.pipeline = pipeline;
         self.layout = layout;
         self.bind = bind;
@@ -101,6 +130,7 @@ impl Resources {
             mapped_at_creation: false,
         });
         self.uploaded_versions.clear();
+        self.palette_revision = None;
         self.rebuild(device);
         self.stats.lock().unwrap().recoveries += 1;
     }
@@ -112,6 +142,8 @@ fn build_gpu(
     camera: &wgpu::Buffer,
     grid: &wgpu::Buffer,
     cells: &wgpu::Buffer,
+    style: &wgpu::Buffer,
+    palette: &wgpu::Buffer,
 ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::BindGroup) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("CAM GUI stock"),
@@ -123,6 +155,16 @@ fn build_gpu(
             entry(0, wgpu::BufferBindingType::Uniform),
             entry(1, wgpu::BufferBindingType::Uniform),
             entry(2, wgpu::BufferBindingType::Storage { read_only: true }),
+            entry_with(
+                3,
+                wgpu::BufferBindingType::Uniform,
+                wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ),
+            entry_with(
+                4,
+                wgpu::BufferBindingType::Storage { read_only: true },
+                wgpu::ShaderStages::FRAGMENT,
+            ),
         ],
     });
     let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -140,6 +182,14 @@ fn build_gpu(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: cells.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: style.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: palette.as_entire_binding(),
             },
         ],
     });
@@ -183,9 +233,17 @@ fn build_gpu(
 }
 
 fn entry(binding: u32, ty: wgpu::BufferBindingType) -> wgpu::BindGroupLayoutEntry {
+    entry_with(binding, ty, wgpu::ShaderStages::VERTEX)
+}
+
+fn entry_with(
+    binding: u32,
+    ty: wgpu::BufferBindingType,
+    visibility: wgpu::ShaderStages,
+) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::VERTEX,
+        visibility,
         ty: wgpu::BindingType::Buffer {
             ty,
             has_dynamic_offset: false,
@@ -213,6 +271,13 @@ pub struct Callback {
     /// The `camera::Camera::uniform` value `stock.wgsl` reads.
     pub camera: [f32; 8],
     pub grid: [f32; 10],
+    /// Display-only style: colour mode, ramps, light and appearance.
+    pub style: StockUniform,
+    /// One RGBA per stage index followed by one per tool index.
+    pub palette: Arc<Vec<[f32; 4]>>,
+    /// Changes when the palette contents change, so the buffer is uploaded on
+    /// change instead of every frame.
+    pub palette_revision: u64,
     pub drill: Drill,
 }
 
@@ -251,6 +316,18 @@ impl egui_wgpu::CallbackTrait for Callback {
         }
         queue.write_buffer(&r.camera, 0, bytemuck::cast_slice(&self.camera));
         queue.write_buffer(&r.grid, 0, bytemuck::cast_slice(&self.grid));
+        queue.write_buffer(&r.style, 0, bytemuck::bytes_of(&self.style));
+        if r.palette_revision != Some(self.palette_revision) {
+            let mut bytes = Vec::with_capacity(PALETTE_BYTES as usize);
+            for entry in self.palette.iter().take(PALETTE_ENTRIES) {
+                bytes.extend_from_slice(bytemuck::cast_slice(entry));
+            }
+            // A palette shorter than the buffer keeps its empty slots black
+            // rather than reading whatever the driver left behind.
+            bytes.resize(PALETTE_BYTES as usize, 0);
+            queue.write_buffer(&r.palette, 0, &bytes);
+            r.palette_revision = Some(self.palette_revision);
+        }
         let mut uploaded = 0_u64;
         let mut skipped = 0_u64;
         let source: &[u8] = match (&self.local, &self.payload) {
@@ -429,8 +506,8 @@ mod tests {
         // Boundary cells of the low-Y edge are faced 4 mm; everything else is
         // untouched, so the test covers both a stepped wall and a full one.
         let mut cells = vec![0u32; cols * rows];
-        for col in 0..cols {
-            cells[col] = 65535 / 18 * 4;
+        for cell in cells.iter_mut().take(cols) {
+            *cell = 65535 / 18 * 4;
         }
         let corners = [[0., 0.], [1., 0.], [0., 1.], [1., 1.]];
         for (cell, along_x, high) in wall_quads(cols, rows) {
@@ -515,5 +592,42 @@ mod tests {
         // A fine 200 × 100 mm field at the standard 0.4 mm cells adds one wall
         // quad per boundary cell: 1.2% more vertices than the surface alone.
         assert_eq!(draw_vertices(500, 250) - 500 * 250 * 6, 1_500 * 6 + 6);
+    }
+
+    /// Mirror of `stock.wgsl`'s surface normal: `(t·∂d/∂x, t·∂d/∂y, 1)`, where
+    /// `d` is the *removed* fraction and `t` the stock thickness. The shading
+    /// only reads the direction, so the test pins that rather than pixels.
+    fn surface_normal(
+        left: f32,
+        right: f32,
+        down: f32,
+        up: f32,
+        thickness: f32,
+        cell: f32,
+    ) -> [f32; 3] {
+        let step = (2. * cell).max(1e-6);
+        [
+            (right - left) * thickness / step,
+            (up - down) * thickness / step,
+            1.,
+        ]
+    }
+
+    #[test]
+    fn the_surface_normal_points_up_and_leans_with_the_gradient() {
+        // Flat material: straight up, whatever the depth.
+        assert_eq!(surface_normal(0.2, 0.2, 0.2, 0.2, 18., 0.4), [0., 0., 1.]);
+        // Deeper material to the +x side means the surface falls away in +x, so
+        // the normal leans that way: the step face reads as an edge, and a
+        // V-bit flank reads as a slope instead of a flat colour.
+        let falling = surface_normal(0.1, 0.3, 0.2, 0.2, 18., 0.4);
+        assert!(falling[0] > 0. && falling[2] > 0., "{falling:?}");
+        let mirrored = surface_normal(0.3, 0.1, 0.2, 0.2, 18., 0.4);
+        assert!((mirrored[0] + falling[0]).abs() < 1e-6);
+        // A finer display cell reports a steeper gradient for the same step,
+        // which is what keeps shading consistent across display presets.
+        let coarse = surface_normal(0.1, 0.2, 0.1, 0.1, 18., 0.8);
+        let fine = surface_normal(0.1, 0.2, 0.1, 0.1, 18., 0.2);
+        assert!(fine[0] > coarse[0]);
     }
 }
