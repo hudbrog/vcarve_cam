@@ -3,6 +3,7 @@
 //! of the field instead of the whole grid.
 use crate::sim::TILE;
 use crate::stock_style::{PALETTE_ENTRIES, StockUniform};
+use crate::stock_walls::{WALL_BYTES, Wall};
 use eframe::egui_wgpu::{self, wgpu};
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
@@ -11,6 +12,8 @@ use std::sync::{Arc, Mutex};
 pub const TILE_BYTES: usize = TILE * TILE * 4;
 /// Bytes of one palette entry (RGBA).
 const PALETTE_BYTES: u64 = (PALETTE_ENTRIES * 16) as u64;
+/// Initial wall buffer capacity: one page of instances.
+const WALL_INITIAL_BYTES: u64 = (WALL_BYTES * 1024) as u64;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +50,9 @@ pub struct Resources {
     cells: wgpu::Buffer,
     style: wgpu::Buffer,
     palette: wgpu::Buffer,
+    walls: wgpu::Buffer,
+    wall_capacity: u64,
+    wall_revision: Option<u64>,
     palette_revision: Option<u64>,
     capacity: u64,
     format: wgpu::TextureFormat,
@@ -87,8 +93,24 @@ impl Resources {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let (pipeline, layout, bind) =
-            build_gpu(device, format, &camera, &grid, &cells, &style, &palette);
+        let walls = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("CAM GUI stock walls"),
+            size: WALL_INITIAL_BYTES,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let (pipeline, layout, bind) = build_gpu(
+            device,
+            format,
+            &Buffers {
+                camera: &camera,
+                grid: &grid,
+                cells: &cells,
+                style: &style,
+                palette: &palette,
+                walls: &walls,
+            },
+        );
         Self {
             pipeline,
             layout,
@@ -98,6 +120,9 @@ impl Resources {
             cells,
             style,
             palette,
+            walls,
+            wall_capacity: WALL_INITIAL_BYTES,
+            wall_revision: None,
             palette_revision: None,
             capacity: TILE_BYTES as u64,
             format,
@@ -111,11 +136,14 @@ impl Resources {
         let (pipeline, layout, bind) = build_gpu(
             device,
             self.format,
-            &self.camera,
-            &self.grid,
-            &self.cells,
-            &self.style,
-            &self.palette,
+            &Buffers {
+                camera: &self.camera,
+                grid: &self.grid,
+                cells: &self.cells,
+                style: &self.style,
+                palette: &self.palette,
+                walls: &self.walls,
+            },
         );
         self.pipeline = pipeline;
         self.layout = layout;
@@ -136,15 +164,30 @@ impl Resources {
     }
 }
 
+/// The stock pass's uniform and storage bindings, bundled so the pipeline
+/// builder takes one argument instead of six.
+struct Buffers<'a> {
+    camera: &'a wgpu::Buffer,
+    grid: &'a wgpu::Buffer,
+    cells: &'a wgpu::Buffer,
+    style: &'a wgpu::Buffer,
+    palette: &'a wgpu::Buffer,
+    walls: &'a wgpu::Buffer,
+}
+
 fn build_gpu(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
-    camera: &wgpu::Buffer,
-    grid: &wgpu::Buffer,
-    cells: &wgpu::Buffer,
-    style: &wgpu::Buffer,
-    palette: &wgpu::Buffer,
+    buffers: &Buffers<'_>,
 ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::BindGroup) {
+    let Buffers {
+        camera,
+        grid,
+        cells,
+        style,
+        palette,
+        walls,
+    } = *buffers;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("CAM GUI stock"),
         source: wgpu::ShaderSource::Wgsl(include_str!("stock.wgsl").into()),
@@ -164,6 +207,11 @@ fn build_gpu(
                 4,
                 wgpu::BufferBindingType::Storage { read_only: true },
                 wgpu::ShaderStages::FRAGMENT,
+            ),
+            entry_with(
+                5,
+                wgpu::BufferBindingType::Storage { read_only: true },
+                wgpu::ShaderStages::VERTEX,
             ),
         ],
     });
@@ -190,6 +238,10 @@ fn build_gpu(
             wgpu::BindGroupEntry {
                 binding: 4,
                 resource: palette.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: walls.as_entire_binding(),
             },
         ],
     });
@@ -278,6 +330,10 @@ pub struct Callback {
     /// Changes when the palette contents change, so the buffer is uploaded on
     /// change instead of every frame.
     pub palette_revision: u64,
+    /// Interior and edge walls of the displayed field state.
+    pub walls: Arc<Vec<Wall>>,
+    /// Changes when the wall set changes.
+    pub wall_revision: u64,
     pub drill: Drill,
 }
 
@@ -327,6 +383,23 @@ impl egui_wgpu::CallbackTrait for Callback {
             bytes.resize(PALETTE_BYTES as usize, 0);
             queue.write_buffer(&r.palette, 0, &bytes);
             r.palette_revision = Some(self.palette_revision);
+        }
+        if r.wall_revision != Some(self.wall_revision) {
+            let needed = (self.walls.len() * WALL_BYTES).max(WALL_BYTES) as u64;
+            if needed > r.wall_capacity {
+                r.wall_capacity = needed.next_power_of_two();
+                r.walls = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("CAM GUI stock walls"),
+                    size: r.wall_capacity,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                r.rebuild(device);
+            }
+            if !self.walls.is_empty() {
+                queue.write_buffer(&r.walls, 0, bytemuck::cast_slice(&self.walls));
+            }
+            r.wall_revision = Some(self.wall_revision);
         }
         let mut uploaded = 0_u64;
         let mut skipped = 0_u64;
@@ -386,17 +459,20 @@ impl egui_wgpu::CallbackTrait for Callback {
         if let Some(r) = resources.get::<Resources>() {
             pass.set_pipeline(&r.pipeline);
             pass.set_bind_group(0, &r.bind, &[]);
-            pass.draw(0..draw_vertices(self.cols, self.rows), 0..1);
+            pass.draw(
+                0..draw_vertices(self.cols, self.rows, self.walls.len()),
+                0..1,
+            );
         }
     }
 }
 
-/// Vertices `stock.wgsl` emits for a `cols × rows` field: one quad per cell,
-/// one wall quad per boundary cell (the four edges, corners counted twice) and
-/// the stock's bottom face. The shader derives the same three ranges from
-/// `grid.cols`/`grid.rows`, so this must stay in step with it.
-pub fn draw_vertices(cols: usize, rows: usize) -> u32 {
-    (cols * rows * 6 + (2 * cols + 2 * rows) * 6 + 6) as u32
+/// Vertices `stock.wgsl` emits for a `cols × rows` field with `walls` wall
+/// instances: one quad per cell, one per wall and the stock's bottom face. The
+/// shader derives the same three ranges from its grid uniform, so this must
+/// stay in step with it.
+pub fn draw_vertices(cols: usize, rows: usize, walls: usize) -> u32 {
+    (cols * rows * 6 + walls * 6 + 6) as u32
 }
 
 #[cfg(test)]
@@ -575,23 +651,24 @@ mod tests {
     fn the_drawn_vertex_count_matches_the_shader_ranges() {
         let shader = include_str!("stock.wgsl");
         assert!(shader.contains("count*6u"), "cell range");
-        assert!(shader.contains("(2u*cols+2u*rows)*6u"), "wall range");
+        assert!(shader.contains("u32(grid.walls)*6u"), "wall range");
         assert!(
             shader.contains("array<u32,6>(4u,5u,6u,4u,6u,7u)"),
             "bottom face"
         );
-        for (cols, rows) in [(0, 0), (1, 1), (2, 1), (500, 250)] {
+        for (cols, rows, walls) in [(0, 0, 0), (1, 1, 4), (2, 1, 6), (500, 250, 1_500)] {
             assert_eq!(
-                draw_vertices(cols, rows),
-                (cols * rows * 6 + (2 * cols + 2 * rows) * 6 + 6) as u32,
-                "{cols}x{rows}"
+                draw_vertices(cols, rows, walls),
+                (cols * rows * 6 + walls * 6 + 6) as u32,
+                "{cols}x{rows} with {walls} walls"
             );
         }
         // An empty field still draws the stock's bottom face.
-        assert_eq!(draw_vertices(0, 0), 6);
+        assert_eq!(draw_vertices(0, 0, 0), 6);
         // A fine 200 × 100 mm field at the standard 0.4 mm cells adds one wall
-        // quad per boundary cell: 1.2% more vertices than the surface alone.
-        assert_eq!(draw_vertices(500, 250) - 500 * 250 * 6, 1_500 * 6 + 6);
+        // quad per wall instance: the edges of a faced plate are four runs, so
+        // the walls cost a fraction of a percent of the surface.
+        assert_eq!(draw_vertices(500, 250, 4) - 500 * 250 * 6, 4 * 6 + 6);
     }
 
     /// Mirror of `stock.wgsl`'s surface normal: `(t·∂d/∂x, t·∂d/∂y, 1)`, where

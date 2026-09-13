@@ -5,7 +5,10 @@
 // Camera and grid field orders mirror their Rust mirrors; `Style` mirrors
 // `StockUniform` (the size is pinned by a Rust test).
 struct Camera { yaw: f32, tilt: f32, zoom: f32, pan_x: f32, pan_y: f32, aspect: f32, _pad0: f32, _pad1: f32 }
-struct Grid { origin: vec2<f32>, cell: f32, thickness: f32, cols: f32, rows: f32, width: f32, height: f32, tiles_x: f32, _pad: f32 }
+struct Grid { origin: vec2<f32>, cell: f32, thickness: f32, cols: f32, rows: f32, width: f32, height: f32, tiles_x: f32, walls: f32 }
+// One interior or edge wall, in grid-cell units: axis 0 stands at a fixed x
+// and runs along y, axis 1 at a fixed y and runs along x.
+struct Wall { start: vec2<f32>, length: f32, axis: u32, top: f32, bottom: f32, identity: u32, _pad: f32 }
 struct Style {
     mode: u32,
     wall_mode: u32,
@@ -27,6 +30,7 @@ struct Style {
 @group(0) @binding(2) var<storage, read> cells: array<u32>;
 @group(0) @binding(3) var<uniform> style: Style;
 @group(0) @binding(4) var<storage, read> palette: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read> walls: array<Wall>;
 struct Output { @builtin(position) position: vec4<f32>, @location(0) color: vec4<f32> }
 
 const PALETTE_STAGES: u32 = 256u;
@@ -43,21 +47,28 @@ fn tool_of(packed: u32) -> u32 { return (packed>>24u)&255u; }
 
 // Floors keep the plain colour where no cutter has been, whatever the mode:
 // an untouched cell has no operation to attribute it to.
-fn floor_color(packed: u32, depth: f32) -> vec3<f32> {
+fn surface_color(stage: u32, tool: u32, depth: f32) -> vec3<f32> {
     if (depth <= 0.) { return style.plain.rgb; }
-    if (style.mode == 1u) { return palette[stage_of(packed)].rgb; }
-    if (style.mode == 2u) { return palette[PALETTE_STAGES+tool_of(packed)].rgb; }
+    if (style.mode == 1u) { return palette[stage].rgb; }
+    if (style.mode == 2u) { return palette[PALETTE_STAGES+tool].rgb; }
     if (style.mode == 3u) { return mix(style.ramp_a.rgb,style.ramp_b.rgb,clamp(depth,0.,1.)); }
     return style.plain.rgb;
 }
 // A wall's identity is the cell that removed the material beside it, so its
 // own-operation colour is the cutter that created the face, not the surface
-// above it. `height` is the fragment's fraction of the stock thickness.
-fn wall_color(packed: u32, depth: f32, height: f32) -> vec3<f32> {
-    if (style.wall_mode == 1u) { return palette[stage_of(packed)].rgb; }
+// above it. `identity` is `stage | tool << 8`, or "no cutter" for material a
+// tool never touched (the stock's own untouched edge). `height` is the
+// fragment's fraction of the stock thickness.
+fn wall_color(identity: u32, height: f32) -> vec3<f32> {
+    if (identity == 0xffffffffu) { return style.plain_wall.rgb; }
+    let stage = identity&255u;
+    let tool = (identity>>8u)&255u;
+    if (style.wall_mode == 1u) { return palette[stage].rgb; }
     if (style.wall_mode == 2u) { return mix(style.ramp_a.rgb,style.ramp_b.rgb,clamp(height,0.,1.)); }
     if (style.mode == 0u) { return style.plain_wall.rgb; }
-    return floor_color(packed,max(depth,1.));
+    // A wall always has material beside it, so the surface modes colour it
+    // exactly as they colour the floor it belongs to.
+    return surface_color(stage,tool,1.);
 }
 // One directional key light plus ambient, both supplied by the camera so
 // orbiting never turns a face black. Culling is off, so a face whose normal
@@ -79,10 +90,9 @@ fn output_alpha() -> f32 {
     let rows = u32(grid.rows);
     let count = cols*rows;
     let cell_vertices = count*6u;
-    // One wall quad per boundary cell: the four edges, corner cells carrying
-    // two of them. The wall follows the material left in its own cell, so the
-    // sides show the remaining stock instead of the original envelope.
-    let wall_vertices = (2u*cols+2u*rows)*6u;
+    // One quad per wall instance the display built: interior steps and the
+    // stock's own edges, both from the same detector (`stock_walls.rs`).
+    let wall_vertices = u32(grid.walls)*6u;
     var p: vec3<f32>;
     var normal = vec3(0.,0.,1.);
     var color = style.plain_wall.rgb;
@@ -103,51 +113,20 @@ fn output_alpha() -> f32 {
         let dx = (neighbour_depth(col,row,1,0)-neighbour_depth(col,row,-1,0))*grid.thickness/step;
         let dy = (neighbour_depth(col,row,0,1)-neighbour_depth(col,row,0,-1))*grid.thickness/step;
         normal = vec3(dx,dy,1.);
-        color = floor_color(packed,depth);
+        color = surface_color(stage_of(packed),tool_of(packed),depth);
     } else if (id < cell_vertices+wall_vertices) {
         let wall = (id-cell_vertices)/6u;
         let corners = array<vec2<f32>,6>(vec2(0.,0.),vec2(1.,0.),vec2(0.,1.),vec2(0.,1.),vec2(1.,0.),vec2(1.,1.));
         let c = corners[(id-cell_vertices)%6u];
-        // Walk the perimeter: the low-Y edge, the low-X edge, the high-Y edge,
-        // then the high-X edge.
-        var cell: vec2<u32>;
-        var along_x: bool;
-        var high: f32;
-        if (wall < cols) {
-            cell = vec2<u32>(wall,0u);
-            along_x = true;
-            high = 0.;
-        } else if (wall < cols+rows) {
-            cell = vec2<u32>(0u,wall-cols);
-            along_x = false;
-            high = 0.;
-        } else if (wall < 2u*cols+rows) {
-            cell = vec2<u32>(wall-(cols+rows),rows-1u);
-            along_x = true;
-            high = 1.;
-        } else {
-            cell = vec2<u32>(cols-1u,wall-(2u*cols+rows));
-            along_x = false;
-            high = 1.;
-        }
-        let packed = packed_at(cell.x,cell.y);
-        let depth = depth_of(packed);
-        // From this cell's machined surface down to the stock bottom. A cell
-        // cut through leaves no wall at all, so a through cut opens a real gap.
-        // `along_extent` is the axis the wall runs along; the edge it stands on
-        // is the *other* axis, so the two must not share an extent.
-        let along_extent = select(grid.height,grid.width,along_x);
-        let edge_extent = select(grid.width,grid.height,along_x);
-        let along = min((select(f32(cell.y),f32(cell.x),along_x)+c.x)*grid.cell,along_extent);
-        let fixed = high*edge_extent;
-        let height = mix(depth,1.,c.y);
-        p = vec3(
-            grid.origin.x+select(fixed,along,along_x),
-            grid.origin.y+select(along,fixed,along_x),
-            mix(-depth*grid.thickness,-grid.thickness,c.y)
-        );
-        normal = select(vec3(0.,select(-1.,1.,high > 0.5),0.),vec3(select(-1.,1.,high > 0.5),0.,0.),along_x);
-        color = wall_color(packed,depth,height);
+        let instance = walls[wall];
+        // Axis 0 stands at a fixed x and runs along y; axis 1 the other way.
+        let along = instance.start+c.x*instance.length*select(vec2(0.,1.),vec2(1.,0.),instance.axis == 1u);
+        let height = mix(instance.top,instance.bottom,c.y);
+        p = vec3(grid.origin+along*grid.cell,-height*grid.thickness);
+        // The normal is the wall's own plane; the shader flips it toward the
+        // viewer below, so an edge seen from either side still shades.
+        normal = select(vec3(0.,1.,0.),vec3(1.,0.,0.),instance.axis == 0u);
+        color = wall_color(instance.identity,height);
     } else {
         // The bottom face keeps the full stock rectangle.
         let corner = array<vec3<f32>,8>(vec3(0.,0.,0.),vec3(1.,0.,0.),vec3(1.,1.,0.),vec3(0.,1.,0.),vec3(0.,0.,-1.),vec3(1.,0.,-1.),vec3(1.,1.,-1.),vec3(0.,1.,-1.));

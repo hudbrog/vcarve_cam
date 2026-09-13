@@ -7,6 +7,7 @@ use crate::{
     stock_preview::PreviewMeta,
     stock_render,
     stock_style::{self, StageIdentity, StockStyle},
+    stock_walls::{self, Wall},
 };
 use egui::Color32;
 use std::sync::Arc;
@@ -184,6 +185,16 @@ impl ViewSettings {
     }
 }
 
+/// Walls of one displayed state and the key that identifies it: the stock
+/// identity, the playhead prefix and the threshold the style asked for.
+struct WallCache {
+    identity: u64,
+    prefix: usize,
+    threshold: u32,
+    walls: Arc<Vec<Wall>>,
+    revision: u64,
+}
+
 pub struct Viewport {
     knife_chains: Arc<Vec<crate::knife::Chain>>,
     /// Closed catalogue contours a profile operation can select, in document
@@ -233,6 +244,13 @@ pub struct Viewport {
     palette: Option<Arc<Vec<[f32; 4]>>>,
     /// Revision the renderer keys its palette upload on.
     palette_revision: u64,
+    /// Walls of the displayed field state, with the key they were built for.
+    wall_cache: Option<WallCache>,
+    /// Revision the renderer keys its wall upload on.
+    wall_revision: u64,
+    /// What the wall budget policy had to give up for the displayed state:
+    /// `(dropped steps, threshold used)`. Reported, never hidden.
+    wall_report: Option<(usize, f64)>,
     playhead: usize,
     playing: bool,
     stage: usize,
@@ -307,6 +325,9 @@ impl Default for Viewport {
             tool_ids: Arc::new(Vec::new()),
             palette: None,
             palette_revision: 0,
+            wall_cache: None,
+            wall_revision: 0,
+            wall_report: None,
             playhead: 0,
             playing: false,
             stage: 0,
@@ -791,6 +812,7 @@ impl Viewport {
             // Style inputs are resolved before the scene borrow: the palette
             // is cached and only rebuilt when the style or the plan changes.
             let (style_uniform, palette, palette_revision) = self.stock_style_inputs(rect);
+            let (walls, wall_revision) = self.stock_walls();
             if self.gpu_unavailable {
                 ui.painter().text(
                     rect.center(),
@@ -840,11 +862,13 @@ impl Viewport {
                                     ((stock.meta.stock.x1 - stock.meta.stock.x0) * scale) as f32,
                                     ((stock.meta.stock.y1 - stock.meta.stock.y0) * scale) as f32,
                                     stock.meta.tiles_x as f32,
-                                    0.,
+                                    walls.len() as f32,
                                 ],
                                 style: style_uniform,
                                 palette: palette.clone(),
                                 palette_revision,
+                                walls: walls.clone(),
+                                wall_revision,
                                 drill: stock_drill(self.drill),
                             },
                         ));
@@ -1251,6 +1275,10 @@ impl Viewport {
             "showPaths": self.stock_style.show_paths,
             "paletteRevision": self.palette_revision,
             "stages": self.stages.len(),
+            "wallRevision": self.wall_revision,
+            "walls": self.wall_cache.as_ref().map_or(0, |cache| cache.walls.len()),
+            "wallThresholdMm": self.wall_report.map(|(_, threshold)| threshold),
+            "wallsDropped": self.wall_report.map(|(dropped, _)| dropped),
         })
     }
     /// Diagnostics drill: stop drawing through the custom renderer callbacks
@@ -1511,11 +1539,69 @@ impl Viewport {
         let camera = self.camera(rect);
         let (_, _, to_camera) = camera.screen_basis();
         let uniform = self.stock_style.uniform(
-            camera.stock_light(),
+            stock_style::key_light(),
             [to_camera[0], to_camera[1], to_camera[2], 0.],
             stock_style::FLAG_WALLS,
         );
         (uniform, palette, self.palette_revision)
+    }
+
+    /// The walls of the displayed field state, rebuilt when the state or the
+    /// style's threshold changes and cached otherwise. The builder reads the
+    /// packed field the display already holds, so no wall geometry is ever
+    /// transported (plan `stock-display-plan.md` §4).
+    fn stock_walls(&mut self) -> (Arc<Vec<Wall>>, u64) {
+        let Some(scene) = self.scene.as_ref() else {
+            return (Arc::new(Vec::new()), self.wall_revision);
+        };
+        let Some(stock) = self.stock.as_ref() else {
+            return (Arc::new(Vec::new()), self.wall_revision);
+        };
+        let threshold = self.stock_style.wall_threshold(stock.meta.cell_mm);
+        let identity = stock.identity;
+        let prefix = stock.prefix;
+        if let Some(cache) = &self.wall_cache
+            && cache.identity == identity
+            && cache.prefix == prefix
+            && cache.threshold == threshold.to_bits()
+        {
+            return (cache.walls.clone(), cache.revision);
+        }
+        // The displayed cells come either from the transported payload or from
+        // the locally re-integrated field; both are this process's own bytes.
+        let cells: &[u8] = match (&stock.local, &scene.payload) {
+            (Some(local), _) => local,
+            (None, payload) => payload.get(stock.range.clone()).unwrap_or(&[]),
+        };
+        let meta = &stock.meta;
+        let built = stock_walls::build(
+            &stock_walls::Grid {
+                cells,
+                cols: meta.cols,
+                rows: meta.rows,
+                tiles_x: meta.tiles_x,
+                cell_mm: meta.cell_mm,
+                thickness_mm: meta.stock.thickness_mm,
+                width_cells: (meta.stock.x1 - meta.stock.x0) / meta.cell_mm,
+                length_cells: (meta.stock.y1 - meta.stock.y0) / meta.cell_mm,
+            },
+            threshold as f64,
+            stock_walls::WALL_BUDGET_INSTANCES,
+        );
+        let revision = self.wall_revision.wrapping_add(1);
+        let walls = Arc::new(built.walls);
+        self.wall_report = (built.dropped > 0)
+            .then_some((built.dropped, built.threshold_mm))
+            .or(Some((0, built.threshold_mm)));
+        self.wall_cache = Some(WallCache {
+            identity,
+            prefix,
+            threshold: threshold.to_bits(),
+            walls: walls.clone(),
+            revision,
+        });
+        self.wall_revision = revision;
+        (walls, revision)
     }
 
     /// Zoom about a viewport point, keeping the scene point under it fixed.

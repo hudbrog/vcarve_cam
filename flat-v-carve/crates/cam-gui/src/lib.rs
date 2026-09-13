@@ -27,6 +27,7 @@ pub mod state;
 pub mod stock_preview;
 pub mod stock_render;
 pub mod stock_style;
+pub mod stock_walls;
 pub mod viewport;
 #[cfg(target_arch = "wasm32")]
 mod web;

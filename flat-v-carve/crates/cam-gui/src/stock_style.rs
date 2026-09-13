@@ -320,6 +320,14 @@ pub struct StockUniform {
 /// Flag bits in [`StockUniform::flags`].
 pub const FLAG_WALLS: u32 = 1 << 0;
 
+/// The key light the stock pass shades with: a fixed world direction from the
+/// upper left with the ambient term in `w`. Fixed rather than camera-relative
+/// so a floor and the walls around it keep their contrast as the view orbits;
+/// the ambient term keeps the far side readable.
+pub fn key_light() -> [f32; 4] {
+    [0.42, -0.36, 0.83, 0.45]
+}
+
 fn rgb(color: [f32; 4]) -> [f32; 3] {
     [color[0], color[1], color[2]]
 }

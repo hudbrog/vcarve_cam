@@ -190,25 +190,6 @@ impl Camera {
         let to_camera = [-sin_yaw * sin_tilt, -cos_yaw * sin_tilt, cos_tilt];
         (right, up, to_camera)
     }
-
-    /// The key light for the stock pass: a headlight tilted up and to the
-    /// right of the screen, with the ambient term carried in `w`.
-    pub fn stock_light(&self) -> [f32; 4] {
-        let (right, up, to_camera) = self.screen_basis();
-        let mut light = [0.; 3];
-        for axis in 0..3 {
-            light[axis] = to_camera[axis] + 0.45 * up[axis] + 0.35 * right[axis];
-        }
-        let length = (light[0] * light[0] + light[1] * light[1] + light[2] * light[2])
-            .sqrt()
-            .max(1e-6);
-        [
-            light[0] / length,
-            light[1] / length,
-            light[2] / length,
-            0.42,
-        ]
-    }
 }
 
 #[cfg(test)]
@@ -404,11 +385,5 @@ mod tests {
                 assert!(camera.depth(along_camera) < camera.depth([0., 0., 0.]));
             }
         }
-        // The key light always leans toward the viewer, so nothing is unlit.
-        let camera = Camera::new(1.);
-        let light = camera.stock_light();
-        let (_, _, to_camera) = camera.screen_basis();
-        assert!(light[0] * to_camera[0] + light[1] * to_camera[1] + light[2] * to_camera[2] > 0.5);
-        assert!((light[3] - 0.42).abs() < 1e-6);
     }
 }
