@@ -74,6 +74,11 @@ generate the batch → seek → rebuild the display at Fine → seek → prepare
 checked program) and prints its checks. It does not open the window, so the
 tour below is still what tells you how the application feels.
 
+The build keeps its session recovery **next to the executable** in a
+`cam-gui-recovery` folder. The package ships without one, so the first launch
+starts clean and any folder that appears afterwards is your own session —
+delete it, or use **Restore draft** in the application, as you prefer.
+
 ## Fixtures
 
 | Fixture | Use |

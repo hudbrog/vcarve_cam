@@ -218,6 +218,14 @@ tree was clean at the moment it was written, so a reviewer can tell a package
 built from a commit apart from one built in a dirty worktree. Documentation-only
 follow-ups after that commit changed no compiled input.
 
+The manifest pins **what shipped**, not a reproducible hash: a forced clean
+recompile of the same committed source produced a different native binary
+(`6ec126a1…` against the shipped `2d7d3852…`), which is expected for a Rust/PE
+build carrying embedded paths and timestamps. The shipped hashes and
+`SHA256SUMS` are therefore the identity a review should compare against; a
+local rebuild is the same program but not the same file, and the WASM artifact
+was not tested for byte-reproducibility.
+
 ### Limits
 
 - **One payload per execution.** The whole generated execution still travels
