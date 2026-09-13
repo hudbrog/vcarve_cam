@@ -209,11 +209,14 @@ does not involve a window, a GPU or input devices, so the interactive tour in
   the manual recipe is the first full native run.
 
 `artifacts/gui9/review/manifest.json` records which sources and packages the
-review build was made from: commit `cf5d798` with a clean tree, `0cae4485…`
-native, `255cfe08…` WASM, offline bundle
+review build was made from: `0cae4485…` native, `255cfe08…` WASM, offline bundle
 `d289669f…`, and the 296 hashed source files (now including
 `scripts/native-smoke.mjs`), covering the GUI9b and GUI9c
-changes).
+changes. The binaries were built from the milestone commit `cf5d798`; the
+manifest also names the head commit, the hashed source tree and whether the
+tree was clean at the moment it was written, so a reviewer can tell a package
+built from a commit apart from one built in a dirty worktree. Documentation-only
+follow-ups after that commit changed no compiled input.
 
 ### Limits
 
