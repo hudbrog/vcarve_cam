@@ -117,6 +117,16 @@ the higher and lower cell, runs from the **lower** cell's surface up to the
 and identity merge into one quad, so a facing pass yields a handful of long
 instances instead of one per cell.
 
+**Status:** landed for S1–S3 (`96dfee9`, `b6af1be`, `0b2915e`); S4 is not
+started. Two implementation notes differ from the text below and are recorded
+here rather than left implicit: the boundary ring *is* folded into the detector
+as planned, and the wall set is rebuilt for a changed displayed state and
+otherwise cached (keyed on the stock identity, the playhead prefix and the
+threshold) instead of being rebuilt per dirty tile. The state-level rebuild is
+O(cells) with a small constant and happens only when the displayed state
+changes, so the per-tile path is left as a measured follow-up rather than
+guessed at; the interface in the shader is the same either way.
+
 **Where they are built — in the display process, not the worker.** The display
 side already holds the complete packed field for the displayed state: either a
 transported checkpoint section in the payload, or the locally re-integrated
@@ -229,6 +239,15 @@ pub struct StockStyle {
 
 ### S1 — Identity, shading and style plumbing
 
+**Status: landed (`96dfee9`).** Cells pack `depth | stage | tool`; the worker
+publishes the stage identity table; `stock_style.rs` holds the modes, palettes,
+ramp, threshold, appearance and toggles; the stock pass shades with a normal
+from the field gradient and a fixed key light; artwork and path toggles are draw
+ranges. Evidence: `sim::tests::packed_cells_carry_the_stage_and_tool_that_created_the_surface`,
+the `stock_style` suite, `camera::tests::the_screen_basis_matches_the_projection`,
+`viewport::tests::the_stock_style_drives_the_uniform_and_the_palette`, and naga
+validation of the shader.
+
 Pack stage/tool into the cell, add the palette buffer and `StockStyle` with
 `Plain` as the default, add normals + light to `stock.wgsl`, add the artwork and
 path toggles. The depth ramp is parameterised over the stock thickness from the
@@ -241,6 +260,14 @@ naga shader validation; the probe reporting the active style. *Visual:* the
 flower job in each mode, and Plain unchanged except for shading.
 
 ### S2 — Interior walls
+
+**Status: landed (`b6af1be`).** `stock_walls.rs` derives one quad per step and
+per stock edge from the packed field, merging runs, thresholding slopes and
+bounding itself with a reported budget; the shader draws the instances instead
+of walking the perimeter. Evidence: the `stock_walls` suite (faced plate,
+pocket, through cut, slope below threshold, budget policy),
+`stock_render::tests::the_drawn_vertex_count_matches_the_shader_ranges` and the
+positional wall tests carried over from the boundary-ring fix.
 
 Step detector with the threshold, run-length merging, incremental rebuild on the
 dirty-tile set with a halo, the wall storage buffer and draw range, and the
@@ -257,6 +284,10 @@ own edge inside the stock and span the right heights. *Visual:* a facing job, a
 pocket, and the flower job.
 
 ### S3 — X-ray stock
+
+**Status: landed (`0b2915e`).** A second pipeline (no depth writes, alpha
+blending) plus the scene-first/stock-last pass order; `output_alpha` is pinned
+by test and the probe reports appearance, opacity and the wall budget.
 
 The `Appearance::XRay { opacity }` style value, the artwork/paths-first pass
 order with the stock drawn last and no depth writes, and a viewport control for

@@ -148,3 +148,35 @@ Not covered: vertical walls **inside** a cut (a pocket or a partial face shows
 its floor and its step edge only through the cell quads, not as a lit wall), and
 a ghost outline of the original envelope, which is the cheap way to bring back
 the "how much was removed" cue if it is missed.
+
+## Stock display slices S1–S3 (plan: `stock-display-plan.md`)
+
+The first three slices of the stock display plan have landed; S4 (a true
+elevation/section view) has not started.
+
+* **S1 (`96dfee9`) — identity, shading and style.** A cell now carries
+  `depth | stage | tool` in the same 32 bits it always used, with the planner's
+  own 256-stage bound covering the field, and the motion stream carries the
+  stage the worker annotated it with. `stock_style.rs` holds the display-only
+  appearance: plain, by operation, by tool and by depth modes over a ramp that
+  spans the stock thickness, per-id colour overrides and automatic colours keyed
+  by id, the wall threshold, the appearance and the artwork/path toggles.
+  `stock.wgsl` shades with a per-fragment normal — the field gradient for floors,
+  the wall plane for walls — and one fixed key light with an ambient term, so a
+  step reads as an edge and a V-bit flank reads as a slope. Artwork and path
+  toggles are draw-range decisions and shipped with it.
+* **S2 (`b6af1be`) — interior walls.** `stock_walls.rs` derives the walls of the
+  displayed field in the display process: one quad per step and per stock edge,
+  runs merged, slopes below the threshold left as shaded surface, and a budget
+  policy that raises the threshold, keeps the deepest steps and reports what it
+  left out. The perimeter walk that lived in the shader is gone; the shader
+  draws the instances, which is also what closes the one-cell slits that were
+  visible at every cut edge.
+* **S3 (`0b2915e`) — x-ray.** A second pipeline with no depth writes and alpha
+  blending, drawn after the artwork and paths, so a path inside a cut stays
+  readable through the material while material in front still tints it.
+
+What the three slices do **not** yet do: a true elevation or section view (S4,
+including the vertical-plane pointer mapping that would let the camera reach
+90°), OIT for overlapping translucent surfaces, and per-tile incremental wall
+rebuilds (the state-level rebuild is bounded and measured first).
