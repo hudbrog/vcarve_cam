@@ -221,6 +221,15 @@ impl StockStyle {
         out
     }
 
+    /// Alpha the stock pass writes: opaque stock hides what is behind it, the
+    /// x-ray appearance lets artwork and paths read across it.
+    pub fn output_alpha(&self) -> f32 {
+        match self.appearance {
+            Appearance::Opaque => 1.,
+            Appearance::XRay => self.xray_opacity.clamp(0.05, 1.),
+        }
+    }
+
     /// The palette buffer the stock pass reads: one entry per stage index
     /// (coloured by that stage's operation) followed by one per tool index
     /// (coloured by the tool's id).
@@ -485,5 +494,20 @@ mod tests {
             ..StockStyle::default()
         };
         assert!((style.wall_threshold(0.4) - 0.3).abs() < 1e-6);
+    }
+
+    /// The x-ray appearance is the tester's answer to the translucency
+    /// question: the stock is drawn so artwork and paths read across it, which
+    /// is an alpha plus a depth-write decision in the pass.
+    #[test]
+    fn the_stock_alpha_follows_the_appearance() {
+        let mut style = StockStyle::default();
+        assert_eq!(style.output_alpha(), 1., "opaque stock writes no alpha");
+        style.appearance = Appearance::XRay;
+        style.xray_opacity = 0.35;
+        assert!((style.output_alpha() - 0.35).abs() < 1e-6);
+        style.xray_opacity = 0.;
+        assert!(style.output_alpha() >= 0.05, "never fully invisible");
+        assert_eq!(style.uniform(key_light(), [0.; 4], 0).appearance, 1);
     }
 }

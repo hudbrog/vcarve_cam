@@ -43,6 +43,9 @@ pub enum Drill {
 
 pub struct Resources {
     pipeline: wgpu::RenderPipeline,
+    /// The same pass drawn as a translucent x-ray: no depth writes, alpha
+    /// blending, so artwork and paths read across the material.
+    xray_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     bind: wgpu::BindGroup,
     camera: wgpu::Buffer,
@@ -99,7 +102,7 @@ impl Resources {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let (pipeline, layout, bind) = build_gpu(
+        let (pipeline, xray_pipeline, layout, bind) = build_gpu(
             device,
             format,
             &Buffers {
@@ -113,6 +116,7 @@ impl Resources {
         );
         Self {
             pipeline,
+            xray_pipeline,
             layout,
             bind,
             camera,
@@ -133,7 +137,7 @@ impl Resources {
     }
 
     fn rebuild(&mut self, device: &wgpu::Device) {
-        let (pipeline, layout, bind) = build_gpu(
+        let (pipeline, xray_pipeline, layout, bind) = build_gpu(
             device,
             self.format,
             &Buffers {
@@ -146,6 +150,7 @@ impl Resources {
             },
         );
         self.pipeline = pipeline;
+        self.xray_pipeline = xray_pipeline;
         self.layout = layout;
         self.bind = bind;
     }
@@ -179,7 +184,12 @@ fn build_gpu(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     buffers: &Buffers<'_>,
-) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::BindGroup) {
+) -> (
+    wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
+    wgpu::BindGroupLayout,
+    wgpu::BindGroup,
+) {
     let Buffers {
         camera,
         grid,
@@ -250,38 +260,46 @@ fn build_gpu(
         bind_group_layouts: &[&layout],
         push_constant_ranges: &[],
     });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("CAM GUI stock cells"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_stock"),
-            compilation_options: Default::default(),
-            buffers: &[],
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_stock"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth24Plus,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::LessEqual,
-            stencil: Default::default(),
-            bias: Default::default(),
-        }),
-        multisample: Default::default(),
-        multiview: None,
-        cache: None,
-    });
-    (pipeline, layout, bind)
+    // Two variants of one pass: the solid stock writes depth, the x-ray does
+    // not and blends, so whatever is behind it (artwork, paths) stays readable.
+    let pipeline = |xray: bool| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(if xray {
+                "CAM GUI stock cells (x-ray)"
+            } else {
+                "CAM GUI stock cells"
+            }),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_stock"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_stock"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: xray.then_some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24Plus,
+                depth_write_enabled: !xray,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        })
+    };
+    (pipeline(false), pipeline(true), layout, bind)
 }
 
 fn entry(binding: u32, ty: wgpu::BufferBindingType) -> wgpu::BindGroupLayoutEntry {
@@ -457,7 +475,13 @@ impl egui_wgpu::CallbackTrait for Callback {
         resources: &egui_wgpu::CallbackResources,
     ) {
         if let Some(r) = resources.get::<Resources>() {
-            pass.set_pipeline(&r.pipeline);
+            // The x-ray appearance is a different pipeline state, not a
+            // shader branch: no depth writes, alpha blended.
+            pass.set_pipeline(if self.style.appearance == 1 {
+                &r.xray_pipeline
+            } else {
+                &r.pipeline
+            });
             pass.set_bind_group(0, &r.bind, &[]);
             pass.draw(
                 0..draw_vertices(self.cols, self.rows, self.walls.len()),

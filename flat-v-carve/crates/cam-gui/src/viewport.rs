@@ -824,55 +824,11 @@ impl Viewport {
             } else if self.gpu
                 && let Some(scene) = &self.scene
             {
-                if self.show_stock
-                    && let Some(stock) = &self.stock
-                {
-                    let bounds = scene.meta.bounds;
-                    let size = (bounds[2] - bounds[0])
-                        .max(bounds[3] - bounds[1])
-                        .max(0.001);
-                    let scale = 1.6 / size;
-                    ui.painter()
-                        .add(eframe::egui_wgpu::Callback::new_paint_callback(
-                            rect,
-                            stock_render::Callback {
-                                payload: match stock.local {
-                                    None => Some(scene.payload.clone()),
-                                    Some(_) => None,
-                                },
-                                cells: stock.range.clone(),
-                                local: stock.local.clone(),
-                                cols: stock.meta.cols,
-                                rows: stock.meta.rows,
-                                tiles_x: stock.meta.tiles_x,
-                                tiles_y: stock.meta.tiles_y,
-                                versions: stock.cell_versions.clone(),
-                                identity: stock.identity,
-                                revision: self.scene_revision * 4096 + stock.prefix as u64,
-                                camera: self.camera(rect).uniform(),
-                                grid: [
-                                    ((stock.meta.stock.x0 - (bounds[0] + bounds[2]) / 2.) * scale)
-                                        as f32,
-                                    ((stock.meta.stock.y0 - (bounds[1] + bounds[3]) / 2.) * scale)
-                                        as f32,
-                                    (stock.meta.cell_mm * scale) as f32,
-                                    (stock.meta.stock.thickness_mm * scale) as f32,
-                                    stock.meta.cols as f32,
-                                    stock.meta.rows as f32,
-                                    ((stock.meta.stock.x1 - stock.meta.stock.x0) * scale) as f32,
-                                    ((stock.meta.stock.y1 - stock.meta.stock.y0) * scale) as f32,
-                                    stock.meta.tiles_x as f32,
-                                    walls.len() as f32,
-                                ],
-                                style: style_uniform,
-                                palette: palette.clone(),
-                                palette_revision,
-                                walls: walls.clone(),
-                                wall_revision,
-                                drill: stock_drill(self.drill),
-                            },
-                        ));
-                }
+                // Artwork and paths are drawn first and the stock last. In the
+                // opaque appearance that changes nothing visible (geometry
+                // above the surface keeps the nearer depth it already wrote);
+                // in the x-ray appearance it is what lets a path inside a cut
+                // stay readable through the material.
                 ui.painter()
                     .add(eframe::egui_wgpu::Callback::new_paint_callback(
                         rect,
@@ -925,6 +881,55 @@ impl Viewport {
                             drill: self.drill,
                         },
                     ));
+                if self.show_stock
+                    && let Some(stock) = &self.stock
+                {
+                    let bounds = scene.meta.bounds;
+                    let size = (bounds[2] - bounds[0])
+                        .max(bounds[3] - bounds[1])
+                        .max(0.001);
+                    let scale = 1.6 / size;
+                    ui.painter()
+                        .add(eframe::egui_wgpu::Callback::new_paint_callback(
+                            rect,
+                            stock_render::Callback {
+                                payload: match stock.local {
+                                    None => Some(scene.payload.clone()),
+                                    Some(_) => None,
+                                },
+                                cells: stock.range.clone(),
+                                local: stock.local.clone(),
+                                cols: stock.meta.cols,
+                                rows: stock.meta.rows,
+                                tiles_x: stock.meta.tiles_x,
+                                tiles_y: stock.meta.tiles_y,
+                                versions: stock.cell_versions.clone(),
+                                identity: stock.identity,
+                                revision: self.scene_revision * 4096 + stock.prefix as u64,
+                                camera: self.camera(rect).uniform(),
+                                grid: [
+                                    ((stock.meta.stock.x0 - (bounds[0] + bounds[2]) / 2.) * scale)
+                                        as f32,
+                                    ((stock.meta.stock.y0 - (bounds[1] + bounds[3]) / 2.) * scale)
+                                        as f32,
+                                    (stock.meta.cell_mm * scale) as f32,
+                                    (stock.meta.stock.thickness_mm * scale) as f32,
+                                    stock.meta.cols as f32,
+                                    stock.meta.rows as f32,
+                                    ((stock.meta.stock.x1 - stock.meta.stock.x0) * scale) as f32,
+                                    ((stock.meta.stock.y1 - stock.meta.stock.y0) * scale) as f32,
+                                    stock.meta.tiles_x as f32,
+                                    walls.len() as f32,
+                                ],
+                                style: style_uniform,
+                                palette: palette.clone(),
+                                palette_revision,
+                                walls: walls.clone(),
+                                wall_revision,
+                                drill: stock_drill(self.drill),
+                            },
+                        ));
+                }
             }
             self.artwork_overlay(ui, rect);
             self.inspection_marker(ui, rect);
