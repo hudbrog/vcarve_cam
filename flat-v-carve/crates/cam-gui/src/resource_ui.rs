@@ -695,6 +695,18 @@ impl App {
             ui.label("Target assignment: Drag knife");
             return;
         }
+        // A Face or Profile operation has one milling assignment, so there is
+        // no rough/finish choice to make for it.
+        if self.document.as_ref().is_some_and(|d| {
+            matches!(
+                crate::session::kind(&d.job, &d.raw.operation),
+                Some(crate::session::OperationKind::Face | crate::session::OperationKind::Profile)
+            )
+        }) {
+            self.resources.role = Role::Milling;
+            ui.label("Target assignment: Milling (the selected operation's cutter)");
+            return;
+        }
         ui.horizontal(|ui| {
             ui.label("Target assignment");
             for (label, role) in [
@@ -1044,7 +1056,15 @@ impl App {
                 ui.horizontal(|ui|{let r=ui.selectable_value(&mut self.resources.job_tool,tool.id.clone(),format!("{} · {}",tool.name,tool.id));observe_control(&format!("Job tool {}",tool.id),r.rect);ui.label(if users.is_empty(){"Unused".into()}else{users.join(", ")});});
             }
             if let Some(tool)=job.tools.iter().find(|t|t.id==self.resources.job_tool){
-                if button(ui,"Use tool in assignment",self.active.is_none()).clicked(){self.resource_command(R::UseTool{operation:job.operations[0].id.clone(),role:self.resources.role,tool:tool.id.clone()},ctx);}
+                // Address the operation the workspace has selected, not
+                // whichever operation happens to be first.
+                let operation = job
+                    .operations
+                    .iter()
+                    .find(|operation| operation.id == self.document.as_ref().unwrap().raw.operation)
+                    .map(|operation| operation.id.clone())
+                    .unwrap_or_else(|| job.operations[0].id.clone());
+                if button(ui,"Use tool in assignment",self.active.is_none()).clicked(){self.resource_command(R::UseTool{operation,role:self.resources.role,tool:tool.id.clone()},ctx);}
                 if button(ui,"Edit copied geometry",true).clicked(){
                     match crate::resources::capture_tool(tool,tool.id.clone(),tool.name.clone()){
                         Ok(t)=>{self.resources.job_tool_draft=Some((self.revision,t));self.resources.job_raw.clear();self.resources.job_invalid.clear();},Err(e)=>self.status=e,

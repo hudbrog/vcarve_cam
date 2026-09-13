@@ -8,9 +8,14 @@
 //! inspection and the viewport then display.
 use super::*;
 use crate::profile::{self, AnchorKind, SelectionRow};
+use crate::resources::ResourceCommand as R;
 use cam_core::project::{
     ContourOrder, ContourSide, CutDirection, HeightReference, LeadSpec, ProfileEntry,
-    SpindleDirection, TabShape, TraversalDirection, v5::StartSelectionV5,
+    SpindleDirection, TabShape, TraversalDirection,
+    v5::{
+        StartSelectionV5,
+        resources::{self as core, AssignmentRole as Role},
+    },
 };
 
 const SIDES: [(&str, ContourSide); 3] = [
@@ -422,41 +427,8 @@ impl App {
 
     fn profile_tool(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.operation_group(ui, "Tool & cutting", true, |app, ui| {
-            let job = app.document.as_ref().unwrap().job.clone();
-            let id = app.operation_id();
-            let assigned = profile::settings_in(&job, &id).map(|s| s.assignment.tool_id.clone());
-            let label = assigned
-                .as_ref()
-                .and_then(|tool_id| job.tools.iter().find(|tool| &tool.id == tool_id))
-                .map(|tool| format!("{} · {}", tool.name, tool.id))
-                .unwrap_or_else(|| "no tool assigned".into());
-            ui.strong(label);
-            let mut selected = assigned.clone().unwrap_or_default();
-            let before = selected.clone();
-            let response = egui::ComboBox::from_id_salt("profile-tool")
-                .width(ui.available_width())
-                .selected_text("Choose a job tool…")
-                .show_ui(ui, |ui| {
-                    for tool in &job.tools {
-                        if matches!(
-                            tool.geometry,
-                            None | Some(cam_core::project::ToolGeometry::Endmill(_))
-                        ) {
-                            ui.selectable_value(
-                                &mut selected,
-                                tool.id.clone(),
-                                format!("{} · {}", tool.name, tool.id),
-                            );
-                        }
-                    }
-                });
-            observe_control("Profile assignment tool", response.response.rect);
-            if selected != before && !selected.is_empty() {
-                let id = app.operation_id();
-                app.edit_job(ctx, &[2, 8, 10, 11, 12, 13, 88], move |job| {
-                    authoring::assign_tool_in(job, &id, false, &selected)
-                });
-            }
+            app.profile_resources(ui, ctx);
+            ui.separator();
             if button(ui, "Clear profile cutting values", app.active.is_none()).clicked() {
                 let id = app.operation_id();
                 app.edit_job(ctx, &[2, 8, 10, 11, 88], move |job| {
@@ -493,6 +465,151 @@ impl App {
             app.operation_capabilities(ui, ctx, false);
             ui.small("A ramp entry needs a tool you mark ramp capable; a plunge entry needs one you mark plunge capable.");
         });
+    }
+
+    /// The profile's cutter and cutting values, addressed as the operation's
+    /// single `Milling` assignment: the job tool in use, its Applied/Modified
+    /// state, a job-tool picker and the loaded library's tools and cutting
+    /// profiles (GUI5's reusable-tool workflow, applied to a profile).
+    fn profile_resources(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let Some(job) = self.document.as_ref().map(|d| d.job.clone()) else {
+            return;
+        };
+        let operation = self.operation_id();
+        let Some(state) = core::assignment_statuses(&job)
+            .into_iter()
+            .find(|status| status.operation_id == operation && status.role == Role::Milling)
+        else {
+            return;
+        };
+        let tools = job
+            .tools
+            .iter()
+            .filter(|tool| {
+                matches!(
+                    tool.geometry,
+                    Some(cam_core::project::ToolGeometry::Endmill(_))
+                )
+            })
+            .map(|tool| (tool.id.clone(), tool.name.clone()))
+            .collect::<Vec<_>>();
+        ui.strong(format!(
+            "Job tool: {}",
+            job.tools
+                .iter()
+                .find(|tool| tool.id == state.tool_id)
+                .map(|tool| tool.name.as_str())
+                .unwrap_or(&state.tool_id)
+        ));
+        ui.label(match state.status {
+            core::ProfileStatus::Applied => "Cutting values: applied from a library profile",
+            core::ProfileStatus::Modified => {
+                "Cutting values: modified after the library profile was applied"
+            }
+            core::ProfileStatus::Custom => "Cutting values: custom — no library profile applied",
+        });
+        if let Some(applied) = &state.applied {
+            ui.small(format!(
+                "{} · copied revision {}",
+                applied.name_at_application, applied.revision_at_application
+            ));
+        }
+        ui.horizontal_wrapped(|ui| {
+            if button(
+                ui,
+                "Reset profile overrides",
+                state.status != core::ProfileStatus::Custom && self.active.is_none(),
+            )
+            .clicked()
+            {
+                self.resource_command(
+                    R::Reset {
+                        operation: operation.clone(),
+                        role: Role::Milling,
+                    },
+                    ctx,
+                );
+            }
+            let menu = ui.menu_button("Choose job endmill", |ui| {
+                if tools.is_empty() {
+                    ui.label("No job tool carries cutter geometry yet.");
+                    return;
+                }
+                for (id, name) in &tools {
+                    if button(ui, name, self.active.is_none()).clicked() {
+                        self.resource_command(
+                            R::UseTool {
+                                operation: operation.clone(),
+                                role: Role::Milling,
+                                tool: id.clone(),
+                            },
+                            ctx,
+                        );
+                        ui.close();
+                    }
+                }
+            });
+            observe_control("Choose job endmill", menu.response.rect);
+        });
+        if !self.resources.ready && !self.resources.busy {
+            self.request_resources(ResourceIntent::Load, ctx);
+        }
+        if let Some(catalog) = self.resources.base.as_ref().map(|s| s.snapshot.clone()) {
+            let menu = ui.menu_button("Apply library endmill", |ui| {
+                for tool in &catalog.library.tools {
+                    if !matches!(
+                        tool.geometry,
+                        cam_core::tool_library::LibraryGeometry::Endmill(_)
+                    ) {
+                        continue;
+                    }
+                    if button(
+                        ui,
+                        &format!("{} · tool only", tool.name),
+                        self.active.is_none(),
+                    )
+                    .clicked()
+                    {
+                        self.resource_command(
+                            R::SelectLibraryTool {
+                                catalog: catalog.clone(),
+                                tool: tool.id.clone(),
+                                operation: operation.clone(),
+                                role: Role::Milling,
+                            },
+                            ctx,
+                        );
+                        ui.close();
+                    }
+                    for preset in &tool.cutting_presets {
+                        if button(
+                            ui,
+                            &format!("{} / {}", tool.name, preset.name),
+                            self.active.is_none(),
+                        )
+                        .clicked()
+                        {
+                            self.resource_command(
+                                R::ApplyToolProfile {
+                                    catalog: catalog.clone(),
+                                    tool: tool.id.clone(),
+                                    preset: preset.id.clone(),
+                                    operation: operation.clone(),
+                                    role: Role::Milling,
+                                },
+                                ctx,
+                            );
+                            ui.close();
+                        }
+                    }
+                }
+            });
+            observe_control("Apply library endmill", menu.response.rect);
+        } else {
+            ui.small(
+                "Load the tool library in Setup → Tool library to copy a reviewed cutter and its cutting profile here.",
+            );
+        }
     }
 
     fn profile_heights(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -1441,6 +1558,26 @@ mod tests {
             2,
             "the adopted document carries only the outer contours"
         );
+    }
+
+    #[test]
+    fn the_tool_group_offers_the_job_tool_and_library_actions() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let controls = render(&mut app, &ctx);
+        // The profile addresses its single milling assignment through the same
+        // role-aware actions the carving stages use: choose a job tool, reset
+        // the applied baseline, and load the library when it is not resident.
+        for label in [
+            "Choose job endmill",
+            "Reset profile overrides",
+            "Clear profile cutting values",
+        ] {
+            assert!(controls.contains_key(label), "{label} missing");
+        }
+        // The old ad-hoc job-tool combo is gone: every tool change now goes
+        // through the resource commands that keep provenance and baselines.
+        assert!(!controls.contains_key("Profile assignment tool"));
     }
 
     #[test]

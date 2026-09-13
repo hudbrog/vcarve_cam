@@ -1007,6 +1007,129 @@ fn an_invalid_entry_is_located_and_can_be_repaired() {
 }
 
 #[test]
+fn a_profile_takes_its_cutter_and_cutting_values_from_the_tool_library() {
+    use cam_core::project::v5::resources::{AssignmentRole as Role, ProfileStatus};
+    use cam_gui_runtime::resources::{Catalog, ResourceCommand as R};
+
+    // A profile job with contours, heights and an applied machine, but no
+    // cutter data at all: exactly the state a new profile job starts in.
+    let mut job = profile::import_svg(
+        "letters.svg".into(),
+        include_str!("../../../fixtures/gui3/lettering.svg").into(),
+    )
+    .unwrap();
+    let id = job.operations[0].id.clone();
+    let rows = profile::contours(&job)
+        .unwrap()
+        .into_iter()
+        .map(|contour| profile::SelectionRow {
+            reference: contour.reference,
+            side: contour.suggested_side,
+            traversal: None,
+        })
+        .collect::<Vec<_>>();
+    job = profile::select_in(&job, &id, &rows).unwrap();
+    for (field, value) in [(6, 6.), (7, 5.), (8, 0.5), (90, -6.)] {
+        job = app::set_value(&job, &id, field, Some(value)).unwrap();
+    }
+    profile::set_direction(&mut job, &id, Some(CutDirection::Climb)).unwrap();
+    let (applied, _) = session::execute(
+        &mut Retained::new(),
+        Command::ApplyProfile {
+            job: job.to_json().unwrap(),
+            json: session::PROFILE.into(),
+        },
+    )
+    .unwrap();
+    let job = session::open(&applied.job).unwrap();
+    let mut service = Retained::new();
+    // Without a cutter the operation cannot plan.
+    let meta = generate(&mut service, &job);
+    assert_eq!(meta.report["gui2"]["kind"], "issues");
+
+    // The library's cutter, with a cutting profile, is applied to this
+    // profile's single milling assignment.
+    let mut catalog = Catalog::decode(include_str!("../../../fixtures/gui5/library.json")).unwrap();
+    catalog.library.tools[0].spindle_direction = Some(SpindleDirection::Clockwise);
+    let action = R::ApplyToolProfile {
+        catalog: catalog.clone(),
+        tool: "endmill".into(),
+        preset: "rough".into(),
+        operation: id.clone(),
+        role: Role::Milling,
+    };
+    // The profile's own drafts for every value the command writes are cleared.
+    for field in [2, 10, 11, 88, 12, 13] {
+        assert!(
+            action.clear_fields(&job).contains(&field),
+            "field {field} is not refreshed after applying a library profile"
+        );
+    }
+    let job = action.execute(&job).unwrap();
+    let settings = profile::settings_in(&job, &id).unwrap();
+    assert_eq!(settings.assignment.spindle_rpm, Some(12_000.));
+    assert_eq!(settings.assignment.cutting_feed_mm_min, Some(1_200.));
+    assert_eq!(settings.assignment.plunge_feed_mm_min, Some(400.));
+    assert_eq!(settings.assignment.max_stepdown_mm, Some(0.5));
+    assert_eq!(
+        settings.assignment.spindle_direction,
+        Some(SpindleDirection::Clockwise),
+        "the library tool's rotation is copied onto the milling assignment"
+    );
+    let tool = job
+        .tools
+        .iter()
+        .find(|tool| tool.id == settings.assignment.tool_id)
+        .unwrap();
+    assert!(
+        matches!(
+            tool.geometry,
+            Some(cam_core::project::ToolGeometry::Endmill(_))
+        ),
+        "the profile now uses the copied library cutter: {tool:?}"
+    );
+    let status = cam_core::project::v5::resources::assignment_statuses(&job)
+        .into_iter()
+        .find(|status| status.operation_id == id && status.role == Role::Milling)
+        .unwrap();
+    assert_eq!(status.status, ProfileStatus::Applied);
+    assert_eq!(
+        status
+            .applied
+            .as_ref()
+            .map(|applied| applied.name_at_application.as_str()),
+        Some("Lettering rough")
+    );
+
+    // The job now plans, generates and prepares with the library values.
+    let meta = generate(&mut service, &job);
+    let report = &meta.report["gui2"];
+    assert_eq!(report["checks"]["exportReady"], true, "{report}");
+    assert!(meta.motions > 0);
+
+    // Editing one applied value shows Modified; Reset restores the baseline.
+    let edited = app::set_value(&job, &id, 2, Some(900.)).unwrap();
+    let status = cam_core::project::v5::resources::assignment_statuses(&edited)
+        .into_iter()
+        .find(|status| status.operation_id == id && status.role == Role::Milling)
+        .unwrap();
+    assert_eq!(status.status, ProfileStatus::Modified);
+    let reset = R::Reset {
+        operation: id.clone(),
+        role: Role::Milling,
+    }
+    .execute(&edited)
+    .unwrap();
+    assert_eq!(
+        profile::settings_in(&reset, &id)
+            .unwrap()
+            .assignment
+            .cutting_feed_mm_min,
+        Some(1_200.)
+    );
+}
+
+#[test]
 fn profile_after_the_known_carving_keeps_each_operation_stock() {
     // The established carving plus a profile that cuts the same artwork after
     // it: both operations publish their own stock prefix.

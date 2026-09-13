@@ -153,6 +153,58 @@ export async function gui8Scenario({control,edit,state,waitFor,send,evaluate,sle
   record('ramped motions',ramped.motions);
   await screenshot('gui8-ramp-entry.png');
 
+  // --- the cutter and cutting values come from the tool library ------------
+  await control('Tool library');
+  await waitFor(s=>s.resources.ready&&!s.resources.busy,'tool library loaded');
+  await chooseFile('Import library','fixtures/gui5/library.json');
+  await waitFor(s=>s.resources.catalog?.id==='gui5-lettering-library','library fixture in the edit buffer');
+  await control('Save library');
+  await waitFor(s=>!s.resources.busy&&!s.resources.dirty&&s.resources.revision,'saved library revision');
+  await control('Library tool endmill');
+  await control('Use tool & profile');
+  const library=await waitFor(
+    s=>!s.active
+      && s.job.profile.assignment.cutting_feed_mm_min===1200
+      && s.job.profileStatuses?.find(p=>p.role==='milling')?.status==='applied',
+    'the profile takes the library cutter and cutting profile',
+    120,
+  );
+  if(!library.job.profileStatuses.some(p=>p.role==='milling'&&p.applied?.name_at_application==='Lettering rough'))
+    throw new Error('The applied cutting profile is not reported as the profile baseline');
+  await screenshot('gui8-library-applied.png');
+  record('library cutter and cutting profile applied',library.job.profile.assignment.tool_id);
+  // The copied cutter needs its own controller mapping before checked output;
+  // T numbers stay unique across the applied configuration.
+  await control('Close library');
+  await control('Machine');await edit('Tool number','2');
+  await waitFor(s=>!s.active&&!s.pending,'mapped the library cutter');
+  await control('Cutting');
+  // Editing one applied value shows Modified; Reset restores the baseline
+  // offline, without the library present.
+  await edit('Roughing feed','900');
+  await waitFor(s=>s.job.profileStatuses?.find(p=>p.role==='milling')?.status==='modified','applied value shows Modified');
+  await control('Reset profile overrides');
+  await waitFor(
+    s=>s.job.profile.assignment.cutting_feed_mm_min===1200
+      && s.job.profileStatuses?.find(p=>p.role==='milling')?.status==='applied',
+    'reset restores the copied baseline',
+  );
+  record(
+    'library baseline applied, modified then reset offline',
+    library.job.profileStatuses.find(status=>status.role==='milling')?.applied?.name_at_application,
+  );
+  // This library tool declares no rotation, so the assignment's rotation is
+  // unset again after the tool change and the planner reports it: pick one.
+  await control('Profile CW');
+  await waitFor(s=>s.job.profile.assignment.spindle_direction==='clockwise','profile rotation chosen');
+  await control('Generate');
+  const libraryCut=await waitFor(s=>s.current&&!s.active&&s.exportReady,'library cutter generates checked output',120);
+  record('library cutter motions',libraryCut.motions);
+  // The profile keeps using the library's geometry, unchanged by the
+  // operation's own edits.
+  if(libraryCut.job.tools.find(t=>t.id===libraryCut.job.profile.assignment.tool_id)?.geometry?.dimensions?.diameter_mm!==2.5)
+    throw new Error('The profile no longer uses the library cutter');
+
   // --- checked output and reopen -------------------------------------------
   await control('Prepare checked output');
   const prepared=await waitFor(s=>s.prepared&&!s.active,'checked profile output',120);

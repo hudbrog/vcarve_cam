@@ -59,13 +59,26 @@ bundle version).
    - **Bottom: stock bottom** (a profile must state where the cut ends; without
      it the planner reports `HEIGHT_RANGE_INVALID`)
 4. **Machine → Example machine → Apply flower machine profile**.
-5. **Generate**: the result reports its motion count and the resolved heights.
-6. **Simulate**: press **After profile rough**. The heightfield shows the cut
+5. **Cutter from the tool library** (or use a job tool you already set up):
+   - **Setup → Tool library → Library actions → Import library…** and choose
+     `flat-v-carve/fixtures/gui5/library.json` (or your own library file), then
+     **Save library**.
+   - Back in the profile's **Tool & cutting**: **Apply library endmill** →
+     `Endmill / Lettering rough`. The group reports the job tool in use and
+     *Cutting values: applied from a library profile*; the copied cutter keeps
+     its library provenance. Editing one value switches the line to *modified*;
+     **Reset profile overrides** restores the copied values without the library.
+   - A tool change clears the assignment's rotation; if your library tool does
+     not state one, choose **Profile CW** again (the planner reports the missing
+     rotation). The copied cutter also needs its own mapping: **Machine → Tool
+     number** (unique across the applied configuration).
+6. **Generate**: the result reports its motion count and the resolved heights.
+7. **Simulate**: press **After profile rough**. The heightfield shows the cut
    band along each contour; **Start** restores the intact stock, and scrubbing
    backwards restores the earlier surface exactly.
-7. **Export…**: the prepared program is read back and checked. **Save as…** and
+8. **Export…**: the prepared program is read back and checked. **Save as…** and
    compare the displayed SHA-256 with the saved file.
-8. **Save job**, then drop the saved file back into the window: the profile
+9. **Save job**, then drop the saved file back into the window: the profile
    reopens with the same contours, sides, heights and feeds.
 
 ## Fixture B — tabs in that same workflow (GUI8b)

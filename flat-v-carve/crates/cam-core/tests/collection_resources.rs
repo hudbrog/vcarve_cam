@@ -28,6 +28,7 @@ use cam_core::{
             resources::{
                 AssignmentRole as Role, ProfileStatus, apply_cutting_profile,
                 apply_tool_to_assignment, assignment_statuses, reapply_profile, reset_assignment,
+                set_assignment_spindle_direction,
             },
         },
     },
@@ -364,6 +365,69 @@ fn status_of(job: &CamJobV5, operation_id: &str, role: Role) -> ProfileStatus {
 /// job tool's different assignments; editing one leaves the other Applied;
 /// after the library is gone, Reset restores the copied baseline and the
 /// reopened document needs no library to describe itself.
+#[test]
+fn a_library_tools_rotation_is_copied_onto_the_addressed_milling_assignment() {
+    // "Use in operation" copies the tool's rotation too. The role decides which
+    // assignment that is: a Flat V-carve stage, a Face/Profile milling
+    // assignment, or nothing at all for a passive knife.
+    let mut job = resource_job();
+    // Leave the carving stage without a rotation so the two assignments differ
+    // and an accidental sibling edit is visible.
+    if let OperationSettingsV5::FlatVcarve(carve) = &mut job.operations[0].settings {
+        carve.endmill.spindle_direction = None;
+    }
+    let job = set_assignment_spindle_direction(
+        &job,
+        "profile-1",
+        Role::Milling,
+        Some(SpindleDirection::Clockwise),
+    )
+    .unwrap()
+    .job;
+    let OperationSettingsV5::Profile(settings) = &job
+        .operations
+        .iter()
+        .find(|operation| operation.id == "profile-1")
+        .unwrap()
+        .settings
+    else {
+        panic!("profile operation");
+    };
+    assert_eq!(
+        settings.assignment.spindle_direction,
+        Some(SpindleDirection::Clockwise)
+    );
+    // The carve's endmill stage is a different assignment and stays untouched.
+    let OperationSettingsV5::FlatVcarve(carve) = &job.operations[0].settings else {
+        panic!("carving operation");
+    };
+    assert_eq!(carve.endmill.spindle_direction, None);
+    // Roles that do not exist for the addressed operation are refused.
+    assert!(
+        set_assignment_spindle_direction(
+            &job,
+            "profile-1",
+            Role::Vbit,
+            Some(SpindleDirection::Clockwise)
+        )
+        .is_err()
+    );
+    let knife = job_of(vec![knife_operation(reference_of(
+        GeometryRefKind::Centerline,
+        "cut-chain-0",
+    ))]);
+    assert!(
+        set_assignment_spindle_direction(
+            &knife,
+            "knife-1",
+            Role::Knife,
+            Some(SpindleDirection::Clockwise)
+        )
+        .is_err(),
+        "a passive knife has no spindle to set"
+    );
+}
+
 #[test]
 fn scenario7_two_named_profiles_on_one_tool_stay_independent() {
     let mut job = resource_job();

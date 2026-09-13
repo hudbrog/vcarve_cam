@@ -392,3 +392,70 @@ integration test passes, including the real worker process, the canonical
 carving parity test and the eight profile tests. No scripted native window
 interaction was performed for this review; the trained native tour in the
 recipe above is part of the user review.
+
+## Manual review feedback (2026-09-13)
+
+**Finding (user, first review pass).** "In *Tool & cutting* in the profile
+operation I can't seem to select a tool from my existing tool library; instead
+it has 'endmill' and 'endmill-2', which I actually don't have in the library."
+
+The profile panel offered only the job's own tool snapshots — a combobox over
+`job.tools` — so a job-tool copy created by the operation could be picked, but
+nothing could be brought in from the loaded tool library, and there was no
+Applied/Modified/Reset state for the profile's cutter. The same gap existed in
+the library modal for a Profile (or Face) document: the "use this tool" action
+only offered the carving rough/finish roles and a knife role.
+
+**Fix.** The profile's single cutter is now addressed as the operation's
+`Milling` assignment through the GUI5/GUI6 resource workflow, in both places:
+
+- The profile's **Tool & cutting** group shows the job tool in use, its
+  Applied/Modified/Custom state and copied baseline, **Reset profile
+  overrides**, **Choose job endmill** (the job's own endmill snapshots) and
+  **Apply library endmill** (any loaded library endmill, "tool only" or one of
+  its named cutting profiles). The old ad-hoc combobox is gone, so every tool
+  change keeps provenance and the copied baseline.
+- The library modal addresses the **selected** operation (not the first one)
+  and offers `Milling` for a Face/Profile document, so "Use tool & profile"
+  works there too.
+- `cam_core::project::v5::resources::set_assignment_spindle_direction` is a new
+  role-aware command: copying a library tool's rotation onto the addressed
+  assignment used to be a Flat V-carve-only code path that failed for
+  `Milling` ("Unsupported milling assignment").
+- `ResourceCommand::clear_fields` now clears the profile's assignment drafts
+  (cutting/plunge feed, spindle speed, tool stepdown limit, cutter geometry)
+  after a tool or profile change, so no stale raw text survives the copy.
+
+**Consequences a reviewer will see (all honest, none invented):**
+
+- Applying a library tool copies its geometry into the job as an independent
+  snapshot (`endmill-2` in the tour) with copied provenance; the job keeps no
+  live dependency on the library.
+- Changing the cutter clears the assignment's cutting values, its baseline and
+  its rotation. If the library tool declares a rotation it is copied; if it
+  does not, the rotation is unset again and the planner reports it.
+- The copied cutter needs its own controller mapping before checked output
+  (`POST_TOOL_MAPPING` names the tool, and the T number must be unique in the
+  applied configuration).
+
+**Evidence.** `crates/cam-gui/tests/profile.rs::a_profile_takes_its_cutter_and_cutting_values_from_the_tool_library`
+applies a library tool + cutting profile to a profile that cannot plan before
+it, asserts the copied feeds/speed/stepdown/rotation and geometry, the Applied
+→ Modified → Reset cycle, and that the job then generates and prepares;
+`crates/cam-core/tests/collection_resources.rs::a_library_tools_rotation_is_copied_onto_the_addressed_milling_assignment`
+pins the role-aware rotation copy (profile accepted, sibling carve untouched,
+knife refused); `app::inspector::profile_ui::tests::the_tool_group_offers_the_job_tool_and_library_actions`
+pins the panel. The browser tour now loads the library fixture, applies the
+cutter and profile to the profile, maps it, and prepares the checked program:
+3496 motions, prepared SHA-256
+`fa09cf83129259260ef658bfec6a42f0332f1ea4b51ce0ccfeb515890dcddf97`, evidence
+`artifacts/gui/browser-smoke/2026-09-13T06-11-04.345Z`.
+
+**Rebuilt review artifacts** (the fix changes code, so both were rebuilt):
+native `8855ac04c44f45d738743a9e51864714b711f2fe0ac090cd3e8648c8cca62229`,
+WASM `e6899500c15fa7aca8471bb8995c11ddb1b027899b5663ade2b8435ec30eea5f`,
+offline bundle `9d9a3d38940cb0ba2c52f806ca5df0bf8b93c9d0f2216a03e03f9ff9d627b9fc`.
+
+The same pattern still applies to the **Face** operation's tool group, which
+keeps its simpler job-tool picker; it is the same role and the same commands,
+so wiring it is a small follow-up if the review wants it.

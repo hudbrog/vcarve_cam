@@ -530,6 +530,40 @@ pub fn apply_tool_to_assignment(
     use_job_tool(&added.0.job, operation_id, role, &tool_id)
 }
 
+/// Copy one library tool's spindle rotation onto exactly one assignment,
+/// addressed by `(operation id, role)`. "Use in operation" uses this so a
+/// Flat V-carve rough/finish assignment and a Face/Profile operation's single
+/// milling assignment all take the library tool's rotation. Spindle direction
+/// sits outside the preset surface, so the assignment's cutting values, its
+/// stored baseline and its Applied/Modified status are untouched.
+pub fn set_assignment_spindle_direction(
+    job: &CamJobV5,
+    operation_id: &str,
+    role: AssignmentRole,
+    direction: Option<crate::project::SpindleDirection>,
+) -> Result<super::commands::CommandOutcome> {
+    let index = operation_index(job, operation_id)?;
+    let mut candidate = job.clone();
+    match assignment_mut(
+        &mut candidate.operations[index].settings,
+        operation_id,
+        role,
+    )? {
+        AssignmentRef::Milling(assignment) => assignment.spindle_direction = direction,
+        AssignmentRef::Knife(_) => {
+            return Err(resource_error(format!(
+                "operation '{operation_id}' is a drag_knife operation and has no spindle to set"
+            )));
+        }
+    }
+    super::commands::CommandOutcome::commit(
+        candidate,
+        vec![super::commands::AffectedEntity::Operation(
+            operation_id.into(),
+        )],
+    )
+}
+
 /// Add independent geometry without changing an assignment. Only an exact
 /// unchanged snapshot with the same explicit origin can be reused. Colliding
 /// local IDs and equal dimensions never identify the same physical tool.

@@ -723,6 +723,7 @@ impl App {
                     "leadIn": settings.map(|s| &s.lead_in),
                     "rawStepdown": d.text(8),
                     "machine": d.job.machine_configuration.is_some(),
+                    "profileStatuses": cam_core::project::v5::resources::assignment_statuses(&d.job),
                 })
             }
             Some(kind) => {

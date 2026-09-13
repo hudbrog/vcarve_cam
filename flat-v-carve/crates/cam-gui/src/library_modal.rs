@@ -615,6 +615,10 @@ impl App {
                         (&t.geometry, self.resources.role),
                         (LibraryGeometry::Endmill(_), Role::Endmill)
                             | (LibraryGeometry::Vbit(_), Role::Vbit)
+                            // A Face/Profile operation's milling assignment is
+                            // cut with an endmill; a V-bit would be refused by
+                            // the planner, so it is not offered here either.
+                            | (LibraryGeometry::Endmill(_), Role::Milling)
                             | (LibraryGeometry::DragKnife(_), Role::Knife)
                     )
                 });

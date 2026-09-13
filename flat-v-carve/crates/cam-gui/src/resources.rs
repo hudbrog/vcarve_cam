@@ -229,7 +229,10 @@ impl ResourceCommand {
             return match role {
                 AssignmentRole::Endmill => vec![2, 8, 9, 10, 11, 12, 13, 32, 33],
                 AssignmentRole::Vbit => vec![3, 20, 21, 22, 46, 16, 17, 18, 19, 38, 39],
-                _ => vec![],
+                // Applying a library tool + cutting profile rewrites the
+                // operation's milling assignment and its cutter geometry.
+                AssignmentRole::Milling => vec![2, 10, 11, 88, 12, 13],
+                AssignmentRole::Knife => vec![],
             };
         }
         if matches!(self, Self::StockPage { .. }) {
@@ -272,6 +275,10 @@ impl ResourceCommand {
         let mut fields = match role {
             Some(AssignmentRole::Endmill) => vec![2, 8, 9, 10, 11],
             Some(AssignmentRole::Vbit) => vec![3, 20, 21, 22, 46],
+            // A Profile (or Face) operation's single milling assignment owns
+            // the cutting feed, plunge feed, spindle speed and tool stepdown
+            // limit; its own stepdown is a separate field and stays.
+            Some(AssignmentRole::Milling) => vec![2, 10, 11, 88],
             _ => vec![],
         };
         if matches!(self, Self::UseTool { .. } | Self::EditTool { .. }) {
@@ -281,8 +288,12 @@ impl ResourceCommand {
             let Some(carving) = crate::session::carving(job) else {
                 // A source-free Face operation carries its own cutter geometry
                 // and tool stepdown limit; the raw drafts of those values are
-                // stale after a resource edit.
-                fields.extend([12, 13, 88]);
+                // stale after a resource edit. The same holds for a Profile
+                // operation, whose assignment names a job tool of its own.
+                if !fields.contains(&88) {
+                    fields.push(88);
+                }
+                fields.extend([12, 13]);
                 return fields;
             };
             for (finish, extra) in [
@@ -363,14 +374,17 @@ impl ResourceCommand {
                     .map_err(|e| e.to_string())?
                     .spindle_direction
                 {
-                    let settings = crate::authoring::settings_mut(&mut selected);
-                    match role {
-                        AssignmentRole::Endmill => {
-                            settings.endmill.spindle_direction = Some(direction)
-                        }
-                        AssignmentRole::Vbit => settings.vbit.spindle_direction = Some(direction),
-                        _ => return Err("Unsupported milling assignment".into()),
-                    }
+                    // The library tool's rotation is copied onto exactly the
+                    // addressed assignment; the role decides whether that is a
+                    // Flat V-carve stage or a Face/Profile milling assignment.
+                    selected = core::set_assignment_spindle_direction(
+                        &selected,
+                        &operation,
+                        role,
+                        Some(direction),
+                    )
+                    .map_err(|e| e.to_string())?
+                    .job;
                 }
                 return Ok(selected);
             }
