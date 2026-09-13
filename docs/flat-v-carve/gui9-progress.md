@@ -211,12 +211,16 @@ does not involve a window, a GPU or input devices, so the interactive tour in
 `artifacts/gui9/review/manifest.json` records which sources and packages the
 review build was made from: `2d7d3852…` native, `abe25cb9…` WASM, offline bundle
 `7c4725d0…`, and the 296 hashed source files (now including
-`scripts/native-smoke.mjs`), covering the GUI9b and GUI9c
-changes. The binaries were built from the milestone commit `cf5d798`; the
-manifest also names the head commit, the hashed source tree and whether the
-tree was clean at the moment it was written, so a reviewer can tell a package
-built from a commit apart from one built in a dirty worktree. Documentation-only
-follow-ups after that commit changed no compiled input.
+`scripts/native-smoke.mjs`), covering the GUI9b and GUI9c changes.
+
+The shipped binaries were built from the source tree of commit `87eb330`;
+`git diff --stat 87eb330..HEAD -- flat-v-carve/crates flat-v-carve/scripts
+flat-v-carve/fixtures` is empty, so every later commit touched documentation
+only. The manifest's head, hashed source tree and clean flag describe the tree
+it was regenerated against, which is documentation-newer than the build; the
+artifact hashes and `SHA256SUMS` identify what shipped. The two are kept
+separate on purpose: the source hashes say which code a reviewer is reading,
+the artifact hashes say which file they are running.
 
 The manifest pins **what shipped**, not a reproducible hash: a forced clean
 recompile of the same committed source produced a different native binary
