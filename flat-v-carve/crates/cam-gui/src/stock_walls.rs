@@ -126,6 +126,82 @@ pub fn build(grid: &Grid, threshold_mm: f64, budget: usize) -> WallSet {
     }
 }
 
+/// The section of the stock for a true elevation: one quad per column across
+/// the screen, from that column's silhouette down to the stock bottom.
+///
+/// An edge-on view has no visible surface — every cell quad projects to a line —
+/// so the material would read as a wireframe. The silhouette is the highest
+/// material anywhere along the view direction at that column, and the quads
+/// tile the whole profile, giving a filled section instead. `along_x` says the
+/// screen's horizontal axis runs along the stock's X (front and back views) or
+/// its Y (left and right views).
+pub fn build_section(grid: &Grid, along_x: bool) -> Vec<Wall> {
+    let count = if along_x { grid.cols } else { grid.rows };
+    let limit = if along_x {
+        grid.width_cells
+    } else {
+        grid.length_cells
+    };
+    let mut walls = Vec::new();
+    let mut index = 0;
+    while index < count {
+        let Some((top, identity)) = silhouette(grid, index, along_x) else {
+            // The whole column is cut through: the section opens there.
+            index += 1;
+            continue;
+        };
+        let mut run = index + 1;
+        while run < count && silhouette(grid, run, along_x) == Some((top, identity)) {
+            run += 1;
+        }
+        let start_along = index as f64;
+        let end_along = (run as f64).min(limit);
+        if end_along > start_along {
+            // Axis 1 runs along X, axis 0 along Y; the fixed coordinate is
+            // arbitrary because the plane is seen edge-on.
+            let axis = u32::from(along_x);
+            let start = if along_x {
+                [start_along, 0.]
+            } else {
+                [0., start_along]
+            };
+            push(
+                &mut walls,
+                start,
+                end_along - start_along,
+                axis,
+                Step {
+                    top,
+                    bottom: 1.,
+                    identity,
+                },
+            );
+        }
+        index = run;
+    }
+    walls
+}
+
+/// One column's silhouette: the least-cut cell along the view direction, so the
+/// highest material, and the cutter that left that surface. `None` when the
+/// column holds no material at all.
+fn silhouette(grid: &Grid, index: usize, along_x: bool) -> Option<(f64, u32)> {
+    let count = if along_x { grid.rows } else { grid.cols };
+    let mut best: Option<(f64, u32)> = None;
+    for step in 0..count {
+        let (col, row) = if along_x {
+            (index, step)
+        } else {
+            (step, index)
+        };
+        let depth = grid.depth(col, row);
+        if best.is_none_or(|(top, _)| depth < top) {
+            best = Some((depth, grid.identity(col, row)));
+        }
+    }
+    best.filter(|(top, _)| grid.height_mm(1. - top) > 1e-9)
+}
+
 fn detect(grid: &Grid, threshold: f64, walls: &mut Vec<Wall>) {
     // Interior steps. The wall between two neighbouring cells belongs to the
     // boundary they share, so each step is emitted exactly once.
@@ -455,5 +531,53 @@ mod tests {
             "the policy has to leave a trace: {:?}",
             (set.threshold_mm, set.dropped)
         );
+    }
+
+    /// A faced plate's section is one run: the silhouette is the faced surface
+    /// across the whole width, and it reaches the bottom.
+    #[test]
+    fn a_faced_plate_sections_as_one_run() {
+        let cells = packed(5, 3, |_, _| 0.4, |_, _| 3);
+        let grid = grid(&cells, 5, 3);
+        let section = build_section(&grid, true);
+        assert_eq!(section.len(), 1, "{section:?}");
+        assert_eq!(section[0].axis, 1, "the front view runs along X");
+        assert!((section[0].length - 5.).abs() < 1e-6);
+        assert!((section[0].top - 0.4).abs() < 1e-4);
+        assert!((section[0].bottom - 1.).abs() < 1e-4);
+        assert_eq!(section[0].identity, 3);
+    }
+
+    /// The silhouette is the *highest* material along the view direction, and a
+    /// column of different heights becomes its own run — so a pocket shows as a
+    /// step in the section, not as a hole.
+    #[test]
+    fn a_section_follows_the_highest_material_in_each_column() {
+        // Front view: the screen runs along X, so each column is a strip of the
+        // stock at one X and the silhouette scans Y.
+        let cells = packed(
+            2,
+            3,
+            |col, row| if col == 0 && row == 1 { 0.6 } else { 0. },
+            |_, _| 5,
+        );
+        let view = grid(&cells, 2, 3);
+        let section = build_section(&view, true);
+        // Both columns keep their untouched surface: the cut is inside the
+        // material, so the section (the outline) is unchanged.
+        assert_eq!(section.len(), 1, "{section:?}");
+        assert!((section[0].top - 0.).abs() < 1e-6);
+        // Cut the whole of column 0's material away and the section opens.
+        let cells = packed(2, 3, |col, _| if col == 0 { 1. } else { 0. }, |_, _| 5);
+        let section = build_section(&grid(&cells, 2, 3), true);
+        assert_eq!(section.len(), 1, "{section:?}");
+        assert!((section[0].start[0] - 1.).abs() < 1e-6, "half is gone");
+        assert!((section[0].length - 1.).abs() < 1e-6);
+        // And a half-depth cut over the whole column shows up as its own run.
+        let cells = packed(2, 3, |col, _| if col == 0 { 0.25 } else { 0. }, |_, _| 5);
+        let section = build_section(&grid(&cells, 2, 3), true);
+        assert_eq!(section.len(), 2, "{section:?}");
+        assert!((section[0].top - 0.25).abs() < 1e-4);
+        assert!((section[1].top - 0.).abs() < 1e-6);
     }
 }

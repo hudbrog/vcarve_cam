@@ -328,6 +328,9 @@ pub struct StockUniform {
 
 /// Flag bits in [`StockUniform::flags`].
 pub const FLAG_WALLS: u32 = 1 << 0;
+/// Set in a true elevation, where the surface is edge-on: the pass draws the
+/// section instead of the cell quads.
+pub const FLAG_SECTION: u32 = 1 << 1;
 
 /// The key light the stock pass shades with: a fixed world direction from the
 /// upper left with the ambient term in `w`. Fixed rather than camera-relative

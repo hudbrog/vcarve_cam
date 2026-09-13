@@ -191,6 +191,8 @@ struct WallCache {
     identity: u64,
     prefix: usize,
     threshold: u32,
+    /// `None` for the ordinary step walls, `Some(along_x)` for a section.
+    section: Option<bool>,
     walls: Arc<Vec<Wall>>,
     revision: u64,
 }
@@ -644,16 +646,24 @@ impl Viewport {
                 // Presets set the elevation only. The azimuth, the elevation
                 // and the pan stay free afterwards, from the pointer or from
                 // these controls.
-                for (label, tilt) in [
-                    ("Top", 0.),
-                    ("Isometric", camera::ISO_TILT),
-                    ("Front", camera::TILT_LIMIT),
-                ] {
+                for (label, tilt) in [("Top", 0.), ("Isometric", camera::ISO_TILT)] {
                     let selected = (self.camera.tilt - tilt).abs() < 1e-3;
                     let response = ui.selectable_label(selected, label);
                     crate::app::observe_control(label, response.rect);
                     if response.clicked() {
                         self.camera.set_tilt(tilt);
+                    }
+                }
+                // True elevations set both angles: the view faces a stock face
+                // exactly, which the stock pass then renders as a section.
+                for (label, yaw) in camera::ELEVATIONS {
+                    let selected =
+                        self.camera.is_elevation() && (self.camera.yaw - yaw).abs() < 1e-3;
+                    let response = ui.selectable_label(selected, label);
+                    crate::app::observe_control(label, response.rect);
+                    if response.clicked() {
+                        self.camera.yaw = yaw;
+                        self.camera.set_tilt(camera::TILT_LIMIT);
                     }
                 }
                 let fit = ui.button("Fit");
@@ -799,20 +809,40 @@ impl Viewport {
             {
                 self.pick_at(position, rect, ctx.pixels_per_point());
                 if let Some(scene) = &self.scene {
-                    let p = crate::artwork_view::setup_point(
-                        self.camera(rect),
+                    let camera = self.camera(rect);
+                    // A true elevation has no ground plane: the pointer lands on
+                    // the plane the viewer faces, so the click moves the
+                    // section along the axis the view shows and keeps the other
+                    // coordinate where it was.
+                    if let Some(point) = crate::artwork_view::elevation_setup_point(
+                        camera,
                         scene.meta.bounds,
                         rect,
                         position,
-                    );
-                    self.inspection.point = Some([p.x, p.y]);
+                    ) {
+                        let mut inspection = self.inspection.point.unwrap_or([point.x, point.y]);
+                        if camera.section_along_x() {
+                            inspection[0] = point.x;
+                        } else {
+                            inspection[1] = point.y;
+                        }
+                        self.inspection.point = Some(inspection);
+                    } else {
+                        let p = crate::artwork_view::setup_point(
+                            camera,
+                            scene.meta.bounds,
+                            rect,
+                            position,
+                        );
+                        self.inspection.point = Some([p.x, p.y]);
+                    }
                 }
             }
             self.build_overlay(rect, ctx.pixels_per_point());
             // Style inputs are resolved before the scene borrow: the palette
             // is cached and only rebuilt when the style or the plan changes.
             let (style_uniform, palette, palette_revision) = self.stock_style_inputs(rect);
-            let (walls, wall_revision) = self.stock_walls();
+            let (walls, wall_revision) = self.stock_walls(rect);
             if self.gpu_unavailable {
                 ui.painter().text(
                     rect.center(),
@@ -1284,6 +1314,11 @@ impl Viewport {
             "walls": self.wall_cache.as_ref().map_or(0, |cache| cache.walls.len()),
             "wallThresholdMm": self.wall_report.map(|(_, threshold)| threshold),
             "wallsDropped": self.wall_report.map(|(dropped, _)| dropped),
+            // A true elevation draws the section instead of the surface; the
+            // probe names which axis the section runs along.
+            "section": self.wall_cache.as_ref().and_then(|cache| cache.section).map(
+                |along_x| if along_x { "along_x" } else { "along_y" }
+            ),
         })
     }
     /// Diagnostics drill: stop drawing through the custom renderer callbacks
@@ -1543,10 +1578,18 @@ impl Viewport {
         let palette = self.stock_palette();
         let camera = self.camera(rect);
         let (_, _, to_camera) = camera.screen_basis();
+        // A true elevation has no visible surface, so the pass draws the
+        // section instead of the cell quads.
+        let flags = stock_style::FLAG_WALLS
+            | if camera.is_elevation() {
+                stock_style::FLAG_SECTION
+            } else {
+                0
+            };
         let uniform = self.stock_style.uniform(
             stock_style::key_light(),
             [to_camera[0], to_camera[1], to_camera[2], 0.],
-            stock_style::FLAG_WALLS,
+            flags,
         );
         (uniform, palette, self.palette_revision)
     }
@@ -1555,10 +1598,11 @@ impl Viewport {
     /// style's threshold changes and cached otherwise. The builder reads the
     /// packed field the display already holds, so no wall geometry is ever
     /// transported (plan `stock-display-plan.md` §4).
-    fn stock_walls(&mut self) -> (Arc<Vec<Wall>>, u64) {
-        let Some(scene) = self.scene.as_ref() else {
-            return (Arc::new(Vec::new()), self.wall_revision);
-        };
+    fn stock_walls(&mut self, rect: egui::Rect) -> (Arc<Vec<Wall>>, u64) {
+        let camera = self.camera(rect);
+        // A true elevation draws the section: the silhouette of the material
+        // across the screen, which is what makes a front view readable.
+        let section = camera.is_elevation().then(|| camera.section_along_x());
         let Some(stock) = self.stock.as_ref() else {
             return (Arc::new(Vec::new()), self.wall_revision);
         };
@@ -1569,30 +1613,36 @@ impl Viewport {
             && cache.identity == identity
             && cache.prefix == prefix
             && cache.threshold == threshold.to_bits()
+            && cache.section == section
         {
             return (cache.walls.clone(), cache.revision);
         }
         // The displayed cells come either from the transported payload or from
         // the locally re-integrated field; both are this process's own bytes.
-        let cells: &[u8] = match (&stock.local, &scene.payload) {
+        let cells: &[u8] = match (&stock.local, self.scene.as_ref()) {
             (Some(local), _) => local,
-            (None, payload) => payload.get(stock.range.clone()).unwrap_or(&[]),
+            (None, Some(scene)) => scene.payload.get(stock.range.clone()).unwrap_or(&[]),
+            (None, None) => &[],
         };
         let meta = &stock.meta;
-        let built = stock_walls::build(
-            &stock_walls::Grid {
-                cells,
-                cols: meta.cols,
-                rows: meta.rows,
-                tiles_x: meta.tiles_x,
-                cell_mm: meta.cell_mm,
-                thickness_mm: meta.stock.thickness_mm,
-                width_cells: (meta.stock.x1 - meta.stock.x0) / meta.cell_mm,
-                length_cells: (meta.stock.y1 - meta.stock.y0) / meta.cell_mm,
+        let view = stock_walls::Grid {
+            cells,
+            cols: meta.cols,
+            rows: meta.rows,
+            tiles_x: meta.tiles_x,
+            cell_mm: meta.cell_mm,
+            thickness_mm: meta.stock.thickness_mm,
+            width_cells: (meta.stock.x1 - meta.stock.x0) / meta.cell_mm,
+            length_cells: (meta.stock.y1 - meta.stock.y0) / meta.cell_mm,
+        };
+        let built = match section {
+            Some(along_x) => stock_walls::WallSet {
+                walls: stock_walls::build_section(&view, along_x),
+                threshold_mm: threshold as f64,
+                dropped: 0,
             },
-            threshold as f64,
-            stock_walls::WALL_BUDGET_INSTANCES,
-        );
+            None => stock_walls::build(&view, threshold as f64, stock_walls::WALL_BUDGET_INSTANCES),
+        };
         let revision = self.wall_revision.wrapping_add(1);
         let walls = Arc::new(built.walls);
         self.wall_report = (built.dropped > 0)
@@ -1602,6 +1652,7 @@ impl Viewport {
             identity,
             prefix,
             threshold: threshold.to_bits(),
+            section,
             walls: walls.clone(),
             revision,
         });
@@ -2132,5 +2183,89 @@ mod tests {
         assert_eq!(probe["style"]["showPaths"], false);
         assert_eq!(probe["style"]["showArtwork"], false);
         assert_eq!(probe["style"]["surface"], "by_operation");
+    }
+
+    /// A stock view over a small faced field, for the section test.
+    fn faced_stock(cols: usize, rows: usize, cell_mm: f64) -> StockView {
+        let stock = sim::Stock {
+            x0: 0.,
+            y0: 0.,
+            x1: cols as f64 * cell_mm,
+            y1: rows as f64 * cell_mm,
+            thickness_mm: 10.,
+        };
+        let mut cells = vec![0u8; sim::TILE * sim::TILE * 4];
+        for index in 0..cols * rows {
+            // Faced 4 mm of a 10 mm stock, by stage 3.
+            let word = 26_214u32 | (3u32 << 16);
+            cells[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        StockView {
+            meta: PreviewMeta {
+                stock,
+                cols,
+                rows,
+                cell_mm,
+                reference_cell_mm: cell_mm,
+                tiles_x: cols.div_ceil(sim::TILE),
+                tiles_y: rows.div_ceil(sim::TILE),
+                retained_bytes: cells.len(),
+                ladder_frames: 0,
+                preset: crate::stock_preview::DisplayPreset::Standard,
+                key: "0".repeat(32),
+                frames: vec![],
+                dropped_stage_marks: 0,
+            },
+            identity: 1,
+            range: 0..0,
+            local: Some(Arc::new(cells)),
+            cell_versions: Arc::new(vec![0]),
+            stats: Default::default(),
+            prefix: 0,
+            last_transfer_bytes: 0,
+            last_replayed: 0,
+        }
+    }
+
+    /// S4: a true elevation has no visible surface, so the pass draws the
+    /// section instead and the probe says which way it runs.
+    #[test]
+    fn a_true_elevation_builds_a_section_and_sets_the_flag() {
+        let mut view = Viewport {
+            stock: Some(faced_stock(2, 1, 1.)),
+            ..Viewport::default()
+        };
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.));
+        // Ordinary view: step walls, no section.
+        let (uniform, _, _) = view.stock_style_inputs(rect);
+        assert_eq!(uniform.flags & stock_style::FLAG_SECTION, 0);
+        let (walls, _) = view.stock_walls(rect);
+        assert!(
+            walls
+                .iter()
+                .all(|wall| wall.identity != stock_walls::NO_CUTTER)
+        );
+        assert!(view.display_probe()["style"]["section"].is_null());
+        // Front elevation: the section replaces the walls and the flag is set.
+        view.camera.yaw = 0.;
+        view.camera.set_tilt(camera::TILT_LIMIT);
+        let (uniform, _, _) = view.stock_style_inputs(rect);
+        assert_eq!(
+            uniform.flags & stock_style::FLAG_SECTION,
+            stock_style::FLAG_SECTION
+        );
+        let (walls, _) = view.stock_walls(rect);
+        assert!(!walls.is_empty());
+        assert!(
+            walls.iter().all(|wall| wall.axis == 1),
+            "a front view sections along X: {walls:?}"
+        );
+        assert!((walls[0].top - 0.4).abs() < 1e-4);
+        assert_eq!(view.display_probe()["style"]["section"], "along_x");
+        // A side elevation sections along Y instead.
+        view.camera.yaw = camera::ELEVATIONS[2].1;
+        let (walls, _) = view.stock_walls(rect);
+        assert!(walls.iter().all(|wall| wall.axis == 0), "{walls:?}");
+        assert_eq!(view.display_probe()["style"]["section"], "along_y");
     }
 }

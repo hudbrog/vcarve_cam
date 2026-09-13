@@ -176,7 +176,7 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
             "Depth-dependent clearing computes the reachable region separately at each depth. Deepest-region clearing uses the region reachable at the deepest cut for all layers. These can produce different coverage on sloped V-shaped targets."
         }
         "View controls" => {
-            "Drag with the left button to orbit the view; drag with the middle button, or hold Shift and drag, to pan. The wheel (or a pinch and ctrl-wheel gesture) zooms toward the pointer. Top, Isometric and Front set the elevation, View sets it numerically, and Fit re-frames the scene without changing the elevation. The camera is display only: it never changes the job, the machining or the exported program."
+            "Drag with the left button to orbit the view; drag with the middle button, or hold Shift and drag, to pan. The wheel (or a pinch and ctrl-wheel gesture) zooms toward the pointer. Top and Isometric set two familiar views; Front, Back, Left and Right are true elevations, and in those the stock is drawn as a section and a click moves the section along the axis you are facing. View sets the elevation numerically, Fit re-frames the scene without changing the elevation. The camera is display only: it never changes the job, the machining or the exported program."
         }
         _ if label.starts_with("Configuration T ") => FIELD_HELP[32],
         _ if label.starts_with("Configuration H ") => FIELD_HELP[33],

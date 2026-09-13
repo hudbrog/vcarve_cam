@@ -117,8 +117,8 @@ the higher and lower cell, runs from the **lower** cell's surface up to the
 and identity merge into one quad, so a facing pass yields a handful of long
 instances instead of one per cell.
 
-**Status:** landed for S1–S3 (`96dfee9`, `b6af1be`, `0b2915e`); S4 is not
-started. Two implementation notes differ from the text below and are recorded
+**Status:** all four slices are landed (`96dfee9`, `b6af1be`, `0b2915e`, and the
+S4 commit). Two implementation notes differ from the text below and are recorded
 here rather than left implicit: the boundary ring *is* folded into the detector
 as planned, and the wall set is rebuilt for a changed displayed state and
 otherwise cached (keyed on the stock identity, the playhead prefix and the
@@ -301,6 +301,23 @@ what still sorts incorrectly. *Follow-up:* OIT/depth peeling as its own slice if
 the artifacts matter.
 
 ### S4 — True elevation and section views
+
+**Status: landed.** `camera::TILT_LIMIT` is a full quarter turn, so Front, Back,
+Left and Right (which now set yaw *and* tilt) reach a true elevation; within
+`ELEVATION_COS` of edge-on the ground-plane pointer conversion is refused and
+`Camera::elevation_point` solves the vertical plane the viewer faces instead, so
+a click moves the section along the axis the view shows (`elevation_setup_point`
+plus `section_along_x`). `stock_walls::build_section` emits one quad per screen
+column from that column's silhouette — the least-cut cell along the view
+direction — down to the stock bottom, merging equal runs, and the pass drops the
+cell quads there (`FLAG_SECTION`) because edge-on they would draw as a wireframe
+inside the section. Evidence: `camera::tests::an_elevation_maps_the_pointer_to_the_vertical_plane`,
+`stock_walls::tests::a_faced_plate_sections_as_one_run` and
+`a_section_follows_the_highest_material_in_each_column`, and
+`viewport::tests::a_true_elevation_builds_a_section_and_sets_the_flag`, which
+also pins the probe's `section` field. Deliberately out of scope: a section
+through an arbitrary (non-axis-aligned) yaw, and material hatching inside the
+section.
 
 The silhouette/section rendering that makes a 90° front view readable, together
 with the vertical-plane pointer mapping that a true elevation needs (today the

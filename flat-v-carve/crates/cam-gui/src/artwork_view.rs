@@ -39,6 +39,31 @@ pub fn setup_point(
         ground[1] as f64 / scale + (bounds[1] + bounds[3]) / 2.,
     )
 }
+/// The setup-coordinate point under the cursor in a **true elevation**, where
+/// the ground plane is edge-on and the pointer lands on the vertical plane the
+/// viewer is facing instead. The caller keeps whichever axis the view shows:
+/// `Camera::section_along_x` says whether that is X. `None` outside an
+/// elevation view, where [`setup_point`] applies.
+pub fn elevation_setup_point(
+    camera: Camera,
+    bounds: [f64; 4],
+    rect: egui::Rect,
+    screen: egui::Pos2,
+) -> Option<Point> {
+    let point = camera.elevation_point(
+        [screen.x - rect.center().x, screen.y - rect.center().y],
+        [rect.width(), rect.height()],
+    )?;
+    let scale = 1.6
+        / (bounds[2] - bounds[0])
+            .max(bounds[3] - bounds[1])
+            .max(0.001);
+    Some(Point::new(
+        point[0] as f64 / scale + (bounds[0] + bounds[2]) / 2.,
+        point[1] as f64 / scale + (bounds[1] + bounds[3]) / 2.,
+    ))
+}
+
 pub fn screen_point(
     camera: Camera,
     bounds: [f64; 4],

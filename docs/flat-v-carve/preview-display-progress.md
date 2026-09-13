@@ -149,10 +149,9 @@ its floor and its step edge only through the cell quads, not as a lit wall), and
 a ghost outline of the original envelope, which is the cheap way to bring back
 the "how much was removed" cue if it is missed.
 
-## Stock display slices S1–S3 (plan: `stock-display-plan.md`)
+## Stock display slices S1–S4 (plan: `stock-display-plan.md`)
 
-The first three slices of the stock display plan have landed; S4 (a true
-elevation/section view) has not started.
+All four slices of the stock display plan have landed.
 
 * **S1 (`96dfee9`) — identity, shading and style.** A cell now carries
   `depth | stage | tool` in the same 32 bits it always used, with the planner's
@@ -175,8 +174,17 @@ elevation/section view) has not started.
 * **S3 (`0b2915e`) — x-ray.** A second pipeline with no depth writes and alpha
   blending, drawn after the artwork and paths, so a path inside a cut stays
   readable through the material while material in front still tints it.
+* **S4 — true elevations and sections.** The camera tilt now reaches a full
+  quarter turn, Front/Back/Left/Right set yaw and tilt together, and within
+  three degrees of edge-on the pointer is solved against the vertical plane the
+  viewer faces (so a click moves the section along the axis on screen) while the
+  ground-plane conversion is refused rather than amplified. In that band the
+  pass draws the stock's **section**: one quad per screen column from the
+  silhouette — the least-cut cell along the view direction — down to the bottom,
+  runs merged, with the cell quads dropped because edge-on they would draw as a
+  wireframe inside it. The probe reports `section: along_x | along_y`.
 
-What the three slices do **not** yet do: a true elevation or section view (S4,
-including the vertical-plane pointer mapping that would let the camera reach
-90°), OIT for overlapping translucent surfaces, and per-tile incremental wall
-rebuilds (the state-level rebuild is bounded and measured first).
+What the four slices do **not** yet do: a section through an arbitrary
+(non-axis-aligned) view direction, material hatching inside a section, OIT for
+overlapping translucent surfaces, and per-tile incremental wall rebuilds (the
+state-level rebuild is bounded and measured first).

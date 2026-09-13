@@ -144,6 +144,12 @@ fn output_alpha() -> f32 {
     var out: Output;
     out.position = vec4((x+camera.pan_x)*camera.zoom/camera.aspect,(yy+camera.pan_y)*camera.zoom,depth,1.);
     out.color = vec4(shade(normal,color),output_alpha());
+    // In a true elevation the cell quads are edge-on: they would draw as a
+    // dense wireframe inside the section, so the pass drops them and keeps the
+    // section quads and the bottom face.
+    if ((style.flags&2u) != 0u && id < cell_vertices) {
+        out.position = vec4(2.,2.,2.,1.);
+    }
     return out;
 }
 // Neighbouring cell depth for the surface normal; the border repeats itself.

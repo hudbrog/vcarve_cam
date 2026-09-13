@@ -32,10 +32,22 @@ use std::f32::consts::PI;
 /// historical pair is not exactly orthonormal (`0.65² + 0.76² = 1.0001`), so
 /// this reproduces the mix `0.65*v + 0.76*z` to within 4e-5 of its own scale.
 pub const ISO_TILT: f32 = 0.863_254_7;
-/// How far the view may tilt, in radians (85°). The limit keeps the projection
-/// away from the exactly edge-on view, where the ground-plane pointer
-/// conversion has no usable solution.
-pub const TILT_LIMIT: f32 = 85. * PI / 180.;
+/// How far the view may tilt, in radians: a true elevation. At the limit the
+/// ground plane is exactly edge-on, so the viewport switches the pointer to the
+/// vertical plane ([`Camera::elevation_point`]) and the stock pass to its
+/// section ([`Camera::section_along_x`]).
+pub const TILT_LIMIT: f32 = PI / 2.;
+/// Below this `|cos(tilt)|` the ground plane is treated as edge-on: the
+/// conversion is either singular or amplified past usefulness.
+pub const ELEVATION_COS: f32 = 0.05;
+/// The four true elevations as `(label, yaw)` at [`TILT_LIMIT`]: front and back
+/// look along the stock's Y axis, left and right along X.
+pub const ELEVATIONS: [(&str, f32); 4] = [
+    ("Front", 0.),
+    ("Back", PI),
+    ("Left", PI / 2.),
+    ("Right", -PI / 2.),
+];
 /// Zoom limits. One is the framing the scene normalization was chosen for: at
 /// zoom 1 the scene fills 80% of the viewport height.
 pub const MIN_ZOOM: f32 = 0.05;
@@ -161,7 +173,7 @@ impl Camera {
     /// units. `None` when the ground plane is edge-on.
     pub fn ground_point(&self, cursor_points: [f32; 2], rect_points: [f32; 2]) -> Option<[f32; 2]> {
         let cos_tilt = self.tilt.cos();
-        if cos_tilt.abs() < 1e-3 {
+        if cos_tilt.abs() < ELEVATION_COS {
             return None;
         }
         let ndc = self.to_ndc(cursor_points, rect_points);
@@ -169,6 +181,63 @@ impl Camera {
         let u = ndc[0] * self.aspect / self.zoom - self.pan[0];
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
         Some([u * cos_yaw + v * sin_yaw, -u * sin_yaw + v * cos_yaw])
+    }
+
+    /// Whether the view is close enough to edge-on that the ground plane has no
+    /// usable pointer solution.
+    pub fn is_elevation(&self) -> bool {
+        self.tilt.cos().abs() < ELEVATION_COS
+    }
+
+    /// The point on the **vertical** plane through the setup origin under the
+    /// cursor, in normalized scene units. This is what a true elevation needs:
+    /// the ground plane is edge-on there, while the plane the viewer is facing
+    /// carries both screen axes. `None` outside an elevation view.
+    pub fn elevation_point(
+        &self,
+        cursor_points: [f32; 2],
+        rect_points: [f32; 2],
+    ) -> Option<[f32; 3]> {
+        if !self.is_elevation() {
+            return None;
+        }
+        let (right, up, _) = self.screen_basis();
+        let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
+        // The horizontal view direction is the plane's normal, so the plane
+        // stands through the origin facing the viewer.
+        let normal = [sin_yaw, cos_yaw, 0.];
+        let ndc = self.to_ndc(cursor_points, rect_points);
+        let rhs = [
+            ndc[0] * self.aspect / self.zoom - self.pan[0],
+            ndc[1] / self.zoom - self.pan[1],
+            0.,
+        ];
+        let rows = [right, up, normal];
+        let determinant = |matrix: [[f32; 3]; 3]| {
+            matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1])
+                - matrix[0][1] * (matrix[1][0] * matrix[2][2] - matrix[1][2] * matrix[2][0])
+                + matrix[0][2] * (matrix[1][0] * matrix[2][1] - matrix[1][1] * matrix[2][0])
+        };
+        let base = determinant(rows);
+        if base.abs() < 1e-6 {
+            return None;
+        }
+        let mut point = [0.; 3];
+        for axis in 0..3 {
+            let mut replaced = rows;
+            for (row, value) in rhs.iter().enumerate() {
+                replaced[row][axis] = *value;
+            }
+            point[axis] = determinant(replaced) / base;
+        }
+        Some(point)
+    }
+
+    /// In an elevation view, whether the screen's horizontal direction runs
+    /// along the stock's X axis (`true`) or its Y axis. The section quads of the
+    /// stock pass run the same way.
+    pub fn section_along_x(&self) -> bool {
+        self.yaw.cos().abs() >= self.yaw.sin().abs()
     }
 
     /// Points per normalized scene unit along both axes, matching the
@@ -343,9 +412,71 @@ mod tests {
         assert_eq!(camera.zoom, MIN_ZOOM);
         camera.set_tilt(-9.);
         assert_eq!(camera.tilt, -TILT_LIMIT);
-        // Edge-on views are refused rather than divided by zero.
+        // Edge-on views are refused by the ground conversion rather than
+        // divided by zero, and the vertical plane takes over.
         camera.tilt = PI / 2.;
         assert!(camera.ground_point([0., 0.], [100., 100.]).is_none());
+        assert!(camera.is_elevation());
+        assert!(camera.elevation_point([0., 0.], [100., 100.]).is_some());
+    }
+
+    /// A true elevation: the pointer lands on the plane the viewer faces, and
+    /// the section runs across the screen.
+    #[test]
+    fn an_elevation_maps_the_pointer_to_the_vertical_plane() {
+        let rect = [800., 600.];
+        for (label, yaw) in ELEVATIONS {
+            let mut camera = Camera::new(rect[0] / rect[1]);
+            camera.yaw = yaw;
+            camera.tilt = TILT_LIMIT;
+            assert!(camera.is_elevation(), "{label}");
+            assert!(
+                camera.ground_point([0., 0.], rect).is_none(),
+                "{label} has no ground plane"
+            );
+            // The centre of the viewport is the setup origin on that plane.
+            let centre = camera.elevation_point([0., 0.], rect).unwrap();
+            for axis in centre {
+                assert!(axis.abs() < 1e-5, "{label}: {centre:?}");
+            }
+            // What the mapping reports projects back onto the cursor.
+            let cursor = [120., -80.];
+            let point = camera.elevation_point(cursor, rect).unwrap();
+            let projected = camera.ndc(point);
+            let expected = camera.to_ndc(cursor, rect);
+            assert!(
+                (projected[0] - expected[0]).abs() < 1e-4
+                    && (projected[1] - expected[1]).abs() < 1e-4,
+                "{label}: {projected:?} vs {expected:?}"
+            );
+            // Panning moves the point with the view.
+            camera.pan = [0.2, 0.];
+            let panned = camera.elevation_point(cursor, rect).unwrap();
+            // Screen x runs along X for the front and back views and along Y for
+            // the side views, so the pan moves that coordinate.
+            let axis = usize::from(!camera.section_along_x());
+            assert!(
+                ((panned[axis] - point[axis]).abs() - 0.2).abs() < 1e-4,
+                "{label}: the pan moved the mapped point by {}",
+                panned[axis] - point[axis]
+            );
+        }
+        // A top view has no vertical plane to solve: the ground plane is it.
+        let camera = Camera::new(1.);
+        assert!(!camera.is_elevation());
+        assert!(camera.elevation_point([0., 0.], rect).is_none());
+        // Front and back run the section along X; left and right along Y.
+        let mut camera = Camera::new(1.);
+        camera.tilt = TILT_LIMIT;
+        for (label, yaw, along_x) in [
+            ("Front", 0., true),
+            ("Back", PI, true),
+            ("Left", PI / 2., false),
+            ("Right", -PI / 2., false),
+        ] {
+            camera.yaw = yaw;
+            assert_eq!(camera.section_along_x(), along_x, "{label}");
+        }
     }
 
     #[test]
