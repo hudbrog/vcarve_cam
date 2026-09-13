@@ -28,7 +28,7 @@ use cam_core::{
             resources::{
                 AssignmentRole as Role, ProfileStatus, apply_cutting_profile,
                 apply_tool_to_assignment, assignment_statuses, reapply_profile, reset_assignment,
-                set_assignment_spindle_direction,
+                set_assignment_spindle_direction, use_job_tool,
             },
         },
     },
@@ -365,6 +365,54 @@ fn status_of(job: &CamJobV5, operation_id: &str, role: Role) -> ProfileStatus {
 /// job tool's different assignments; editing one leaves the other Applied;
 /// after the library is gone, Reset restores the copied baseline and the
 /// reopened document needs no library to describe itself.
+#[test]
+fn a_job_tool_without_geometry_binds_to_any_assignment_but_a_mismatch_does_not() {
+    // An empty snapshot is an incomplete state, not a wrong cutter: binding it
+    // keeps the operation saveable and lets the planner report the missing
+    // geometry. A snapshot of the wrong kind is still refused.
+    let mut job = resource_job();
+    job.tools.push(v5::JobToolV5 {
+        id: "empty".into(),
+        name: "Not described yet".into(),
+        geometry: None,
+        capabilities: Default::default(),
+        library_origin: None,
+    });
+    let bound = use_job_tool(&job, "profile-1", Role::Milling, "empty")
+        .unwrap()
+        .job;
+    let OperationSettingsV5::Profile(settings) = &bound
+        .operations
+        .iter()
+        .find(|operation| operation.id == "profile-1")
+        .unwrap()
+        .settings
+    else {
+        panic!("profile operation");
+    };
+    assert_eq!(settings.assignment.tool_id, "empty");
+    assert!(
+        use_job_tool(&job, "profile-1", Role::Endmill, "empty").is_err(),
+        "the role gate still applies to an operation that has no such assignment"
+    );
+    job.tools.push(v5::JobToolV5 {
+        id: "vbit-target".into(),
+        name: "V-bit target".into(),
+        geometry: Some(ToolGeometry::Vbit(cam_core::model::VBitSpec {
+            included_angle_deg: 90.,
+            tip_diameter_mm: 0.1,
+            max_cutting_diameter_mm: 12.,
+            cutting_height_mm: 5.,
+        })),
+        capabilities: Default::default(),
+        library_origin: None,
+    });
+    assert!(
+        use_job_tool(&job, "carve-1", Role::Endmill, "vbit-target").is_err(),
+        "a V-bit snapshot does not fit an endmill assignment"
+    );
+}
+
 #[test]
 fn a_library_tools_rotation_is_copied_onto_the_addressed_milling_assignment() {
     // "Use in operation" copies the tool's rotation too. The role decides which

@@ -63,11 +63,14 @@ bundle version).
    - **Setup → Tool library → Library actions → Import library…** and choose
      `flat-v-carve/fixtures/gui5/library.json` (or your own library file), then
      **Save library**.
-   - Back in the profile's **Tool & cutting**: **Apply library endmill** →
-     `Endmill / Lettering rough`. The group reports the job tool in use and
-     *Cutting values: applied from a library profile*; the copied cutter keeps
-     its library provenance. Editing one value switches the line to *modified*;
-     **Reset profile overrides** restores the copied values without the library.
+   - Back in the profile's **Tool & cutting**, press **Change tool…** — the
+     same cutter picker a Flat V-carve stage uses: **From library** choose the
+     `Endmill` and the `Lettering rough` cutting profile, then **Apply tool &
+     profile**. The group reports the job tool in use and *From library*; the
+     copied cutter keeps its library provenance. Editing one value switches the
+     line to *Modified for this job*; **More… → Reset profile overrides**
+     restores the copied values without the library. **Change profile…** opens
+     the library editor targeted at this assignment.
    - A tool change clears the assignment's rotation; if your library tool does
      not state one, choose **Profile CW** again (the planner reports the missing
      rotation). The copied cutter also needs its own mapping: **Machine → Tool

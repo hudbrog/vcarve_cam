@@ -54,7 +54,8 @@ are test inputs, not material or machine recommendations:
    output settings without replanning unchanged cutting geometry.
 6. In Tool library, create a drag knife with explicit dimensions and a knife
    cutting profile. Save the library, then Use tool & profile. Edit its copied
-   feed in the job and Reset knife overrides. Reset uses the portable copied
+  feed in the job and **More… → Reset knife overrides** in the knife's cutter
+  picker (the same element every operation uses). Reset uses the portable copied
    baseline. Saving a library does not silently update existing jobs.
 7. Save job, reopen it, Generate and export again. Source bytes, qualified
    references, knife dimensions, assignments and applied machine travel in the

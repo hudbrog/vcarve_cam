@@ -1,7 +1,5 @@
 use super::*;
-use crate::resources::ResourceCommand as R;
 use cam_core::project::v5::StartSelectionV5;
-use cam_core::project::v5::resources::{self as core, AssignmentRole as Role};
 
 impl App {
     pub(super) fn knife_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -307,121 +305,11 @@ impl App {
     }
 
     fn knife_resources(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let job = &self.document.as_ref().unwrap().job;
-        let state = core::assignment_statuses(job)
-            .into_iter()
-            .find(|s| s.role == Role::Knife)
-            .unwrap();
-        let operation = job.operations[0].id.clone();
-        let tools = job
-            .tools
-            .iter()
-            .filter(|t| {
-                matches!(
-                    t.geometry,
-                    Some(cam_core::project::ToolGeometry::DragKnife(_))
-                )
-            })
-            .map(|t| (t.id.clone(), t.name.clone()))
-            .collect::<Vec<_>>();
-        ui.label(format!(
-            "Job tool: {}",
-            job.tools
-                .iter()
-                .find(|t| t.id == state.tool_id)
-                .map(|t| t.name.as_str())
-                .unwrap_or(&state.tool_id)
-        ));
-        ui.label(format!("Profile: {:?}", state.status));
-        if let Some(applied) = &state.applied {
-            ui.small(&applied.name_at_application);
-        }
-        if button(
-            ui,
-            "Reset knife overrides",
-            state.status != core::ProfileStatus::Custom && self.active.is_none(),
-        )
-        .clicked()
-        {
-            self.resource_command(
-                R::Reset {
-                    operation: operation.clone(),
-                    role: Role::Knife,
-                },
-                ctx,
-            );
-        }
-        let menu = ui.menu_button("Choose job knife", |ui| {
-            for (id, name) in tools {
-                if button(ui, &name, self.active.is_none()).clicked() {
-                    self.resource_command(
-                        R::UseTool {
-                            operation: operation.clone(),
-                            role: Role::Knife,
-                            tool: id,
-                        },
-                        ctx,
-                    );
-                    ui.close();
-                }
-            }
-        });
-        observe_control("Choose job knife", menu.response.rect);
-        if !self.resources.ready && !self.resources.busy {
-            self.request_resources(ResourceIntent::Load, ctx);
-        }
-        if let Some(catalog) = self.resources.base.as_ref().map(|s| s.snapshot.clone()) {
-            let menu = ui.menu_button("Apply library knife", |ui| {
-                for tool in &catalog.library.tools {
-                    if !matches!(
-                        tool.geometry,
-                        cam_core::tool_library::LibraryGeometry::DragKnife(_)
-                    ) {
-                        continue;
-                    }
-                    if button(
-                        ui,
-                        &format!("{} · tool only", tool.name),
-                        self.active.is_none(),
-                    )
-                    .clicked()
-                    {
-                        self.resource_command(
-                            R::SelectLibraryTool {
-                                catalog: catalog.clone(),
-                                tool: tool.id.clone(),
-                                operation: operation.clone(),
-                                role: Role::Knife,
-                            },
-                            ctx,
-                        );
-                        ui.close();
-                    }
-                    for p in &tool.knife_cutting_presets {
-                        if button(
-                            ui,
-                            &format!("{} / {}", tool.name, p.name),
-                            self.active.is_none(),
-                        )
-                        .clicked()
-                        {
-                            self.resource_command(
-                                R::ApplyToolProfile {
-                                    catalog: catalog.clone(),
-                                    tool: tool.id.clone(),
-                                    preset: p.id.clone(),
-                                    operation: operation.clone(),
-                                    role: Role::Knife,
-                                },
-                                ctx,
-                            );
-                            ui.close();
-                        }
-                    }
-                }
-            });
-            observe_control("Apply library knife", menu.response.rect);
-        }
+        // The same cutter picker every operation uses, with the knife's own
+        // words and its typed knife cutting presets.
+        let operation = self.operation_id();
+        let cutter = super::tool_picker::Cutter::knife(&operation);
+        self.tool_picker(ui, ctx, &cutter);
     }
 }
 

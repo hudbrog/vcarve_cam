@@ -564,6 +564,34 @@ pub fn set_assignment_spindle_direction(
     )
 }
 
+/// Clear exactly one assignment's copied cutting values and its applied
+/// baseline, keeping the chosen job tool bound. The assignment becomes
+/// `Custom` with unset values, which is the editor's "Clear cutting values"
+/// action for every role: a Flat V-carve stage, a Face/Profile milling
+/// assignment, or a drag knife.
+pub fn clear_assignment_values(
+    job: &CamJobV5,
+    operation_id: &str,
+    role: AssignmentRole,
+) -> Result<super::commands::CommandOutcome> {
+    let index = operation_index(job, operation_id)?;
+    let mut candidate = job.clone();
+    match assignment_mut(
+        &mut candidate.operations[index].settings,
+        operation_id,
+        role,
+    )? {
+        AssignmentRef::Milling(assignment) => clear_milling(assignment),
+        AssignmentRef::Knife(assignment) => clear_knife(assignment),
+    }
+    super::commands::CommandOutcome::commit(
+        candidate,
+        vec![super::commands::AffectedEntity::Operation(
+            operation_id.into(),
+        )],
+    )
+}
+
 /// Add independent geometry without changing an assignment. Only an exact
 /// unchanged snapshot with the same explicit origin can be reused. Colliding
 /// local IDs and equal dimensions never identify the same physical tool.
@@ -626,6 +654,13 @@ pub fn add_library_tool(
 
 /// Bind a selected copied job tool; changing physical tools clears only this
 /// assignment's cutting values and baseline. Existing geometry stays shared.
+///
+/// The role decides which geometry kinds are acceptable: V-bit geometry
+/// belongs to a V-bit assignment, a knife to a knife assignment, an endmill to
+/// a milling one. A snapshot that carries **no** geometry is accepted for every
+/// role: a job tool whose cutter is not described yet is a legitimate
+/// incomplete state that the planner reports as a missing setting, not a
+/// reason to refuse the binding.
 pub fn use_job_tool(
     job: &CamJobV5,
     operation_id: &str,
@@ -638,8 +673,6 @@ pub fn use_job_tool(
         .iter()
         .find(|t| t.id == tool_id)
         .ok_or_else(|| resource_error(format!("unknown job tool '{tool_id}'")))?;
-    // The role decides which geometry kinds are acceptable: V-bit geometry
-    // belongs to a V-bit assignment, a knife to a knife assignment.
     let accepts = |geometry: &crate::project::ToolGeometry| match role {
         AssignmentRole::Endmill => matches!(geometry, crate::project::ToolGeometry::Endmill(_)),
         AssignmentRole::Vbit => matches!(geometry, crate::project::ToolGeometry::Vbit(_)),
@@ -649,7 +682,11 @@ pub fn use_job_tool(
         ),
         AssignmentRole::Knife => matches!(geometry, crate::project::ToolGeometry::DragKnife(_)),
     };
-    if !tool.geometry.as_ref().is_some_and(accepts) {
+    if tool
+        .geometry
+        .as_ref()
+        .is_some_and(|geometry| !accepts(geometry))
+    {
         return Err(resource_error(format!(
             "job tool '{tool_id}' does not fit the {} assignment of operation '{operation_id}'",
             role.name()

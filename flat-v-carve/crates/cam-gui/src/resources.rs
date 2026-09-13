@@ -199,6 +199,12 @@ pub enum ResourceCommand {
         role: AssignmentRole,
         catalog: Catalog,
     },
+    /// Clear one assignment's copied cutting values and its applied baseline,
+    /// keeping the chosen job tool bound.
+    Clear {
+        operation: String,
+        role: AssignmentRole,
+    },
     EditTool {
         tool: v5::JobToolV5,
     },
@@ -235,6 +241,14 @@ impl ResourceCommand {
                 AssignmentRole::Knife => vec![],
             };
         }
+        if let Self::Clear { role, .. } = self {
+            return match role {
+                AssignmentRole::Endmill => vec![2, 8, 9, 10, 11],
+                AssignmentRole::Vbit => vec![3, 20, 21, 22, 46],
+                AssignmentRole::Milling => vec![2, 10, 11, 88],
+                AssignmentRole::Knife => vec![63, 64, 65, 66],
+            };
+        }
         if matches!(self, Self::StockPage { .. }) {
             return vec![40, 41, 42, 43];
         }
@@ -269,7 +283,8 @@ impl ResourceCommand {
             Self::UseTool { role, .. }
             | Self::Apply { role, .. }
             | Self::Reset { role, .. }
-            | Self::Reapply { role, .. } => Some(*role),
+            | Self::Reapply { role, .. }
+            | Self::Clear { role, .. } => Some(*role),
             _ => None,
         };
         let mut fields = match role {
@@ -437,6 +452,7 @@ impl ResourceCommand {
                 }
                 core::reapply_profile(job, &operation, role, &catalog.library, &catalog.id)
             }
+            Self::Clear { operation, role } => core::clear_assignment_values(job, &operation, role),
             Self::EditTool { tool } => {
                 let mut candidate = job.clone();
                 let target = candidate
@@ -520,8 +536,9 @@ pub struct Editor {
     pub new_machine_id: String,
     pub machines_view: bool,
     pub picker_loaded: bool,
-    pub picker_tools: [String; 2],
-    pub picker_profiles: [String; 2],
+    /// One selection per assignment role (endmill, V-bit, milling, knife).
+    pub picker_tools: [String; 4],
+    pub picker_profiles: [String; 4],
     pub open: bool,
     pub jobs_open: bool,
     pub base: Option<StoredCatalog>,

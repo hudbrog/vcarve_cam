@@ -160,8 +160,17 @@ export async function gui8Scenario({control,edit,state,waitFor,send,evaluate,sle
   await waitFor(s=>s.resources.catalog?.id==='gui5-lettering-library','library fixture in the edit buffer');
   await control('Save library');
   await waitFor(s=>!s.resources.busy&&!s.resources.dirty&&s.resources.revision,'saved library revision');
-  await control('Library tool endmill');
-  await control('Use tool & profile');
+  await control('Close library');
+  // The operation's own cutter picker — the same element the Flat V-carve
+  // stages use — takes the library tool and its cutting profile.
+  await control('Cutting');
+  await scrollInspector(8);
+  await control('Change cutter tool');
+  await control('Profile library tool');
+  await control('Profile library tool endmill');
+  await control('Profile library profile');
+  await control('Profile library profile rough');
+  await control('Apply Profile library selection');
   const library=await waitFor(
     s=>!s.active
       && s.job.profile.assignment.cutting_feed_mm_min===1200
@@ -175,7 +184,6 @@ export async function gui8Scenario({control,edit,state,waitFor,send,evaluate,sle
   record('library cutter and cutting profile applied',library.job.profile.assignment.tool_id);
   // The copied cutter needs its own controller mapping before checked output;
   // T numbers stay unique across the applied configuration.
-  await control('Close library');
   await control('Machine');await edit('Tool number','2');
   await waitFor(s=>!s.active&&!s.pending,'mapped the library cutter');
   await control('Cutting');

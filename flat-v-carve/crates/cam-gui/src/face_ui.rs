@@ -201,51 +201,10 @@ impl App {
 
     fn face_tool(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.operation_group(ui, "Tool & cutting", true, |app, ui| {
-            let job = app.document.as_ref().unwrap().job.clone();
-            let id = app.operation_id();
-            let assigned = crate::session::face(&job, &id).map(|s| s.assignment.tool_id.clone());
-            let label = assigned
-                .as_ref()
-                .and_then(|tool_id| job.tools.iter().find(|tool| &tool.id == tool_id))
-                .map(|tool| format!("{} · {}", tool.name, tool.id))
-                .unwrap_or_else(|| "no tool assigned".into());
-            ui.strong(label);
-            let mut selected = assigned.clone().unwrap_or_default();
-            let before = selected.clone();
-            let response = egui::ComboBox::from_id_salt("face-tool")
-                .width(ui.available_width())
-                .selected_text("Choose a job tool…")
-                .show_ui(ui, |ui| {
-                    for tool in &job.tools {
-                        if matches!(
-                            tool.geometry,
-                            None | Some(cam_core::project::ToolGeometry::Endmill(_))
-                        ) {
-                            ui.selectable_value(
-                                &mut selected,
-                                tool.id.clone(),
-                                format!("{} · {}", tool.name, tool.id),
-                            );
-                        }
-                    }
-                });
-            observe_control("Face assignment tool", response.response.rect);
-            if selected != before && !selected.is_empty() {
-                let id = app.operation_id();
-                app.edit_job(ctx, &[2, 8, 9, 10, 11, 12, 13, 88], move |job| {
-                    authoring::assign_tool_in(job, &id, false, &selected)
-                });
-            }
-            if ui
-                .button("Clear face cutting values")
-                .clicked()
-            {
-                let id = app.operation_id();
-                app.edit_job(ctx, &[2, 8, 9, 10, 11, 88], move |job| {
-                    authoring::clear_assignment_in(job, &id, false);
-                    Ok(())
-                });
-            }
+            // The same cutter picker every operation uses.
+            let operation = app.operation_id();
+            let cutter = super::tool_picker::Cutter::milling(&operation, "Face");
+            app.tool_picker(ui, ctx, &cutter);
             ui.separator();
             app.operation_numbers(ui, ctx, &[12, 13]);
             ui.separator();

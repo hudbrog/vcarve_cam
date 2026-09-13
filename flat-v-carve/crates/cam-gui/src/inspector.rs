@@ -7,6 +7,8 @@ mod knife_ui;
 mod operation_ui;
 #[path = "profile_ui.rs"]
 mod profile_ui;
+#[path = "tool_picker.rs"]
+mod tool_picker;
 use crate::authoring::{self, settings_mut};
 use cam_core::project::{FlatVcarveMode, SpindleDirection, WorkZeroXY, WorkZeroZ};
 
@@ -571,89 +573,6 @@ impl App {
                 );
             }
         }
-    }
-    fn assignment_tool(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, finish: bool) {
-        help::label(ui, "Assigned job tool");
-        use cam_core::project::ToolGeometry;
-        let job = &self.document.as_ref().unwrap().job;
-        let assignment = if finish {
-            &engine::settings(job).vbit
-        } else {
-            &engine::settings(job).endmill
-        };
-        let mut selected = assignment.tool_id.clone();
-        let before = selected.clone();
-        let current = job
-            .tools
-            .iter()
-            .find(|t| t.id == selected)
-            .map(|t| t.name.as_str())
-            .unwrap_or("Missing tool");
-        let response = egui::ComboBox::from_id_salt(("assignment-tool", finish))
-            .selected_text(current)
-            .show_ui(ui, |ui| {
-                for tool in &job.tools {
-                    if matches!(
-                        (&tool.geometry, finish),
-                        (None, _)
-                            | (Some(ToolGeometry::Endmill(_)), false)
-                            | (Some(ToolGeometry::Vbit(_)), true)
-                    ) {
-                        let r = ui.selectable_value(
-                            &mut selected,
-                            tool.id.clone(),
-                            format!("{} · {}", tool.name, tool.id),
-                        );
-                        observe_control(
-                            &format!(
-                                "Assign {} {}",
-                                if finish { "V-bit" } else { "endmill" },
-                                tool.id
-                            ),
-                            r.rect,
-                        );
-                    }
-                }
-            });
-        observe_control(
-            if finish {
-                "V-bit assignment tool"
-            } else {
-                "Endmill assignment tool"
-            },
-            response.response.rect,
-        );
-        if selected != before {
-            self.edit_job(
-                ctx,
-                if finish {
-                    &[16, 17, 18, 19, 3, 20, 21, 22, 46, 38, 39]
-                } else {
-                    &[12, 13, 2, 8, 9, 10, 11, 32, 33]
-                },
-                |job| authoring::assign_tool(job, finish, &selected),
-            );
-        }
-        let label = if finish {
-            "Clear V-bit cutting values"
-        } else {
-            "Clear endmill cutting values"
-        };
-        if button(ui, label, true).clicked() {
-            self.edit_job(
-                ctx,
-                if finish {
-                    &[3, 20, 21, 22, 46]
-                } else {
-                    &[2, 8, 9, 10, 11]
-                },
-                |job| {
-                    authoring::clear_assignment(job, finish);
-                    Ok(())
-                },
-            );
-        }
-        ui.small("Choosing another job tool clears this assignment’s cutting values; enter values for the chosen cutter.");
     }
     fn direction(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, finish: bool) {
         help::label(

@@ -490,58 +490,17 @@ impl App {
         ui: &mut egui::Ui,
         ctx: &egui::Context,
         finish: bool,
-        cutting: bool,
+        _cutting: bool,
     ) {
-        let role = if finish {
-            cam_core::project::v5::resources::AssignmentRole::Vbit
+        // Every operation renders the same cutter picker; a carving stage's
+        // two assignments differ only in their role and their words.
+        let operation = self.operation_id();
+        let cutter = if finish {
+            super::tool_picker::Cutter::vbit(&operation)
         } else {
-            cam_core::project::v5::resources::AssignmentRole::Endmill
+            super::tool_picker::Cutter::endmill(&operation)
         };
-        if let Some(tool) = authoring::tool_in(
-            &self.document.as_ref().unwrap().job,
-            &self.operation_id(),
-            finish,
-        ) {
-            ui.strong(&tool.name);
-        }
-        let index = usize::from(finish);
-        let changing = self.operation_picker == Some(index);
-        let change = ui.button(if changing {
-            "Done choosing tool"
-        } else {
-            "Change tool…"
-        });
-        observe_control(
-            if finish {
-                "Change V-bit tool"
-            } else {
-                "Change endmill tool"
-            },
-            change.rect,
-        );
-        if change.clicked() {
-            self.operation_picker = if changing { None } else { Some(index) };
-        }
-        if self.operation_picker == Some(index) {
-            ui.scope(|ui| {
-                ui.set_max_width(ui.available_width().min(350.));
-                self.assignment_library_picker(ui, ctx, role);
-                if button(ui, "Browse library…", self.active.is_none()).clicked() {
-                    self.resources.role = role;
-                    self.resources.machines_view = false;
-                    self.resources.open = true;
-                    if !self.resources.ready && !self.resources.busy {
-                        self.request_resources(ResourceIntent::Load, ctx);
-                    }
-                    self.operation_picker = None;
-                }
-                ui.separator();
-                self.assignment_tool(ui, ctx, finish);
-            });
-        }
-        if cutting {
-            self.assignment_profiles(ui, ctx, finish);
-        }
+        self.tool_picker(ui, ctx, &cutter);
     }
 
     pub(super) fn operation_capabilities(

@@ -406,15 +406,34 @@ Applied/Modified/Reset state for the profile's cutter. The same gap existed in
 the library modal for a Profile (or Face) document: the "use this tool" action
 only offered the carving rough/finish roles and a knife role.
 
-**Fix.** The profile's single cutter is now addressed as the operation's
-`Milling` assignment through the GUI5/GUI6 resource workflow, in both places:
+**Fix (second review pass: one picker for every operation).** The Flat V-carve
+tool tabs' cutter element was extracted into
+`crates/cam-gui/src/tool_picker.rs` and every operation now renders that same
+element: the job tool in use, **Change tool…** revealing the library tool and
+cutting-profile pickers plus the job's own snapshots (**Assigned job tool**,
+**Clear … cutting values**), then the copied profile line with **Change
+profile…** and **More… → Reset … overrides / Reapply reviewed profile**. Only
+the words differ per assignment; the layout, commands and
+Applied/Modified/Custom meaning are one implementation:
 
-- The profile's **Tool & cutting** group shows the job tool in use, its
-  Applied/Modified/Custom state and copied baseline, **Reset profile
-  overrides**, **Choose job endmill** (the job's own endmill snapshots) and
-  **Apply library endmill** (any loaded library endmill, "tool only" or one of
-  its named cutting profiles). The old ad-hoc combobox is gone, so every tool
-  change keeps provenance and the copied baseline.
+- `Cutter::endmill`/`Cutter::vbit` (Flat V-carve's two stages),
+  `Cutter::milling(op, "Face")` and `Cutter::milling(op, "Profile")` (each
+  operation's single assignment) and `Cutter::knife` (drag knife) all call
+  `App::tool_picker`. The panel, the reveal toggle and the library combos are
+  role-slot keyed, so a Face, Profile and Knife editor each keep their own
+  selection, and every picker targets its **own operation** (the carving tabs
+  previously assumed the first operation when opening the library picker).
+- Clearing values, using a job tool, applying a library tool or cutting
+  profile, resetting and reapplying all go through role-aware document
+  commands: `R::Clear` (new) → `resources::clear_assignment_values`,
+  `R::UseTool` → `resources::use_job_tool`, `R::SelectLibraryTool`,
+  `R::ApplyToolProfile`, `R::Reset`, `R::Reapply`. A library tool's rotation is
+  copied with the new role-aware `resources::set_assignment_spindle_direction`
+  (previously a Flat V-carve-only code path that failed for `Milling` with
+  "Unsupported milling assignment").
+- `use_job_tool` now accepts a snapshot that carries **no** geometry for any
+  role (an incomplete cutter is a state the planner reports, not a mismatch),
+  while a wrong-kind snapshot is still refused.
 - The library modal addresses the **selected** operation (not the first one)
   and offers `Milling` for a Face/Profile document, so "Use tool & profile"
   works there too.
@@ -445,17 +464,24 @@ it, asserts the copied feeds/speed/stepdown/rotation and geometry, the Applied
 `crates/cam-core/tests/collection_resources.rs::a_library_tools_rotation_is_copied_onto_the_addressed_milling_assignment`
 pins the role-aware rotation copy (profile accepted, sibling carve untouched,
 knife refused); `app::inspector::profile_ui::tests::the_tool_group_offers_the_job_tool_and_library_actions`
-pins the panel. The browser tour now loads the library fixture, applies the
-cutter and profile to the profile, maps it, and prepares the checked program:
-3496 motions, prepared SHA-256
-`fa09cf83129259260ef658bfec6a42f0332f1ea4b51ce0ccfeb515890dcddf97`, evidence
-`artifacts/gui/browser-smoke/2026-09-13T06-11-04.345Z`.
+pins the panel, and
+`app::inspector::tool_picker::tests::every_operation_renders_the_same_picker`
+pins that the Endmill, V-bit, Face, Profile and Knife editors all render the
+same picker element (and
+`::the_cutters_keep_the_established_probe_names` keeps the probes the earlier
+tours address). The browser tour now loads the library fixture, takes the
+cutter and cutting profile through the profile's own **Change tool…** picker,
+maps it, and prepares the checked program; the knife (GUI6) and carving (GUI5)
+tours were re-run against the same build and still pass, so one picker did not
+change the reviewed workflows. Evidence directories:
+`artifacts/gui/browser-smoke/<timestamp>` from the runs recorded in
+`artifacts/gui/gui8-browser-smoke.txt`, `gui6-browser-smoke.txt` and
+`gui5-browser-smoke.txt`.
 
 **Rebuilt review artifacts** (the fix changes code, so both were rebuilt):
-native `8855ac04c44f45d738743a9e51864714b711f2fe0ac090cd3e8648c8cca62229`,
-WASM `e6899500c15fa7aca8471bb8995c11ddb1b027899b5663ade2b8435ec30eea5f`,
-offline bundle `9d9a3d38940cb0ba2c52f806ca5df0bf8b93c9d0f2216a03e03f9ff9d627b9fc`.
+native `91b7611862f30c484f956a0f62fa57a62a5c8b055d4a99f4d642f4b2036587db`,
+WASM `307642617e3202fda261e7fa28d208dec9c4403f195f1f40da238936e587c3f3`,
+offline bundle `594c4b41b639cf217c786569799e0bb4edaabdae5dc477806f2f539eb077a90b`.
 
-The same pattern still applies to the **Face** operation's tool group, which
-keeps its simpler job-tool picker; it is the same role and the same commands,
-so wiring it is a small follow-up if the review wants it.
+The **Face** operation now uses the same picker too, so profiles, facing, the
+carving stages and the knife all behave identically.

@@ -131,13 +131,22 @@ const control = async label => {
         const tab=operationTarget(label)??geometryTarget(label);
         if(tab!==null&&current.workspace.operation_tab!==tab){await control(['Operation Shape & depth','Operation Endmill','Operation V-bit'][tab]);continue;}
         if(['Depth-dependent clearing','Deepest-region clearing'].includes(label)){await control('Operation clearing strategy');continue;}
-        if(label.includes('library tool')||label.includes('library profile')||label.startsWith('Apply Roughing')||label.startsWith('Apply Finish')||label.endsWith('assignment tool')){await control(current.workspace.operation_tab===2?'Change V-bit tool':'Change endmill tool');continue;}
-        if(label==='Reset roughing overrides'||label==='Reset finish overrides'){await control(current.workspace.operation_tab===2?'Finish profile actions':'Roughing profile actions');continue;}
         const geometry=['Endmill diameter','Cutting length','V-bit angle','Tip diameter','Cutting diameter','Cutting height','Plunge yes','Plunge no','V-bit plunge yes','V-bit plunge no','Ramp yes','Ramp no'];
         if(geometry.includes(label)){await control('Operation Geometry & capabilities');continue;}
         if(label.includes('limit')||['Cleanup iterations','Quality sample spacing','Stock slices'].includes(label)){await control('Operation Advanced');continue;}
         if(['Ramp angle','Ramp feed'].includes(label)){await control('Ramp entry');continue;}
       }
+      // Every operation renders the same cutter picker, and its library combos
+      // and baseline actions sit behind the "Change … tool" reveal and the
+      // "… profile actions" menu. Open those first instead of failing.
+      const pickerProbes={'Roughing':'Change endmill tool','Finish':'Change V-bit tool','Profile':'Change cutter tool','Face':'Change cutter tool','Knife':'Change knife tool'};
+      const actionProbes={'Roughing':'Roughing profile actions','Finish':'Finish profile actions','Profile':'Profile profile actions','Face':'Face profile actions','Knife':'Knife profile actions'};
+      const reveal=Object.keys(pickerProbes).find(prefix=>label.startsWith(prefix+' library')||label.startsWith('Apply '+prefix+' library'));
+      if(reveal&&current.controls?.[pickerProbes[reveal]]){await control(pickerProbes[reveal]);continue;}
+      const assignmentProbes={'Endmill assignment tool':'Change endmill tool','V-bit assignment tool':'Change V-bit tool','Profile assignment tool':'Change cutter tool','Face assignment tool':'Change cutter tool','Knife assignment tool':'Change knife tool'};
+      if(assignmentProbes[label]&&current.controls?.[assignmentProbes[label]]){await control(assignmentProbes[label]);continue;}
+      const actions=Object.keys(actionProbes).find(prefix=>label===`Reset ${prefix.toLowerCase()} overrides`);
+      if(actions&&current.controls?.[actionProbes[actions]]){await control(actionProbes[actions]);continue;}
       if(current.resources?.open&&libraryMenus[label]){await control(libraryMenus[label]);continue;}
       if((current.resources?.open||current.resources?.jobsOpen)&&dropdown){await control(dropdown);continue;}
       if(current.resources?.open&&['Path control','Coolant','Configuration blend tolerance','Configuration naive CAM tolerance'].includes(label)){await control('Motion & coolant');continue;}
