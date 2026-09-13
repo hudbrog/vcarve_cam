@@ -160,6 +160,9 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
         "Work zero" => {
             "The point you will set as zero on the machine for this stock. It shifts output coordinates; simulated geometry remains in setup coordinates."
         }
+        "Z datum" => {
+            "Which surface of the stock you will set as Z0 on the machine. Stock top is the surface the tool touches first; stock bottom is the underside resting on the table or mat. Every Z in the generated program is measured from the surface you pick here, and the simulated stock stays in setup coordinates either way. CAM cannot see how your machine measures tools: if your M6 touch-off always references the table, zero on that same surface too, or make sure tool-length compensation reproduces it. Choosing the wrong surface is what cuts through the spoilboard or cutting mat, so confirm this before generating."
+        }
         "From library" => {
             "Select a saved cutter and optionally a cutting profile, then Apply. This copies geometry, capabilities and specified spindle direction, plus selected cutting values, into this job. Later library edits do not silently change the job."
         }
@@ -304,6 +307,7 @@ mod tests {
                 "Local offsets unused",
                 "Length compensation",
                 "Library rotation",
+                "Z datum",
             ]
             .iter(),
         ) {

@@ -526,6 +526,46 @@ impl App {
             }
         });
         ui.small("Work zero affects output coordinates; simulation stays in setup coordinates. Applying a machine does not change this datum.");
+        ui.separator();
+        // The Z datum decides the surface the first plunge is measured from.
+        // It is a single choice with a physical consequence, so it is stated
+        // here in the machine's terms instead of left to the operator to
+        // reconstruct (field-test finding 1.2).
+        help::label(ui, "Z datum");
+        ui.horizontal(|ui| {
+            for (label, z) in [
+                ("Z0: stock top", WorkZeroZ::StockTop),
+                ("Z0: stock bottom", WorkZeroZ::StockBottom),
+            ] {
+                let r = ui.selectable_label(
+                    self.document.as_ref().unwrap().job.setup.work_zero.z == z,
+                    label,
+                );
+                observe_control(label, r.rect);
+                if r.clicked() {
+                    self.edit_job(ctx, &[], |job| {
+                        job.setup.work_zero.z = z;
+                        Ok(())
+                    });
+                }
+            }
+        });
+        let thickness = self.document.as_ref().unwrap().job.setup.stock.thickness_mm;
+        match self.document.as_ref().unwrap().job.setup.work_zero.z {
+            WorkZeroZ::StockTop => {
+                ui.strong("Z0 is the top surface of the stock: the tool touches the stock at Z0.");
+            }
+            WorkZeroZ::StockBottom => {
+                let text = match thickness {
+                    Some(t) => format!(
+                        "Z0 is the bottom surface of the stock: every output Z is {t:.3} mm below the top surface the tool first touches."
+                    ),
+                    None => "Z0 is the bottom surface of the stock: every output Z is measured from the underside, not the surface the tool first touches.".into(),
+                };
+                ui.strong(text);
+            }
+        }
+        ui.small("Set the machine's Z zero on this same surface and check it before the first cut: CAM cannot see how your machine touches off tools after M6.");
         self.numbers(ui, ctx, &[7, 30, 31]);
         if button(ui, "Use default start XY", true).clicked() {
             self.edit_job(ctx, &[30, 31], |job| {
@@ -820,5 +860,41 @@ mod tests {
             headings(&mut app, &ctx),
             ["Inspector heading JOB TOOL · Endmill · Lettering rough"]
         );
+    }
+
+    #[test]
+    fn the_setup_tab_shows_the_z_datum_as_its_own_documented_choice() {
+        // Field-test finding 1.2: the active Z datum must be a named control
+        // with help, not a pair of labels buried under the stock numbers.
+        let empty = operation_authoring::empty_job();
+        let job = operation_authoring::apply(&empty, operation_authoring::add(Kind::Face, &empty))
+            .unwrap();
+        let mut app = App {
+            document: Some(Document::new(job)),
+            inspector_tab: 1,
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        for label in ["Z datum", "Z0: stock top", "Z0: stock bottom"] {
+            for _ in 0..3 {
+                CONTROLS.with(|c| c.borrow_mut().clear());
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1200., 900.),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| app.inspector(ctx),
+                );
+            }
+            let present = CONTROLS.with(|c| {
+                let c = c.borrow();
+                c.contains_key(label) || c.contains_key(&format!("Help {label}"))
+            });
+            assert!(present, "{label} missing from the setup tab");
+        }
+        assert!(help::explanation("Z datum").is_some_and(|s| s.len() > 30));
     }
 }
