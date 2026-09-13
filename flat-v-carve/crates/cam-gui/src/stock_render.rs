@@ -503,8 +503,10 @@ pub fn draw_vertices(cols: usize, rows: usize, walls: usize) -> u32 {
 mod tests {
     use super::*;
 
-    /// Mirror of `stock.wgsl`'s perimeter walk: the `(cell, along x, edge)`
-    /// triple of every wall quad, in the order the shader emits them.
+    /// Mirror of the perimeter walk the shader used to do. `stock_walls::build`
+    /// owns that logic now (its suite checks the same geometry over real
+    /// fields); this stays only as the retired reference for the contract test
+    /// below.
     fn wall_quads(cols: usize, rows: usize) -> Vec<((usize, usize), bool, u8)> {
         (0..2 * cols + 2 * rows)
             .map(|wall| {

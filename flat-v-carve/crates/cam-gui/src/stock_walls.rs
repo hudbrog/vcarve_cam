@@ -580,4 +580,61 @@ mod tests {
         assert!((section[0].top - 0.25).abs() < 1e-4);
         assert!((section[1].top - 0.).abs() < 1e-6);
     }
+
+    /// Every wall stands where it claims: an edge wall on a stock boundary, an
+    /// interior wall on a cell boundary inside the rectangle. This is the check
+    /// the misplaced-wall review build needed, applied to the builder that owns
+    /// the geometry now.
+    #[test]
+    fn every_wall_instance_stands_on_the_boundary_it_names() {
+        let cells = packed(
+            5,
+            4,
+            |col, row| {
+                if (1..4).contains(&col) && (1..3).contains(&row) {
+                    0.5
+                } else {
+                    0.
+                }
+            },
+            |_, _| 6,
+        );
+        let view = grid(&cells, 5, 4);
+        let set = build(&view, THRESHOLD, WALL_BUDGET_INSTANCES);
+        assert!(!set.walls.is_empty());
+        for wall in &set.walls {
+            let fixed = if wall.axis == 0 {
+                wall.start[0]
+            } else {
+                wall.start[1]
+            };
+            let along = if wall.axis == 0 {
+                wall.start[1]
+            } else {
+                wall.start[0]
+            };
+            // Axis 0 stands at a fixed x (bounded by the width) and runs along
+            // y (bounded by the length); axis 1 the other way round.
+            let fixed_limit = if wall.axis == 0 { 5. } else { 4. };
+            let along_limit = if wall.axis == 0 { 4. } else { 5. };
+            let on_stock_edge = fixed == 0. || fixed == fixed_limit;
+            let on_cell_boundary = fixed.fract() == 0. && fixed > 0. && fixed < fixed_limit;
+            assert!(
+                on_stock_edge || on_cell_boundary,
+                "wall {wall:?} stands at {fixed} on neither an edge nor a cell boundary"
+            );
+            assert!(along.fract() == 0., "wall {wall:?} starts mid-cell");
+            assert!(
+                wall.length > 0.
+                    && along >= 0.
+                    && along + wall.length <= along_limit + 1e-4
+                    && wall.start[0] >= 0.
+                    && wall.start[0] <= 5.
+                    && wall.start[1] >= 0.
+                    && wall.start[1] <= 4.,
+                "wall {wall:?} leaves the stock"
+            );
+            assert!(wall.top < wall.bottom, "wall {wall:?} has no height");
+        }
+    }
 }

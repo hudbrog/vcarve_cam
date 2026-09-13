@@ -2268,4 +2268,32 @@ mod tests {
         assert!(walls.iter().all(|wall| wall.axis == 0), "{walls:?}");
         assert_eq!(view.display_probe()["style"]["section"], "along_y");
     }
+
+    /// S3: the whole style round-trips through the saved view, so a restored
+    /// workspace keeps its colour mode, appearance and toggles.
+    #[test]
+    fn a_non_default_style_round_trips_through_the_saved_view() {
+        let mut view = Viewport::default();
+        view.stock_style.surface = stock_style::ColorMode::ByTool;
+        view.stock_style.walls = stock_style::WallMode::ByDepth;
+        view.stock_style.appearance = stock_style::Appearance::XRay;
+        view.stock_style.xray_opacity = 0.25;
+        view.stock_style.show_paths = false;
+        view.stock_style
+            .overrides
+            .insert("op-a".into(), [1., 0., 0.]);
+        let saved = view.settings();
+        assert!(saved.validate().is_ok());
+        let mut restored = Viewport::default();
+        restored.restore_settings(&saved);
+        assert_eq!(restored.settings(), saved);
+        assert_eq!(restored.stock_style.surface, stock_style::ColorMode::ByTool);
+        assert_eq!(restored.stock_style.walls, stock_style::WallMode::ByDepth);
+        assert_eq!(restored.stock_style.xray_opacity, 0.25);
+        assert!(!restored.stock_style.show_paths);
+        assert_eq!(
+            restored.stock_style.overrides.get("op-a"),
+            Some(&[1., 0., 0.])
+        );
+    }
 }

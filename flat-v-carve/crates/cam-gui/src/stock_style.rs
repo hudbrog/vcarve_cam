@@ -194,19 +194,19 @@ impl StockStyle {
     /// Colour of a wall fragment: `depth` is the fraction of the stock
     /// thickness the fragment sits below the top, and the identity is the cell
     /// that removed the material beside it.
-    pub fn wall_color(&self, palette: &[[f32; 4]], stage: u8, tool: u8, depth: f32) -> [f32; 3] {
+    pub fn wall_color(&self, palette: &[[f32; 4]], identity: u32, height: f32) -> [f32; 3] {
+        if identity == crate::stock_walls::NO_CUTTER {
+            return self.plain_wall;
+        }
+        let stage = (identity & 255) as u8;
+        let tool = ((identity >> 8) & 255) as u8;
         match self.walls {
-            WallMode::MatchSurface => {
-                let mut color = self.floor_color(palette, stage, tool, 1.);
-                if self.surface == ColorMode::Plain {
-                    color = self.plain_wall;
-                }
-                color
-            }
+            WallMode::MatchSurface if self.surface == ColorMode::Plain => self.plain_wall,
+            WallMode::MatchSurface => self.floor_color(palette, stage, tool, 1.),
             WallMode::OwnStage => palette
                 .get(stage as usize)
                 .map_or(self.plain_wall, |color| rgb(*color)),
-            WallMode::ByDepth => self.ramp(depth.clamp(0., 1.)),
+            WallMode::ByDepth => self.ramp(height.clamp(0., 1.)),
         }
     }
 
@@ -462,6 +462,53 @@ mod tests {
         }
     }
 
+    /// Each mode resolves a *cut* cell its own way: the operation's colour, the
+    /// tool's colour, or the ramp at that cell's depth.
+    #[test]
+    fn every_mode_resolves_a_cut_cell() {
+        let base = StockStyle::default();
+        let palette = base.palette(&stages(), &["tool-a".into(), "tool-b".into()]);
+        let mut style = StockStyle {
+            surface: ColorMode::ByOperation,
+            ..base.clone()
+        };
+        assert_eq!(
+            style.floor_color(&palette, 1, 1, 0.3).to_vec(),
+            palette[1][..3].to_vec()
+        );
+        style.surface = ColorMode::ByTool;
+        assert_eq!(
+            style.floor_color(&palette, 1, 1, 0.3).to_vec(),
+            palette[PALETTE_STAGES + 1][..3].to_vec()
+        );
+        style.surface = ColorMode::ByDepth;
+        assert_eq!(style.floor_color(&palette, 1, 1, 0.3), style.ramp(0.3));
+        style.surface = ColorMode::Plain;
+        assert_eq!(style.floor_color(&palette, 1, 1, 0.3), style.plain);
+        // A wall with no cutter above it keeps the plain wall colour in every
+        // mode: the stock's own untouched edge has no operation to name.
+        for mode in ColorMode::ALL {
+            let style = StockStyle {
+                surface: mode,
+                ..base.clone()
+            };
+            assert_eq!(
+                style.wall_color(&palette, crate::stock_walls::NO_CUTTER, 0.5),
+                style.plain_wall,
+                "{mode:?}"
+            );
+        }
+        // A wall the pocket cut owns takes that operation's colour.
+        let pocket = StockStyle {
+            surface: ColorMode::ByOperation,
+            ..base.clone()
+        };
+        assert_eq!(
+            pocket.wall_color(&palette, 1, 0.5).to_vec(),
+            palette[1][..3].to_vec()
+        );
+    }
+
     #[test]
     fn the_depth_ramp_runs_across_the_stock_thickness() {
         let style = StockStyle::default();
@@ -480,11 +527,8 @@ mod tests {
         // a shallow wall shows only the slice between its levels.
         let mut style = style;
         style.walls = WallMode::ByDepth;
-        assert_eq!(style.wall_color(&[], 0, 0, 0.1), style.ramp(0.1));
-        assert_ne!(
-            style.wall_color(&[], 0, 0, 0.1),
-            style.wall_color(&[], 0, 0, 0.9)
-        );
+        assert_eq!(style.wall_color(&[], 1, 0.1), style.ramp(0.1));
+        assert_ne!(style.wall_color(&[], 1, 0.1), style.wall_color(&[], 1, 0.9));
     }
 
     #[test]
