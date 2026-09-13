@@ -36,3 +36,11 @@ wasm-bindgen = "=0.2.128"
 wasm-bindgen-futures = "=0.4.78"
 js-sys = "=0.3.105"
 web-sys = { version = "=0.3.105", features = ["Window", "Document", "Element", "HtmlCanvasElement", "Performance", "Worker", "WorkerOptions", "WorkerType", "MessageEvent", "ErrorEvent"] }
+
+[dev-dependencies]
+# Shader validation without a GPU. wgpu compiles the viewport's WGSL when the
+# renderer builds, so a syntax or type error would reach the tester as a failed
+# viewport instead of a failing test. naga is already wgpu's shader compiler, so
+# this adds no package to the build; it only exposes the same front end and
+# validator to `tests/shaders.rs`.
+naga = { version = "=27.0.3", features = ["wgsl-in"] }

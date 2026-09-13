@@ -1,7 +1,8 @@
 use crate::{
+    camera::{self, Camera},
     compute::{Scene, SceneMeta, Vertex},
     overlay, pages,
-    pick::{self, Camera, Picker},
+    pick::{self, Picker},
     render, sim,
     stock_preview::PreviewMeta,
     stock_render,
@@ -105,9 +106,18 @@ pub struct DisplayGroup {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ViewSettings {
+    /// True when the view sits at the historical isometric tilt. Kept for the
+    /// saved-view format and the review scenarios; `tilt_deg` is the
+    /// authoritative elevation and is absent in views saved before the camera
+    /// could tilt freely.
     pub isometric: bool,
+    #[serde(default)]
+    pub tilt_deg: Option<f32>,
     pub zoom: f32,
     pub yaw: f32,
+    /// View-target offset in normalized scene units, as `camera::Camera` uses.
+    #[serde(default)]
+    pub pan: [f32; 2],
     pub stage: usize,
     pub stock: bool,
     pub prefix: usize,
@@ -122,8 +132,10 @@ impl Default for ViewSettings {
     fn default() -> Self {
         Self {
             isometric: false,
+            tilt_deg: None,
             zoom: 1.,
             yaw: 0.,
+            pan: [0., 0.],
             stage: 0,
             stock: true,
             prefix: 0,
@@ -134,12 +146,15 @@ impl Default for ViewSettings {
 }
 impl ViewSettings {
     pub fn validate(&self) -> Result<(), String> {
+        let tilt = self.tilt_deg.unwrap_or(0.);
         if self
             .inspection_xy
             .is_some_and(|xy| !xy.iter().all(|v| v.is_finite()))
             || !self.zoom.is_finite()
-            || !(0.5..=3.).contains(&self.zoom)
+            || !(camera::MIN_ZOOM..=camera::MAX_ZOOM).contains(&self.zoom)
             || !self.yaw.is_finite()
+            || !tilt.is_finite()
+            || !self.pan.iter().all(|v| v.is_finite())
             || self.stage > crate::session::MAX_DISPLAY_GROUPS
             || self.prefix > crate::session::MOTION_LIMIT
         {
@@ -183,9 +198,9 @@ pub struct Viewport {
     pub status: String,
     scene: Option<Scene>,
     // Viewport and selection
-    iso: bool,
-    zoom: f32,
-    yaw: f32,
+    /// The orbit camera shared by the renderer, the picker and every overlay.
+    /// `aspect` is refreshed from the viewport rect on each use.
+    camera: Camera,
     playhead: usize,
     playing: bool,
     stage: usize,
@@ -254,9 +269,7 @@ impl Default for Viewport {
             requested_preset: None,
             status: "Open a job to begin.".into(),
             scene: None,
-            iso: false,
-            zoom: 1.,
-            yaw: 0.,
+            camera: Camera::default(),
             playhead: 0,
             playing: false,
             stage: 0,
@@ -313,11 +326,16 @@ impl Viewport {
             self.worker_motion_bytes = motions as usize;
         }
     }
+    /// The saved view is the camera plus the display decisions around it. The
+    /// isometric flag stays in the format for older readers and the review
+    /// scenarios; the elevation itself travels in `tilt_deg`.
     pub fn settings(&self) -> ViewSettings {
         ViewSettings {
-            isometric: self.iso,
-            zoom: self.zoom,
-            yaw: self.yaw,
+            isometric: (self.camera.tilt - camera::ISO_TILT).abs() < 1e-3,
+            tilt_deg: Some(self.camera.tilt.to_degrees()),
+            zoom: self.camera.zoom,
+            yaw: self.camera.yaw,
+            pan: self.camera.pan,
             stage: self.stage,
             stock: self.show_stock,
             prefix: self.stock_prefix,
@@ -329,10 +347,24 @@ impl Viewport {
         }
     }
     pub fn restore_settings(&mut self, settings: &ViewSettings) {
-        self.iso = settings.isometric;
         self.inspection.point = settings.inspection_xy;
-        self.zoom = settings.zoom;
-        self.yaw = settings.yaw;
+        // A view saved before free rotation carries only the isometric flag.
+        let tilt = settings
+            .tilt_deg
+            .map(f32::to_radians)
+            .unwrap_or(if settings.isometric {
+                camera::ISO_TILT
+            } else {
+                0.
+            });
+        let mut camera = Camera {
+            yaw: settings.yaw,
+            ..Camera::default()
+        };
+        camera.pan = settings.pan;
+        camera.set_tilt(tilt);
+        camera.set_zoom(settings.zoom);
+        self.camera = camera;
         self.stage = settings.stage;
         self.show_stock = settings.stock;
         self.playing = false;
@@ -454,12 +486,7 @@ impl Viewport {
 
     fn draw_workspace(&self, ui: &egui::Ui, rect: egui::Rect) {
         let painter = ui.painter().with_clip_rect(rect);
-        let camera = Camera {
-            iso: self.iso,
-            aspect: rect.width() / rect.height().max(1.),
-            zoom: self.zoom,
-            yaw: self.yaw,
-        };
+        let camera = self.camera(rect);
         let project = |p: [f32; 3]| {
             let xy = camera.to_points(camera.ndc(p), [rect.width(), rect.height()]);
             rect.center() + egui::vec2(xy[0], xy[1])
@@ -505,7 +532,8 @@ impl Viewport {
             };
             let top = points(0.);
             let bottom = points(-values[4]);
-            if self.iso {
+            // The side faces are only visible once the view is off the plane.
+            if self.camera.tilt.sin().abs() > 1e-3 {
                 for i in 0..4 {
                     let j = (i + 1) % 4;
                     painter.add(egui::Shape::convex_polygon(
@@ -525,18 +553,50 @@ impl Viewport {
     fn viewport(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let top = ui.selectable_value(&mut self.iso, false, "Top");
-                crate::app::observe_control("Top", top.rect);
-                let iso = ui.selectable_value(&mut self.iso, true, "Isometric");
-                crate::app::observe_control("Isometric", iso.rect);
-                if ui.button("Fit").clicked() {
-                    self.zoom = 1.;
-                    self.yaw = 0.;
+                // Presets set the elevation only. The azimuth, the elevation
+                // and the pan stay free afterwards, from the pointer or from
+                // these controls.
+                for (label, tilt) in [
+                    ("Top", 0.),
+                    ("Isometric", camera::ISO_TILT),
+                    ("Front", camera::TILT_LIMIT),
+                ] {
+                    let selected = (self.camera.tilt - tilt).abs() < 1e-3;
+                    let response = ui.selectable_label(selected, label);
+                    crate::app::observe_control(label, response.rect);
+                    if response.clicked() {
+                        self.camera.set_tilt(tilt);
+                    }
                 }
-                ui.add(egui::Slider::new(&mut self.zoom, 0.5..=3.).text("Zoom"));
+                let fit = ui.button("Fit");
+                crate::app::observe_control("Fit", fit.rect);
+                if fit.clicked() {
+                    self.fit();
+                }
+                let mut tilt_deg = self.camera.tilt.to_degrees();
+                let view = ui.add(
+                    egui::Slider::new(&mut tilt_deg, -85.0..=85.0)
+                        .suffix("°")
+                        .text("View"),
+                );
+                crate::app::observe_control("View", view.rect);
+                if view.changed() {
+                    self.camera.set_tilt(tilt_deg.to_radians());
+                }
+                let mut zoom = self.camera.zoom;
+                let zoom_control = ui.add(
+                    egui::Slider::new(&mut zoom, camera::MIN_ZOOM..=camera::MAX_ZOOM)
+                        .logarithmic(true)
+                        .text("Zoom"),
+                );
+                crate::app::observe_control("Zoom", zoom_control.rect);
+                if zoom_control.changed() {
+                    self.camera.set_zoom(zoom);
+                }
                 if self.stock.is_some() {
                     ui.checkbox(&mut self.show_stock, "Stock preview");
                 }
+                crate::app::help::icon(ui, "View controls");
             });
             self.artwork_toolbar(ui);
             ui.label(
@@ -553,12 +613,44 @@ impl Viewport {
             self.draw_workspace(ui, rect);
             self.artwork_pointer(ui, &response, rect);
             self.profile_anchor_pointer(ui, &response, rect);
-            if response.dragged()
-                && self.anchor_drag.is_none()
-                && (!self.artwork.enabled
-                    || self.artwork.mode == crate::artwork_view::GestureMode::Select)
-            {
-                self.yaw += response.drag_delta().x * 0.005;
+            // View navigation. Active edit handles and the selectable geometry
+            // kinds own their drags first (UI plan section 9.3): the artwork
+            // placement gesture and the profile anchor keep the primary
+            // button, so an active gesture is never stolen. Primary (or any
+            // secondary) drag orbits; the middle button, or Shift with the
+            // primary button, pans — and the middle button and the wheel stay
+            // available for navigation in every mode.
+            let edit_gesture = !self.artwork.enabled
+                || self.artwork.mode == crate::artwork_view::GestureMode::Select;
+            if self.anchor_drag.is_none() {
+                let delta = response.drag_delta();
+                let shift = ctx.input(|input| input.modifiers.shift);
+                let pan = response.dragged_by(egui::PointerButton::Middle)
+                    || (edit_gesture && shift && response.dragged_by(egui::PointerButton::Primary));
+                let orbit = edit_gesture
+                    && (response.dragged_by(egui::PointerButton::Primary)
+                        || response.dragged_by(egui::PointerButton::Secondary));
+                if pan {
+                    self.camera
+                        .pan_by([delta.x, delta.y], [rect.width(), rect.height()]);
+                } else if orbit && delta != egui::Vec2::ZERO {
+                    self.camera.orbit([delta.x, delta.y]);
+                }
+            }
+            // The wheel (or a pinch / ctrl-wheel gesture) zooms about the
+            // cursor, so the point under it stays put.
+            if response.hovered() {
+                let (scroll, pinch) =
+                    ctx.input(|input| (input.raw_scroll_delta.y, input.zoom_delta()));
+                let factor = if (pinch - 1.).abs() > 1e-4 {
+                    pinch
+                } else {
+                    (scroll * 0.0025).exp()
+                };
+                if (factor - 1.).abs() > 1e-4 {
+                    let cursor = response.hover_pos().unwrap_or_else(|| rect.center());
+                    self.zoom_at(cursor, rect, factor.clamp(0.2, 5.));
+                }
             }
             if !self.artwork.enabled
                 && response.clicked()
@@ -612,12 +704,7 @@ impl Viewport {
                                 versions: stock.cell_versions.clone(),
                                 identity: stock.identity,
                                 revision: self.scene_revision * 4096 + stock.prefix as u64,
-                                camera: [
-                                    if self.iso { 1. } else { 0. },
-                                    rect.width() / rect.height().max(1.),
-                                    self.zoom,
-                                    self.yaw,
-                                ],
+                                camera: self.camera(rect).uniform(),
                                 grid: [
                                     ((stock.meta.stock.x0 - (bounds[0] + bounds[2]) / 2.) * scale)
                                         as f32,
@@ -675,12 +762,7 @@ impl Viewport {
                                 .map(|s| s.offset..s.offset + s.len)
                                 .unwrap_or(0..0),
                             revision: self.overlay_revision,
-                            camera: [
-                                if self.iso { 1. } else { 0. },
-                                rect.width() / rect.height().max(1.),
-                                self.zoom,
-                                self.yaw,
-                            ],
+                            camera: self.camera(rect).uniform(),
                             lines: self.overlay_lines.clone(),
                             triangles: self.overlay_triangles.clone(),
                             drill: self.drill,
@@ -1242,11 +1324,29 @@ impl Viewport {
 
     fn camera(&self, rect: egui::Rect) -> Camera {
         Camera {
-            iso: self.iso,
             aspect: (rect.width() / rect.height().max(1.)).max(0.2),
-            zoom: self.zoom,
-            yaw: self.yaw,
+            ..self.camera
         }
+    }
+
+    /// Frame the whole scene again: the default azimuth, zoom one and no pan.
+    /// The elevation the user chose is kept.
+    fn fit(&mut self) {
+        self.camera.yaw = 0.;
+        self.camera.set_zoom(1.);
+        self.camera.pan = [0., 0.];
+    }
+
+    /// Zoom about a viewport point, keeping the scene point under it fixed.
+    fn zoom_at(&mut self, cursor: egui::Pos2, rect: egui::Rect, factor: f32) {
+        let mut camera = self.camera(rect);
+        let ndc = camera.to_ndc(
+            [cursor.x - rect.center().x, cursor.y - rect.center().y],
+            [rect.width(), rect.height()],
+        );
+        camera.zoom_toward(ndc, factor);
+        self.camera.zoom = camera.zoom;
+        self.camera.pan = camera.pan;
     }
 
     /// Selection fill and blade marker in the same normalized scene space as
@@ -1257,7 +1357,7 @@ impl Viewport {
             self.selection.map(|pick| pick.motion),
             self.playhead,
             self.stage,
-            (self.zoom * 100.) as i32,
+            (self.camera.zoom * 100.) as i32,
             rect.width() as i32,
             rect.height() as i32,
             self.profile_anchor_signature,
@@ -1278,7 +1378,7 @@ impl Viewport {
             .max(0.001);
         let scale = 1.6 / size;
         // Points per scene unit, matching the viewport projection.
-        let per_unit = self.zoom * rect.height().max(1.) / 2.;
+        let per_unit = self.camera.points_per_unit([rect.width(), rect.height()]);
         let selection = self
             .selection
             .filter(|p| self.visible_motion_range().contains(&(p.motion as usize)))
@@ -1431,5 +1531,254 @@ mod tests {
         view.stage = 0;
         view.stage_window = 1_000;
         assert_eq!(view.timeline_window(1_000), (992, 1_000));
+    }
+
+    /// Drive the real widget with synthetic pointer input, so the wiring from
+    /// button to camera is covered and not only the camera math in `camera.rs`.
+    fn frame(view: &mut Viewport, ctx: &egui::Context, events: Vec<egui::Event>) {
+        frame_with(view, ctx, events, egui::Modifiers::default());
+    }
+
+    fn frame_with(
+        view: &mut Viewport,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200., 900.),
+                )),
+                events,
+                modifiers,
+                ..Default::default()
+            },
+            |ctx| view.viewport(ctx),
+        );
+    }
+
+    fn viewport_rect() -> egui::Rect {
+        let [x0, y0, x1, y1] =
+            crate::app::control_rect("Artwork viewport").expect("the viewport reports its rect");
+        egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
+    }
+
+    fn pointer(position: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: position,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        }
+    }
+
+    /// Press, move and release; returns the camera the widget settled on.
+    fn drag(
+        view: &mut Viewport,
+        ctx: &egui::Context,
+        button: egui::PointerButton,
+        delta: egui::Vec2,
+        shift: bool,
+    ) {
+        frame(view, ctx, vec![]);
+        let rect = viewport_rect();
+        let start = rect.center();
+        let modifiers = egui::Modifiers {
+            shift,
+            ..Default::default()
+        };
+        frame_with(view, ctx, vec![egui::Event::PointerMoved(start)], modifiers);
+        frame_with(
+            view,
+            ctx,
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button,
+                pressed: true,
+                modifiers,
+            }],
+            modifiers,
+        );
+        for step in 1..=4 {
+            let position = start + delta * (step as f32 / 4.);
+            frame_with(
+                view,
+                ctx,
+                vec![egui::Event::PointerMoved(position)],
+                modifiers,
+            );
+        }
+        frame_with(
+            view,
+            ctx,
+            vec![egui::Event::PointerButton {
+                pos: start + delta,
+                button,
+                pressed: false,
+                modifiers,
+            }],
+            modifiers,
+        );
+    }
+
+    fn click(view: &mut Viewport, ctx: &egui::Context, position: egui::Pos2) {
+        frame(view, ctx, vec![egui::Event::PointerMoved(position)]);
+        frame(
+            view,
+            ctx,
+            vec![pointer(position, egui::PointerButton::Primary, true)],
+        );
+        frame(
+            view,
+            ctx,
+            vec![pointer(position, egui::PointerButton::Primary, false)],
+        );
+    }
+
+    #[test]
+    fn the_pointer_orbits_pans_and_zooms_the_real_viewport() {
+        let mut view = Viewport::default();
+        let ctx = egui::Context::default();
+        assert_eq!(view.camera, Camera::default());
+
+        // Primary drag orbits: the history is a horizontal turn and a vertical
+        // elevation, and the elevation stops at the limit.
+        drag(
+            &mut view,
+            &ctx,
+            egui::PointerButton::Primary,
+            egui::vec2(60., 30.),
+            false,
+        );
+        assert!(view.camera.yaw > 0., "{:?}", view.camera);
+        assert!(view.camera.tilt > 0., "{:?}", view.camera);
+        let yaw = view.camera.yaw;
+        drag(
+            &mut view,
+            &ctx,
+            egui::PointerButton::Primary,
+            egui::vec2(0., 10_000.),
+            false,
+        );
+        assert_eq!(view.camera.tilt, camera::TILT_LIMIT);
+        assert_eq!(view.camera.yaw, yaw, "a pure elevation drag must not turn");
+        view.fit();
+
+        // Middle drag pans without turning, and the primary drag stays free
+        // for the artwork gesture that owns it.
+        drag(
+            &mut view,
+            &ctx,
+            egui::PointerButton::Middle,
+            egui::vec2(40., 0.),
+            false,
+        );
+        assert!(view.camera.pan[0] > 0., "{:?}", view.camera);
+        assert_eq!(view.camera.yaw, 0.);
+        let pan = view.camera.pan;
+        view.artwork.enabled = true;
+        view.artwork.mode = crate::artwork_view::GestureMode::Move;
+        drag(
+            &mut view,
+            &ctx,
+            egui::PointerButton::Primary,
+            egui::vec2(60., 0.),
+            false,
+        );
+        assert_eq!(view.camera.yaw, 0., "the artwork gesture owns the drag");
+        drag(
+            &mut view,
+            &ctx,
+            egui::PointerButton::Middle,
+            egui::vec2(40., 0.),
+            false,
+        );
+        assert!(view.camera.pan[0] > pan[0], "panning stays available");
+        // Shift with the primary button pans while the viewport, not the
+        // artwork, owns the drag.
+        view.artwork.mode = crate::artwork_view::GestureMode::Select;
+        let pan = view.camera.pan;
+        let yaw = view.camera.yaw;
+        drag(
+            &mut view,
+            &ctx,
+            egui::PointerButton::Primary,
+            egui::vec2(40., 0.),
+            true,
+        );
+        assert!(
+            view.camera.pan[0] > pan[0] && view.camera.yaw == yaw,
+            "shift-drag pans instead of orbiting: {:?}",
+            view.camera
+        );
+        view.artwork.enabled = false;
+    }
+
+    #[test]
+    fn the_wheel_zooms_toward_the_pointer_and_the_presets_set_the_elevation() {
+        let mut view = Viewport::default();
+        let ctx = egui::Context::default();
+        frame(&mut view, &ctx, vec![]);
+        let rect = viewport_rect();
+        let cursor = rect.center() + egui::vec2(rect.width() * 0.3, -rect.height() * 0.2);
+        let before = view
+            .camera(rect)
+            .ground_point(
+                [cursor.x - rect.center().x, cursor.y - rect.center().y],
+                [rect.width(), rect.height()],
+            )
+            .unwrap();
+        frame(
+            &mut view,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(cursor),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0., 1.),
+                    modifiers: egui::Modifiers::default(),
+                },
+            ],
+        );
+        assert!(view.camera.zoom > 1., "{:?}", view.camera);
+        let after = view
+            .camera(rect)
+            .ground_point(
+                [cursor.x - rect.center().x, cursor.y - rect.center().y],
+                [rect.width(), rect.height()],
+            )
+            .unwrap();
+        assert!(
+            (before[0] - after[0]).abs() < 1e-3 && (before[1] - after[1]).abs() < 1e-3,
+            "{before:?} -> {after:?}"
+        );
+
+        // The presets set the elevation and leave the azimuth alone.
+        view.camera.yaw = 0.4;
+        let isometric = crate::app::control_rect("Isometric").unwrap();
+        click(
+            &mut view,
+            &ctx,
+            egui::pos2(
+                (isometric[0] + isometric[2]) / 2.,
+                (isometric[1] + isometric[3]) / 2.,
+            ),
+        );
+        assert!(
+            (view.camera.tilt - camera::ISO_TILT).abs() < 1e-6,
+            "{:?}",
+            view.camera
+        );
+        let top = crate::app::control_rect("Top").unwrap();
+        click(
+            &mut view,
+            &ctx,
+            egui::pos2((top[0] + top[2]) / 2., (top[1] + top[3]) / 2.),
+        );
+        assert_eq!(view.camera.tilt, 0.);
+        assert_eq!(view.camera.yaw, 0.4);
+        assert!(!view.settings().isometric);
     }
 }

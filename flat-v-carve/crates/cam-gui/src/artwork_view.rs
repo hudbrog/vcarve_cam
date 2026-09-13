@@ -1,6 +1,6 @@
 //! Display-only filled-region picking and placement candidates. Assignment is
 //! a separate document command; pointer selection never changes machining.
-use crate::{authoring::Component, pick::Camera};
+use crate::{authoring::Component, camera::Camera};
 use cam_core::{geometry::Point, project::v5::GeometryRef, svg::Placement};
 use serde::{Deserialize, Serialize};
 
@@ -21,20 +21,22 @@ pub fn setup_point(
     rect: egui::Rect,
     screen: egui::Pos2,
 ) -> Point {
-    let q = camera.to_ndc(
+    // The camera inverts its own projection onto the Z=0 plane; an edge-on
+    // view has no ground point to return, so the pointer keeps its meaning as
+    // far as the plane can carry it.
+    let Some(ground) = camera.ground_point(
         [screen.x - rect.center().x, screen.y - rect.center().y],
         [rect.width(), rect.height()],
-    );
-    let u = q[0] as f64 * camera.aspect as f64 / camera.zoom as f64;
-    let v = q[1] as f64 / camera.zoom as f64 / if camera.iso { 0.65 } else { 1. };
-    let (s, c) = (camera.yaw as f64).sin_cos();
+    ) else {
+        return Point::new((bounds[0] + bounds[2]) / 2., (bounds[1] + bounds[3]) / 2.);
+    };
     let scale = 1.6
         / (bounds[2] - bounds[0])
             .max(bounds[3] - bounds[1])
             .max(0.001);
     Point::new(
-        (c * u + s * v) / scale + (bounds[0] + bounds[2]) / 2.,
-        (-s * u + c * v) / scale + (bounds[1] + bounds[3]) / 2.,
+        ground[0] as f64 / scale + (bounds[0] + bounds[2]) / 2.,
+        ground[1] as f64 / scale + (bounds[1] + bounds[3]) / 2.,
     )
 }
 pub fn screen_point(
@@ -130,12 +132,13 @@ mod tests {
     fn screen_round_trip_and_gesture_use_the_core_placement_convention() {
         let bounds = [-20., -10., 80., 60.];
         let rect = egui::Rect::from_min_size(egui::pos2(210., 150.), egui::vec2(720., 480.));
-        for iso in [false, true] {
+        for tilt in [0., crate::camera::ISO_TILT, 1.2] {
             for yaw in [0., 0.8, -1.2] {
                 let camera = Camera {
-                    iso,
+                    tilt,
                     yaw,
                     zoom: 1.7,
+                    pan: [-0.05, 0.02],
                     aspect: rect.width() / rect.height(),
                 };
                 let p = Point::new(23.5, 17.2);

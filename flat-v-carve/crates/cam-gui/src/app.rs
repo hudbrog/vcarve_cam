@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 #[path = "export_ui.rs"]
 mod export_ui;
 #[path = "help.rs"]
-mod help;
+pub(crate) mod help;
 #[path = "inspector.rs"]
 mod inspector;
 #[path = "issues.rs"]
@@ -40,6 +40,11 @@ pub fn observe_control(label: &str, rect: egui::Rect) {
             [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
         );
     });
+}
+/// The rect a named control reported during the last frame, in viewport
+/// points. Test and probe surface: the same map [`observe_control`] fills.
+pub fn control_rect(label: &str) -> Option<[f32; 4]> {
+    CONTROLS.with(|c| c.borrow().get(label).copied())
 }
 fn button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
     let response = ui.add_enabled(enabled, egui::Button::new(label));
@@ -2135,8 +2140,10 @@ mod tests {
         });
         app.view.restore_settings(&crate::viewport::ViewSettings {
             isometric: true,
+            tilt_deg: None,
             zoom: 1.4,
             yaw: 0.3,
+            pan: [0., 0.],
             stage: 1,
             stock: true,
             prefix: 123,

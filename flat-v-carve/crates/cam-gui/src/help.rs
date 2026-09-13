@@ -2,7 +2,7 @@
 //! explanation; click to keep it open while reading.
 use super::*;
 
-pub(super) fn icon(ui: &mut egui::Ui, label: &str) {
+pub(crate) fn icon(ui: &mut egui::Ui, label: &str) {
     let Some(body) = explanation(label) else {
         return;
     };
@@ -35,7 +35,7 @@ pub(super) fn icon(ui: &mut egui::Ui, label: &str) {
         });
     });
 }
-pub(super) fn label(ui: &mut egui::Ui, name: &str) {
+pub(crate) fn label(ui: &mut egui::Ui, name: &str) {
     ui.horizontal_wrapped(|ui| {
         ui.label(name);
         icon(ui, name);
@@ -174,6 +174,9 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
         }
         "Clearing strategy" => {
             "Depth-dependent clearing computes the reachable region separately at each depth. Deepest-region clearing uses the region reachable at the deepest cut for all layers. These can produce different coverage on sloped V-shaped targets."
+        }
+        "View controls" => {
+            "Drag with the left button to orbit the view; drag with the middle button, or hold Shift and drag, to pan. The wheel (or a pinch and ctrl-wheel gesture) zooms toward the pointer. Top, Isometric and Front set the elevation, View sets it numerically, and Fit re-frames the scene without changing the elevation. The camera is display only: it never changes the job, the machining or the exported program."
         }
         _ if label.starts_with("Configuration T ") => FIELD_HELP[32],
         _ if label.starts_with("Configuration H ") => FIELD_HELP[33],

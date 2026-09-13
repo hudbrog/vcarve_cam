@@ -89,7 +89,7 @@ impl Resources {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, stats: SharedStats) -> Self {
         let camera = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("CAM GUI camera"),
-            size: 16,
+            size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -265,7 +265,8 @@ pub struct Callback {
     pub contour_draw_ranges: Vec<std::ops::Range<u32>>,
     pub contour_range: std::ops::Range<usize>,
     pub revision: u64,
-    pub camera: [f32; 4],
+    /// The `camera::Camera::uniform` value `scene.wgsl` reads.
+    pub camera: [f32; 8],
     pub lines: Arc<Vec<Vertex>>,
     pub triangles: Arc<Vec<Vertex>>,
     pub drill: Drill,

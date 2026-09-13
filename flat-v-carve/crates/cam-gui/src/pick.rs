@@ -2,52 +2,23 @@
 //! screen-distance test. No CAM meaning is attached to a pick; the returned
 //! motion index is a display identity inside the transported motion pages.
 //!
-//! The camera here mirrors `scene.wgsl` exactly. Vertex positions are the same
+//! [`Camera`] mirrors `scene.wgsl` exactly. Vertex positions are the same
 //! normalized scene coordinates the shader receives, so a pick reproduces the
-//! visible projection instead of a second, guessed transform:
+//! visible projection instead of a second, guessed transform. The projection
+//! itself lives in `camera.rs`; picking only has to invert its ground plane:
 //!
 //! ```text
-//! u   = x*cos(yaw) - y*sin(yaw)          // rotation
-//! v   = x*sin(yaw) + y*cos(yaw)
-//! ndc = (u*zoom/aspect, mix(v, 0.65*v + 0.76*z, iso)*zoom)
+//! screen = camera.ndc(p)                 // see camera.rs
+//! ground = camera.ground_point(cursor)   // the z = 0 plane under the cursor
 //! ```
 //!
 //! Tolerance is declared in **physical pixels** and converted through the
 //! reported scale factor, so a display at 200% keeps the same physical hit
 //! target instead of a hit target that halves on screen.
+use crate::camera::Camera;
 use serde::{Deserialize, Serialize};
 
 pub const VERTEX_BYTES: usize = 28;
-
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Camera {
-    pub iso: bool,
-    pub aspect: f32,
-    pub zoom: f32,
-    pub yaw: f32,
-}
-
-impl Camera {
-    pub fn ndc(&self, p: [f32; 3]) -> [f32; 2] {
-        let (s, c) = self.yaw.sin_cos();
-        let u = p[0] * c - p[1] * s;
-        let v = p[0] * s + p[1] * c;
-        let mixed = if self.iso { 0.65 * v + 0.76 * p[2] } else { v };
-        [u * self.zoom / self.aspect, mixed * self.zoom]
-    }
-    /// NDC to points inside `rect_points` (width, height). Y is inverted
-    /// because window coordinates grow downward.
-    pub fn to_points(&self, ndc: [f32; 2], rect_points: [f32; 2]) -> [f32; 2] {
-        [ndc[0] * rect_points[0] / 2., -ndc[1] * rect_points[1] / 2.]
-    }
-    pub fn to_ndc(&self, point: [f32; 2], rect_points: [f32; 2]) -> [f32; 2] {
-        [
-            point[0] * 2. / rect_points[0].max(1.),
-            -point[1] * 2. / rect_points[1].max(1.),
-        ]
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -186,13 +157,12 @@ impl Picker {
         let scale_x = (cam.zoom * rect_points[0] / 2. / cam.aspect.max(1e-6)).max(1e-6);
         let scale_y = (cam.zoom * rect_points[1] / 2.).max(1e-6);
         let along_x = tolerance_points / scale_x;
-        let along_y = if cam.iso {
-            // In isometric view the shader mixes 0.65*v + 0.76*z, so a
-            // candidate with a different z can still project onto the cursor.
-            (tolerance_points / scale_y + 0.76 * self.z_reach) / 0.65
-        } else {
-            tolerance_points / scale_y
-        };
+        // The projection mixes `v*cos(tilt) + z*sin(tilt)`, so a candidate
+        // with a different z can still project onto the cursor. On the ground
+        // plane (a tilted view seen from the side) that widens the band.
+        let (sin_tilt, cos_tilt) = cam.tilt.sin_cos();
+        let along_y =
+            (tolerance_points / scale_y + sin_tilt.abs() * self.z_reach) / cos_tilt.abs().max(0.05);
         along_x.max(along_y)
     }
 
@@ -227,19 +197,10 @@ impl Picker {
         if self.endpoints.is_empty() {
             return None;
         }
-        let cursor_ndc = cam.to_ndc(cursor_points, rect_points);
         let radius = self.search_radius(tolerance_points, rect_points, cam);
-        // Cursor to model space: invert the shader's linear part, then search a
-        // ball of `radius` around the point that projects onto that pixel.
-        let (s, c) = cam.yaw.sin_cos();
-        let rotated = [
-            cursor_ndc[0] * cam.aspect / cam.zoom.max(1e-6),
-            cursor_ndc[1] / cam.zoom.max(1e-6) / if cam.iso { 0.65 } else { 1. },
-        ];
-        let centre = [
-            rotated[0] * c + rotated[1] * s,
-            -rotated[0] * s + rotated[1] * c,
-        ];
+        // Cursor to model space: invert the shader's linear part (the z = 0
+        // plane under the cursor), then search a ball of `radius` around it.
+        let centre = cam.ground_point(cursor_points, rect_points)?;
         let lo = self.cell_of([centre[0] - radius, centre[1] - radius]);
         let hi = self.cell_of([centre[0] + radius, centre[1] + radius]);
         let mut best: Option<(u32, f32)> = None;
@@ -315,12 +276,7 @@ mod tests {
     fn coincident_hidden_stage_does_not_steal_motion_pick() {
         let picker =
             Picker::new(vec![[0., 0., 0.], [1., 0., 0.], [0., 0., 0.], [1., 0., 0.]]).unwrap();
-        let camera = Camera {
-            iso: false,
-            aspect: 1.,
-            zoom: 1.,
-            yaw: 0.,
-        };
+        let camera = Camera::new(1.);
         let hit = picker
             .pick_visible(&camera, [500., 500.], [100., 0.], 8., 1., 1..2)
             .unwrap();
@@ -353,7 +309,7 @@ mod tests {
     #[test]
     fn indexed_pick_matches_brute_force_for_cameras_and_dpi() {
         let picker = fixture();
-        for iso in [false, true] {
+        for tilt in [0., crate::camera::ISO_TILT] {
             for zoom in [0.5, 1., 2.4] {
                 for yaw in [0., 0.7, -1.9] {
                     for rect in rects() {
@@ -362,10 +318,11 @@ mod tests {
                         // conservative radius.
                         for aspect in [rect[0] / rect[1], 0.8] {
                             let cam = Camera {
-                                iso,
+                                tilt,
                                 aspect,
                                 zoom,
                                 yaw,
+                                pan: [0., 0.],
                             };
                             for step in 0..48 {
                                 let cursor = [
@@ -402,12 +359,7 @@ mod tests {
         // One isolated horizontal segment, so the only question is how the
         // declared physical-pixel tolerance converts at each scale factor.
         let picker = Picker::new(vec![[-0.5, 0., 0.], [0.5, 0., 0.]]).unwrap();
-        let cam = Camera {
-            iso: false,
-            aspect: 1.5,
-            zoom: 1.,
-            yaw: 0.,
-        };
+        let cam = Camera::new(1.5);
         let rect = [900., 600.];
         let anchor = [0., 0.];
         for ppp in [1., 1.25, 1.5, 2.] {
@@ -440,18 +392,7 @@ mod tests {
         assert_eq!(empty.motion_count(), 0);
         assert!(
             empty
-                .pick(
-                    &Camera {
-                        iso: false,
-                        aspect: 1.,
-                        zoom: 1.,
-                        yaw: 0.
-                    },
-                    [100., 100.],
-                    [0., 0.],
-                    8.,
-                    1.
-                )
+                .pick(&Camera::new(1.), [100., 100.], [0., 0.], 8., 1.)
                 .is_none()
         );
         assert!(Picker::from_vertex_bytes(&[0u8; 7]).is_err());

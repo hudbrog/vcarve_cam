@@ -203,8 +203,10 @@ mod tests {
         app.scroll[0] = 42.;
         app.view.restore_settings(&crate::viewport::ViewSettings {
             isometric: true,
+            tilt_deg: None,
             zoom: 1.4,
             yaw: 0.3,
+            pan: [0., 0.],
             stage: 1,
             stock: true,
             prefix: 123,
@@ -226,7 +228,9 @@ mod tests {
         assert!(restored.view.settings().isometric);
         assert_eq!(restored.view.settings().inspection_xy, Some([9., 23.]));
         // "Re-open the prior view" means the whole working view, including the
-        // display resolution, not only the camera flag. The playhead is stored
+        // display resolution and the free camera, not only the camera flag. A
+        // view saved before free rotation restores the isometric elevation it
+        // recorded by flag and re-saves it as a stated angle. The playhead is stored
         // with the snapshot and re-applied when a scene loads, because the
         // retained execution itself is never restored from a draft, so a
         // context that was saved before its first generation reports the
@@ -235,8 +239,10 @@ mod tests {
             restored.view.settings(),
             crate::viewport::ViewSettings {
                 isometric: true,
+                tilt_deg: Some(crate::camera::ISO_TILT.to_degrees()),
                 zoom: 1.4,
                 yaw: 0.3,
+                pan: [0., 0.],
                 stage: 1,
                 stock: true,
                 prefix: 0,

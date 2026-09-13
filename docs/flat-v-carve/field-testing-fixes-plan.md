@@ -311,6 +311,15 @@ currently keeps the tangent entry of a non-plunging tool legal, W1) or ask for
 it as a stated entry/exit overrun — and the overlay/camera half of step 3 above
 is still unstarted.
 
+Two more preview defects were reported directly by the tester and fixed in the
+same batch, both recorded in [preview-display-progress.md](preview-display-progress.md):
+the preview camera is now a free orbit (drag to rotate, middle/Shift drag to
+pan, wheel to zoom toward the pointer, Top/Isometric/Front/View/Zoom/Fit) with
+one shared frame for the renderer, the picker and every overlay; and the
+simulated stock's four walls now follow the material left in each boundary cell
+instead of standing at the original stock height, so a faced plate reads as a
+plate rather than a tray with the original envelope around it.
+
 ### W4 — Inkscape/SVG import compatibility (P1, 3.1)
 
 **Current behaviour.** A `<style>` element is a hard failure
