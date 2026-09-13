@@ -93,7 +93,7 @@ Invariants to enforce with tests, not prose:
 | 1.1 | Facing plunges inside material | P0 | **Present**; reproduced by inspection | `cam-core/src/operations/face.rs:527`, `:584` |
 | 1.2 | Z reference not prominent | P0/P1 | **Present** | `cam-gui/src/inspector.rs:512-513` |
 | 2.1 | Offset/overhang semantics unclear | P1 | **Present**; parameters exist, semantics undocumented | `cam-core/src/project.rs:512-544`, `face.rs:219-256` |
-| 2.2 | Facing offsets distort the preview | P1 | **Unverified**; camera/bounds suspect | `cam-gui/src/scene.rs:272-300`, `:483-487` |
+| 2.2 | Facing offsets distort the preview | P1 | **Reproduced and fixed** for the artwork/stock scale; camera fit still open | `cam-gui/src/scene.rs::build_with_preset`, `executed_frame` |
 | 3.1 | Inkscape CSS/`<style>` rejected | P1 | **Reproduced** | `svg/mod.rs:291`, `svg/style.rs:100` |
 | 3.2 | SVG Y transform wrong | P1 | **Convention exists**, undocumented/untested in user terms | `svg/mod.rs:315`, `:548-601` |
 | 3.3 | Stock resize breaks relative position | P1 | **Present by design** (absolute rect, no anchor, no warning) | `project/v5/commands.rs:805` |
@@ -277,6 +277,39 @@ are byte-identical before/after changing each of the four margins and both
 overruns; a preview test asserting coverage/envelope/entry overlays are drawn
 for the report's example (Y stock `0…100`, facing offset `20`, start overhang
 `60`, Ø51 tool → entry at `Y = -60`).
+
+**Status: the scale half of 2.2 landed; the rest is open.** The tester's own
+reproduction (`real_data/facing_job.json`: 200 × 100 × 18 mm stock, its page-sized
+`flower_box.svg`, a whole-stock face with a Ø50.2 plate at 25 mm stepover) was
+generated and the first raster row read back: the motions run to `x = 225.1`
+and `x = -25.1`, so the frame grew from 200 mm to 252.2 mm across. The artwork
+had already been normalized against the 200 mm frame, so the SVG was drawn
+**26% larger than the stock block** — the report's "the loaded SVG is rendered
+larger than the stock material", including why it looked intermittent: at pass
+angle 90 the raster leaves through the 100 mm axis, the frame only grew to
+202 mm, and the error fell under 1%.
+
+The scene now settles **one display frame before the first vertex is written**
+(`build_with_preset` + `executed_frame`): the stock rectangle, the artwork, the
+knife chains and the executed toolpath are all normalized against it, so a path
+that travels outside the stock widens the frame instead of rescaling anything
+drawn inside it. `crates/cam-gui/tests/scene_frame.rs` reproduces the reported
+job at both pass angles, reads the contour vertices back out of the payload and
+asserts the artwork returns as the 200 × 100 mm rectangle it occupies — while
+the toolpath, read back from the same payload, is asserted to leave the stock.
+Before the fix the same test recovers `-26.1 … 226.1` for the artwork at
+0 degrees.
+
+What this does **not** change, and what is still open from W3, is the size of
+the travel itself and how the view frames it: the raster still puts the cutter
+centre a full radius past the coverage at both ends of every row (25.1 mm with
+this plate) with both overruns at `0`, and the camera still fits
+`stock ∪ artwork ∪ toolpath`, so a large overrun still reads as the whole scene
+zooming out. The definition question is Q3-adjacent — whether the default
+whole-stock face should carry an implicit cutter-radius overrun (which is what
+currently keeps the tangent entry of a non-plunging tool legal, W1) or ask for
+it as a stated entry/exit overrun — and the overlay/camera half of step 3 above
+is still unstarted.
 
 ### W4 — Inkscape/SVG import compatibility (P1, 3.1)
 

@@ -227,6 +227,107 @@ fn sim_tool(job: &CamJobV5, tool_id: &str) -> Result<ToolSpec, String> {
     }
 }
 
+/// The display frame and the simulation inputs an executed plan contributes:
+/// the tools its stages use, the simulated stock rectangle and the bounds that
+/// include every motion. It is built before any vertex is normalized so the
+/// artwork, the stock and the toolpath share one rectangle (plan section
+/// 15.1). A toolpath that reaches outside the stock therefore widens the
+/// frame instead of rescaling the artwork drawn inside it — the 2026-09-13
+/// field report's "the imported SVG renders larger than the stock" once a
+/// facing operation was generated.
+struct ExecutedFrame {
+    bounds: [f64; 4],
+    stock: Stock,
+    tools: Vec<ToolSpec>,
+    detail: f64,
+}
+
+fn executed_frame(
+    job: &CamJobV5,
+    plan: &OperationPlanV5,
+    spans: &[StageSpan],
+    mut bounds: [f64; 4],
+) -> Result<ExecutedFrame, String> {
+    let mut tools = Vec::new();
+    for span in spans {
+        if tools.len() <= span.tool_index {
+            let stage = plan
+                .stages
+                .iter()
+                .find(|stage| stage.stage_id == span.stage_id)
+                .ok_or("Missing plan stage")?;
+            tools.push(sim_tool(job, &stage.tool_id)?);
+        }
+    }
+    let mut detail = f64::INFINITY;
+    let mut radius: f64 = 0.;
+    for tool in &tools {
+        match *tool {
+            ToolSpec::Knife { .. } => {}
+            ToolSpec::Endmill { diameter } => {
+                radius = radius.max(diameter / 2.);
+                detail = detail.min(diameter);
+            }
+            ToolSpec::Vbit {
+                tip,
+                diameter,
+                height,
+                angle,
+            } => {
+                let slope = (angle / 2.).to_radians().tan();
+                radius = radius.max((tip + 2. * height * slope).min(diameter) / 2.);
+                detail = detail.min(tip.max(0.2));
+                let _ = height;
+            }
+        }
+    }
+    if !detail.is_finite() {
+        detail = 0.4;
+    }
+    let thickness = job
+        .setup
+        .stock
+        .thickness_mm
+        .ok_or("Generate requires the stock thickness")?;
+    let margin = radius + 1.;
+    let mut stock = Stock {
+        x0: bounds[0] - margin,
+        y0: bounds[1] - margin,
+        x1: bounds[2] + margin,
+        y1: bounds[3] + margin,
+        thickness_mm: thickness,
+    };
+    if let Some(xy) = job.setup.stock.xy {
+        stock.x0 = xy.min_x_mm;
+        stock.y0 = xy.min_y_mm;
+        stock.x1 = xy.min_x_mm + xy.width_mm;
+        stock.y1 = xy.min_y_mm + xy.length_mm;
+    }
+    // The executed toolpath joins the frame, and the physical stock rectangle
+    // keeps a one-millimetre display margin so the block is never flush with
+    // the edge of the view.
+    for motion in &plan.motions {
+        for p in [motion.start, motion.end] {
+            bounds[0] = bounds[0].min(p.x);
+            bounds[1] = bounds[1].min(p.y);
+            bounds[2] = bounds[2].max(p.x);
+            bounds[3] = bounds[3].max(p.y);
+        }
+    }
+    bounds = [
+        bounds[0].min(stock.x0) - 1.,
+        bounds[1].min(stock.y0) - 1.,
+        bounds[2].max(stock.x1) + 1.,
+        bounds[3].max(stock.y1) + 1.,
+    ];
+    Ok(ExecutedFrame {
+        bounds,
+        stock,
+        tools,
+        detail,
+    })
+}
+
 fn role_color(role: StageRole) -> [f32; 4] {
     match role {
         StageRole::Face => [0.16, 0.68, 0.38, 1.],
@@ -296,10 +397,14 @@ pub fn build_with_preset(
             bounds[3] = bounds[3].max(point[1]);
         }
     }
-    let mut vertices = Vec::new();
+    // Artwork and knife-chain points stay in setup coordinates until the
+    // display frame is final below: the frame also carries the generated
+    // toolpath, so normalizing them here would scale them against a different
+    // rectangle than the stock and the motions.
+    let mut contour_points: Vec<([f64; 3], [f32; 4])> = Vec::new();
     let mut spans = Vec::new();
     for component in &components {
-        let start = vertices.len();
+        let start = contour_points.len();
         let color = if selected.contains(&component.reference) {
             [0.25, 0.8, 0.85, 1.]
         } else {
@@ -308,18 +413,18 @@ pub fn build_with_preset(
         for ring in &component.rings {
             for i in 0..ring.len() {
                 for p in [ring[i], ring[(i + 1) % ring.len()]] {
-                    vertices.push(vertex([p[0], p[1], 0.02], bounds, color));
+                    contour_points.push(([p[0], p[1], 0.02], color));
                 }
             }
         }
         spans.push(json!([
             component.reference.artwork_item_id,
             start,
-            vertices.len()
+            contour_points.len()
         ]));
     }
     for chain in &chains {
-        let start = vertices.len();
+        let start = contour_points.len();
         let color = if selected.contains(&chain.reference) {
             [0.25, 0.8, 0.85, 1.]
         } else {
@@ -334,13 +439,13 @@ pub fn build_with_preset(
                 chain.vertices[i],
                 chain.vertices[(i + 1) % chain.vertices.len()],
             ] {
-                vertices.push(vertex([p[0], p[1], 0.02], bounds, color));
+                contour_points.push(([p[0], p[1], 0.02], color));
             }
         }
         spans.push(json!([
             chain.reference.artwork_item_id,
             start,
-            vertices.len()
+            contour_points.len()
         ]));
     }
     report["components"] = json!(components);
@@ -363,10 +468,28 @@ pub fn build_with_preset(
                 .issues
         );
     }
-    let contour_vertices = vertices.len();
-    let Some(plan) = plan else {
-        report["inferredStockXY"] = json!(job.setup.stock.xy.is_none());
-        if !vertices.is_empty() {
+    // Settle the one display frame every vertex is normalized against before
+    // the first vertex is written. The frame carries the stock rectangle, the
+    // artwork and — once a plan exists — the executed toolpath, so a facing
+    // pass that travels past the stock widens the frame rather than changing
+    // the scale of the artwork drawn inside it.
+    let planned_spans = match plan {
+        Some(plan) => stage_spans(plan)?,
+        None => vec![],
+    };
+    let executed = if planned_spans.is_empty() {
+        None
+    } else {
+        Some(executed_frame(
+            job,
+            plan.expect("a stage span implies a plan"),
+            &planned_spans,
+            bounds,
+        )?)
+    };
+    match &executed {
+        Some(frame) => bounds = frame.bounds,
+        None if plan.is_none() && !contour_points.is_empty() => {
             bounds = [
                 bounds[0] - 2.,
                 bounds[1] - 2.,
@@ -374,6 +497,15 @@ pub fn build_with_preset(
                 bounds[3] + 2.,
             ];
         }
+        None => {}
+    }
+    let mut vertices: Vec<crate::compute::Vertex> = contour_points
+        .iter()
+        .map(|(point, color)| vertex(*point, bounds, *color))
+        .collect();
+    let contour_vertices = vertices.len();
+    let Some(plan) = plan else {
+        report["inferredStockXY"] = json!(job.setup.stock.xy.is_none());
         return package(Package {
             name: job.name.clone(),
             job: job.to_json().map_err(|e| e.to_string())?,
@@ -387,7 +519,7 @@ pub fn build_with_preset(
             sim: None,
         });
     };
-    let spans = stage_spans(plan)?;
+    let spans = planned_spans;
     let groups = groups_for(plan)?;
     // An incomplete plan has no executed stage: report the inspection and the
     // located reasons without inventing motion, stock playback or a tool.
@@ -417,75 +549,13 @@ pub fn build_with_preset(
         .filter(|span| span.role == StageRole::Knife)
         .map(|span| span.start)
         .min();
-    let mut tools = Vec::new();
-    for span in &spans {
-        if tools.len() <= span.tool_index {
-            let stage = plan
-                .stages
-                .iter()
-                .find(|stage| stage.stage_id == span.stage_id)
-                .ok_or("Missing plan stage")?;
-            tools.push(sim_tool(job, &stage.tool_id)?);
-        }
-    }
-    let mut detail = f64::INFINITY;
-    let mut radius: f64 = 0.;
-    for tool in &tools {
-        match *tool {
-            ToolSpec::Knife { .. } => {}
-            ToolSpec::Endmill { diameter } => {
-                radius = radius.max(diameter / 2.);
-                detail = detail.min(diameter);
-            }
-            ToolSpec::Vbit {
-                tip,
-                diameter,
-                height,
-                angle,
-            } => {
-                let slope = (angle / 2.).to_radians().tan();
-                radius = radius.max((tip + 2. * height * slope).min(diameter) / 2.);
-                detail = detail.min(tip.max(0.2));
-                let _ = height;
-            }
-        }
-    }
-    if !detail.is_finite() {
-        detail = 0.4;
-    }
-    let thickness = job
-        .setup
-        .stock
-        .thickness_mm
-        .ok_or("Generate requires the stock thickness")?;
-    let margin = radius + 1.;
-    let mut stock = Stock {
-        x0: bounds[0] - margin,
-        y0: bounds[1] - margin,
-        x1: bounds[2] + margin,
-        y1: bounds[3] + margin,
-        thickness_mm: thickness,
-    };
-    if let Some(xy) = job.setup.stock.xy {
-        stock.x0 = xy.min_x_mm;
-        stock.y0 = xy.min_y_mm;
-        stock.x1 = xy.min_x_mm + xy.width_mm;
-        stock.y1 = xy.min_y_mm + xy.length_mm;
-    }
-    for motion in &plan.motions {
-        for p in [motion.start, motion.end] {
-            bounds[0] = bounds[0].min(p.x);
-            bounds[1] = bounds[1].min(p.y);
-            bounds[2] = bounds[2].max(p.x);
-            bounds[3] = bounds[3].max(p.y);
-        }
-    }
-    bounds = [
-        bounds[0].min(stock.x0) - 1.,
-        bounds[1].min(stock.y0) - 1.,
-        bounds[2].max(stock.x1) + 1.,
-        bounds[3].max(stock.y1) + 1.,
-    ];
+    let frame = executed.expect("a non-empty span list builds the executed frame");
+    let ExecutedFrame {
+        stock,
+        tools,
+        detail,
+        ..
+    } = frame;
     let width = stock.x1 - stock.x0;
     let length = stock.y1 - stock.y0;
     let resolution = crate::sim::choose_resolution(width, length, detail, 8192., 64_000_000.)?;
