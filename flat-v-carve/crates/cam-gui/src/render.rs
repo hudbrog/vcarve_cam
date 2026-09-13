@@ -14,6 +14,11 @@ use std::sync::{Arc, Mutex};
 
 pub const VERTEX_BYTES: usize = std::mem::size_of::<Vertex>();
 pub const DEFAULT_PAGE_BUDGET: u64 = 64 * 1024 * 1024;
+/// Retained display-data budget for the browser target (plan section 2.5):
+/// motion pages, CPU scene caches and stock checkpoints. It is the number the
+/// diagnostics compare their declared categories against; categories a page
+/// cannot measure are disclosed as unknown instead of being counted as zero.
+pub const BROWSER_DISPLAY_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 /// Motion bytes one frame may copy. A cold scene load continues on the next
 /// frames instead of copying the whole resident budget in a single `prepare`,
 /// and the display asks for another frame while anything is still deferred.

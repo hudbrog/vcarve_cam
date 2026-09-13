@@ -209,8 +209,8 @@ does not involve a window, a GPU or input devices, so the interactive tour in
   the manual recipe is the first full native run.
 
 `artifacts/gui9/review/manifest.json` records which sources and packages the
-review build was made from: `0cae4485…` native, `255cfe08…` WASM, offline bundle
-`d289669f…`, and the 296 hashed source files (now including
+review build was made from: `67168094…` native, `d2c5373f…` WASM, offline bundle
+`96de2239…`, and the 296 hashed source files (now including
 `scripts/native-smoke.mjs`), covering the GUI9b and GUI9c
 changes. The binaries were built from the milestone commit `cf5d798`; the
 manifest also names the head commit, the hashed source tree and whether the
@@ -337,6 +337,7 @@ The GUI9c run on the same package added the load and recovery records:
 | Camera-only frames (plan §2.5 M target: p95 ≤ 33 ms) | 120 sampled frames while the camera moved over the settled scene: p50 15.7 ms, p95 16.3 ms, max 17.3 ms, with **0** page uploads and **0** uploaded bytes |
 | Idle behavior (plan §2.5: at least 30 s with no animation, task or input) | 30 s observed at a fixed playhead: **0** additional page uploads, **0** additional uploaded bytes, playhead unchanged |
 | Build identity | The run records `cam-gui 0.7.7` on protocol `cam-gui-retained-5`, so the numbers name the build they came from |
+| Browser display-memory categories (plan §2.5 budget: 256 MiB) | Batch at Fine: scene 33,446,512 B + retained checkpoints 58,720,256 B + GPU pages 7,712,152 B + stock tiles 2,097,152 B = **101,976,072 B (97.3 MiB)**, inside the budget and asserted by the run. The JS heap is read where the browser exposes it (Edge: 2.6 MB used) and the categories a page cannot see — WASM linear memory and total GPU memory — are recorded as an explicit unknown, not as zero |
 
 Native outcome, recorded separately: the same tour through the shipped
 executable's worker mailbox (generate → seek → resolution rebuild → seek →
@@ -453,6 +454,10 @@ the required page range, resident pages and bytes, cumulative page uploads,
 upload bytes, cache hits (pages whose fingerprint matched and were skipped) and
 evictions, plus the scene/checkpoint/GPU/stock-tile memory categories. The panel
 states all of it, so a review does not have to guess what the display is doing.
+The memory line adds those categories up and compares the total against the
+plan's 256 MiB browser display budget (`render::BROWSER_DISPLAY_BUDGET_BYTES`),
+and states plainly that WASM linear memory, the JS heap and total GPU memory
+are not visible to the panel — an unknown rather than a zero.
 
 **No silently dropped actions** (`crates/cam-gui/src/app.rs`). A command that
 arrives while the worker is busy is no longer ignored. `Pending` holds one

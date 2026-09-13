@@ -237,6 +237,11 @@ fresh open of the batch fixture:
    counters still do not move (the automated run observes exactly that for 30
    seconds, and records `cam-gui 0.7.7` on protocol `cam-gui-retained-5` next
    to the numbers).
+   The memory line adds the display's categories (scene payload, retained
+   checkpoints, GPU pages, stock tiles) to a declared total against the plan's
+   256 MiB browser budget — 97.3 MiB for the batch job at Fine — and says that
+   WASM linear memory, the JS heap and total GPU memory are an unknown rather
+   than a number it cannot see.
 2. **Edit while the worker is busy.** Press **Generate** and, before it
    finishes, change the camera (**Isometric**) and then click **Cutting** in
    the navigator and type a value into **Roughing feed**. Both respond. When the

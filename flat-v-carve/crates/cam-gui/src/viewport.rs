@@ -1010,6 +1010,22 @@ impl Viewport {
     pub fn renderer_probe(&self) -> serde_json::Value {
         let scene = self.render_stats.lock().ok();
         let stock = self.stock_stats.lock().ok();
+        // Memory categories this display is responsible for. The plan's budget
+        // covers motion pages, CPU scene caches and stock/checkpoints; the
+        // categories a page cannot see (WASM linear memory, GPU totals) are
+        // reported as unknown by the caller, never as zero.
+        let scene_bytes = self
+            .scene
+            .as_ref()
+            .map_or(0, |scene| scene.meta.transport.payload_bytes);
+        let checkpoint_bytes = self
+            .stock
+            .as_ref()
+            .map_or(0, |stock| stock.meta.retained_bytes);
+        let stock_buffer_bytes = stock.as_ref().map_or(0, |stats| stats.buffer_bytes);
+        let gpu_page_bytes = scene.as_ref().map_or(0, |stats| stats.resident_bytes);
+        let declared_display_bytes =
+            scene_bytes as u64 + checkpoint_bytes as u64 + stock_buffer_bytes + gpu_page_bytes;
         let mut sorted = self.frame_ms.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let percentile = |quantile: f64| {
@@ -1038,6 +1054,15 @@ impl Viewport {
             "residentPages": scene.as_ref().map_or(0, |stats| stats.resident_pages),
             "residentBytes": scene.as_ref().map_or(0, |stats| stats.resident_bytes),
             "pagesOmittedByBudget": scene.as_ref().map_or(0, |stats| stats.budget_omitted),
+            "memory": {
+                "sceneBytes": scene_bytes,
+                "checkpointBytes": checkpoint_bytes,
+                "gpuPageBytes": gpu_page_bytes,
+                "stockTileBytes": stock_buffer_bytes,
+                "declaredDisplayBytes": declared_display_bytes,
+                "displayBudgetBytes": crate::render::BROWSER_DISPLAY_BUDGET_BYTES,
+                "withinBudget": declared_display_bytes <= crate::render::BROWSER_DISPLAY_BUDGET_BYTES,
+            },
             "pageUploads": scene.as_ref().map_or(0, |stats| stats.page_uploads),
             "pagesSkipped": scene.as_ref().map_or(0, |stats| stats.uploads_skipped),
             "uploadBytes": scene.as_ref().map_or(0, |stats| stats.upload_bytes),

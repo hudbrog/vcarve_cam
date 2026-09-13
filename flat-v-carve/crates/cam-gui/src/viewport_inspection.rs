@@ -168,23 +168,23 @@ impl Viewport {
                     probe["uploadBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
                     probe["pagesSkipped"].as_u64().unwrap_or(0),
                 ));
-                let scene_bytes = self
-                    .scene
-                    .as_ref()
-                    .map_or(0, |scene| scene.meta.transport.payload_bytes);
-                let checkpoint_bytes = self.stock.as_ref().map_or(0, |stock| stock.meta.retained_bytes);
-                let tile_buffer = self
-                    .stock_stats
-                    .lock()
-                    .ok()
-                    .map_or(0, |stats| stats.buffer_bytes);
                 ui.small(format!(
-                    "Memory · scene {:.1} MiB · checkpoints {:.1} MiB · GPU pages {:.1} MiB · stock tiles {:.1} MiB",
-                    scene_bytes as f64 / 1_048_576.,
-                    checkpoint_bytes as f64 / 1_048_576.,
-                    probe["residentBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
-                    tile_buffer as f64 / 1_048_576.,
+                    "Memory · scene {:.1} MiB · checkpoints {:.1} MiB · GPU pages {:.1} MiB · stock tiles {:.1} MiB = {:.1} MiB of the {:.0} MiB display budget{}",
+                    probe["memory"]["sceneBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
+                    probe["memory"]["checkpointBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
+                    probe["memory"]["gpuPageBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
+                    probe["memory"]["stockTileBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
+                    probe["memory"]["declaredDisplayBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
+                    probe["memory"]["displayBudgetBytes"].as_f64().unwrap_or(0.) / 1_048_576.,
+                    if probe["memory"]["withinBudget"] == true {
+                        ""
+                    } else {
+                        " — over budget"
+                    },
                 ));
+                ui.small(
+                    "WASM linear memory, the JS heap and total GPU memory are not visible to this panel; they are an unknown, not zero.",
+                );
                 ui.small(
                     "A failure or recovery never changes the document, the retained result, the playhead or the display resolution.",
                 );

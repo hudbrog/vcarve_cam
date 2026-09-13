@@ -316,6 +316,30 @@ export async function gui9Scenario({control,edit,state,waitFor,send,evaluate,sle
     residentBytes: idleAfter.renderer.residentBytes,
     build: idleAfter.renderer.build,
   });
+
+  // Display-memory categories against the browser budget (plan section 2.5).
+  // The page cannot see WASM linear memory or total GPU memory; that is
+  // recorded as an unknown rather than as zero.
+  const memory = idleAfter.renderer.memory;
+  if (memory.withinBudget !== true)
+    throw new Error(
+      `declared display data ${memory.declaredDisplayBytes} B exceeds the ${memory.displayBudgetBytes} B budget`,
+    );
+  const jsHeap = await evaluate(`(() => {
+    const m = performance.memory;
+    return m ? {usedBytes: m.usedJSHeapSize, totalBytes: m.totalJSHeapSize, limitBytes: m.jsHeapSizeLimit} : null;
+  })()`);
+  record('display memory categories', {
+    sceneBytes: memory.sceneBytes,
+    checkpointBytes: memory.checkpointBytes,
+    gpuPageBytes: memory.gpuPageBytes,
+    stockTileBytes: memory.stockTileBytes,
+    declaredDisplayBytes: memory.declaredDisplayBytes,
+    displayBudgetBytes: memory.displayBudgetBytes,
+    withinBudget: memory.withinBudget,
+    jsHeap: jsHeap ?? 'not exposed by this browser',
+    unknown: 'WASM linear memory and total GPU memory are not exposed to the page',
+  });
   await screenshot('gui9c-sustained-scrub.png');
 
   // A display rebuild is short by design (18–109 ms natively); the edit during
