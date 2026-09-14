@@ -51,8 +51,14 @@ fn surface_color(stage: u32, tool: u32, depth: f32) -> vec3<f32> {
     if (depth <= 0.) { return style.plain.rgb; }
     if (style.mode == 1u) { return palette[stage].rgb; }
     if (style.mode == 2u) { return palette[PALETTE_STAGES+tool].rgb; }
-    if (style.mode == 3u) { return mix(style.ramp_a.rgb,style.ramp_b.rgb,clamp(depth,0.,1.)); }
+    if (style.mode == 3u) { return ramp_color(depth); }
     return style.plain.rgb;
+}
+// The ramp spans the *cut's* depth range, not the stock thickness: a shallow
+// carve in thick stock has to use the whole ramp, or every depth looks alike.
+fn ramp_color(depth: f32) -> vec3<f32> {
+    let span = max(style.ramp_bottom-style.ramp_top,1e-6);
+    return mix(style.ramp_a.rgb,style.ramp_b.rgb,clamp((depth-style.ramp_top)/span,0.,1.));
 }
 // A wall's identity is the cell that removed the material beside it, so its
 // own-operation colour is the cutter that created the face, not the surface
@@ -64,7 +70,7 @@ fn wall_color(identity: u32, height: f32) -> vec3<f32> {
     let stage = identity&255u;
     let tool = (identity>>8u)&255u;
     if (style.wall_mode == 1u) { return palette[stage].rgb; }
-    if (style.wall_mode == 2u) { return mix(style.ramp_a.rgb,style.ramp_b.rgb,clamp(height,0.,1.)); }
+    if (style.wall_mode == 2u) { return ramp_color(height); }
     if (style.mode == 0u) { return style.plain_wall.rgb; }
     // A wall always has material beside it, so the surface modes colour it
     // exactly as they colour the floor it belongs to.

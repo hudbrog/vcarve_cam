@@ -193,6 +193,8 @@ struct WallCache {
     threshold: u32,
     /// `None` for the ordinary step walls, `Some(along_x)` for a section.
     section: Option<bool>,
+    /// Deepest removed fraction in this state: the depth ramp's own span.
+    deepest: f32,
     walls: Arc<Vec<Wall>>,
     revision: u64,
 }
@@ -841,8 +843,8 @@ impl Viewport {
             self.build_overlay(rect, ctx.pixels_per_point());
             // Style inputs are resolved before the scene borrow: the palette
             // is cached and only rebuilt when the style or the plan changes.
-            let (style_uniform, palette, palette_revision) = self.stock_style_inputs(rect);
             let (walls, wall_revision) = self.stock_walls(rect);
+            let (style_uniform, palette, palette_revision) = self.stock_style_inputs(rect);
             if self.gpu_unavailable {
                 ui.painter().text(
                     rect.center(),
@@ -1606,6 +1608,18 @@ impl Viewport {
                 stock.meta.cell_mm,
                 self.stock_style.wall_threshold(stock.meta.cell_mm) as f64,
             ) as f32;
+            // The ramp spans the cut, not the stock: an explicit range in
+            // millimetres if the style gives one, otherwise the deepest cut in
+            // the displayed state.
+            let thickness = stock.meta.stock.thickness_mm.max(1e-9);
+            let span = self
+                .stock_style
+                .ramp_range_mm
+                .map(|mm| mm as f64 / thickness)
+                .or_else(|| self.wall_cache.as_ref().map(|cache| cache.deepest as f64))
+                .unwrap_or(1.);
+            uniform.ramp_top = 0.;
+            uniform.ramp_bottom = span.clamp(1e-6, 1.) as f32;
         }
         (uniform, palette, self.palette_revision)
     }
@@ -1659,6 +1673,7 @@ impl Viewport {
             },
             None => stock_walls::build(&view, threshold as f64, stock_walls::WALL_BUDGET_INSTANCES),
         };
+        let deepest = stock_walls::max_depth(&view) as f32;
         let revision = self.wall_revision.wrapping_add(1);
         let walls = Arc::new(built.walls);
         self.wall_report = (built.dropped > 0)
@@ -1669,6 +1684,7 @@ impl Viewport {
             prefix,
             threshold: threshold.to_bits(),
             section,
+            deepest,
             walls: walls.clone(),
             revision,
         });

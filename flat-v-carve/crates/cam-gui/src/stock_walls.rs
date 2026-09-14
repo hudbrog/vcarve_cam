@@ -38,6 +38,20 @@ pub fn effective_threshold(cell_mm: f64, style_mm: f64) -> f64 {
     style_mm.max(cell_mm * MIN_WALL_SLOPE).max(1e-6)
 }
 
+/// Deepest removed fraction anywhere in the field: the cut's own depth range,
+/// which is what a useful depth ramp has to span. A 2.5 mm carve in an 18 mm
+/// stock reaches only 14% of the thickness, so ramping over the thickness would
+/// paint it in one colour.
+pub fn max_depth(grid: &Grid) -> f64 {
+    let mut deepest = 0_f64;
+    for row in 0..grid.rows {
+        for col in 0..grid.cols {
+            deepest = deepest.max(grid.depth(col, row));
+        }
+    }
+    deepest
+}
+
 /// One wall quad, in grid-cell units so the shader multiplies by its own cell
 /// size. Axis 0 stands at a fixed x and runs along y; axis 1 at a fixed y and
 /// runs along x. `top` and `bottom` are fractions of the stock thickness below

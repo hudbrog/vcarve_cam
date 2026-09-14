@@ -124,6 +124,10 @@ pub struct StockStyle {
     /// thickness, so the gradient is comparable across the part.
     pub ramp_top: [f32; 3],
     pub ramp_bottom: [f32; 3],
+    /// Depth the ramp's far stop sits at, in millimetres. `None` spans the
+    /// deepest cut in the displayed state, which is what makes a shallow carve
+    /// use the whole ramp instead of one colour.
+    pub ramp_range_mm: Option<f32>,
     /// Explicit per-id colours. Unlisted ids get the deterministic automatic
     /// colour, so a palette is stable across regeneration.
     pub overrides: BTreeMap<String, [f32; 3]>,
@@ -148,6 +152,7 @@ impl Default for StockStyle {
             walls: WallMode::MatchSurface,
             ramp_top: [0.62, 0.80, 0.92],
             ramp_bottom: [0.12, 0.28, 0.55],
+            ramp_range_mm: None,
             overrides: BTreeMap::new(),
             wall_threshold_mm: None,
             appearance: Appearance::Opaque,
