@@ -32,8 +32,10 @@ fn canonical_flower_retains_exact_execution_and_prepares_without_replanning() {
     assert!(scene.sim.is_some());
     let handle = scene.report["gui2"]["handle"].as_str().unwrap().to_owned();
     let plan = service.generated_plan(&handle).unwrap();
+    // The schema-3 revision of the real job: `real_data/` now holds the same
+    // job as a schema-5 document, which the legacy planner cannot read.
     let original = cam_core::job::Job::from_json(include_str!(
-        "../../../../real_data/flower_box-svg.job-real.json"
+        "../../../fixtures/m4/flower-combined-legacy.json"
     ))
     .unwrap();
     let legacy = cam_core::vcarve::plan_combined_with_receipt(&original)
@@ -167,7 +169,7 @@ fn real_edits_pending_text_recovery_and_unsupported_documents() {
     );
     assert!(
         gui::open(include_str!(
-            "../../../../real_data/flower_box-svg.job-real.json"
+            "../../../fixtures/m4/flower-combined-legacy.json"
         ))
         .is_err(),
         "GUI2 is schema-5 only"

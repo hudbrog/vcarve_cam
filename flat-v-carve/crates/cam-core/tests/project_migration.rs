@@ -10,7 +10,10 @@ use cam_core::{
 
 const M3_RECTANGLE: &str = include_str!("../../../fixtures/m3/rectangle.json");
 const M4_CONTACT_LINE: &str = include_str!("../../../fixtures/m4/contact-line.json");
-const FLOWER_COMBINED: &str = include_str!("../../../../real_data/flower_box-svg.job-real.json");
+// The real job in `real_data/` is a schema-5 document kept as the tester left
+// it, so the migration fixture is the last schema-3 revision of that same job,
+// stored verbatim under `fixtures/m4/`.
+const FLOWER_COMBINED: &str = include_str!("../../../fixtures/m4/flower-combined-legacy.json");
 
 fn flat_vcarve(job: &CamJob) -> &cam_core::project::FlatVcarveSettings {
     let OperationSettings::FlatVcarve(settings) = &job.operations[0].settings else {

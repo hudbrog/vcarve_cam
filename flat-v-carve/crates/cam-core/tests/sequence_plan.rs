@@ -19,7 +19,9 @@ use cam_core::{
 const M3_RECTANGLE: &str = include_str!("../../../fixtures/m3/rectangle.json");
 const M4_CONTACT_LINE: &str = include_str!("../../../fixtures/m4/contact-line.json");
 const M4_RESOURCE_LIMIT: &str = include_str!("../../../fixtures/m4/resource-limit.json");
-const FLOWER_COMBINED: &str = include_str!("../../../../real_data/flower_box-svg.job-real.json");
+// The schema-3 revision of the tester's real job: `real_data/` now holds the
+// same job as a schema-5 document, which the legacy adapter cannot read.
+const FLOWER_COMBINED: &str = include_str!("../../../fixtures/m4/flower-combined-legacy.json");
 
 fn flat_vcarve(job: &CamJob) -> &FlatVcarveSettings {
     job.operations

@@ -68,7 +68,9 @@ fn batch_import_duplicate_and_reorder_preserve_assignments() {
 }
 #[test]
 fn explicit_migration_and_applied_profile_produce_one_portable_project() {
-    let legacy = include_str!("../../../../real_data/flower_box-svg.job-real.json");
+    // A schema-3 document, so this test still exercises the migration path:
+    // `real_data/` holds the tester's session file, which is schema 5.
+    let legacy = include_str!("../../../fixtures/m4/flower-combined-legacy.json");
     let expected = v5::migrate::migrate_json(legacy).unwrap();
     let (migrated, _) = session::execute(
         &mut Retained::new(),

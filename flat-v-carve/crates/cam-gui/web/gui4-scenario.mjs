@@ -96,7 +96,10 @@ export async function gui4Scenario({control,edit,state,waitFor,send,evaluate,sle
   await waitFor(s=>!s.active&&s.current&&s.job.artworks.length===4,'dropped SVG adds to the existing project');
   if((await state()).job.components!==2)throw new Error('Dropping SVG changed the existing carving assignment');
   record('SVG drop adds artwork and preserves the existing project',await state());
-  await control('File');await chooseFile('Import older job','../real_data/flower_box-svg.job-real.json');
+  // The schema-3 revision of the real job: the tester's `real_data/` file is
+  // saved from their own session and is schema 5, so it is no longer an
+  // "older job" for this migration walk.
+  await control('File');await chooseFile('Import older job','fixtures/m4/flower-combined-legacy.json');
   await waitFor(s=>!s.active&&s.job.artworks.length===1&&s.job.name!=='lettering.svg','explicit older-job import');
   await control('Machine');await control('Example machine');await control('Apply flower machine profile');
   await waitFor(s=>!s.active&&s.job.machine,'migrated project has one applied machine');

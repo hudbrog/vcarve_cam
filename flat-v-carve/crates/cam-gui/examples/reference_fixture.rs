@@ -1,8 +1,10 @@
 //! Rebuild the canonical GUI2 regression fixture from the historical reference.
 //! This is test-data preparation; GUI2 itself accepts schema 5 only.
 fn main() {
+    // The schema-3 revision of the real job; `real_data/` holds the tester's
+    // schema-5 session file, which is not a legacy input.
     let legacy = cam_core::project::migrate::migrate_legacy_json(include_str!(
-        "../../../../real_data/flower_box-svg.job-real.json"
+        "../../../fixtures/m4/flower-combined-legacy.json"
     ))
     .unwrap();
     let profile = cam_core::post::LinuxCncProfile::from_json(include_str!(

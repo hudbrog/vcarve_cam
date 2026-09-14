@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 pub const PROTOCOL: &str = "gui1-spike-4";
 pub const SMALL: &str = include_str!("../../../fixtures/m4/contact-line.json");
-pub const FLOWER: &str = include_str!("../../../../real_data/flower_box-svg.job-real.json");
+// The schema-3 revision of the real job: this probe builds the legacy `Job`
+// model, and `real_data/` now holds the tester's schema-5 session file.
+pub const FLOWER: &str = include_str!("../../../fixtures/m4/flower-combined-legacy.json");
 pub const PROFILE: &str = include_str!("../../../../real_data/machine-profile.json");
 pub const MAX_SEGMENTS: usize = 1_000_000;
 /// Above this the display process does not receive a replayable motion stream;
