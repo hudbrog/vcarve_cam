@@ -282,7 +282,6 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
             verification_tolerance_mm: Some(0.05),
         },
         machine_configuration: None,
-        legacy_machine_profile: None,
     };
     job.validate_structure().map_err(|e| e.to_string())?;
     if job.to_json().map_err(|e| e.to_string())?.len() > 8_000_000 {

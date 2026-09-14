@@ -323,13 +323,5 @@
   "tolerances": {
     "motion_tolerance_mm": null,
     "verification_tolerance_mm": null
-  },
-  "legacy_machine_profile": {
-    "id": "legacy-machine",
-    "work_offset": "G54",
-    "clearance_z_mm": 5.0,
-    "endmill_tool_number": 1,
-    "vbit_tool_number": 2,
-    "m6_contract": null
   }
 }

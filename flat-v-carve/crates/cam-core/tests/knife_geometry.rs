@@ -122,7 +122,6 @@ fn job_with_offset(svg_body: &str, settings: DragKnifeSettings, blade_offset_mm:
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.01),
         },
-        legacy_machine_profile: None,
     };
     job.validate().unwrap();
     job

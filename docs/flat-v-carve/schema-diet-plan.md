@@ -4,10 +4,9 @@ Date: 2026-09-14\
 Context: the compatibility policy in
 [field-testing-fixes-plan.md](field-testing-fixes-plan.md) §0 ("saved jobs do
 not have to survive") and open question 9 there.\
-Status: landed through stage 3 with the library half of stage 4; the document
-field `legacy_machine_profile` and its conversion are the remaining stage-4
-item, and `cam collection select` is the one open decision. See
-[schema-diet-progress.md](schema-diet-progress.md).
+Status: landed — stages 1–4. `cam collection select` remains the one open
+decision, and the milestone reproduction scripts still drive the deleted CLI.
+See [schema-diet-progress.md](schema-diet-progress.md).
 
 ## What the repository holds today
 

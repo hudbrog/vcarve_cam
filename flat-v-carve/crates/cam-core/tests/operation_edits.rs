@@ -160,7 +160,6 @@ fn created_operations_leave_machining_values_unset() {
         operations: vec![],
         tolerances: Default::default(),
         machine_configuration: None,
-        legacy_machine_profile: None,
     };
     for (kind, prefix) in [
         (NewOperationKind::Face, "endmill"),

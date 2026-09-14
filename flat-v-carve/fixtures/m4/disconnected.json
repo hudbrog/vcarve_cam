@@ -75,7 +75,6 @@
     "motion_tolerance_mm": 0.005,
     "verification_tolerance_mm": 0.05
   },
-  "machine_profile": null,
   "endmill_planning": {
     "clearance_z_mm": 5,
     "start_xy_mm": {

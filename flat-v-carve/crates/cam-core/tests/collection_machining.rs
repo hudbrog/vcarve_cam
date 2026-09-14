@@ -311,7 +311,6 @@ fn two_source_job(operations: Vec<OperationV5>) -> v5::CamJobV5 {
         operations,
         tolerances: tolerances(),
         machine_configuration: None,
-        legacy_machine_profile: None,
     }
 }
 

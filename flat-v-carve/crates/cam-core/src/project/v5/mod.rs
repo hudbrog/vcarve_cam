@@ -23,7 +23,7 @@
 //! refused by name (docs/flat-v-carve/schema-diet-plan.md).
 use crate::{
     geometry::{Diagnostic, Result},
-    job::{MachineProfile, PlanningTolerances, SourceSnapshot},
+    job::{PlanningTolerances, SourceSnapshot},
     motion::Position,
     post::{Coolant, LengthCompensation, M6Contract, PathControl},
     preview,
@@ -869,10 +869,6 @@ pub struct CamJobV5 {
     pub tolerances: PlanningTolerances,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_configuration: Option<AppliedMachineConfiguration>,
-    /// Preserved legacy descriptive metadata; never fabricated into an
-    /// applied machine configuration and never a reviewed export contract.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy_machine_profile: Option<MachineProfile>,
 }
 
 fn validate_flat_vcarve(settings: &FlatVcarveSettingsV5, id: &str) -> Result<()> {
@@ -1126,10 +1122,6 @@ impl CamJobV5 {
             "tolerances.verification_tolerance_mm",
             true,
         )?;
-        if let Some(profile) = &self.legacy_machine_profile {
-            // Reuse the frozen schema-4 legacy metadata validation unchanged.
-            super::validate_machine_profile(profile)?;
-        }
         if let Some(configuration) = &self.machine_configuration {
             configuration.validate()?;
         }

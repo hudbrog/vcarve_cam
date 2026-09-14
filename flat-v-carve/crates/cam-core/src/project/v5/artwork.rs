@@ -37,7 +37,6 @@ pub fn item_catalogue(item: &ArtworkItem) -> Result<ContourCatalogue> {
         tools: vec![],
         operations: vec![],
         tolerances: Default::default(),
-        legacy_machine_profile: None,
     };
     ContourCatalogue::build(&job)
 }

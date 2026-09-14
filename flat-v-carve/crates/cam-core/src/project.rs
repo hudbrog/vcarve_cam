@@ -11,7 +11,7 @@
 //! fake engine input for a planner that has its own.
 use crate::{
     geometry::{Diagnostic, Point, Result},
-    job::{MachineProfile, PlanningTolerances, SourceSnapshot},
+    job::{PlanningTolerances, SourceSnapshot},
     model::{VBit, VBitSpec},
     pocket::{ClearingStrategy, EntryStrategy},
     preview,
@@ -849,9 +849,6 @@ pub struct CamJob {
     pub operations: Vec<Operation>,
     #[serde(default)]
     pub tolerances: PlanningTolerances,
-    /// Preserved legacy descriptive metadata; never a reviewed export contract.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy_machine_profile: Option<MachineProfile>,
 }
 
 /// Structural validation context shared by all operations of one job.
@@ -1143,29 +1140,6 @@ fn validate_flat_vcarve(
     Ok(())
 }
 
-fn validate_machine_profile(profile: &MachineProfile) -> Result<()> {
-    if !preview::valid_id(&profile.id) {
-        return Err(error("PROJECT_MACHINE", "invalid machine profile ID"));
-    }
-    number(
-        profile.clearance_z_mm,
-        "legacy_machine_profile.clearance_z_mm",
-        true,
-    )?;
-    if profile.endmill_tool_number == Some(0) || profile.vbit_tool_number == Some(0) {
-        return Err(error("PROJECT_MACHINE", "tool numbers must be positive"));
-    }
-    if profile.work_offset.as_ref().is_some_and(|s| {
-        !matches!(
-            s.as_str(),
-            "G54" | "G55" | "G56" | "G57" | "G58" | "G59" | "G59.1" | "G59.2" | "G59.3"
-        )
-    }) {
-        return Err(error("PROJECT_MACHINE", "unsupported work offset"));
-    }
-    Ok(())
-}
-
 impl CamJob {
     /// The engine's planning input for one Flat V-carve operation.
     ///
@@ -1295,9 +1269,6 @@ impl CamJob {
             "tolerances.verification_tolerance_mm",
             true,
         )?;
-        if let Some(profile) = &self.legacy_machine_profile {
-            validate_machine_profile(profile)?;
-        }
         Ok(())
     }
 }

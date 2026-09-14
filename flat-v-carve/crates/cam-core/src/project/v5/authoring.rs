@@ -88,7 +88,6 @@ pub fn from_svg(filename: String, svg: String, geometry_tolerance_mm: f64) -> Re
             verification_tolerance_mm: Some(0.05),
         },
         machine_configuration: None,
-        legacy_machine_profile: None,
     };
     job.validate_structure()?;
     Ok(job)

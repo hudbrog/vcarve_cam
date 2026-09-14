@@ -46,6 +46,12 @@ reason, and the caller's project is left alone:
 | `cam-service/src/{document,sequence,inspection}.rs` | the pre-collection document and sequence service surfaces |
 | workspace menu `File → Import older job`, `Command::Migrate`, `IoKind::Migrate` | the GUI's forward-import entry |
 | `knife::interpretation`, `command_svg`-era renderers (`job_svg`, `combined_svg`, `plan_svg`, `verification_svg`) | the interpretation mode that decided an import from the selected operation, and the previews of the deleted artifact formats |
+| `job::MachineProfile`, `Job::machine_profile`, `CamJob::legacy_machine_profile`, `CamJobV5::legacy_machine_profile` | the schema-1/2/3 machine settings block embedded in a document: the engine input copied it across and the export gate compared the exporting profile against it. The schema-5 document keeps only the *applied* configuration, which is a copy of the reusable profile with no dependency on the file, so the field, its validation and both conversions are gone. |
+
+The engine's own M6 profile type (`post::LinuxCncProfile`, schema 1, applied to a
+substrate job by `apply_legacy_profile`) stays: it is the engine's export input
+and its fixture corpus, not a document, and rewriting the engine is outside
+this diet by design.
 
 `cam serve` is now static hosting only: GET/HEAD of one UI directory, with the
 boundary check on host/origin. The browser build plans in its own WebAssembly
@@ -80,7 +86,7 @@ instead of unpacking it by hand.
 
 | Directory | Now holds |
 | --- | --- |
-| `fixtures/m3`, `fixtures/m4` | **engine inputs** in the substrate shape (no `schema_version`), loaded through the fixture-only loader; the planner tests compare against them |
+| `fixtures/m3`, `fixtures/m4` | **engine inputs** in the substrate shape (no `schema_version`, no `machine_profile` block), loaded through the fixture-only loader; the planner tests compare against them |
 | `fixtures/v4` | the same substrate copies the engine plan comparisons use (`rectangle`, `contact-line`, `resource-limit`) |
 | `fixtures/v5` | the documents: `full-job.json` (face + carve + profile + knife over one artwork item) and `full-job-machine.json` (the same with an applied machine configuration) |
 | `fixtures/gui2` | the stored collection document (`flower.job.json`) and its reusable machine configuration (`machine.json`) the CLI test drives |
@@ -111,12 +117,6 @@ the portable document.
 
 ## Still inside the goal
 
-* **Legacy machine settings.** `real_data/machine-profile.json` is a schema-1
-  `LinuxCncProfile`, `CamJobV5::legacy_machine_profile` still carries one, and
-  `post::sequence::apply_legacy_profile` plus the engine's schema-1 profile
-  type still apply it. Stage 4 of the plan: the document field, its validation
-  and the engine-side copy go; the engine's own profile API stays, because the
-  engine input is not being rewritten in this pass.
 * **`cam collection select`.** Recorded above: not implemented, deliberately.
 * **Recovery envelope.** The workspace recovery record is still numbered
   `schema 3`, which is now only its own format version (it embeds a schema-5

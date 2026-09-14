@@ -106,7 +106,6 @@ fn face_job(
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.05),
         },
-        legacy_machine_profile: None,
     }
 }
 

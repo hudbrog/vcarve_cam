@@ -36,7 +36,6 @@ fn job(svg: &str, placement: Placement) -> CamJob {
         tools: vec![],
         operations: vec![],
         tolerances: PlanningTolerances::default(),
-        legacy_machine_profile: None,
     }
 }
 

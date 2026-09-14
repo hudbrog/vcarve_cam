@@ -264,11 +264,10 @@ fn conflicts_bad_references_and_import_collisions_leave_original_unchanged() {
 }
 
 #[test]
-fn applying_copies_snapshots_and_preserves_job_ids_machine_and_other_settings() {
+fn applying_copies_snapshots_and_preserves_job_ids_and_other_settings() {
     let mut original = job();
     original.tools[0].id = "job-local-mill".into();
     original.operation.endmill_id = "job-local-mill".into();
-    original.machine_profile = Some(serde_json::from_value(json!({"id":"machine", "work_offset":"G54", "endmill_tool_number":7, "vbit_tool_number":8})).unwrap());
     original.tools.reverse(); // Role lookup must not depend on array order.
     let mut library = library();
     library.tools[0].cutting_presets[0].cutting_feed_mm_min = Some(444.);
@@ -520,7 +519,6 @@ fn knife_job() -> CamJob {
             },
         ],
         tolerances: Default::default(),
-        legacy_machine_profile: None,
     };
     job.validate().unwrap();
     job

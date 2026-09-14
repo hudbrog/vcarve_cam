@@ -315,7 +315,11 @@ Quality acceptance has separate criteria: overcut must stay within the stated nu
 | `Motion` | Explicit start/end XYZ, kind, tool and operation IDs, feed where applicable; linear segments initially. |
 | `Plan` | Validated job snapshot including tools, normalized geometry, input fingerprint, engine/dependency versions, ordered operations and motions, tool-change markers. |
 | `VerificationReport` | Passed/failed/inconclusive status, error bounds, overcut/residual findings, locations, and model limitations. |
-| `MachineProfile` | LinuxCNC settings, work offset, clearance plane, tool mapping, length-compensation policy, M6 contract, output precision. |
+| Applied machine configuration | LinuxCNC settings, work offset, clearance plane, tool mapping, length-compensation policy, M6 contract, output precision —**copied into** the document, with no dependency on the file it came from. |
+
+There is one document model (schema 5) and no conversion of older documents;
+the [schema-diet progress note](schema-diet-progress.md) records what was
+removed with the old models.
 
 Use versioned JSON for jobs and planning artifacts. UI transport schemas are derived from or checked against the Rust model. Preserve the input SVG snapshot for repeatability; an external filename alone is insufficient. Derived previews are replaceable caches.
 

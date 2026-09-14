@@ -8,10 +8,9 @@ use crate::operations::LocatedDiagnostic;
 use crate::{
     geometry::{Diagnostic, Region, Result},
     job::{
-        Job as LegacyJob, MachineProfile as LegacyMachineProfile,
-        OperationSettings as LegacyOperationSettings, SourceSnapshot as LegacySourceSnapshot,
-        StockSettings as LegacyStockSettings, ToolGeometry as LegacyToolGeometry,
-        ToolSettings as LegacyToolSettings,
+        Job as LegacyJob, OperationSettings as LegacyOperationSettings,
+        SourceSnapshot as LegacySourceSnapshot, StockSettings as LegacyStockSettings,
+        ToolGeometry as LegacyToolGeometry, ToolSettings as LegacyToolSettings,
     },
     model::{EndmillSpec, VBitSpec},
     operations::PlanContext,
@@ -353,7 +352,6 @@ pub(crate) fn to_legacy_job_v5(
             )?,
         ],
         tolerances: ctx.tolerances.clone(),
-        machine_profile: job.legacy_machine_profile.clone(),
         endmill_planning: Some(endmill_planning),
         vbit_planning: if settings.mode == FlatVcarveMode::Combined {
             settings.finish.clone()
@@ -406,7 +404,6 @@ pub fn to_legacy_job(
         max_loops_per_layer: rough.max_loops_per_layer,
         max_motions: rough.max_motions,
     };
-    let machine_profile: Option<LegacyMachineProfile> = job.legacy_machine_profile.clone();
     let legacy = LegacyJob {
         name: job.name.clone(),
         source: job.source.clone().ok_or_else(|| {
@@ -448,7 +445,6 @@ pub fn to_legacy_job(
             )?,
         ],
         tolerances: job.tolerances.clone(),
-        machine_profile,
         endmill_planning: Some(endmill_planning),
         vbit_planning: if settings.mode == FlatVcarveMode::Combined {
             settings.finish.clone()

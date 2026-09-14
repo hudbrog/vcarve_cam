@@ -206,7 +206,6 @@ fn base_job(operations: Vec<v5::OperationV5>) -> CamJobV5 {
             verification_tolerance_mm: Some(0.05),
         },
         machine_configuration: None,
-        legacy_machine_profile: None,
     }
 }
 

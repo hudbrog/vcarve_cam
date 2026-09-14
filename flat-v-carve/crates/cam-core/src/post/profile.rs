@@ -322,28 +322,6 @@ impl LinuxCncProfile {
                 ));
             }
         }
-        if let Some(legacy) = &job.machine_profile {
-            let e = self.tool(&job.operation.endmill_id);
-            let v = self.tool(&job.operation.vbit_id);
-            if legacy.id != self.id
-                || legacy
-                    .work_offset
-                    .as_ref()
-                    .is_some_and(|w| w != &self.work_offset)
-                || legacy
-                    .clearance_z_mm
-                    .is_some_and(|z| z != self.clearance_z_mm)
-                || legacy
-                    .endmill_tool_number
-                    .is_some_and(|n| n != e.tool_number)
-                || legacy.vbit_tool_number.is_some_and(|n| n != v.tool_number)
-            {
-                return Err(error(
-                    "POST_PROFILE_MISMATCH",
-                    "export profile conflicts with machine settings embedded in the saved job",
-                ));
-            }
-        }
         Ok(())
     }
     pub(super) fn z_offset(&self, job: &Job) -> Result<f64> {

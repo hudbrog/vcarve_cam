@@ -164,7 +164,6 @@ fn base_job(operations: Vec<Operation>) -> CamJob {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: None,
         },
-        legacy_machine_profile: None,
     };
     job.validate().unwrap();
     job

@@ -355,8 +355,7 @@ impl SequenceProfile {
 /// Apply a legacy schema-1 profile to a canonical job as one document/profile
 /// application: the Z datum moves into `setup.work_zero.z` and the per-tool
 /// spindle directions move into every matching milling assignment (only
-/// where still unset; an explicit job value wins). The job keeps
-/// `legacy_machine_profile` as descriptive metadata.
+/// where still unset; an explicit job value wins).
 pub fn apply_legacy_profile(profile: &LinuxCncProfile, job: &CamJob) -> Result<CamJob> {
     // When the job is exactly a migratable Flat V-carve document, run the
     // legacy profile validation against its reconstructed legacy job so the

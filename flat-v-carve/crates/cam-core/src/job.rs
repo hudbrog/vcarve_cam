@@ -106,18 +106,6 @@ pub struct PlanningTolerances {
     pub verification_tolerance_mm: Option<f64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineProfile {
-    pub id: String,
-    pub work_offset: Option<String>,
-    pub clearance_z_mm: Option<f64>,
-    pub endmill_tool_number: Option<u32>,
-    pub vbit_tool_number: Option<u32>,
-    /// Editable description; implementing/validating its behavior belongs to M6.
-    pub m6_contract: Option<String>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
@@ -129,7 +117,6 @@ pub struct Job {
     pub operation: OperationSettings,
     pub tools: Vec<ToolSettings>,
     pub tolerances: PlanningTolerances,
-    pub machine_profile: Option<MachineProfile>,
     #[serde(default)]
     pub endmill_planning: Option<crate::pocket::EndmillPlanningSettings>,
     #[serde(default)]
@@ -290,23 +277,6 @@ impl Job {
                     }
                     _ => {}
                 }
-            }
-        }
-        if let Some(m) = &self.machine_profile {
-            if !crate::preview::valid_id(&m.id) {
-                return Err(error("JOB_MACHINE", "invalid machine profile ID"));
-            }
-            number(m.clearance_z_mm, "clearance_z_mm", false)?;
-            if m.endmill_tool_number == Some(0) || m.vbit_tool_number == Some(0) {
-                return Err(error("JOB_MACHINE", "tool numbers must be positive"));
-            }
-            if m.work_offset.as_ref().is_some_and(|s| {
-                !matches!(
-                    s.as_str(),
-                    "G54" | "G55" | "G56" | "G57" | "G58" | "G59" | "G59.1" | "G59.2" | "G59.3"
-                )
-            }) {
-                return Err(error("JOB_MACHINE", "unsupported work offset"));
             }
         }
         Ok(())
