@@ -236,19 +236,34 @@ fn silhouette(grid: &Grid, index: usize, along_x: bool) -> Option<(f64, u32)> {
 }
 
 fn detect(grid: &Grid, threshold: f64, walls: &mut Vec<Wall>) {
+    // Floor cells: machined, with no deeper neighbour. The boundary of that set
+    // is where a flank meets its floor.
+    let floor: Vec<bool> = (0..grid.cols * grid.rows)
+        .map(|index| {
+            let (col, row) = (index % grid.cols, index / grid.cols);
+            let depth = grid.depth(col, row);
+            depth > 0.
+                && [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().all(|(dx, dy)| {
+                    let c = (col as i32 + dx).clamp(0, grid.cols as i32 - 1) as usize;
+                    let r = (row as i32 + dy).clamp(0, grid.rows as i32 - 1) as usize;
+                    grid.depth(c, r) <= depth + 1e-9
+                })
+        })
+        .collect();
     // Interior steps. The wall between two neighbouring cells belongs to the
     // boundary they share, so each step is emitted exactly once.
     for col in 0..grid.cols.saturating_sub(1) {
         let x = (col + 1) as f64;
         let mut row = 0;
         while row < grid.rows {
-            let Some(boundary) = between(grid, threshold, (col, row), (col + 1, row)) else {
+            let Some(boundary) = between(grid, threshold, &floor, (col, row), (col + 1, row))
+            else {
                 row += 1;
                 continue;
             };
             let mut run = row + 1;
             while run < grid.rows
-                && between(grid, threshold, (col, run), (col + 1, run)) == Some(boundary)
+                && between(grid, threshold, &floor, (col, run), (col + 1, run)) == Some(boundary)
             {
                 run += 1;
             }
@@ -266,13 +281,14 @@ fn detect(grid: &Grid, threshold: f64, walls: &mut Vec<Wall>) {
         let y = (row + 1) as f64;
         let mut col = 0;
         while col < grid.cols {
-            let Some(boundary) = between(grid, threshold, (col, row), (col, row + 1)) else {
+            let Some(boundary) = between(grid, threshold, &floor, (col, row), (col, row + 1))
+            else {
                 col += 1;
                 continue;
             };
             let mut run = col + 1;
             while run < grid.cols
-                && between(grid, threshold, (run, row), (run, row + 1)) == Some(boundary)
+                && between(grid, threshold, &floor, (run, row), (run, row + 1)) == Some(boundary)
             {
                 run += 1;
             }
@@ -314,22 +330,49 @@ struct Boundary {
     wall: bool,
 }
 
-fn between(grid: &Grid, threshold: f64, a: (usize, usize), b: (usize, usize)) -> Option<Boundary> {
+fn between(
+    grid: &Grid,
+    threshold: f64,
+    floor: &[bool],
+    a: (usize, usize),
+    b: (usize, usize),
+) -> Option<Boundary> {
     let (da, db) = (grid.depth(a.0, a.1), grid.depth(b.0, b.1));
     let delta = grid.height_mm((da - db).abs());
+    let deeper = if da >= db { a } else { b };
     if delta <= 1e-9 {
-        return None;
+        // Two cells at the same height: a crease only where one of them is
+        // floor - machined, with no deeper neighbour - and the other is still
+        // descending into it. That boundary is the bottom edge of a cut, and
+        // the line lies on the floor it belongs to.
+        let (fa, fb) = (floor[a.1 * grid.cols + a.0], floor[b.1 * grid.cols + b.0]);
+        if fa == fb {
+            return None;
+        }
+        let (cell, height) = if fa { (a, da) } else { (b, db) };
+        return Some(Boundary {
+            step: Step {
+                top: height,
+                bottom: height,
+                identity: grid.identity(cell.0, cell.1),
+            },
+            wall: false,
+        });
     }
     let wall = delta > threshold;
     // A cut's rim: untouched material beside machined material. The line lies
     // on the untouched side, which is the stock top.
-    let crease = !wall && (da == 0.) != (db == 0.);
-    if !wall && !crease {
+    let rim = !wall && (da == 0.) != (db == 0.);
+    // The other end of a cut: a step into the floor. The line lies on the floor
+    // it belongs to, which is the deeper side.
+    let into_floor = !wall && !rim && floor[a.1 * grid.cols + a.0] != floor[b.1 * grid.cols + b.0];
+    if !wall && !rim && !into_floor {
         return None;
     }
-    let lower = if da >= db { a } else { b };
     let (top, bottom) = if wall {
         (da.min(db), da.max(db))
+    } else if into_floor {
+        (da.max(db), da.max(db))
     } else {
         let height = da.min(db);
         (height, height)
@@ -338,7 +381,7 @@ fn between(grid: &Grid, threshold: f64, a: (usize, usize), b: (usize, usize)) ->
         step: Step {
             top,
             bottom,
-            identity: grid.identity(lower.0, lower.1),
+            identity: grid.identity(deeper.0, deeper.1),
         },
         wall,
     })
@@ -748,5 +791,42 @@ mod tests {
             "{:?}",
             set.walls
         );
+    }
+
+    /// The other end of a cut, which the tester missed next: a flank that
+    /// settles onto a flat floor earns a line at the floor's own depth, so a
+    /// pocket shows both where it starts and where its bottom is.
+    #[test]
+    fn a_flank_meeting_its_floor_gets_a_line_at_the_floor() {
+        // Untouched, then a four-cell flank down to a 3 mm floor.
+        let cells = packed(
+            8,
+            1,
+            |col, _| match col {
+                0..=2 => 0.,
+                3 => 0.1,
+                4 => 0.2,
+                _ => 0.3,
+            },
+            |_, _| 2,
+        );
+        let view = grid(&cells, 8, 1);
+        let set = build(&view, THRESHOLD, WALL_BUDGET_INSTANCES);
+        let lines: Vec<_> = set
+            .walls
+            .iter()
+            .filter(|wall| wall.top == wall.bottom && wall.axis == 0)
+            .map(|wall| (wall.start[0], wall.top))
+            .collect();
+        // The rim at the stock top, and the floor's edge at the cut's depth.
+        assert!(lines.contains(&(3., 0.)), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|(x, height)| *x == 5. && (height - 0.3).abs() < 1e-4),
+            "{lines:?}"
+        );
+        // Nothing across the untouched plateau or across the flat floor.
+        assert_eq!(lines.len(), 2, "{lines:?}");
     }
 }

@@ -561,9 +561,10 @@ pub fn draw_vertices(cols: usize, rows: usize, walls: usize) -> u32 {
     (cols * rows * 6 + walls * 6 + 6) as u32
 }
 
-/// Vertices the edge overlay draws: one line, two endpoints, per wall instance.
+/// Vertices the edge overlay draws: the top and bottom lines of every wall
+/// instance, two endpoints each.
 pub fn wire_vertices(walls: usize) -> u32 {
-    (walls * 2) as u32
+    (walls * 4) as u32
 }
 
 #[cfg(test)]
@@ -762,7 +763,7 @@ mod tests {
         // reads `vs_wire`.
         assert!(shader.contains("@vertex fn vs_wire"), "edge entry point");
         assert_eq!(wire_vertices(0), 0);
-        assert_eq!(wire_vertices(1_500), 3_000);
+        assert_eq!(wire_vertices(1_500), 6_000);
         // A fine 200 × 100 mm field at the standard 0.4 mm cells adds one wall
         // quad per wall instance: the edges of a faced plate are four runs, so
         // the walls cost a fraction of a percent of the surface.

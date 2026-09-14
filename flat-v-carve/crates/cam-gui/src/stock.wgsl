@@ -191,14 +191,16 @@ fn neighbour_depth(col: u32, row: u32, dx: i32, dy: i32) -> f32 {
 }
 @fragment fn fs_stock(in: Output) -> @location(0) vec4<f32> {return in.color;}
 
-// Optional edge overlay: one line per wall instance, along the crease its top
-// edge makes, drawn with the line-list pipeline after the solid pass. It is the
-// cheap half of a shaded-with-edges view - the part's creases and outline
-// rather than every triangle.
+// Optional edge overlay: the top *and* bottom edges of every wall instance, so
+// a cut shows where it starts and where its floor is, drawn with the line-list
+// pipeline after the solid pass. It is the cheap half of a shaded-with-edges
+// view - the part's creases and outline rather than every triangle. A crease
+// instance has no height, so its two lines coincide.
 @vertex fn vs_wire(@builtin(vertex_index) id: u32) -> Output {
-    let instance = walls[id/2u];
+    let instance = walls[id/4u];
+    let height = select(instance.top,instance.bottom,(id%4u) >= 2u);
     let along = instance.start+(f32(id%2u)*instance.length)*select(vec2(0.,1.),vec2(1.,0.),instance.axis == 1u);
-    let p = vec3(grid.origin+along*grid.cell,-instance.top*grid.thickness);
+    let p = vec3(grid.origin+along*grid.cell,-height*grid.thickness);
     let a = camera.yaw;
     let x = p.x*cos(a)-p.y*sin(a);
     let y = p.x*sin(a)+p.y*cos(a);
