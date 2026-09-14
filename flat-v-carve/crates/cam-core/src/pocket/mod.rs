@@ -5,7 +5,7 @@ mod settings;
 mod verify;
 use crate::{
     geometry::{BooleanOp, BoundaryQuery, Diagnostic, Point, Region, Result},
-    job::Job,
+    job::VcarveInput,
     model::{Depth, Length},
     motion::{Motion, MotionKind, Position},
     stock::{SliceRemoval, removal_at_slice},
@@ -60,7 +60,9 @@ pub struct EndmillPlan {
     pub engine_version: String,
     pub input_fingerprint: String,
     pub motion_fingerprint: String,
-    pub job: Job,
+    /// The exact planning input this plan was generated from, including the
+    /// resolved region its target was built from.
+    pub input: VcarveInput,
     pub spindle_rpm: f64,
     pub motions: Vec<Motion>,
     pub generation_issues: Vec<GenerationIssue>,
@@ -75,7 +77,7 @@ pub(crate) struct Envelope {
     engine_version: String,
     pub(crate) input_fingerprint: String,
     pub(crate) motion_fingerprint: String,
-    pub(crate) job: Job,
+    pub(crate) input: VcarveInput,
     pub(crate) motions: Vec<Motion>,
     generation_issues: Vec<GenerationIssue>,
 }
@@ -83,11 +85,11 @@ pub(crate) struct Envelope {
 fn hash<T: Serialize>(value: &T) -> Result<String> {
     crate::plan_hash::hash(value).map_err(|e| error("PLAN_JSON", e.to_string()))
 }
-fn input_hash(job: &Job) -> Result<String> {
+fn input_hash(input: &VcarveInput) -> Result<String> {
     hash(&(
         env!("CARGO_PKG_VERSION"),
         "endmill-v1;clipper2-rust=1.1.0",
-        job,
+        input,
     ))
 }
 impl EndmillPlan {
@@ -98,7 +100,7 @@ impl EndmillPlan {
             engine_version: self.engine_version.clone(),
             input_fingerprint: self.input_fingerprint.clone(),
             motion_fingerprint: self.motion_fingerprint.clone(),
-            job: self.job.clone(),
+            input: self.input.clone(),
             motions: self.motions.clone(),
             generation_issues: self.generation_issues.clone(),
         }
@@ -140,8 +142,8 @@ impl EndmillPlan {
 
     pub(crate) fn from_envelope(e: Envelope) -> Result<Self> {
         e.check_identity()?;
-        let ctx = Context::new(&e.job)?;
-        let mut analysis = verify::analyze(&ctx, &e.job, &e.motions)?;
+        let ctx = Context::new(&e.input)?;
+        let mut analysis = verify::analyze(&ctx, &e.motions)?;
         apply_generation(&mut analysis, &e.generation_issues);
         Ok(Self {
             artifact_kind: e.artifact_kind,
@@ -149,7 +151,7 @@ impl EndmillPlan {
             engine_version: e.engine_version,
             input_fingerprint: e.input_fingerprint,
             motion_fingerprint: e.motion_fingerprint,
-            job: e.job,
+            input: e.input,
             spindle_rpm: ctx.spindle,
             motions: e.motions,
             generation_issues: e.generation_issues,
@@ -171,7 +173,7 @@ impl Envelope {
                 "unsupported plan schema or engine version; regenerate the plan",
             ));
         }
-        if input_hash(&self.job)? != self.input_fingerprint
+        if input_hash(&self.input)? != self.input_fingerprint
             || hash(&(
                 &self.input_fingerprint,
                 &self.motions,
@@ -206,37 +208,28 @@ fn strategy_depth(ctx: &Context, depth: f64) -> f64 {
     }
 }
 
-pub fn plan_endmill(job: &Job) -> Result<EndmillPlan> {
-    let geometry = job.inspect()?;
-    plan_region(job, Some(geometry.geometry.selected), None).map(|(plan, _)| plan)
-}
-
-/// Plan the rough stage over a caller-resolved selected region: the shared
-/// machining entry point for the schema-4 adapter and the H3 collection
-/// planner (plan section 22.4). The legacy job carries every non-geometric
-/// setting; the region is the resolved union of the selected filled
-/// components and is never re-imported here.
-pub fn plan_endmill_with_region(job: &Job, region: Region) -> Result<EndmillPlan> {
-    plan_region(job, Some(region), None).map(|(plan, _)| plan)
+/// Plan the rough stage for one Flat V-carve operation. The selected region
+/// is part of the input, so nothing is imported here.
+pub fn plan_endmill(input: &VcarveInput) -> Result<EndmillPlan> {
+    plan_region(input, None).map(|(plan, _)| plan)
 }
 
 /// Keep the freshly constructed target for the next tool of the same job.
 /// Its immutable geometry and bounded query caches are planning evidence,
 /// never data recovered from a saved artifact.
 pub(crate) fn plan_with_target(
-    job: &Job,
+    input: &VcarveInput,
     shared: Option<std::sync::Arc<crate::target::Target>>,
 ) -> Result<(EndmillPlan, std::sync::Arc<crate::target::Target>)> {
-    plan_region(job, None, shared)
+    plan_region(input, shared)
 }
 
 fn plan_region(
-    job: &Job,
-    region: Option<Region>,
+    input: &VcarveInput,
     shared: Option<std::sync::Arc<crate::target::Target>>,
 ) -> Result<(EndmillPlan, std::sync::Arc<crate::target::Target>)> {
     let mut timing = crate::timing::Timer::new("endmill");
-    let ctx = Context::build(job, region, shared)?;
+    let ctx = Context::build(input, shared)?;
     timing.lap("context");
     let levels = depths(&ctx)?;
     let mut motions = vec![];
@@ -252,7 +245,7 @@ fn plan_region(
         if access.status == CenterSetStatus::Empty {
             continue;
         }
-        if !ctx.entry_supported(job) {
+        if !ctx.entry_supported() {
             diagnostics.push(error(
                 "UNSUPPORTED_ENTRY",
                 format!("layer {layer}: selected entry is not explicitly supported by this tool"),
@@ -444,7 +437,7 @@ fn plan_region(
         ));
     }
     timing.lap("generate motions");
-    let mut analysis = verify::analyze(&ctx, job, &motions)?;
+    let mut analysis = verify::analyze(&ctx, &motions)?;
     timing.lap("analyze");
     let generation_issues: Vec<_> = diagnostics
         .into_iter()
@@ -454,7 +447,7 @@ fn plan_region(
         })
         .collect();
     apply_generation(&mut analysis, &generation_issues);
-    let input_fingerprint = input_hash(job)?;
+    let input_fingerprint = input_hash(input)?;
     let motion_fingerprint = hash(&(&input_fingerprint, &motions, &generation_issues))?;
     let plan = EndmillPlan {
         artifact_kind: "endmill_plan".into(),
@@ -462,7 +455,7 @@ fn plan_region(
         engine_version: env!("CARGO_PKG_VERSION").into(),
         input_fingerprint,
         motion_fingerprint,
-        job: job.clone(),
+        input: input.clone(),
         spindle_rpm: ctx.spindle,
         motions,
         generation_issues,

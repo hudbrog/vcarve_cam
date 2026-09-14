@@ -51,8 +51,10 @@ fn micro_segments_keep_their_direction_and_required_z_at_selected_precision() {
     assert!(check(&m, &profile));
     // No precision within the supported subset can rescue a sub-nanometer
     // entry. The independent reader must continue to refuse it.
-    let job =
-        Job::from_fixture(include_str!("../../../../fixtures/m4/narrow-channel.json")).unwrap();
+    let job = crate::job::input_from_fixture_json(include_str!(
+        "../../../../fixtures/m4/narrow-channel.json"
+    ))
+    .unwrap();
     let mut motions = vec![
         Motion {
             kind: MotionKind::Approach,
@@ -73,7 +75,7 @@ fn micro_segments_keep_their_direction_and_required_z_at_selected_precision() {
         m.id = i;
     }
     let source = SourcePlan {
-        job: &job,
+        input: &job,
         input_fingerprint: "test",
         motion_fingerprint: "test",
         endmill: &motions,

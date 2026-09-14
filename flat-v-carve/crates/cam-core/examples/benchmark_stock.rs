@@ -2,7 +2,7 @@
 //! This benchmark deliberately does not authenticate a plan or certify machining.
 use cam_core::{
     geometry::BooleanOp,
-    job::{Job, ToolGeometry},
+    job::{ToolGeometry, VcarveInput},
     model::{Depth, Endmill, VBit},
     motion::Motion,
     stock::{removal_at_slice, vbit_removal_at_slice},
@@ -13,7 +13,7 @@ use std::{fs, time::Instant};
 
 #[derive(Deserialize)]
 struct EndmillInput {
-    job: Job,
+    input: VcarveInput,
     motions: Vec<Motion>,
 }
 #[derive(Deserialize)]
@@ -27,19 +27,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() != 3 {
         return Err("usage: benchmark_stock <combined-plan.json> <depth-mm> (timing only, no authentication)".into());
     }
-    let input: Input = serde_json::from_str(&fs::read_to_string(&args[1])?)?;
+    let artifact: Input = serde_json::from_str(&fs::read_to_string(&args[1])?)?;
     let depth: f64 = args[2].parse()?;
-    let job = &input.endmill.job;
-    let region = job.inspect()?.geometry.selected;
-    let mill = job
+    let input = &artifact.endmill.input;
+    let region = input.region.clone();
+    let mill = input
         .tools
         .iter()
-        .find(|t| t.id == job.operation.endmill_id)
+        .find(|t| t.id == input.operation.endmill_id)
         .unwrap();
-    let bit = job
+    let bit = input
         .tools
         .iter()
-        .find(|t| t.id == job.operation.vbit_id)
+        .find(|t| t.id == input.operation.vbit_id)
         .unwrap();
     let Some(ToolGeometry::Endmill(spec)) = &mill.geometry else {
         return Err("endmill required".into());
@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bit = VBit::try_from(spec.clone())?;
     let target = Target::for_planning(
         region,
-        Depth::new(job.operation.max_depth_mm.ok_or("depth required")?)?,
+        Depth::new(input.operation.max_depth_mm.ok_or("depth required")?)?,
         bit.angle(),
     )?;
     let mut timer = Instant::now();
@@ -61,12 +61,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let e = removal_at_slice(
         target.region().grid(),
-        &input.endmill.motions,
+        &artifact.endmill.motions,
         mill.radius().mm(),
         depth,
     )?;
     lap("endmill stock");
-    let v = vbit_removal_at_slice(target.region().grid(), &input.vbit_motions, &bit, depth)?;
+    let v = vbit_removal_at_slice(target.region().grid(), &artifact.vbit_motions, &bit, depth)?;
     lap("vbit stock");
     let lower = e.lower.boolean(BooleanOp::Union, &v.lower)?;
     lap("lower union");

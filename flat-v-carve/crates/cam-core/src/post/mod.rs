@@ -9,7 +9,7 @@ pub use profile::*;
 
 use crate::{
     geometry::{Diagnostic, Result},
-    job::Job,
+    job::VcarveInput,
     motion::{Motion, MotionKind, Position},
     vcarve::{AuthenticatedPlan, CombinedPlan},
     verification::{
@@ -120,7 +120,7 @@ struct ProgramReadback {
     evidence: Vec<ProgramEvidence>,
 }
 pub(crate) struct SourcePlan<'a> {
-    pub job: &'a Job,
+    pub input: &'a VcarveInput,
     pub input_fingerprint: &'a str,
     pub motion_fingerprint: &'a str,
     pub endmill: &'a [Motion],
@@ -130,7 +130,7 @@ pub(crate) struct SourcePlan<'a> {
 impl<'a> From<&'a CombinedPlan> for SourcePlan<'a> {
     fn from(plan: &'a CombinedPlan) -> Self {
         Self {
-            job: &plan.endmill.job,
+            input: &plan.endmill.input,
             input_fingerprint: &plan.input_fingerprint,
             motion_fingerprint: &plan.motion_fingerprint,
             endmill: &plan.endmill.motions,
@@ -142,7 +142,7 @@ impl<'a> From<&'a CombinedPlan> for SourcePlan<'a> {
 }
 fn stages<'a>(plan: &SourcePlan<'a>) -> Result<Vec<Stage<'a>>> {
     let spindle = |id: &str| {
-        plan.job
+        plan.input
             .tools
             .iter()
             .find(|t| t.id == id)
@@ -152,15 +152,15 @@ fn stages<'a>(plan: &SourcePlan<'a>) -> Result<Vec<Stage<'a>>> {
     Ok([
         Stage {
             role: "endmill",
-            id: &plan.job.operation.endmill_id,
+            id: &plan.input.operation.endmill_id,
             motions: plan.endmill,
-            spindle: spindle(&plan.job.operation.endmill_id)?,
+            spindle: spindle(&plan.input.operation.endmill_id)?,
         },
         Stage {
             role: "vbit",
-            id: &plan.job.operation.vbit_id,
+            id: &plan.input.operation.vbit_id,
             motions: plan.vbit,
-            spindle: spindle(&plan.job.operation.vbit_id)?,
+            spindle: spindle(&plan.input.operation.vbit_id)?,
         },
     ]
     .into_iter()
@@ -409,13 +409,13 @@ fn process(
             "output precision is owned by the machine profile",
         ));
     }
-    profile.validate(plan.job)?;
-    let offset = profile.z_offset(plan.job)?;
+    profile.validate(plan.input)?;
+    let offset = profile.z_offset(plan.input)?;
     let mut original_options = options.clone();
     // Output rounding must happen AFTER stock-datum translation. Ordinary M5
     // stock-top decimal rounding is not interchangeable at rounding ties.
     original_options.decimal_places = None;
-    let mut original = verify_motions(plan.job, plan.endmill, plan.vbit, &original_options)?;
+    let mut original = verify_motions(plan.input, plan.endmill, plan.vbit, &original_options)?;
     bind_plan_report(
         &mut original,
         plan.input_fingerprint,
@@ -518,7 +518,7 @@ fn process(
                 },
             });
             for m in read.motions {
-                if m.tool_id == plan.job.operation.endmill_id {
+                if m.tool_id == plan.input.operation.endmill_id {
                     endmill.push(m);
                 } else {
                     vbit.push(m);
@@ -550,7 +550,7 @@ fn process(
         }
     };
     timing.lap("emit and read back");
-    let s = plan.job.endmill_planning.as_ref().unwrap();
+    let s = plan.input.endmill_planning.as_ref().unwrap();
     let start = stock_position(
         machine_position(
             Position::new(s.start_xy_mm, s.clearance_z_mm),
@@ -559,7 +559,7 @@ fn process(
         ),
         offset,
     );
-    let emitted = verify_emitted_motions(plan.job, &endmill, &vbit, &original_options, start)?;
+    let emitted = verify_emitted_motions(plan.input, &endmill, &vbit, &original_options, start)?;
     timing.lap("emitted verification");
     report.status = emitted.status;
     report.emitted_motion_fingerprint = Some(hash(&(&endmill, &vbit))?);

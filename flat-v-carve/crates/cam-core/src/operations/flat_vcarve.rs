@@ -1,21 +1,23 @@
-//! Flat V-carve compatibility adapter (plan section 13.1).
+//! Flat V-carve planning (plan section 13.1).
 //!
-//! Wraps the existing endmill and combined planners without modifying their
-//! motion order. The adapter is the only code that constructs a
-//! [`crate::job::Job`] from the canonical model, and only for Flat V-carve
-//! operations; new Face/Profile/Knife planners never build legacy jobs.
+//! The V-carve engine is a separate code base with its own input type, so this
+//! module is the one place where the canonical model meets it: it fuses the
+//! shared planner context, the operation's settings and the **resolved
+//! selected region** into a [`VcarveInput`], runs the engine, and maps the
+//! engine's motions back into generic rough/finish stages without reordering
+//! them. Face, Profile and Drag knife have native planners and never come
+//! through here.
 use crate::operations::LocatedDiagnostic;
 use crate::{
     geometry::{Diagnostic, Region, Result},
     job::{
-        Job as LegacyJob, OperationSettings as LegacyOperationSettings,
-        SourceSnapshot as LegacySourceSnapshot, StockSettings as LegacyStockSettings,
-        ToolGeometry as LegacyToolGeometry, ToolSettings as LegacyToolSettings,
+        OperationSettings as EngineOperationSettings, StockSettings as EngineStockSettings,
+        ToolGeometry as EngineToolGeometry, ToolSettings as EngineToolSettings, VcarveInput,
     },
     model::{EndmillSpec, VBitSpec},
     operations::PlanContext,
-    pocket::{EndmillPlanningSettings, EntryStrategy, plan_endmill_with_region},
-    project::v5::{CamJobV5, FlatVcarveSettingsV5},
+    pocket::{EndmillPlanningSettings, EntryStrategy, plan_endmill},
+    project::v5::FlatVcarveSettingsV5,
     project::{
         CamJob, FlatVcarveMode, FlatVcarveSettings, MillingAssignment, ToolCapabilities,
         ToolGeometry,
@@ -27,7 +29,7 @@ use crate::{
     },
     svg::Bounds,
     toolpath::PlannedMotion,
-    vcarve::plan_combined_with_region,
+    vcarve::plan_combined,
 };
 
 fn incomplete(_operation_id: &str, issues: Vec<PlanIssue>) -> PlannedOperation {
@@ -183,7 +185,7 @@ fn missing_fields_ctx(
             }
         }
     }
-    // Entry capability per stage, mirroring the legacy planners' checks.
+    // Entry capability per stage, mirroring the engine's checks.
     if let Some(rough) = &settings.rough {
         let endmill = ctx.tool(&settings.endmill.tool_id);
         match rough.entry {
@@ -223,14 +225,14 @@ fn missing_fields_ctx(
     missing
 }
 
-fn legacy_tool(
+fn engine_tool(
     id: &str,
     geometry: &ToolGeometry,
     capabilities: &ToolCapabilities,
     assignment: &MillingAssignment,
-) -> Result<LegacyToolSettings> {
+) -> Result<EngineToolSettings> {
     let geometry = match geometry {
-        ToolGeometry::Endmill(g) => LegacyToolGeometry::Endmill(EndmillSpec {
+        ToolGeometry::Endmill(g) => EngineToolGeometry::Endmill(EndmillSpec {
             diameter_mm: g.diameter_mm,
             cutting_length_mm: g.cutting_length_mm,
             plunge_capable: capabilities.plunge_capable.ok_or_else(|| {
@@ -240,7 +242,7 @@ fn legacy_tool(
                 )
             })?,
         }),
-        ToolGeometry::Vbit(spec) => LegacyToolGeometry::Vbit(VBitSpec {
+        ToolGeometry::Vbit(spec) => EngineToolGeometry::Vbit(VBitSpec {
             included_angle_deg: spec.included_angle_deg,
             tip_diameter_mm: spec.tip_diameter_mm,
             max_cutting_diameter_mm: spec.max_cutting_diameter_mm,
@@ -248,18 +250,18 @@ fn legacy_tool(
         }),
         ToolGeometry::DragKnife(_) => {
             return Err(error(
-                "LEGACY_TOOL_KIND",
-                "drag-knife geometry has no legacy V-carve representation",
+                "ENGINE_TOOL_KIND",
+                "drag-knife geometry has no V-carve engine representation",
             ));
         }
     };
     // The endmill spec already carries the authoritative plunge value; the
-    // legacy slot field is only meaningful for V-bit tools.
+    // slot field is only meaningful for V-bit tools.
     let slot_plunge_capable = match &geometry {
-        LegacyToolGeometry::Endmill(_) => None,
+        EngineToolGeometry::Endmill(_) => None,
         _ => capabilities.plunge_capable,
     };
-    Ok(LegacyToolSettings {
+    Ok(EngineToolSettings {
         id: id.into(),
         geometry: Some(geometry),
         spindle_rpm: assignment.spindle_rpm,
@@ -272,18 +274,18 @@ fn legacy_tool(
     })
 }
 
-/// Construct the legacy planning job for a collection Flat V-carve operation.
-/// The legacy model requires exactly one source snapshot; in the collection
-/// path the resolved region is the geometry authority and the snapshot is an
-/// explicitly inert settings carrier — never parsed, never a synthetic SVG
-/// for re-import (plan section 22.4).
-pub(crate) fn to_legacy_job_v5(
-    job: &CamJobV5,
+/// Fuse the shared planner context, one operation's settings and the resolved
+/// selected region into the engine's planning input: the only constructor of
+/// [`VcarveInput`], for the schema-5 document and the schema-4 substrate
+/// alike. The region always arrives already resolved from the caller's
+/// geometry authority, so nothing below this point imports a source.
+pub(crate) fn vcarve_input(
     ctx: &PlanContext,
     operation_id: &str,
-    settings: &FlatVcarveSettingsV5,
-) -> Result<LegacyJob> {
-    let mapped = crate::project::v5::resolve::to_flat_vcarve_settings(settings);
+    settings: &FlatVcarveSettings,
+    region: Region,
+    source_error_mm: f64,
+) -> Result<VcarveInput> {
     let endmill_tool = ctx
         .tool(&settings.endmill.tool_id)
         .ok_or_else(|| error("PROJECT_TOOL_REFERENCE", "endmill tool not found"))?;
@@ -309,46 +311,37 @@ pub(crate) fn to_legacy_job_v5(
         max_loops_per_layer: rough.max_loops_per_layer,
         max_motions: rough.max_motions,
     };
-    let legacy = LegacyJob {
-        name: job.name.clone(),
-        source: LegacySourceSnapshot {
-            filename: "collection".into(),
-            svg: String::new(),
-        },
-        import: crate::svg::ImportOptions {
-            geometry_tolerance_mm: 0.001,
-            ticks_per_mm: None,
-            placement: crate::svg::Placement::default(),
-        },
-        selected_region_ids: mapped.component_ids.clone(),
-        stock: LegacyStockSettings {
+    let input = VcarveInput {
+        region,
+        source_error_mm,
+        stock: EngineStockSettings {
             thickness_mm: ctx.setup.stock.thickness_mm,
         },
-        operation: LegacyOperationSettings {
+        operation: EngineOperationSettings {
             id: operation_id.into(),
-            endmill_id: mapped.endmill.tool_id.clone(),
-            vbit_id: mapped.vbit.tool_id.clone(),
+            endmill_id: settings.endmill.tool_id.clone(),
+            vbit_id: settings.vbit.tool_id.clone(),
             max_depth_mm: settings.max_depth_mm,
             wall_allowance_mm: settings.wall_allowance_mm,
             max_floor_ridge_mm: settings.max_floor_ridge_mm,
             max_detail_residual_mm: settings.max_detail_residual_mm,
         },
         tools: vec![
-            legacy_tool(
+            engine_tool(
                 endmill_tool.id,
                 endmill_tool.geometry.ok_or_else(|| {
                     error("MISSING_MACHINING_SETTING", "endmill geometry is required")
                 })?,
                 endmill_tool.capabilities,
-                &mapped.endmill,
+                &settings.endmill,
             )?,
-            legacy_tool(
+            engine_tool(
                 vbit_tool.id,
                 vbit_tool.geometry.ok_or_else(|| {
                     error("MISSING_MACHINING_SETTING", "V-bit geometry is required")
                 })?,
                 vbit_tool.capabilities,
-                &mapped.vbit,
+                &settings.vbit,
             )?,
         ],
         tolerances: ctx.tolerances.clone(),
@@ -359,101 +352,8 @@ pub(crate) fn to_legacy_job_v5(
             None
         },
     };
-    legacy.validate_settings()?;
-    Ok(legacy)
-}
-
-/// Construct the legacy job for exactly this operation's component selection,
-/// assignments and planning controls. Shared setup travel settings and the
-/// canonical tolerances travel with the job; nothing else is invented.
-pub fn to_legacy_job(
-    job: &CamJob,
-    operation_id: &str,
-    settings: &FlatVcarveSettings,
-) -> Result<LegacyJob> {
-    let missing = missing_fields(job, operation_id, settings);
-    if let Some(first) = missing.first() {
-        return Err(first.diagnostic());
-    }
-    let endmill_tool = job
-        .tools
-        .iter()
-        .find(|t| t.id == settings.endmill.tool_id)
-        .ok_or_else(|| error("PROJECT_TOOL_REFERENCE", "endmill tool not found"))?;
-    let vbit_tool = job
-        .tools
-        .iter()
-        .find(|t| t.id == settings.vbit.tool_id)
-        .ok_or_else(|| error("PROJECT_TOOL_REFERENCE", "V-bit tool not found"))?;
-    let rough = settings
-        .rough
-        .as_ref()
-        .ok_or_else(|| error("MISSING_MACHINING_SETTING", "rough settings are required"))?;
-    let endmill_planning = EndmillPlanningSettings {
-        clearance_z_mm: job
-            .setup
-            .clearance_above_stock_mm
-            .ok_or_else(|| error("MISSING_MACHINING_SETTING", "clearance is required"))?,
-        start_xy_mm: job
-            .setup
-            .start_xy_mm
-            .ok_or_else(|| error("MISSING_MACHINING_SETTING", "start XY is required"))?,
-        strategy: rough.strategy,
-        entry: rough.entry.clone(),
-        max_layers: rough.max_layers,
-        max_loops_per_layer: rough.max_loops_per_layer,
-        max_motions: rough.max_motions,
-    };
-    let legacy = LegacyJob {
-        name: job.name.clone(),
-        source: job.source.clone().ok_or_else(|| {
-            error(
-                "MISSING_MACHINING_SETTING",
-                "an imported source is required",
-            )
-        })?,
-        import: job.import.clone(),
-        selected_region_ids: settings.component_ids.clone(),
-        stock: LegacyStockSettings {
-            thickness_mm: job.setup.stock.thickness_mm,
-        },
-        operation: LegacyOperationSettings {
-            id: operation_id.into(),
-            endmill_id: settings.endmill.tool_id.clone(),
-            vbit_id: settings.vbit.tool_id.clone(),
-            max_depth_mm: settings.max_depth_mm,
-            wall_allowance_mm: settings.wall_allowance_mm,
-            max_floor_ridge_mm: settings.max_floor_ridge_mm,
-            max_detail_residual_mm: settings.max_detail_residual_mm,
-        },
-        tools: vec![
-            legacy_tool(
-                &endmill_tool.id,
-                endmill_tool.geometry.as_ref().ok_or_else(|| {
-                    error("MISSING_MACHINING_SETTING", "endmill geometry is required")
-                })?,
-                &endmill_tool.capabilities,
-                &settings.endmill,
-            )?,
-            legacy_tool(
-                &vbit_tool.id,
-                vbit_tool.geometry.as_ref().ok_or_else(|| {
-                    error("MISSING_MACHINING_SETTING", "V-bit geometry is required")
-                })?,
-                &vbit_tool.capabilities,
-                &settings.vbit,
-            )?,
-        ],
-        tolerances: job.tolerances.clone(),
-        endmill_planning: Some(endmill_planning),
-        vbit_planning: if settings.mode == FlatVcarveMode::Combined {
-            settings.finish.clone()
-        } else {
-            None
-        },
-    };
-    legacy.validate_settings()?;
-    Ok(legacy)
+    input.validate_settings()?;
+    Ok(input)
 }
 
 fn milling_intent(assignment: &MillingAssignment) -> Result<ProcessIntent> {
@@ -582,7 +482,7 @@ fn resolve_carve_top(
     })
 }
 
-/// Plan one Flat V-carve operation through the legacy engine and map its
+/// Plan one Flat V-carve operation through the engine and map its
 /// output into generic rough/finish stages without reordering motions.
 /// Missing editable values yield an incomplete, empty result carrying the
 /// located diagnostics; the plan stays inspectable and cannot be exported.
@@ -598,19 +498,13 @@ pub(crate) fn plan(
     if !missing.is_empty() {
         return Ok(incomplete_from_missing(missing));
     }
-    // Resolve the selection's filled union once. The legacy planners consumed
-    // the identical import through their own job inspection; the resolved-
-    // region entry points and the collection path share this result (plan
-    // section 22.4: one import, one union authority).
-    let source = job.source.as_ref().expect("missing fields checked");
-    let imported = crate::svg::import_svg(&source.svg, &job.import, Some(&settings.component_ids));
-    let (region, bounds) = match imported {
-        Ok(geometry) => (geometry.selected, geometry.bounds),
+    let (region, bounds, source_error_mm) = match resolve_substrate_region(job, settings) {
+        Ok(resolved) => resolved,
         Err(diagnostic) => {
             // A face-referenced top ran its admission through this import and
             // reported the failure as an incomplete generation; preserve that
             // exact behavior (a stock-top import failure stayed a hard error
-            // inside the legacy planners).
+            // inside the engine).
             if matches!(
                 settings.top.reference,
                 crate::project::HeightReference::FaceResult { .. }
@@ -649,20 +543,19 @@ pub(crate) fn plan(
             ));
         }
     };
-    let mut legacy = to_legacy_job(job, operation_id, settings)?;
+    let mut input = vcarve_input(ctx, operation_id, settings, region, source_error_mm)?;
     if top_z != 0. {
         // local_z = setup_z - top_z for every target, query and report; the
         // physical stock bottom moves to local -(thickness + top_z) and the
         // clearance plane to clearance - top_z above the faced surface.
-        let thickness = legacy.stock.thickness_mm.expect("missing fields checked") + top_z;
-        legacy.stock.thickness_mm = Some(thickness);
-        if let Some(planning) = &mut legacy.endmill_planning {
+        let thickness = input.stock.thickness_mm.expect("missing fields checked") + top_z;
+        input.stock.thickness_mm = Some(thickness);
+        if let Some(planning) = &mut input.endmill_planning {
             planning.clearance_z_mm -= top_z;
         }
     }
-    run_legacy(
-        &legacy,
-        region,
+    run_engine(
+        &input,
         operation_id,
         settings.mode,
         &settings.endmill,
@@ -671,13 +564,32 @@ pub(crate) fn plan(
     )
 }
 
+/// Resolve the substrate operation's selection through the one SVG importer:
+/// the region, its bounds and the import-time error that travels with it.
+pub(crate) fn resolve_substrate_region(
+    job: &CamJob,
+    settings: &FlatVcarveSettings,
+) -> Result<(Region, Option<Bounds>, f64)> {
+    let source = job.source.as_ref().ok_or_else(|| {
+        error(
+            "MISSING_MACHINING_SETTING",
+            "an imported source is required",
+        )
+    })?;
+    let geometry = crate::svg::import_svg(&source.svg, &job.import, Some(&settings.component_ids))?;
+    Ok((
+        geometry.selected,
+        geometry.bounds,
+        geometry.flattening_bound_mm + geometry.source_snap_bound_mm,
+    ))
+}
+
 /// The collection-document entry (plan section 22.4): the resolved union of
 /// the selected filled components arrives from the document resolver —
 /// possibly spanning several artwork items — and no source is imported,
 /// merged or synthesized here.
 pub(crate) fn plan_v5(
     ctx: &PlanContext,
-    job: &CamJobV5,
     operation_id: &str,
     settings: &FlatVcarveSettingsV5,
     resolved: &crate::project::v5::resolve::ResolvedVcarveRegion,
@@ -709,11 +621,18 @@ pub(crate) fn plan_v5(
             ));
         }
     };
-    // Legacy-construction failures are generation outcomes in the collection
+    let mapped = crate::project::v5::resolve::to_flat_vcarve_settings(settings);
+    // Input-construction failures are generation outcomes in the collection
     // model (numeric readiness is planner-side): the rest of the job stays
     // inspectable instead of failing the whole plan.
-    let mut legacy = match to_legacy_job_v5(job, ctx, operation_id, settings) {
-        Ok(legacy) => legacy,
+    let mut input = match vcarve_input(
+        ctx,
+        operation_id,
+        &mapped,
+        resolved.region.clone(),
+        resolved.source_error_mm,
+    ) {
+        Ok(input) => input,
         Err(diagnostic) => {
             return Ok(incomplete(
                 operation_id,
@@ -727,16 +646,14 @@ pub(crate) fn plan_v5(
         }
     };
     if top_z != 0. {
-        let thickness = legacy.stock.thickness_mm.expect("missing fields checked") + top_z;
-        legacy.stock.thickness_mm = Some(thickness);
-        if let Some(planning) = &mut legacy.endmill_planning {
+        let thickness = input.stock.thickness_mm.expect("missing fields checked") + top_z;
+        input.stock.thickness_mm = Some(thickness);
+        if let Some(planning) = &mut input.endmill_planning {
             planning.clearance_z_mm -= top_z;
         }
     }
-    let mapped = crate::project::v5::resolve::to_flat_vcarve_settings(settings);
-    run_legacy(
-        &legacy,
-        resolved.region.clone(),
+    run_engine(
+        &input,
         operation_id,
         mapped.mode,
         &mapped.endmill,
@@ -745,13 +662,12 @@ pub(crate) fn plan_v5(
     )
 }
 
-/// Shared machining core over a fully constructed legacy job and the resolved
-/// selected region. The schema-4 adapter and the collection planner meet
-/// here; neither mode re-imports any source.
+/// Shared machining core over a fully constructed engine input. The schema-4
+/// substrate and the schema-5 document meet here; neither mode re-imports any
+/// source.
 #[allow(clippy::too_many_arguments)]
-fn run_legacy(
-    legacy: &LegacyJob,
-    region: Region,
+fn run_engine(
+    input: &VcarveInput,
     operation_id: &str,
     mode: FlatVcarveMode,
     endmill: &MillingAssignment,
@@ -762,7 +678,7 @@ fn run_legacy(
     let finish_stage_id = format!("{operation_id}-vcarve-finish");
     match mode {
         FlatVcarveMode::EndmillOnly => {
-            let plan = plan_endmill_with_region(legacy, region)?;
+            let plan = plan_endmill(input)?;
             let mut motions = map_motions(
                 &plan.motions,
                 operation_id,
@@ -805,7 +721,7 @@ fn run_legacy(
             })
         }
         FlatVcarveMode::Combined => {
-            let plan = plan_combined_with_region(legacy, region)?;
+            let plan = plan_combined(input)?;
             let mut endmill_motions = map_motions(
                 &plan.endmill.motions,
                 operation_id,
@@ -980,7 +896,7 @@ fn admit_uniform_faced_top(
         ));
     }
     // Earlier removal strictly below the faced plane inside the target would
-    // invalidate the fresh-planar starting surface the legacy engine assumes.
+    // invalidate the fresh-planar starting surface the engine assumes.
     let epsilon = 1e-9;
     for motion in prior_motions {
         if motion.effect != crate::toolpath::MotionEffect::MillingSweep {

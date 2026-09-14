@@ -1,6 +1,6 @@
 use cam_core::{
     geometry::{BoundaryQuery, Grid, Point, PointLocation, Region, Segment},
-    job::Job,
+    job::VcarveInput,
     model::{VBit, VBitSpec},
     motion::{Motion, MotionKind, Position},
     pocket::PlanStatus,
@@ -11,7 +11,7 @@ use cam_core::{
     vcarve::{CombinedPlan, PathFamily, plan_combined, verify_combined_plan, verify_vbit_motions},
 };
 use std::sync::OnceLock;
-fn fixture(name: &str) -> Job {
+fn fixture(name: &str) -> VcarveInput {
     cam_core::job::input_from_fixture_json(
         &std::fs::read_to_string(format!(
             "{}/../../fixtures/m4/{name}.json",
@@ -34,6 +34,19 @@ fn planned(name: &str) -> &'static CombinedPlan {
     static CACHE: [OnceLock<CombinedPlan>; 7] = [const { OnceLock::new() }; 7];
     let i = NAMES.iter().position(|n| *n == name).unwrap();
     CACHE[i].get_or_init(|| plan_combined(&fixture(name)).unwrap_or_else(|e| panic!("{name}: {e}")))
+}
+
+/// The fixture before resolution, for tests that edit the import placement or
+/// the source geometry.
+fn fixture_form(name: &str) -> cam_core::job::FixtureJob {
+    cam_core::job::FixtureJob::parse(
+        &std::fs::read_to_string(format!(
+            "{}/../../fixtures/m4/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap(),
+    )
+    .unwrap()
 }
 fn tool(tip: f64) -> VBit {
     VBit::try_from(VBitSpec {
@@ -116,7 +129,7 @@ fn variable_radius_check_accepts_a_safe_rising_path_and_rejects_interior_gouges(
     assert!(q.variable_radius_margin_mm(s, 0.99, 3.99).unwrap() > 0.);
     assert!(q.segment_distance_mm(s).unwrap() < 3.99); // A deepest-depth-only check would wrongly reject it.
     let job = fixture("island");
-    let q = BoundaryQuery::new(&job.inspect().unwrap().geometry.selected);
+    let q = BoundaryQuery::new(&job.region);
     let s = Segment {
         start: Point::new(8., 15.),
         end: Point::new(32., 15.),
@@ -271,7 +284,7 @@ fn narrowed_regions_get_vbit_depth_passes_when_the_endmill_stage_is_empty() {
 fn medial_branches_preserve_curves_radii_and_join_full_depth_families() {
     let curved = planned("curved-medial");
     assert!(curved.analysis.medial_axis.curved_branches > 0);
-    let query = BoundaryQuery::new(&curved.endmill.job.inspect().unwrap().geometry.selected);
+    let query = BoundaryQuery::new(&curved.endmill.input.region);
     for b in &curved.analysis.medial_axis.branches {
         for (p, r) in b.points.iter().zip(&b.clearance_radii_mm) {
             assert!((query.sample(p.xy()).unwrap().distance_mm - r).abs() < 1e-10);
@@ -311,7 +324,7 @@ fn medial_branches_preserve_curves_radii_and_join_full_depth_families() {
 fn medial_chords_retain_clearance_for_conservative_stock_brackets() {
     for name in ["curved-medial", "finite-tip", "island"] {
         let plan = planned(name);
-        let region = plan.endmill.job.inspect().unwrap().geometry.selected;
+        let region = plan.endmill.input.region.clone();
         let query = BoundaryQuery::new(&region);
         let bit = if name == "finite-tip" {
             tool(0.5)
@@ -415,7 +428,7 @@ fn saved_combined_reports_recompute_and_reject_stale_motion_or_job_edits() {
         "STALE_PLAN"
     );
     value = serde_json::from_str(&saved).unwrap();
-    value["endmill"]["job"]["operation"]["max_floor_ridge_mm"] = serde_json::json!(0.9);
+    value["endmill"]["input"]["operation"]["max_floor_ridge_mm"] = serde_json::json!(0.9);
     assert_eq!(
         CombinedPlan::from_reader(value.to_string().as_bytes())
             .unwrap_err()
@@ -574,7 +587,7 @@ fn motion_verifier_rejects_in_stock_rapids_wrong_feed_and_wrong_tool_order() {
     moves[i].kind = MotionKind::RapidXY;
     moves[i].feed_mm_min = None;
     assert_eq!(
-        verify_vbit_motions(&p.endmill.job, &p.endmill.motions, &moves)
+        verify_vbit_motions(&p.endmill.input, &p.endmill.motions, &moves)
             .unwrap_err()
             .code,
         "INVALID_VBIT_MOTION"
@@ -582,7 +595,7 @@ fn motion_verifier_rejects_in_stock_rapids_wrong_feed_and_wrong_tool_order() {
     moves = p.vbit_motions.clone();
     moves[i].feed_mm_min = Some(1.);
     assert_eq!(
-        verify_vbit_motions(&p.endmill.job, &p.endmill.motions, &moves)
+        verify_vbit_motions(&p.endmill.input, &p.endmill.motions, &moves)
             .unwrap_err()
             .code,
         "INVALID_VBIT_MOTION"
@@ -694,10 +707,10 @@ fn cutting_height_and_conflicting_capabilities_are_rejected() {
 #[test]
 fn curved_medial_xyz_linearization_stays_within_motion_tolerance() {
     let p = planned("curved-medial");
-    let query = BoundaryQuery::new(&p.endmill.job.inspect().unwrap().geometry.selected);
-    let guard = 2. * p.endmill.job.import.geometry_tolerance_mm;
-    let cap = p.endmill.job.operation.max_depth_mm.unwrap();
-    let tolerance = p.endmill.job.tolerances.motion_tolerance_mm.unwrap();
+    let query = BoundaryQuery::new(&p.endmill.input.region);
+    let guard = 2. * p.endmill.input.region.grid().tolerance_mm();
+    let cap = p.endmill.input.operation.max_depth_mm.unwrap();
+    let tolerance = p.endmill.input.tolerances.motion_tolerance_mm.unwrap();
     for b in p
         .analysis
         .medial_axis
@@ -747,13 +760,14 @@ fn curved_medial_xyz_linearization_stays_within_motion_tolerance() {
 }
 #[test]
 fn obtuse_vbit_and_placed_artwork_preserve_continuous_clearance() {
-    let mut j = fixture("narrow-channel");
+    let mut form = fixture_form("narrow-channel");
+    form.import.placement.rotation_deg = 31.;
+    form.import.placement.origin_mm = Point::new(80., 27.);
+    let mut j = form.resolve().unwrap();
     if let Some(cam_core::job::ToolGeometry::Vbit(s)) = &mut j.tools[1].geometry {
         s.included_angle_deg = 120.;
         s.max_cutting_diameter_mm = 20.;
     }
-    j.import.placement.rotation_deg = 31.;
-    j.import.placement.origin_mm = Point::new(80., 27.);
     let p = plan_combined(&j).unwrap();
     assert_eq!(
         p.analysis.status,

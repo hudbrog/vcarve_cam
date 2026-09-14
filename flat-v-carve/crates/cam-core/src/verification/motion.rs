@@ -98,7 +98,7 @@ pub(super) fn check(
     v: &[Motion],
     places: Option<usize>,
 ) -> (usize, Vec<Finding>) {
-    let settings = ctx.job.endmill_planning.as_ref().unwrap();
+    let settings = ctx.input.endmill_planning.as_ref().unwrap();
     let round = |x| places.map_or(x, |n| coordinate(x, n));
     let clearance = ctx
         .emitted_start
@@ -117,11 +117,11 @@ pub(super) fn check(
         let is_endmill = i < e.len();
         let stage_start = i == 0 || i == e.len();
         let id = if is_endmill {
-            &ctx.job.operation.endmill_id
+            &ctx.input.operation.endmill_id
         } else {
-            &ctx.job.operation.vbit_id
+            &ctx.input.operation.vbit_id
         };
-        let slot = ctx.job.tools.iter().find(|t| &t.id == id).unwrap();
+        let slot = ctx.input.tools.iter().find(|t| &t.id == id).unwrap();
         let xy = m.start.xy().distance(m.end.xy());
         let drop = m.start.z - m.end.z;
         let step = slot.max_stepdown_mm.unwrap_or(0.);
@@ -187,7 +187,7 @@ pub(super) fn check(
             || m.start != previous
             || m.id != i
             || &m.tool_id != id
-            || m.operation_id != ctx.job.operation.id
+            || m.operation_id != ctx.input.operation.id
             || !valid
             || m.feed_mm_min != feed
             || !m.kind.rapid() && feed.is_none()

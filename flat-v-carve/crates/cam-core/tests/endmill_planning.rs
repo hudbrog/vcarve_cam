@@ -1,9 +1,23 @@
 use cam_core::{
-    job::Job,
+    job::VcarveInput,
     pocket::{PlanStatus, plan_endmill},
 };
-fn fixture(name: &str) -> Job {
+fn fixture(name: &str) -> VcarveInput {
     cam_core::job::input_from_fixture_json(
+        &std::fs::read_to_string(format!(
+            "{}/../../fixtures/m3/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+/// The fixture before resolution: an attached source, its import options and
+/// the selected region ids. Tests that study placement or an edited SVG
+/// change one of those and resolve again, exactly as a caller would.
+fn fixture_form(name: &str) -> cam_core::job::FixtureJob {
+    cam_core::job::FixtureJob::parse(
         &std::fs::read_to_string(format!(
             "{}/../../fixtures/m3/{name}.json",
             env!("CARGO_MANIFEST_DIR")
@@ -111,7 +125,7 @@ fn saved_reports_are_recomputed_and_identity_changes_rejected() {
     assert_eq!(replay.analysis.status, PlanStatus::Complete);
     assert_eq!(replay.spindle_rpm, 10000.);
     assert_eq!(replay.analysis.layers.len(), 2);
-    data["job"]["operation"]["wall_allowance_mm"] = serde_json::json!(0.8);
+    data["input"]["operation"]["wall_allowance_mm"] = serde_json::json!(0.8);
     assert_eq!(
         EndmillPlan::from_json(&data.to_string()).unwrap_err().code,
         "STALE_PLAN"
@@ -136,7 +150,7 @@ fn saved_reports_are_recomputed_and_identity_changes_rejected() {
     );
 }
 
-fn excursion(job: &Job, a: Point, b: Point) -> Vec<Motion> {
+fn excursion(job: &VcarveInput, a: Point, b: Point) -> Vec<Motion> {
     let mut start = Position::new(Point::new(0., 0.), 5.);
     [
         (MotionKind::RapidXY, Position::new(a, 5.), None),
@@ -170,7 +184,7 @@ fn whole_segment_check_catches_crossing_island_with_valid_endpoints() {
     job.operation.max_depth_mm = Some(1.);
     let a = Point::new(8., 15.);
     let b = Point::new(32., 15.);
-    let query = BoundaryQuery::new(&job.inspect().unwrap().geometry.selected);
+    let query = BoundaryQuery::new(&job.region);
     for p in [a, b] {
         assert!(query.sample(p).unwrap().signed_distance_mm > 3.5);
     }
@@ -523,11 +537,13 @@ fn missing_settings_and_precision_limits_fail_before_any_motion_is_generated() {
 
 #[test]
 fn placement_rotation_and_translation_preserve_clearing_area_within_grid_budget() {
-    let mut job = fixture("rectangle");
-    let original = plan_endmill(&job).unwrap();
-    job.import.placement.rotation_deg = 27.;
-    job.import.placement.origin_mm = Point::new(80., -30.);
-    let placed = plan_endmill(&job).unwrap();
+    let original = plan_endmill(&fixture("rectangle")).unwrap();
+    // The placement is part of the geometry resolution, so the region is
+    // resolved again from the fixture with the placement applied.
+    let mut form = fixture_form("rectangle");
+    form.import.placement.rotation_deg = 27.;
+    form.import.placement.origin_mm = Point::new(80., -30.);
+    let placed = plan_endmill(&form.resolve().unwrap()).unwrap();
     assert_eq!(placed.analysis.status, PlanStatus::Complete);
     for (a, b) in original.analysis.layers.iter().zip(&placed.analysis.layers) {
         assert!((a.removal.lower.area_mm2() - b.removal.lower.area_mm2()).abs() < 0.05);

@@ -220,12 +220,13 @@ mod sample_cache_tests {
 
     #[test]
     fn cached_samples_match_fresh_boundary_queries_and_preserve_range_errors() {
-        let job =
-            crate::job::Job::from_fixture(include_str!("../../../../fixtures/m4/island.json"))
-                .unwrap();
+        let job = crate::job::input_from_fixture_json(include_str!(
+            "../../../../fixtures/m4/island.json"
+        ))
+        .unwrap();
         let make_target = || {
             Target::for_planning(
-                job.inspect().unwrap().geometry.selected,
+                job.region.clone(),
                 Depth::new(2.).unwrap(),
                 IncludedAngle::new(90.).unwrap(),
             )

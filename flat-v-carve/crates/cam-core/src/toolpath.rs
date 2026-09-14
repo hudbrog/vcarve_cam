@@ -3,7 +3,7 @@
 //! This is the new plan representation from the 2.5D CAM contract: feed
 //! motion is separate from material effect, and every motion belongs to
 //! exactly one execution stage. The legacy [`crate::motion::Motion`] stays
-//! inside the legacy planners and is adapted per operation.
+//! inside the V-carve engine and is adapted per operation.
 //!
 //! Knife motions program the blade holder's pivot in XY (plan section 12.1);
 //! the visible blade tip is derived for display from the modeled heading
@@ -40,7 +40,7 @@ pub enum MotionPurpose {
 pub enum MotionEffect {
     /// No material is removed or marked by this move.
     None,
-    /// The cutter sweep of this move removes stock under the legacy engine's
+    /// The cutter sweep of this move removes stock under the engine's
     /// cutting semantics.
     MillingSweep,
     /// The blade traces or scores material without milled volume.

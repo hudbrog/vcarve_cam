@@ -5,7 +5,6 @@ pub mod admission;
 pub mod collection;
 pub mod export;
 pub mod retained;
-pub mod summary;
 pub mod task;
 pub mod verification;
 

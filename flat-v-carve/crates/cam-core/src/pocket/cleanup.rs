@@ -67,10 +67,12 @@ pub(super) fn simplify(ctx: &Context, points: &mut Vec<Point>, depth: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::job::Job;
     fn context() -> Context {
         Context::new(
-            &Job::from_fixture(include_str!("../../../../fixtures/m3/rectangle.json")).unwrap(),
+            &crate::job::input_from_fixture_json(include_str!(
+                "../../../../fixtures/m3/rectangle.json"
+            ))
+            .unwrap(),
         )
         .unwrap()
     }

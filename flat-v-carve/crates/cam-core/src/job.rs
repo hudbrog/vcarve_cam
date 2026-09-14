@@ -1,15 +1,22 @@
 //! The V-carve engine's planning input.
 //!
-//! This is **not** a document and carries no schema version. The only job
-//! document is schema 5 ([`crate::project::v5`]); the engine input is built
-//! from it — or from the schema-4 planning substrate — through
-//! [`crate::operations::flat_vcarve::to_legacy_job`]-style adapters, never
-//! parsed from a file a user opens. Its serde representation exists for the
-//! engine's own regression fixtures under `fixtures/`.
+//! [`VcarveInput`] is the engine's one front door, and it is not a document:
+//! no schema version, no reader, no user command. The only job document is
+//! schema 5 ([`crate::project::v5`]); the input is fused from the shared
+//! planner context, the operation's settings and the **resolved selected
+//! region** ([`crate::operations::flat_vcarve::vcarve_input`]), so the region
+//! is the geometry authority and no source is imported or re-imported
+//! anywhere below this type.
+//!
+//! Two hidden helpers serve the engine's own regression corpus and the
+//! benchmark examples that read a saved plan: [`FixtureJob`] is the fixture
+//! form (`fixtures/m3`, `fixtures/m4`, which still name an SVG and the region
+//! ids selected from it) and [`input_from_json`] reads the plan's embedded
+//! input back.
 use crate::{
-    geometry::{Diagnostic, Result},
+    geometry::{Diagnostic, Grid, GridPoint, Region, Result},
     model::{Endmill, EndmillSpec, VBit, VBitSpec},
-    svg::{ImportOptions, NormalizedGeometry, import_svg},
+    svg::{ImportOptions, import_svg},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -106,9 +113,133 @@ pub struct PlanningTolerances {
     pub verification_tolerance_mm: Option<f64>,
 }
 
+/// Everything one Flat V-carve planning run needs: the operation's settings,
+/// the two cutter slots with their process values, the stock, the tolerances,
+/// the rough/finish limits — and the resolved selected region the target is
+/// built from.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(try_from = "VcarveInputWire", into = "VcarveInputWire")]
+pub struct VcarveInput {
+    /// The union of the selected filled components in workpiece XY, on its own
+    /// snapping grid. Carried whole, so a saved plan can rebuild the exact
+    /// target it was planned against.
+    pub region: Region,
+    /// Import error carried with that region, in workpiece XY millimetres: the
+    /// flattening bound plus the source-snapping bound. The region's grid adds
+    /// its own snapping term, so the verification's source depth error is
+    /// `(source_error_mm + region.grid().snap_bound_mm()) / slope`.
+    pub source_error_mm: f64,
+    pub stock: StockSettings,
+    pub operation: OperationSettings,
+    pub tools: Vec<ToolSettings>,
+    pub tolerances: PlanningTolerances,
+    pub endmill_planning: Option<crate::pocket::EndmillPlanningSettings>,
+    pub vbit_planning: Option<crate::vcarve::VBitPlanningSettings>,
+}
+
+/// The serialized form of [`VcarveInput`]: the same input with the region
+/// written as its snapping grid and grid coordinates, which rebuild through
+/// [`Region::from_grid_rings`] instead of being trusted.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VcarveInputWire {
+    region: RegionWire,
+    source_error_mm: f64,
+    stock: StockSettings,
+    operation: OperationSettings,
+    tools: Vec<ToolSettings>,
+    tolerances: PlanningTolerances,
+    #[serde(default)]
+    endmill_planning: Option<crate::pocket::EndmillPlanningSettings>,
+    #[serde(default)]
+    vbit_planning: Option<crate::vcarve::VBitPlanningSettings>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegionWire {
+    ticks_per_mm: f64,
+    geometry_tolerance_mm: f64,
+    /// Rings of grid coordinates, in stored order.
+    rings: Vec<Vec<[i64; 2]>>,
+}
+
+impl RegionWire {
+    fn of(region: &Region) -> Self {
+        Self {
+            ticks_per_mm: region.grid().scale(),
+            geometry_tolerance_mm: region.grid().tolerance_mm(),
+            rings: region
+                .rings()
+                .iter()
+                .map(|ring| ring.points().iter().map(|p| [p.x, p.y]).collect())
+                .collect(),
+        }
+    }
+
+    fn to_region(&self) -> Result<Region> {
+        let rings: Vec<Vec<GridPoint>> = self
+            .rings
+            .iter()
+            .map(|ring| ring.iter().map(|&[x, y]| GridPoint { x, y }).collect())
+            .collect();
+        let max_abs_mm = rings
+            .iter()
+            .flatten()
+            .map(|p| (p.x.abs().max(p.y.abs())) as f64 / self.ticks_per_mm)
+            .fold(0., f64::max);
+        let grid = Grid::with_scale(self.geometry_tolerance_mm, max_abs_mm, self.ticks_per_mm)?;
+        Region::from_grid_rings(grid, &rings)
+    }
+}
+
+impl TryFrom<VcarveInputWire> for VcarveInput {
+    type Error = Diagnostic;
+    fn try_from(wire: VcarveInputWire) -> Result<Self> {
+        Ok(Self {
+            region: wire.region.to_region()?,
+            source_error_mm: wire.source_error_mm,
+            stock: wire.stock,
+            operation: wire.operation,
+            tools: wire.tools,
+            tolerances: wire.tolerances,
+            endmill_planning: wire.endmill_planning,
+            vbit_planning: wire.vbit_planning,
+        })
+    }
+}
+
+impl From<VcarveInput> for VcarveInputWire {
+    fn from(input: VcarveInput) -> Self {
+        Self {
+            region: RegionWire::of(&input.region),
+            source_error_mm: input.source_error_mm,
+            stock: input.stock,
+            operation: input.operation,
+            tools: input.tools,
+            tolerances: input.tolerances,
+            endmill_planning: input.endmill_planning,
+            vbit_planning: input.vbit_planning,
+        }
+    }
+}
+
+fn error(code: &str, message: impl Into<String>) -> Diagnostic {
+    Diagnostic::new(code, message).at_stage("job")
+}
+
+/// The engine's regression-fixture form: an attached source snapshot, the
+/// import options that produced the geometry from it, and the region ids
+/// selected out of that import, plus the planning settings.
+///
+/// Test data only. It exists so `fixtures/m3` and `fixtures/m4` stay readable
+/// as "this SVG, this selection, these settings", and so the geometry they
+/// describe still arrives through the one SVG importer. No command reads this
+/// shape.
+#[doc(hidden)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Job {
+pub struct FixtureJob {
     pub name: String,
     pub source: SourceSnapshot,
     pub import: ImportOptions,
@@ -122,38 +253,59 @@ pub struct Job {
     #[serde(default)]
     pub vbit_planning: Option<crate::vcarve::VBitPlanningSettings>,
 }
+impl FixtureJob {
+    #[doc(hidden)]
+    pub fn parse(json: &str) -> Result<Self> {
+        if json.len() > 64_000_000 {
+            return Err(error(
+                "JOB_RESOURCE_LIMIT",
+                "job exceeds the 64 MB input limit",
+            ));
+        }
+        serde_json::from_str(json).map_err(|e| error("JOB_JSON", e.to_string()))
+    }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct JobInspection {
-    pub engine_version: String,
-    pub name: String,
-    pub geometry: NormalizedGeometry,
-    /// Missing settings are expected during editing; import only supplies documented defaults.
-    pub missing_machining_fields: Vec<String>,
-    pub planning_available: bool,
+    /// Resolve the fixture's selection into the engine's planning input.
+    #[doc(hidden)]
+    pub fn resolve(&self) -> Result<VcarveInput> {
+        let geometry = import_svg(
+            &self.source.svg,
+            &self.import,
+            Some(&self.selected_region_ids),
+        )?;
+        Ok(VcarveInput {
+            region: geometry.selected,
+            source_error_mm: geometry.flattening_bound_mm + geometry.source_snap_bound_mm,
+            stock: self.stock.clone(),
+            operation: self.operation.clone(),
+            tools: self.tools.clone(),
+            tolerances: self.tolerances.clone(),
+            endmill_planning: self.endmill_planning.clone(),
+            vbit_planning: self.vbit_planning.clone(),
+        })
+    }
 }
 
-fn error(code: &str, message: impl Into<String>) -> Diagnostic {
-    Diagnostic::new(code, message).at_stage("job")
-}
-
-/// The engine's planning input for one stored fixture job.
-///
-/// The engine's input is not a document: it has no reader and no schema
-/// version. This parses the engine's own fixture form (`fixtures/m3`,
-/// `fixtures/m4`), which is test data, so the regression suites and benchmark
-/// examples share one loader. No command reads this shape.
+/// Resolve one engine fixture into the engine's planning input.
 #[doc(hidden)]
-pub fn input_from_fixture_json(json: &str) -> Result<Job> {
+pub fn input_from_fixture_json(json: &str) -> Result<VcarveInput> {
+    FixtureJob::parse(json)?.resolve()
+}
+
+/// Read the input a saved plan embeds. Test and benchmark support: the plan's
+/// own envelope is the only writer of this form.
+#[doc(hidden)]
+pub fn input_from_json(json: &str) -> Result<VcarveInput> {
     if json.len() > 64_000_000 {
         return Err(error(
             "JOB_RESOURCE_LIMIT",
             "job exceeds the 64 MB input limit",
         ));
     }
-    let job: Job = serde_json::from_str(json).map_err(|e| error("JOB_JSON", e.to_string()))?;
-    job.validate_settings()?;
-    Ok(job)
+    let input: VcarveInput =
+        serde_json::from_str(json).map_err(|e| error("JOB_JSON", e.to_string()))?;
+    input.validate_settings()?;
+    Ok(input)
 }
 fn number(value: Option<f64>, name: &str, zero: bool) -> Result<()> {
     if value.is_some_and(|v| !v.is_finite() || if zero { v < 0. } else { v <= 0. }) {
@@ -167,18 +319,7 @@ fn number(value: Option<f64>, name: &str, zero: bool) -> Result<()> {
     }
     Ok(())
 }
-impl Job {
-    /// Parse one engine-input fixture.
-    ///
-    /// Test data only: [`Job`] is not a document, these fixtures carry no
-    /// schema version, and no command reads this shape from a file. The
-    /// helpers live behind `cfg(test)` so the parse cannot leak into a
-    /// product path by accident.
-    #[cfg(test)]
-    pub(crate) fn from_fixture(json: &str) -> Result<Self> {
-        input_from_fixture_json(json)
-    }
-
+impl VcarveInput {
     pub fn validate_settings(&self) -> Result<()> {
         if let Some(settings) = &self.vbit_planning {
             settings.validate()?;
@@ -186,13 +327,10 @@ impl Job {
         if let Some(settings) = &self.endmill_planning {
             settings.validate()?;
         }
-        if self.name.trim().is_empty()
-            || self.name.len() > 1000
-            || self.source.filename.len() > 1000
-        {
+        if !self.source_error_mm.is_finite() || self.source_error_mm < 0. {
             return Err(error(
-                "JOB_NAME",
-                "job/source names must be short and the job name nonempty",
+                "JOB_PARAMETER",
+                "source_error_mm must be finite and nonnegative",
             ));
         }
         if self.tools.len() != 2 {
@@ -280,77 +418,5 @@ impl Job {
             }
         }
         Ok(())
-    }
-    pub fn inspect(&self) -> Result<JobInspection> {
-        self.validate_settings()?;
-        let geometry = import_svg(
-            &self.source.svg,
-            &self.import,
-            Some(&self.selected_region_ids),
-        )?;
-        let mut missing = vec![];
-        if self.vbit_planning.is_none() {
-            missing.push("vbit_planning".into());
-        }
-        if self.endmill_planning.is_none() {
-            missing.push("endmill_planning".into());
-        }
-        if self.selected_region_ids.is_empty() {
-            missing.push("selected_region_ids".into());
-        }
-        for (v, n) in [
-            (self.stock.thickness_mm, "stock.thickness_mm"),
-            (self.operation.max_depth_mm, "operation.max_depth_mm"),
-            (
-                self.operation.wall_allowance_mm,
-                "operation.wall_allowance_mm",
-            ),
-            (
-                self.operation.max_floor_ridge_mm,
-                "operation.max_floor_ridge_mm",
-            ),
-            (
-                self.operation.max_detail_residual_mm,
-                "operation.max_detail_residual_mm",
-            ),
-            (
-                self.tolerances.motion_tolerance_mm,
-                "tolerances.motion_tolerance_mm",
-            ),
-            (
-                self.tolerances.verification_tolerance_mm,
-                "tolerances.verification_tolerance_mm",
-            ),
-        ] {
-            if v.is_none() {
-                missing.push(n.into());
-            }
-        }
-        for t in &self.tools {
-            if t.id == self.operation.vbit_id && t.plunge_capable.is_none() {
-                missing.push(format!("tools.{}.plunge_capable", t.id));
-            }
-            if t.geometry.is_none() {
-                missing.push(format!("tools.{}.geometry", t.id));
-            }
-            for (v, n) in [
-                (t.spindle_rpm, "spindle_rpm"),
-                (t.cutting_feed_mm_min, "cutting_feed_mm_min"),
-                (t.plunge_feed_mm_min, "plunge_feed_mm_min"),
-                (t.max_stepdown_mm, "max_stepdown_mm"),
-                (t.stepover_mm, "stepover_mm"),
-            ] {
-                if v.is_none() {
-                    missing.push(format!("tools.{}.{n}", t.id));
-                }
-            }
-        }
-        Ok(JobInspection {
-            engine_version: env!("CARGO_PKG_VERSION").into(),
-            name: self.name.clone(),
-            geometry,
-            missing_machining_fields: missing,
-            planning_available: true,
-        })
     }
 }

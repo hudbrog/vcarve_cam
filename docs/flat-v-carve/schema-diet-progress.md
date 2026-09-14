@@ -100,6 +100,15 @@ instead of unpacking it by hand.
 | `cargo clippy --workspace --all-targets` | clean, 0 warnings |
 | `cargo fmt --all -- --check` | clean |
 
+The same suite runs unchanged after the engine-input slice: no test was
+deleted, and because no stored expectation pinned a fingerprint *value* — the
+tests compare fingerprints to each other — the changed input hash needed no
+fixture edits at all. The plan round-trip and stale-plan tests, which were the
+point of the embedded job, now exercise the input's own form. The rebuilt
+native GUI passes the smoke with an unchanged exported program hash, which is
+the evidence that the region round-trip is exact: the target the second run
+plans against is the one the first run planned against.
+
 Tests that pin the new behaviour:
 
 | Test | What it pins |
@@ -110,12 +119,52 @@ Tests that pin the new behaviour:
 | `cam-app/tests/jobs_cli.rs::unsupported_artwork_is_refused_without_writing_a_document` | text is still refused, a refused import writes nothing, and the source is never the output |
 | `cam-app/tests/collection_cli.rs::a_stored_document_exports_retained_files_matching_their_manifest` | a stored document plus the copied machine configuration exports checked bytes with their manifest |
 
+## Follow-up slice: the engine input stops being a job
+
+The one place the diet stopped short was the V-carve engine's front door:
+`job::Job` was still built by an adapter that had to fabricate an inert source
+snapshot (`filename: "collection"`, an empty SVG) because the engine type
+expected one. That is now gone.
+
+`job::VcarveInput` is the engine's only input, and it is not a job:
+
+| Carried | Where it comes from |
+| --- | --- |
+| `region` (the resolved selected union, on its own grid) | the caller's geometry authority: the schema-5 resolver or the substrate import |
+| `source_error_mm` (flattening + source-snapping bound) | the same import that produced the region |
+| `stock`, `operation`, `tools`, `tolerances`, `endmill_planning`, `vbit_planning` | `PlanContext` fused with the operation's settings, in one constructor (`operations::flat_vcarve::vcarve_input`) |
+
+What that removed:
+
+* `to_legacy_job` (substrate → engine) and `to_legacy_job_v5` (document →
+  engine), and with them the last reason to build a `Job`;
+* the self-importing entry points `plan_endmill(&Job)` and
+  `plan_combined(&Job)`, plus the `_with_region` variants: the region travels
+  inside the input, so there is one entry point per stage;
+* `Job::inspect()`, `JobInspection` and the `missing_machining_fields` list,
+  which existed for the deleted `cam validate-job` command;
+* `input_hash`'s document shape: the plan's input fingerprint now hashes the
+  plan's own input, and both fingerprints change once (regenerated, not
+  migrated).
+
+The engine artifacts carry that input, so a stored plan can still rebuild the
+target it was planned against. The region serialises as its snapping grid plus
+grid coordinates and reloads through the validated
+`Region::from_grid_rings`, never as trusted geometry. `FixtureJob` keeps the
+fixture form readable — `fixtures/m3` and `fixtures/m4` still name an SVG and
+the ids selected from it, and resolve through the one importer — and the
+benchmark examples read the plan's `input` back with the hidden
+`job::input_from_json`.
+
+`cam-service`'s `summary.rs`, a projection of the legacy plan types left over
+from the deleted HTTP planning API with no callers, is deleted with them.
+
 Browser and review material moved with the code: `gui4-scenario.mjs` no longer
 walks "Import older job" (the entry is gone) — it opens an engine-shaped file
 and asserts the refusal leaves the project untouched, then saves and reopens
 the portable document.
 
-## Still inside the goal
+## Still open
 
 * **`cam collection select`.** Recorded above: not implemented, deliberately.
 * **Recovery envelope.** The workspace recovery record is still numbered

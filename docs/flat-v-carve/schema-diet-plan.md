@@ -4,9 +4,11 @@ Date: 2026-09-14\
 Context: the compatibility policy in
 [field-testing-fixes-plan.md](field-testing-fixes-plan.md) §0 ("saved jobs do
 not have to survive") and open question 9 there.\
-Status: landed — stages 1–4. `cam collection select` remains the one open
-decision, and the milestone reproduction scripts still drive the deleted CLI.
-See [schema-diet-progress.md](schema-diet-progress.md).
+Status: landed — stages 1–4, plus the follow-up slice that turned the engine's
+input into `VcarveInput` instead of a job (see the progress note).
+`cam collection select` remains the one open decision, and the milestone
+reproduction scripts still drive the deleted CLI. See
+[schema-diet-progress.md](schema-diet-progress.md).
 
 ## What the repository holds today
 
@@ -28,11 +30,14 @@ them (`cam collection open`, the GUI's *Import older job*, `cam sequence`,
 **Exactly one parseable job document: schema 5.** Everything else is either an
 in-memory substrate or deleted.
 
-* The engine input keeps its struct — rewriting `pocket`, `vcarve`, `post` and
-  `verification` against a new input type is a different project — but loses
-  every serde/parse surface: no `from_json`, no `from_svg`, no `to_json`, no
-  `schema_version`. It becomes constructible **only** from the current
-  document, through the same conversion the planner already uses.
+* The engine input keeps its algorithms — rewriting `pocket`, `vcarve`, `post`
+  and `verification` is a different project — but loses its job shape: no
+  `source`, no `import`, no `selected_region_ids`, no `schema_version`. It
+  becomes `job::VcarveInput`, built **only** by fusing the planner context,
+  the operation's settings and the resolved region
+  (`operations::flat_vcarve::vcarve_input`), so no source is imported or
+  re-imported anywhere below the planner. Its serde form exists because the
+  plan embeds the input it was generated from, not to read a job.
 * `project::CamJob` likewise stays as the in-memory collection substrate and
   loses its document surface.
 * Every migration module, migration command, migration UI entry, and the

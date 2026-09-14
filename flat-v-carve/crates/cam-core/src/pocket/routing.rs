@@ -147,14 +147,14 @@ pub(super) fn departure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        geometry::{Grid, Region},
-        job::Job,
-    };
+    use crate::geometry::{Grid, Region};
     #[test]
     fn corner_departure_retraces_a_cut_edge_before_one_stepover_crossing() {
         let ctx = Context::new(
-            &Job::from_fixture(include_str!("../../../../fixtures/m3/rectangle.json")).unwrap(),
+            &crate::job::input_from_fixture_json(include_str!(
+                "../../../../fixtures/m3/rectangle.json"
+            ))
+            .unwrap(),
         )
         .unwrap();
         let p = Point::new;
@@ -177,7 +177,10 @@ mod tests {
     #[test]
     fn deeper_links_require_the_whole_swept_cutter_in_preceding_stock() {
         let ctx = Context::new(
-            &Job::from_fixture(include_str!("../../../../fixtures/m3/rectangle.json")).unwrap(),
+            &crate::job::input_from_fixture_json(include_str!(
+                "../../../../fixtures/m3/rectangle.json"
+            ))
+            .unwrap(),
         )
         .unwrap();
         let p = Point::new;
@@ -197,7 +200,10 @@ mod tests {
     #[test]
     fn outward_link_splits_an_edge_without_changing_the_contour() {
         let ctx = Context::new(
-            &Job::from_fixture(include_str!("../../../../fixtures/m3/rectangle.json")).unwrap(),
+            &crate::job::input_from_fixture_json(include_str!(
+                "../../../../fixtures/m3/rectangle.json"
+            ))
+            .unwrap(),
         )
         .unwrap();
         let p = Point::new;

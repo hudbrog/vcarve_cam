@@ -5,7 +5,7 @@ mod motion;
 
 use crate::{
     geometry::{Diagnostic, Point, Result},
-    job::{Job, ToolGeometry},
+    job::{ToolGeometry, VcarveInput},
     model::{Depth, Endmill, Length, VBit},
     motion::Motion,
     svg::Bounds,
@@ -181,7 +181,7 @@ fn status(a: VerificationStatus, b: VerificationStatus) -> VerificationStatus {
 }
 
 struct Context<'a> {
-    job: &'a Job,
+    input: &'a VcarveInput,
     target: Target,
     mill: Endmill,
     vbit: VBit,
@@ -194,8 +194,7 @@ struct Context<'a> {
     emitted_start: Option<crate::motion::Position>,
 }
 impl<'a> Context<'a> {
-    fn new(job: &'a Job) -> Result<Self> {
-        let inspection = job.inspect()?;
+    fn new(input: &'a VcarveInput) -> Result<Self> {
         let required = |v: Option<f64>, name: &str| {
             v.ok_or_else(|| {
                 error(
@@ -205,38 +204,39 @@ impl<'a> Context<'a> {
             })
         };
         let geometry = |id: &str| {
-            job.tools
+            input
+                .tools
                 .iter()
                 .find(|t| t.id == id)
                 .and_then(|t| t.geometry.as_ref())
         };
-        let Some(ToolGeometry::Endmill(e)) = geometry(&job.operation.endmill_id) else {
+        let Some(ToolGeometry::Endmill(e)) = geometry(&input.operation.endmill_id) else {
             return Err(error("VERIFICATION_SETTING", "endmill geometry required"));
         };
-        let Some(ToolGeometry::Vbit(v)) = geometry(&job.operation.vbit_id) else {
+        let Some(ToolGeometry::Vbit(v)) = geometry(&input.operation.vbit_id) else {
             return Err(error("VERIFICATION_SETTING", "V-bit geometry required"));
         };
         let mill = Endmill::try_from(e.clone())?;
         let vbit = VBit::try_from(v.clone())?;
-        let depth = Depth::new(required(job.operation.max_depth_mm, "max_depth_mm")?)?;
+        let depth = Depth::new(required(input.operation.max_depth_mm, "max_depth_mm")?)?;
         mill.validate_depth(depth)?;
         vbit.validate_depth(depth)?;
         let tolerance = required(
-            job.tolerances.verification_tolerance_mm,
+            input.tolerances.verification_tolerance_mm,
             "verification_tolerance_mm",
         )?;
-        required(job.stock.thickness_mm, "stock.thickness_mm")?;
-        if job.endmill_planning.is_none() {
+        required(input.stock.thickness_mm, "stock.thickness_mm")?;
+        if input.endmill_planning.is_none() {
             return Err(error(
                 "VERIFICATION_SETTING",
                 "endmill_planning is required for entry and clearance rules",
             ));
         }
-        let source_error = (inspection.geometry.flattening_bound_mm
-            + inspection.geometry.source_snap_bound_mm
-            + inspection.geometry.grid.snap_bound_mm())
-            / vbit.angle().slope();
-        let target = Target::for_planning(inspection.geometry.selected, depth, vbit.angle())?;
+        // The resolved region carries its own snapping grid; the import-time
+        // flattening and source-snapping bounds travel beside it in the input.
+        let source_error =
+            (input.source_error_mm + input.region.grid().snap_bound_mm()) / vbit.angle().slope();
+        let target = Target::for_planning(input.region.clone(), depth, vbit.angle())?;
         let bounds = Bounds::of(target.region()).unwrap();
         let magnitude = [
             bounds.min.x.abs(),
@@ -251,7 +251,7 @@ impl<'a> Context<'a> {
         .fold(1., f64::max);
         let reserve = 8192. * f64::EPSILON * magnitude / vbit.angle().slope().min(1.);
         Ok(Self {
-            job,
+            input,
             target,
             mill,
             vbit,
@@ -260,12 +260,12 @@ impl<'a> Context<'a> {
             source_error,
             emitted_start: None,
             allowance: Length::new(required(
-                job.operation.wall_allowance_mm,
+                input.operation.wall_allowance_mm,
                 "wall_allowance_mm",
             )?)?,
-            ridge: required(job.operation.max_floor_ridge_mm, "max_floor_ridge_mm")?,
+            ridge: required(input.operation.max_floor_ridge_mm, "max_floor_ridge_mm")?,
             detail: required(
-                job.operation.max_detail_residual_mm,
+                input.operation.max_detail_residual_mm,
                 "max_detail_residual_mm",
             )?,
         })
@@ -276,14 +276,14 @@ impl<'a> Context<'a> {
 /// Use the decoded initial position/clearance, without formatting a second
 /// time or changing the job's target. Only the post can supply this override.
 pub(crate) fn verify_emitted_motions(
-    job: &Job,
+    input: &VcarveInput,
     endmill: &[Motion],
     vbit: &[Motion],
     options: &VerificationOptions,
     emitted_start: crate::motion::Position,
 ) -> Result<StockVerification> {
     options.validate()?;
-    let mut ctx = Context::new(job)?;
+    let mut ctx = Context::new(input)?;
     ctx.emitted_start = Some(emitted_start);
     adaptive::verify(&ctx, endmill, vbit, options, None, vec![])
 }
@@ -291,14 +291,14 @@ pub(crate) fn verify_emitted_motions(
 /// Checks raw motion lists, useful for challenging the verifier independently of
 /// generation records. This does not authenticate a saved plan's path families.
 pub fn verify_motions(
-    job: &Job,
+    input: &VcarveInput,
     endmill: &[Motion],
     vbit: &[Motion],
     options: &VerificationOptions,
 ) -> Result<VerificationReport> {
     options.validate()?;
-    let ctx = Context::new(job)?;
-    let input_fingerprint = fingerprint(&(env!("CARGO_PKG_VERSION"), job))?;
+    let ctx = Context::new(input)?;
+    let input_fingerprint = fingerprint(&(env!("CARGO_PKG_VERSION"), input))?;
     let motion_fingerprint = fingerprint(&(endmill, vbit))?;
     let verification_fingerprint =
         fingerprint(&(&input_fingerprint, &motion_fingerprint, options))?;
@@ -348,7 +348,7 @@ pub fn verify_authenticated_plan(
 ) -> Result<VerificationReport> {
     let plan = plan.plan();
     let mut report = verify_motions(
-        &plan.endmill.job,
+        &plan.endmill.input,
         &plan.endmill.motions,
         &plan.vbit_motions,
         options,

@@ -2,7 +2,7 @@
 //! fine-input target. This is a sampled sensitivity study, not a volume proof.
 use cam_core::{
     geometry::Point,
-    job::{Job, ToolGeometry},
+    job::{ToolGeometry, VcarveInput},
     model::{Depth, Endmill, VBit},
     motion::Motion,
     stock::{removed_depth_at, vbit_removed_depth_at},
@@ -70,20 +70,20 @@ impl Bins {
     }
 }
 
-fn tools(job: &Job) -> AnyResult<(Endmill, VBit)> {
-    let Some(ToolGeometry::Endmill(mill)) = &job
+fn tools(input: &VcarveInput) -> AnyResult<(Endmill, VBit)> {
+    let Some(ToolGeometry::Endmill(mill)) = &input
         .tools
         .iter()
-        .find(|t| t.id == job.operation.endmill_id)
+        .find(|t| t.id == input.operation.endmill_id)
         .ok_or("missing endmill")?
         .geometry
     else {
         return Err("missing endmill geometry".into());
     };
-    let Some(ToolGeometry::Vbit(bit)) = &job
+    let Some(ToolGeometry::Vbit(bit)) = &input
         .tools
         .iter()
-        .find(|t| t.id == job.operation.vbit_id)
+        .find(|t| t.id == input.operation.vbit_id)
         .ok_or("missing V-bit")?
         .geometry
     else {
@@ -95,12 +95,12 @@ fn tools(job: &Job) -> AnyResult<(Endmill, VBit)> {
     ))
 }
 
-fn same_target(a: &Job, b: &Job) -> AnyResult<bool> {
-    let identity = |j: &Job| {
+fn same_target(a: &VcarveInput, b: &VcarveInput) -> AnyResult<bool> {
+    let identity = |input: &VcarveInput| {
         json!({
-            "source": j.source, "placement": j.import.placement,
-            "selection": j.selected_region_ids, "depth": j.operation.max_depth_mm,
-            "tools": j.tools.iter().map(|t| json!({"id": t.id, "geometry": t.geometry})).collect::<Vec<_>>()
+            "region": input.region, "source_error_mm": input.source_error_mm,
+            "depth": input.operation.max_depth_mm,
+            "tools": input.tools.iter().map(|t| json!({"id": t.id, "geometry": t.geometry})).collect::<Vec<_>>()
         })
     };
     Ok(identity(a) == identity(b))
@@ -113,17 +113,17 @@ fn main() -> AnyResult<()> {
     }
     fs::create_dir(&args[2])?;
     let reference = CombinedPlan::from_json(&fs::read_to_string(&args[1])?)?;
-    let (mill, bit) = tools(&reference.endmill.job)?;
+    let (mill, bit) = tools(&reference.endmill.input)?;
     if bit.tip_radius().mm() != 0. {
         return Err("study requires the pointed reference V-bit".into());
     }
-    let geometry = reference.endmill.job.inspect()?.geometry;
+    let region = reference.endmill.input.region.clone();
     let target = Target::new(
-        geometry.selected,
+        region,
         Depth::new(
             reference
                 .endmill
-                .job
+                .input
                 .operation
                 .max_depth_mm
                 .ok_or("missing depth")?,
@@ -172,20 +172,18 @@ fn main() -> AnyResult<()> {
         let timer = Instant::now();
         let plan = CombinedPlan::from_json(&fs::read_to_string(file)?)?;
         let replay_seconds = timer.elapsed().as_secs_f64();
-        if !same_target(&reference.endmill.job, &plan.endmill.job)? {
+        if !same_target(&reference.endmill.input, &plan.endmill.input)? {
             return Err(
                 "source, placement, depth, selection and cutter geometry must match".into(),
             );
         }
-        let candidate_geometry = plan.endmill.job.inspect()?.geometry;
-        let vertices: usize = candidate_geometry
-            .selected
+        let candidate_region = plan.endmill.input.region.clone();
+        let vertices: usize = candidate_region
             .rings()
             .iter()
             .map(|r| r.points().len())
             .sum();
-        let candidate_target =
-            Target::new(candidate_geometry.selected, target.depth_cap(), bit.angle())?;
+        let candidate_target = Target::new(candidate_region, target.depth_cap(), bit.angle())?;
         let endmill_bins = Bins::new(&plan.endmill.motions, |_| mill.radius().mm())?;
         let bit_bins = Bins::new(&plan.vbit_motions, |m| {
             bit.tip_radius().mm() + m.start.depth().max(m.end.depth()) * bit.angle().slope()
@@ -233,8 +231,8 @@ fn main() -> AnyResult<()> {
         let report = json!({
             "file": file, "engine_version": plan.engine_version, "replay_seconds": replay_seconds,
             "evaluation_seconds_including_replay": timer.elapsed().as_secs_f64(),
-            "geometry_vertices": vertices, "flattening_bound_mm": candidate_geometry.flattening_bound_mm,
-            "source_snap_bound_mm": candidate_geometry.source_snap_bound_mm,
+            "geometry_vertices": vertices,
+            "source_error_mm": plan.endmill.input.source_error_mm,
             "status": plan.analysis.status, "diagnostics": plan.analysis.diagnostics,
             "endmill_status": plan.endmill.analysis.status,
             "endmill_generation_issues": plan.endmill.generation_issues,

@@ -236,15 +236,16 @@ mod tests {
     use super::*;
     use crate::{
         geometry::Point,
-        job::Job,
         motion::{Motion, MotionKind},
         stock::vbit_removed_depth_at,
     };
 
     #[test]
     fn endpoint_bound_covers_the_whole_sweep_and_finite_tip_at_all_test_points() {
-        let job =
-            Job::from_fixture(include_str!("../../../../fixtures/m4/finite-tip.json")).unwrap();
+        let job = crate::job::input_from_fixture_json(include_str!(
+            "../../../../fixtures/m4/finite-tip.json"
+        ))
+        .unwrap();
         let ctx = Context::new(&job).unwrap();
         let slope = ctx.tool.angle().slope();
         let q = Position::new(Point::new(3., 0.), -2.);
@@ -280,13 +281,16 @@ mod tests {
             stock::StockQuery,
             vcarve::{medial, routing},
         };
-        let mut job =
-            Job::from_fixture(include_str!("../../../../fixtures/m4/narrow-channel.json")).unwrap();
-        job.import.geometry_tolerance_mm = 0.001;
-        job.source.svg = job.source.svg.replace(
+        let mut form = crate::job::FixtureJob::parse(include_str!(
+            "../../../../fixtures/m4/narrow-channel.json"
+        ))
+        .unwrap();
+        form.import.geometry_tolerance_mm = 0.001;
+        form.source.svg = form.source.svg.replace(
             "M0 0h3v20h-3z",
             "M18 10 A8 8 0 1 1 2 10 A8 8 0 1 1 18 10 Z M15 10 A5 5 0 1 0 5 10 A5 5 0 1 0 15 10 Z",
         );
+        let job = form.resolve().unwrap();
         let ctx = Context::new(&job).unwrap();
         let (axis, mut paths) = medial::build(&ctx).unwrap();
         routing::weld_endpoints(&ctx, &mut paths).unwrap();
@@ -340,8 +344,10 @@ mod tests {
     #[test]
     fn contour_simplification_bounds_flank_coverage_and_keeps_closed_loops() {
         use crate::stock::StockQuery;
-        let job =
-            Job::from_fixture(include_str!("../../../../fixtures/m4/wide-floor.json")).unwrap();
+        let job = crate::job::input_from_fixture_json(include_str!(
+            "../../../../fixtures/m4/wide-floor.json"
+        ))
+        .unwrap();
         let ctx = Context::new(&job).unwrap();
         let original = Candidate {
             family: PathFamily::Boundary,
@@ -395,8 +401,10 @@ mod tests {
     #[test]
     fn isolated_witnesses_survive_and_approximation_does_not_chain() {
         use crate::vcarve::medial;
-        let job =
-            Job::from_fixture(include_str!("../../../../fixtures/m4/narrow-channel.json")).unwrap();
+        let job = crate::job::input_from_fixture_json(include_str!(
+            "../../../../fixtures/m4/narrow-channel.json"
+        ))
+        .unwrap();
         let ctx = Context::new(&job).unwrap();
         let (axis, _) = medial::build(&ctx).unwrap();
         let id = axis

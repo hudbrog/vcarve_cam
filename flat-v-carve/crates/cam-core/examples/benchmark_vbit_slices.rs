@@ -21,9 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input = fs::read(&args[1])?;
     let input_hash = format!("{:x}", Sha256::digest(&input));
     let value: serde_json::Value = serde_json::from_slice(&input)?;
-    let job =
-        cam_core::job::input_from_fixture_json(&serde_json::to_string(&value["endmill"]["job"])?)?;
-    let geometry = job.inspect()?.geometry;
+    let job = cam_core::job::input_from_json(&serde_json::to_string(&value["endmill"]["input"])?)?;
     let settings = job
         .tools
         .iter()
@@ -34,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let tool = VBit::try_from(spec.clone())?;
     let target = Target::for_planning(
-        geometry.selected,
+        job.region.clone(),
         Depth::new(job.operation.max_depth_mm.ok_or("missing depth cap")?)?,
         tool.angle(),
     )?;

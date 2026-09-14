@@ -1,6 +1,6 @@
 use crate::{
-    geometry::{Diagnostic, Point, Region, Result},
-    job::{Job, ToolGeometry},
+    geometry::{Diagnostic, Point, Result},
+    job::{ToolGeometry, VcarveInput},
     model::{Depth, Endmill, VBit},
     target::Target,
 };
@@ -85,6 +85,7 @@ pub(super) struct Context {
     pub guard: f64,
     pub tool_id: String,
     pub operation_id: String,
+    pub ramp_capable: bool,
 }
 pub(super) fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("pocket")
@@ -98,59 +99,49 @@ fn required(v: Option<f64>, name: &str) -> Result<f64> {
     })
 }
 impl Context {
-    pub fn new(job: &Job) -> Result<Self> {
-        Self::build(job, None, None)
+    pub fn new(input: &VcarveInput) -> Result<Self> {
+        Self::build(input, None)
     }
-    /// Build the planning context. `region` is an already-resolved selected
-    /// union (plan section 22.4: the H3 collection planner's input);
-    /// `shared` is a freshly constructed target from combined planning; both
-    /// absent means the legacy job's own source is imported here.
+    /// Build the planning context. The selected region travels inside
+    /// `input`; `shared` is a freshly constructed target from combined
+    /// planning, which already embeds that same region.
     pub(super) fn build(
-        job: &Job,
-        region: Option<Region>,
+        input: &VcarveInput,
         shared: Option<std::sync::Arc<Target>>,
     ) -> Result<Self> {
-        job.validate_settings()?;
-        let settings = job.endmill_planning.clone().ok_or_else(|| {
+        input.validate_settings()?;
+        let settings = input.endmill_planning.clone().ok_or_else(|| {
             error(
                 "MISSING_PLANNING_SETTINGS",
                 "configure endmill_planning before generating cutting moves",
             )
         })?;
         settings.validate()?;
-        // A shared target (combined planning) already embeds this job's
-        // geometry; a resolved region arrives from the collection planner;
-        // otherwise the legacy job's own source is imported here.
-        let geometry = match (region, &shared) {
-            (Some(region), _) => Some(region),
-            (None, Some(_)) => None,
-            (None, None) => Some(job.inspect()?.geometry.selected),
-        };
-        if geometry.as_ref().is_some_and(|g| g.rings().is_empty()) {
+        if shared.is_none() && input.region.rings().is_empty() {
             return Err(error(
                 "EMPTY_SELECTION",
                 "select at least one region before planning",
             ));
         }
-        let depth = required(job.operation.max_depth_mm, "operation.max_depth_mm")?;
-        required(job.stock.thickness_mm, "stock.thickness_mm")?;
+        let depth = required(input.operation.max_depth_mm, "operation.max_depth_mm")?;
+        required(input.stock.thickness_mm, "stock.thickness_mm")?;
         let allowance = required(
-            job.operation.wall_allowance_mm,
+            input.operation.wall_allowance_mm,
             "operation.wall_allowance_mm",
         )?;
-        let tool = job
+        let tool = input
             .tools
             .iter()
-            .find(|t| t.id == job.operation.endmill_id)
+            .find(|t| t.id == input.operation.endmill_id)
             .unwrap();
         let Some(ToolGeometry::Endmill(spec)) = &tool.geometry else {
             return Err(error("MISSING_MACHINING_SETTING", "set endmill dimensions"));
         };
         let mill = Endmill::try_from(spec.clone())?;
-        let vbit = job
+        let vbit = input
             .tools
             .iter()
-            .find(|t| t.id == job.operation.vbit_id)
+            .find(|t| t.id == input.operation.vbit_id)
             .unwrap();
         let Some(ToolGeometry::Vbit(spec)) = &vbit.geometry else {
             return Err(error(
@@ -163,7 +154,7 @@ impl Context {
         let target = match shared {
             Some(target) => target,
             None => std::sync::Arc::new(Target::for_planning(
-                geometry.expect("region or import supplied"),
+                input.region.clone(),
                 Depth::new(depth)?,
                 vbit.angle(),
             )?),
@@ -173,11 +164,11 @@ impl Context {
         let feed = required(tool.cutting_feed_mm_min, "endmill.cutting_feed_mm_min")?;
         let spindle = required(tool.spindle_rpm, "endmill.spindle_rpm")?;
         let motion_tolerance = required(
-            job.tolerances.motion_tolerance_mm,
+            input.tolerances.motion_tolerance_mm,
             "tolerances.motion_tolerance_mm",
         )?;
         let coverage_tolerance = required(
-            job.tolerances.verification_tolerance_mm,
+            input.tolerances.verification_tolerance_mm,
             "tolerances.verification_tolerance_mm",
         )?;
         let e = target.region().grid().tolerance_mm();
@@ -230,20 +221,14 @@ impl Context {
             cleanup_budget,
             guard: 2. * e,
             tool_id: tool.id.clone(),
-            operation_id: job.operation.id.clone(),
+            operation_id: input.operation.id.clone(),
+            ramp_capable: tool.ramp_capable == Some(true),
         })
     }
-    pub fn entry_supported(&self, job: &Job) -> bool {
+    pub fn entry_supported(&self) -> bool {
         match self.settings.entry {
             EntryStrategy::Plunge => self.mill.plunge_capable(),
-            EntryStrategy::Ramp { .. } => {
-                job.tools
-                    .iter()
-                    .find(|t| t.id == self.tool_id)
-                    .unwrap()
-                    .ramp_capable
-                    == Some(true)
-            }
+            EntryStrategy::Ramp { .. } => self.ramp_capable,
         }
     }
     pub fn required_clearance(&self, depth: f64) -> f64 {

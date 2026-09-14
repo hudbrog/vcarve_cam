@@ -6,7 +6,7 @@
 //! of stepover, and no spindle speed, because a passive knife never spins.
 use crate::{
     geometry::{Diagnostic, Result},
-    job::{Job, ToolGeometry, ToolSettings},
+    job::{ToolGeometry, ToolSettings, VcarveInput},
     model::{EndmillSpec, VBitSpec},
     preview::valid_id,
     project::{CamJob, DragKnifeSpec, OperationSettings},
@@ -50,10 +50,10 @@ pub enum ToolSlot {
     Vbit,
 }
 impl ToolSlot {
-    pub fn job_id(self, job: &Job) -> &str {
+    pub fn job_id(self, input: &VcarveInput) -> &str {
         match self {
-            Self::Endmill => &job.operation.endmill_id,
-            Self::Vbit => &job.operation.vbit_id,
+            Self::Endmill => &input.operation.endmill_id,
+            Self::Vbit => &input.operation.vbit_id,
         }
     }
     fn accepts(self, geometry: &LibraryGeometry) -> bool {
@@ -66,7 +66,7 @@ impl ToolSlot {
 
 /// Library tool geometry: the legacy endmill/V-bit shapes plus the passive
 /// drag knife. Wire-compatible with the job's legacy geometry for the milling
-/// kinds; knife tools never enter a legacy job slot.
+/// kinds; knife tools never enter the V-carve engine input.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -248,11 +248,11 @@ impl LibraryTool {
             LibraryGeometry::Endmill(spec) => ToolGeometry::Endmill(spec.clone()),
             LibraryGeometry::Vbit(spec) => ToolGeometry::Vbit(spec.clone()),
             // A knife tool has no legacy representation and never enters a
-            // legacy job slot; apply_to_job rejects it before this runs.
+            // engine input slot; apply_to_job rejects it before this runs.
             LibraryGeometry::DragKnife(_) => {
                 return Err(error(
                     "LIBRARY_TOOL_KIND",
-                    "knife tools cannot be applied to a legacy job slot",
+                    "knife tools cannot be applied to a V-carve engine input",
                 ));
             }
         };
@@ -629,13 +629,13 @@ impl ToolLibrary {
     /// cannot carry over accidentally. A partial preset copies its nulls as well.
     pub fn apply_to_job(
         &self,
-        job: &Job,
+        input: &VcarveInput,
         slot: ToolSlot,
         tool_id: &str,
         preset_id: Option<&str>,
-    ) -> Result<Job> {
+    ) -> Result<VcarveInput> {
         self.validate()?;
-        job.validate_settings()?;
+        input.validate_settings()?;
         let tool = self.tool(tool_id)?;
         if !slot.accepts(&tool.geometry) {
             return Err(error(
@@ -644,8 +644,8 @@ impl ToolLibrary {
             ));
         }
         let preset = preset_id.map(|id| tool.preset(id)).transpose()?;
-        let mut candidate = job.clone();
-        let job_id = slot.job_id(job);
+        let mut candidate = input.clone();
+        let job_id = slot.job_id(input);
         let index = candidate
             .tools
             .iter()

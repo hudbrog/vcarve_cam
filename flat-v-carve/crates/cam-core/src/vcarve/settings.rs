@@ -1,6 +1,6 @@
 use crate::{
     geometry::{Diagnostic, Result},
-    job::{Job, ToolGeometry},
+    job::{ToolGeometry, VcarveInput},
     model::{Depth, Endmill, VBit},
     target::Target,
 };
@@ -75,42 +75,30 @@ pub(super) struct Context {
     pub clearance: f64,
 }
 impl Context {
-    pub fn new(job: &Job) -> Result<Self> {
-        Self::build(job, None)
+    pub fn new(input: &VcarveInput) -> Result<Self> {
+        Self::build(input)
     }
-    /// Context over an already-resolved selected region (plan section 22.4):
-    /// the shared machining entry point for the schema-4 adapter and the H3
-    /// collection planner. The region is the resolved union of the selected
-    /// filled components; the legacy job still carries every non-geometric
-    /// setting and no source is re-imported.
-    pub(super) fn with_region(job: &Job, region: crate::geometry::Region) -> Result<Self> {
-        Self::build(job, Some(region))
-    }
-    fn build(job: &Job, region: Option<crate::geometry::Region>) -> Result<Self> {
-        job.validate_settings()?;
-        let settings = job.vbit_planning.clone().ok_or_else(|| {
+    fn build(input: &VcarveInput) -> Result<Self> {
+        input.validate_settings()?;
+        let settings = input.vbit_planning.clone().ok_or_else(|| {
             error(
                 "MISSING_VBIT_SETTINGS",
                 "configure vbit_planning for the combined stage",
             )
         })?;
-        let selected = match region {
-            Some(region) => region,
-            None => job.inspect()?.geometry.selected,
-        };
-        let slot = job
+        let slot = input
             .tools
             .iter()
-            .find(|t| t.id == job.operation.vbit_id)
+            .find(|t| t.id == input.operation.vbit_id)
             .unwrap();
         let Some(ToolGeometry::Vbit(spec)) = &slot.geometry else {
             return Err(error("MISSING_VBIT_SETTING", "V-bit geometry is required"));
         };
         let tool = VBit::try_from(spec.clone())?;
-        let mill = job
+        let mill = input
             .tools
             .iter()
-            .find(|t| t.id == job.operation.endmill_id)
+            .find(|t| t.id == input.operation.endmill_id)
             .unwrap();
         let Some(ToolGeometry::Endmill(spec)) = &mill.geometry else {
             return Err(error(
@@ -120,19 +108,20 @@ impl Context {
         };
         let mill = Endmill::try_from(spec.clone())?;
         let target = Target::for_planning(
-            selected,
+            input.region.clone(),
             Depth::new(required(
-                job.operation.max_depth_mm,
+                input.operation.max_depth_mm,
                 "operation.max_depth_mm",
             )?)?,
             tool.angle(),
         )?;
         let e = target.region().grid().tolerance_mm();
         let tolerance = required(
-            job.tolerances.verification_tolerance_mm,
+            input.tolerances.verification_tolerance_mm,
             "verification_tolerance_mm",
         )?;
-        let motion_tolerance = required(job.tolerances.motion_tolerance_mm, "motion_tolerance_mm")?;
+        let motion_tolerance =
+            required(input.tolerances.motion_tolerance_mm, "motion_tolerance_mm")?;
         if tolerance < 8. * e / target.angle().slope().min(1.) {
             return Err(error(
                 "VBIT_PRECISION",
@@ -146,7 +135,7 @@ impl Context {
                 "V-bit depth passes exceed the configured budget",
             ));
         }
-        let clearance = job
+        let clearance = input
             .endmill_planning
             .as_ref()
             .ok_or_else(|| {
@@ -165,11 +154,11 @@ impl Context {
             tolerance,
             motion_tolerance,
             ridge: required(
-                job.operation.max_floor_ridge_mm,
+                input.operation.max_floor_ridge_mm,
                 "operation.max_floor_ridge_mm",
             )?,
             detail: required(
-                job.operation.max_detail_residual_mm,
+                input.operation.max_detail_residual_mm,
                 "operation.max_detail_residual_mm",
             )?,
             feed: required(slot.cutting_feed_mm_min, "V-bit cutting_feed_mm_min")?,
@@ -184,7 +173,7 @@ impl Context {
                 )
             })?,
             tool_id: slot.id.clone(),
-            operation_id: job.operation.id.clone(),
+            operation_id: input.operation.id.clone(),
             clearance,
         })
     }

@@ -2,7 +2,7 @@ use super::settings::{Context, error};
 use super::{EndmillAnalysis, EntryStrategy, PlanStatus, depths, layer_stock};
 use crate::{
     geometry::{Point, PointLocation, Result, Segment},
-    job::Job,
+    job::VcarveInput,
     motion::{Motion, MotionKind, Position},
 };
 
@@ -29,11 +29,11 @@ pub(super) fn center_margin(ctx: &Context, a: Point, b: Point, depth: f64) -> Re
     Ok(margin)
 }
 
-pub fn verify_endmill_motions(job: &Job, motions: &[Motion]) -> Result<EndmillAnalysis> {
-    analyze(&Context::new(job)?, job, motions)
+pub fn verify_endmill_motions(input: &VcarveInput, motions: &[Motion]) -> Result<EndmillAnalysis> {
+    analyze(&Context::new(input)?, motions)
 }
 
-pub(super) fn analyze(ctx: &Context, job: &Job, motions: &[Motion]) -> Result<EndmillAnalysis> {
+pub(super) fn analyze(ctx: &Context, motions: &[Motion]) -> Result<EndmillAnalysis> {
     let mut timing = crate::timing::Timer::new("endmill analysis");
     let levels = depths(ctx)?;
     if motions.len() > ctx.settings.max_motions {
@@ -96,7 +96,7 @@ pub(super) fn analyze(ctx: &Context, job: &Job, motions: &[Motion]) -> Result<En
             }
             MotionKind::Plunge => {
                 matches!(ctx.settings.entry, EntryStrategy::Plunge)
-                    && ctx.entry_supported(job)
+                    && ctx.entry_supported()
                     && xy == 0.
                     && dz > 0.
                     && dz <= ctx.stepdown + 1e-12
@@ -104,7 +104,7 @@ pub(super) fn analyze(ctx: &Context, job: &Job, motions: &[Motion]) -> Result<En
             }
             MotionKind::Ramp => match ctx.settings.entry {
                 EntryStrategy::Ramp { max_angle_deg, .. } => {
-                    ctx.entry_supported(job)
+                    ctx.entry_supported()
                         && xy > 0.
                         && dz > 0.
                         && dz <= ctx.stepdown / 2. + 1e-12

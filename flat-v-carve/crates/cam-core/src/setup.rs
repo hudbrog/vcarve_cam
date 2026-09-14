@@ -62,7 +62,7 @@ pub fn resolve_work_zero_setup(setup: &crate::project::SetupSettings) -> Result<
                 .xy
                 .ok_or_else(|| error(
                     "SETUP_STOCK_XY_REQUIRED",
-                    "stock-anchor work zero requires physical stock XY dimensions; legacy jobs have none until supplied",
+                    "stock-anchor work zero requires physical stock XY dimensions; none are set yet",
                 ))?;
             (
                 rect.min_x_mm + x_fraction.fraction() * rect.width_mm,

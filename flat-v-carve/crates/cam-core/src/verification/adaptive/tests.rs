@@ -38,8 +38,8 @@ fn parallel_cells_preserve_serial_results_and_global_resource_limits() {
     }
 }
 
-fn job() -> Job {
-    Job::from_fixture(include_str!(
+fn job() -> VcarveInput {
+    crate::job::input_from_fixture_json(include_str!(
         "../../../../../fixtures/m4/curved-medial.json"
     ))
     .unwrap()
@@ -87,8 +87,12 @@ fn convex_roof_bounds_a_rising_sweep_beyond_both_adjacent_boundary_faces() {
     // reentrant (8,8) corner. The former affine/on-face bound cannot apply.
     for offset in [Point::new(0., 0.), Point::new(10000., -7000.)] {
         for tip in [0., 0.1] {
-            let mut job = job();
-            job.import.placement.origin_mm = offset;
+            let mut form = crate::job::FixtureJob::parse(include_str!(
+                "../../../../../fixtures/m4/curved-medial.json"
+            ))
+            .unwrap();
+            form.import.placement.origin_mm = offset;
+            let mut job = form.resolve().unwrap();
             let Some(ToolGeometry::Vbit(spec)) = &mut job.tools[1].geometry else {
                 panic!()
             };

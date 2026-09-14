@@ -1,7 +1,7 @@
 use super::error;
 use crate::{
     geometry::{Point, Result},
-    job::Job,
+    job::VcarveInput,
     motion::Position,
 };
 use serde::{Deserialize, Serialize};
@@ -127,7 +127,7 @@ impl LinuxCncProfile {
         }
         serde_json::from_str(text).map_err(|e| error("POST_PROFILE", e.to_string()))
     }
-    pub fn validate(&self, job: &Job) -> Result<()> {
+    pub fn validate(&self, input: &VcarveInput) -> Result<()> {
         if self.schema_version != 1
             || !crate::preview::valid_id(&self.id)
             || !matches!(
@@ -157,7 +157,7 @@ impl LinuxCncProfile {
                 "a reviewed M6 reference must establish the return position after compensation, preserve the work datum without rotation, leave G52/G92 unused, and use only Z tool offsets",
             ));
         }
-        let settings = job
+        let settings = input
             .endmill_planning
             .as_ref()
             .ok_or_else(|| error("POST_PROFILE", "planning clearance is required"))?;
@@ -169,7 +169,7 @@ impl LinuxCncProfile {
         }
         // Do not round safety planes or assumed macro/operator positions down.
         let machine_clearance = super::rounded(
-            self.clearance_z_mm + self.z_offset(job)?,
+            self.clearance_z_mm + self.z_offset(input)?,
             self.decimal_places,
         );
         if super::rounded(self.clearance_z_mm, self.decimal_places) != self.clearance_z_mm
@@ -242,7 +242,7 @@ impl LinuxCncProfile {
             }
             // Stock verification certifies the programmed path; blending may
             // deviate from it by up to P. Keep the certificate meaningful.
-            let verification = job.tolerances.verification_tolerance_mm.ok_or_else(|| {
+            let verification = input.tolerances.verification_tolerance_mm.ok_or_else(|| {
                 error(
                     "POST_BLEND_TOLERANCE",
                     "path blending requires the job's declared verification tolerance",
@@ -270,12 +270,12 @@ impl LinuxCncProfile {
                     ),
                 ));
             }
-            if t.tool_id != job.operation.endmill_id && t.tool_id != job.operation.vbit_id {
+            if t.tool_id != input.operation.endmill_id && t.tool_id != input.operation.vbit_id {
                 return Err(error(
                     "POST_TOOL_MAPPING",
                     format!(
                         "job tool ID {:?} is not used by this operation; select endmill ID {:?} or V-bit ID {:?}. The LinuxCNC T number is a separate field",
-                        t.tool_id, job.operation.endmill_id, job.operation.vbit_id
+                        t.tool_id, input.operation.endmill_id, input.operation.vbit_id
                     ),
                 ));
             }
@@ -324,10 +324,10 @@ impl LinuxCncProfile {
         }
         Ok(())
     }
-    pub(super) fn z_offset(&self, job: &Job) -> Result<f64> {
+    pub(super) fn z_offset(&self, input: &VcarveInput) -> Result<f64> {
         let z = match self.z_datum {
             ZDatum::StockTop => 0.,
-            ZDatum::StockBottom => job.stock.thickness_mm.ok_or_else(|| {
+            ZDatum::StockBottom => input.stock.thickness_mm.ok_or_else(|| {
                 error(
                     "POST_Z_DATUM",
                     "stock-bottom datum requires stock thickness",

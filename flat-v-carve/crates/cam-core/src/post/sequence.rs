@@ -358,20 +358,13 @@ impl SequenceProfile {
 /// where still unset; an explicit job value wins).
 pub fn apply_legacy_profile(profile: &LinuxCncProfile, job: &CamJob) -> Result<CamJob> {
     // When the job is exactly a migratable Flat V-carve document, run the
-    // legacy profile validation against its reconstructed legacy job so the
+    // profile validation against its reconstructed engine input so the
     // old checks (clearance, mapped tools, blend tolerance) still apply.
     if job.operations.len() == 1
         && matches!(job.operations[0].settings, OperationSettings::FlatVcarve(_))
     {
-        if let Ok(legacy) = crate::operations::flat_vcarve::to_legacy_job(
-            job,
-            &job.operations[0].id,
-            match &job.operations[0].settings {
-                OperationSettings::FlatVcarve(settings) => settings,
-                _ => unreachable!(),
-            },
-        ) {
-            profile.validate(&legacy)?;
+        if let Ok(input) = job.plan_input(&job.operations[0].id) {
+            profile.validate(&input)?;
         }
     } else {
         for mapping in &profile.tools {

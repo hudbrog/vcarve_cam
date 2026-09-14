@@ -1,21 +1,21 @@
 use super::{Context, Execution, StageTransition, air, error, excursion, profile, routing};
 use crate::{
     geometry::{Result, Segment},
-    job::Job,
+    job::VcarveInput,
     motion::{Motion, MotionKind, Position},
     pocket::EndmillPlan,
 };
 use std::collections::BTreeMap;
 
 pub fn verify_vbit_motions(
-    job: &Job,
+    input: &VcarveInput,
     endmill_moves: &[Motion],
     moves: &[Motion],
 ) -> Result<Option<f64>> {
-    let ctx = Context::new(job)?;
+    let ctx = Context::new(input)?;
     let start = endmill_moves.last().map_or(
         Position::new(
-            job.endmill_planning.as_ref().unwrap().start_xy_mm,
+            input.endmill_planning.as_ref().unwrap().start_xy_mm,
             ctx.clearance,
         ),
         |m| m.end,
@@ -160,14 +160,14 @@ pub(super) fn executions<'a>(
 ) -> Result<CheckedMotions<'a>> {
     let start = endmill.motions.last().map_or(
         Position::new(
-            endmill.job.endmill_planning.as_ref().unwrap().start_xy_mm,
+            endmill.input.endmill_planning.as_ref().unwrap().start_xy_mm,
             ctx.clearance,
         ),
         |m| m.end,
     );
     if transition.after_motion_count != endmill.motions.len()
         || transition.position != start
-        || transition.from_tool_id != endmill.job.operation.endmill_id
+        || transition.from_tool_id != endmill.input.operation.endmill_id
         || transition.to_tool_id != ctx.tool_id
         || start.z != ctx.clearance
     {

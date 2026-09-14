@@ -40,6 +40,12 @@ pub struct ResolvedVcarveRegion {
     /// Tolerance of the reconciled grid (the finest selected import
     /// tolerance); the planners' own precision checks run against it.
     pub grid_tolerance_mm: f64,
+    /// Import-time error the resolved region carries, in workpiece XY
+    /// millimetres: the worst flattening plus source-snapping bound over the
+    /// items that contributed geometry. It travels into the engine input, so
+    /// verification can report the source depth error beside the region's own
+    /// grid snapping.
+    pub source_error_mm: f64,
 }
 
 fn located(code: &str, message: impl Into<String>) -> Diagnostic {
@@ -196,7 +202,7 @@ pub fn resolve_vcarve_region(
     // Import each item's share through the single importer boundary with that
     // item's own options; identical bytes/settings produce the identical
     // per-item region the schema-4 path generated.
-    let mut imported: Vec<(f64, Region)> = vec![];
+    let mut imported: Vec<(f64, Region, f64)> = vec![];
     for (item, local_ids) in &groups {
         let snapshot = match &item.content {
             super::ArtworkContent::Svg(snapshot) => snapshot.clone(),
@@ -206,6 +212,7 @@ pub fn resolve_vcarve_region(
         imported.push((
             item.import_settings.geometry_tolerance_mm,
             geometry.selected,
+            geometry.flattening_bound_mm + geometry.source_snap_bound_mm,
         ));
     }
     // Reconcile onto one grid: the finest selected tolerance. Items sharing
@@ -214,13 +221,19 @@ pub fn resolve_vcarve_region(
     // and a single-item selection returns that item's region unchanged.
     let finest = imported
         .iter()
-        .map(|(tolerance, _)| *tolerance)
+        .map(|(tolerance, _, _)| *tolerance)
         .fold(f64::INFINITY, f64::min);
     let distinct = imported
         .iter()
-        .any(|(tolerance, _)| (*tolerance - finest).abs() > 1e-12);
+        .any(|(tolerance, _, _)| (*tolerance - finest).abs() > 1e-12);
+    // The engine input carries the worst import error beside the region, so a
+    // cross-item union reports a source bound that covers every contributor.
+    let source_error_mm = imported
+        .iter()
+        .map(|(_, _, error)| *error)
+        .fold(0., f64::max);
     let regions: Vec<Region> = if !distinct {
-        imported.into_iter().map(|(_, region)| region).collect()
+        imported.into_iter().map(|(_, region, _)| region).collect()
     } else {
         // A coarser item must satisfy the operation tolerance budgets under
         // its own import error, or be rejected by name: regridding its
@@ -251,7 +264,7 @@ pub fn resolve_vcarve_region(
         }
         let bounds = imported
             .iter()
-            .filter_map(|(_, region)| Bounds::of(region))
+            .filter_map(|(_, region, _)| Bounds::of(region))
             .collect::<Vec<_>>();
         let extent = bounds
             .iter()
@@ -260,7 +273,7 @@ pub fn resolve_vcarve_region(
         let grid = Grid::new(finest, extent)?;
         imported
             .into_iter()
-            .map(|(_, region)| Region::from_rings(grid, &region.rings_mm()))
+            .map(|(_, region, _)| Region::from_rings(grid, &region.rings_mm()))
             .collect::<Result<Vec<_>>>()?
     };
     let region = if regions.len() == 1 {
@@ -274,6 +287,7 @@ pub fn resolve_vcarve_region(
         region,
         bounds,
         grid_tolerance_mm: finest,
+        source_error_mm,
     })
 }
 
@@ -461,7 +475,6 @@ pub(crate) fn plan_operation_v5(
             match resolve_vcarve_region(job, &operation.id, settings, combined) {
                 Ok(resolved) => crate::operations::flat_vcarve::plan_v5(
                     ctx,
-                    job,
                     &operation.id,
                     settings,
                     &resolved,

@@ -307,6 +307,19 @@ impl Region {
         })
     }
 
+    /// Rebuild a region from rings of grid coordinates, the form a stored plan
+    /// carries its target geometry in. The integers are used verbatim and the
+    /// millimetre coordinates flow through [`Region::from_rings`], so the
+    /// region that comes back is the one that was planned against and its
+    /// nesting and orientation invariants are recomputed rather than trusted.
+    pub fn from_grid_rings(grid: Grid, input: &[Vec<GridPoint>]) -> Result<Self> {
+        let rings: Vec<Vec<Point>> = input
+            .iter()
+            .map(|ring| ring.iter().map(|&p| grid.point(p)).collect())
+            .collect();
+        Self::from_rings(grid, &rings)
+    }
+
     pub fn grid(&self) -> Grid {
         self.grid
     }

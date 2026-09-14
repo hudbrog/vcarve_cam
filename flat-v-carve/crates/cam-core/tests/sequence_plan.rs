@@ -2,7 +2,7 @@
 //! motion geometry, order and completeness for the same substrate job, and
 //! independent operations keep distinct identities.
 use cam_core::{
-    job::Job as LegacyJob,
+    job::VcarveInput as LegacyJob,
     motion::{Motion, MotionKind},
     pocket::plan_endmill,
     project::CamJob,

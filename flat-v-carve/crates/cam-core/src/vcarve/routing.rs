@@ -384,12 +384,14 @@ pub(super) fn can_link(ctx: &Context, a: Position, b: Position) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{job::Job, vcarve::PathFamily};
+    use crate::vcarve::PathFamily;
 
     #[test]
     fn adjacent_grid_points_link_on_either_side_of_binary_roundoff() {
-        let job =
-            Job::from_fixture(include_str!("../../../../fixtures/m4/wide-floor.json")).unwrap();
+        let job = crate::job::input_from_fixture_json(include_str!(
+            "../../../../fixtures/m4/wide-floor.json"
+        ))
+        .unwrap();
         let ctx = Context::new(&job).unwrap();
         let q = 1. / ctx.target.region().grid().scale();
         let mut below = false;
@@ -416,8 +418,10 @@ mod tests {
 
     #[test]
     fn endpoint_reconciliation_is_bounded_immutable_and_preserves_depth_and_points() {
-        let job =
-            Job::from_fixture(include_str!("../../../../fixtures/m4/wide-floor.json")).unwrap();
+        let job = crate::job::input_from_fixture_json(include_str!(
+            "../../../../fixtures/m4/wide-floor.json"
+        ))
+        .unwrap();
         let ctx = Context::new(&job).unwrap();
         let q = 1. / ctx.target.region().grid().scale();
         let p = |x, y, z| Position::new(Point::new(x, y), z);
@@ -512,7 +516,10 @@ mod tests {
 
     #[test]
     fn links_check_whole_sweep_stock_stepdown_and_representable_length() {
-        let job = Job::from_fixture(include_str!("../../../../fixtures/m4/island.json")).unwrap();
+        let job = crate::job::input_from_fixture_json(include_str!(
+            "../../../../fixtures/m4/island.json"
+        ))
+        .unwrap();
         let mut ctx = Context::new(&job).unwrap();
         ctx.stepover = 40.;
         let p = |x, y, d: f64| Position::new(Point::new(x, y), -d);
@@ -546,7 +553,10 @@ mod tests {
             pocket::plan_endmill,
             vcarve::{execute, verify_vbit_motions},
         };
-        let job = Job::from_fixture(include_str!("../../../../fixtures/m4/island.json")).unwrap();
+        let job = crate::job::input_from_fixture_json(include_str!(
+            "../../../../fixtures/m4/island.json"
+        ))
+        .unwrap();
         let endmill = plan_endmill(&job).unwrap();
         let mut ctx = Context::new(&job).unwrap();
         let mut moves = vec![];
@@ -635,13 +645,16 @@ mod tests {
     }
 
     fn two_component_job() -> (Context, FeatureIndex) {
-        let mut job =
-            Job::from_fixture(include_str!("../../../../fixtures/m4/narrow-channel.json")).unwrap();
-        job.source.svg = job
+        let mut form = crate::job::FixtureJob::parse(include_str!(
+            "../../../../fixtures/m4/narrow-channel.json"
+        ))
+        .unwrap();
+        form.source.svg = form
             .source
             .svg
             .replace("M0 0h3v20h-3z", "M0 0h3v20h-3zM20 0h3v20h-3z");
-        job.selected_region_ids = vec!["pocket::0".into(), "pocket::1".into()];
+        form.selected_region_ids = vec!["pocket::0".into(), "pocket::1".into()];
+        let job = form.resolve().unwrap();
         let ctx = Context::new(&job).unwrap();
         assert_eq!(ctx.target.region().component_count(), 2);
         let features = FeatureIndex::new(ctx.target.region());
@@ -709,15 +722,12 @@ mod tests {
     #[ignore = "real flower planning locality regression"]
     fn flower_vbit_executions_complete_one_leaf_at_a_time() {
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../real_data");
-        let job = Job::from_fixture(
+        let job = crate::job::input_from_fixture_json(
             &std::fs::read_to_string(data.join("flower_box-svg.job-real.json")).unwrap(),
         )
         .unwrap();
         let plan = crate::vcarve::plan_combined(&job).unwrap();
-        let geometry =
-            crate::svg::import_svg(&job.source.svg, &job.import, Some(&job.selected_region_ids))
-                .unwrap();
-        let features = FeatureIndex::new(&geometry.selected);
+        let features = FeatureIndex::new(&job.region);
         let sequence: Vec<usize> = plan
             .executions
             .iter()
@@ -735,7 +745,7 @@ mod tests {
         }
         assert_eq!(
             runs,
-            geometry.selected.component_count(),
+            job.region.component_count(),
             "each artwork component (leaf) must finish before the next one starts"
         );
     }

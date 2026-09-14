@@ -61,7 +61,7 @@ fn island_floor_cleanup_stays_near_residual_boundaries_and_preserves_finish() {
         cam_core::job::input_from_fixture_json(include_str!("../../../fixtures/m4/island.json"))
             .unwrap();
     let plan = plan_combined(&job).unwrap();
-    let query = BoundaryQuery::new(&job.inspect().unwrap().geometry.selected);
+    let query = BoundaryQuery::new(&job.region);
     let floor: Vec<_> = plan
         .executions
         .iter()
@@ -133,14 +133,14 @@ fn island_floor_cleanup_stays_near_residual_boundaries_and_preserves_finish() {
 
 #[test]
 fn acute_floor_with_no_endmill_access_still_gets_complete_vbit_clearing() {
-    let mut job = cam_core::job::input_from_fixture_json(include_str!(
-        "../../../fixtures/m4/narrow-channel.json"
-    ))
-    .unwrap();
-    job.source.svg = job
+    let mut form =
+        cam_core::job::FixtureJob::parse(include_str!("../../../fixtures/m4/narrow-channel.json"))
+            .unwrap();
+    form.source.svg = form
         .source
         .svg
         .replace("M0 0h3v20h-3z", "M0 0 L12 0 L6 10 z");
+    let mut job = form.resolve().unwrap();
     if let Some(ToolGeometry::Endmill(spec)) = &mut job.tools[0].geometry {
         spec.diameter_mm = 16.;
     }

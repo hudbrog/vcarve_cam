@@ -1,6 +1,6 @@
 use cam_core::{
     geometry::{BoundaryQuery, Point},
-    job::Job,
+    job::VcarveInput,
     motion::{Motion, MotionKind, Position},
     pocket::PlanStatus,
     vcarve::{
@@ -18,7 +18,7 @@ fn flower_stock_verification_is_conclusive_under_twenty_seconds() {
     let path = std::env::var("CAM_VERIFY_BENCH_PLAN").unwrap();
     let saved: serde_json::Value =
         serde_json::from_reader(std::fs::File::open(path).unwrap()).unwrap();
-    let job: Job = serde_json::from_value(saved["endmill"]["job"].clone()).unwrap();
+    let job: VcarveInput = serde_json::from_value(saved["endmill"]["input"].clone()).unwrap();
     let endmill: Vec<Motion> = serde_json::from_value(saved["endmill"]["motions"].clone()).unwrap();
     let vbit: Vec<Motion> = serde_json::from_value(saved["vbit_motions"].clone()).unwrap();
     let started = std::time::Instant::now();
@@ -39,8 +39,20 @@ fn flower_stock_verification_is_conclusive_under_twenty_seconds() {
     assert!(elapsed.as_secs_f64() < 20.);
 }
 
-fn fixture(name: &str) -> Job {
+fn fixture(name: &str) -> VcarveInput {
     cam_core::job::input_from_fixture_json(
+        &std::fs::read_to_string(format!(
+            "{}/../../fixtures/m4/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+/// The fixture before resolution, for tests that edit the import placement.
+fn fixture_form(name: &str) -> cam_core::job::FixtureJob {
+    cam_core::job::FixtureJob::parse(
         &std::fs::read_to_string(format!(
             "{}/../../fixtures/m4/{name}.json",
             env!("CARGO_MANIFEST_DIR")
@@ -68,7 +80,7 @@ fn planned(name: &str) -> &'static CombinedPlan {
 fn continuous_narrow_channel_is_bounded_without_a_sample_lattice() {
     let p = narrow();
     let r = verify_motions(
-        &p.endmill.job,
+        &p.endmill.input,
         &p.endmill.motions,
         &p.vbit_motions,
         &VerificationOptions::default(),
@@ -92,7 +104,7 @@ fn representative_combined_stock_has_bounded_finish_errors() {
     for name in ["wide-floor", "island", "finite-tip", "curved-medial"] {
         let p = planned(name);
         let r = verify_motions(
-            &p.endmill.job,
+            &p.endmill.input,
             &p.endmill.motions,
             &p.vbit_motions,
             &VerificationOptions {
@@ -113,7 +125,7 @@ fn representative_combined_stock_has_bounded_finish_errors() {
         assert!(r.original.evaluated_cells <= VerificationOptions::default().max_cells);
         assert!(
             r.original.bounds.floor_ridge_mm.upper
-                <= p.endmill.job.operation.max_floor_ridge_mm.unwrap()
+                <= p.endmill.input.operation.max_floor_ridge_mm.unwrap()
         );
     }
 }
@@ -136,7 +148,7 @@ fn cell_depth_and_slice_budgets_cannot_create_a_coarse_false_pass() {
         },
     ] {
         let r = verify_motions(
-            &p.endmill.job,
+            &p.endmill.input,
             &p.endmill.motions,
             &p.vbit_motions,
             &options,
@@ -175,7 +187,7 @@ fn decreasing_uncertainty_refines_the_analytic_channel_and_changes_identity() {
     let mut previous = f64::INFINITY;
     let mut identities = std::collections::BTreeSet::new();
     for tolerance in [0.1, 0.05, 0.02] {
-        let mut job = p.endmill.job.clone();
+        let mut job = p.endmill.input.clone();
         job.tolerances.verification_tolerance_mm = Some(tolerance);
         let r = verify_motions(
             &job,
@@ -198,7 +210,7 @@ fn decreasing_uncertainty_refines_the_analytic_channel_and_changes_identity() {
 #[test]
 fn missed_reachable_stock_is_not_hidden_by_a_generous_detail_allowance() {
     let p = narrow();
-    let mut job = p.endmill.job.clone();
+    let mut job = p.endmill.input.clone();
     job.operation.max_detail_residual_mm = Some(100.);
     let mut motions = p.vbit_motions.clone();
     for m in &mut motions {
@@ -224,7 +236,7 @@ fn missed_reachable_stock_is_not_hidden_by_a_generous_detail_allowance() {
 #[test]
 fn finite_tip_detail_limit_requires_geometric_evidence() {
     let p = planned("finite-tip");
-    let mut job = p.endmill.job.clone();
+    let mut job = p.endmill.input.clone();
     job.operation.max_detail_residual_mm = Some(0.05);
     let r = verify_motions(
         &job,
@@ -253,7 +265,7 @@ fn finite_tip_detail_limit_requires_geometric_evidence() {
     );
 }
 
-fn excursion(job: &Job, a: Point, b: Point, depth: f64) -> Vec<Motion> {
+fn excursion(job: &VcarveInput, a: Point, b: Point, depth: f64) -> Vec<Motion> {
     let settings = job.endmill_planning.as_ref().unwrap();
     let tool = job
         .tools
@@ -302,7 +314,7 @@ fn excursion(job: &Job, a: Point, b: Point, depth: f64) -> Vec<Motion> {
 #[test]
 fn continuous_island_crossing_is_a_located_overcut_with_valid_endpoints() {
     let job = fixture("island");
-    let q = BoundaryQuery::new(&job.inspect().unwrap().geometry.selected);
+    let q = BoundaryQuery::new(&job.region);
     let a = Point::new(10., 15.);
     let b = Point::new(30., 15.);
     assert!(q.sample(a).unwrap().signed_distance_mm > 1.);
@@ -335,7 +347,7 @@ fn in_stock_rapid_links_are_rejected_independently_of_cutting_coverage() {
         .unwrap()
         .kind = MotionKind::RapidXY;
     let r = verify_motions(
-        &p.endmill.job,
+        &p.endmill.input,
         &p.endmill.motions,
         &moves,
         &VerificationOptions::default(),
@@ -362,7 +374,7 @@ fn formatted_coordinates_are_rechecked_and_collapsed_moves_are_retained_as_error
             ..Default::default()
         };
         let r = verify_motions(
-            &p.endmill.job,
+            &p.endmill.input,
             &p.endmill.motions,
             &p.vbit_motions,
             &options,
@@ -395,8 +407,9 @@ fn formatted_coordinates_are_rechecked_and_collapsed_moves_are_retained_as_error
 
 #[test]
 fn rounding_can_gouge_a_translated_boundary_without_reversing_or_collapsing_a_move() {
-    let mut job = fixture("narrow-channel");
-    job.import.placement.origin_mm.x = -0.06;
+    let mut form = fixture_form("narrow-channel");
+    form.import.placement.origin_mm.x = -0.06;
+    let job = form.resolve().unwrap();
     let moves = excursion(&job, Point::new(0.25, 11.), Point::new(0.25, 29.), 0.18);
     let r = verify_motions(
         &job,
@@ -431,7 +444,7 @@ fn rounding_can_gouge_a_translated_boundary_without_reversing_or_collapsing_a_mo
 #[test]
 fn rectangle_distance_enclosures_include_boundary_crossings_and_contained_islands() {
     let job = fixture("island");
-    let q = BoundaryQuery::new(&job.inspect().unwrap().geometry.selected);
+    let q = BoundaryQuery::new(&job.region);
     for (min, max) in [
         (Point::new(0., 0.), Point::new(40., 30.)),
         (Point::new(1., 10.), Point::new(2., 20.)),
@@ -548,7 +561,7 @@ fn retained_planning_receipts_match_full_replay_and_reject_changed_artifacts() {
         );
         let original: serde_json::Value = serde_json::from_str(&json).unwrap();
         for pointer in [
-            "/endmill/job/operation/max_depth_mm",
+            "/endmill/input/operation/max_depth_mm",
             "/vbit_motions/0/end/x",
             "/executions/0/pass_depth_mm",
         ] {
@@ -593,7 +606,7 @@ fn reports_are_deterministic_and_cached_analysis_cannot_authorize_changed_tools(
         serde_json::to_vec(&first).unwrap(),
         serde_json::to_vec(&second).unwrap()
     );
-    p.endmill.job.operation.max_depth_mm = Some(1.9);
+    p.endmill.input.operation.max_depth_mm = Some(1.9);
     assert_eq!(verify_plan(&p, &options).unwrap_err().code, "STALE_PLAN");
 }
 
@@ -619,7 +632,7 @@ fn invalid_resource_and_rounding_options_are_rejected_before_work() {
         },
     ] {
         assert_eq!(
-            verify_motions(&p.endmill.job, &[], &[], &options)
+            verify_motions(&p.endmill.input, &[], &[], &options)
                 .unwrap_err()
                 .code,
             "VERIFICATION_OPTIONS"
@@ -656,17 +669,17 @@ fn deleting_one_floor_lane_exposes_a_missed_strip_with_valid_motion_continuity()
             // so this remains a stock-coverage test, not an invalid-link test.
             let clearance = p
                 .endmill
-                .job
+                .input
                 .endmill_planning
                 .as_ref()
                 .unwrap()
                 .clearance_z_mm;
             let slot = p
                 .endmill
-                .job
+                .input
                 .tools
                 .iter()
-                .find(|t| t.id == p.endmill.job.operation.vbit_id)
+                .find(|t| t.id == p.endmill.input.operation.vbit_id)
                 .unwrap();
             let from = previous;
             let mut push = |kind, end, feed| {
@@ -718,7 +731,7 @@ fn deleting_one_floor_lane_exposes_a_missed_strip_with_valid_motion_continuity()
         moves.push(m);
     }
     let r = verify_motions(
-        &p.endmill.job,
+        &p.endmill.input,
         &p.endmill.motions,
         &moves,
         &VerificationOptions::default(),
@@ -741,7 +754,7 @@ fn strict_zero_ridge_does_not_hide_guarded_depth_residue_at_cap_contacts() {
         let p = plan_combined(&fixture(name)).unwrap();
         assert_eq!(p.analysis.status, PlanStatus::Complete);
         let r = verify_motions(
-            &p.endmill.job,
+            &p.endmill.input,
             &p.endmill.motions,
             &p.vbit_motions,
             &VerificationOptions {

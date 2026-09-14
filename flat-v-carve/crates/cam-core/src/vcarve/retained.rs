@@ -23,8 +23,10 @@ impl VerificationReceipt {
     }
 }
 
-pub fn plan_combined_with_receipt(job: &Job) -> Result<(CombinedPlan, VerificationReceipt)> {
-    let plan = plan_combined(job)?;
+pub fn plan_combined_with_receipt(
+    input: &VcarveInput,
+) -> Result<(CombinedPlan, VerificationReceipt)> {
+    let plan = plan_combined(input)?;
     let receipt = VerificationReceipt {
         engine_version: env!("CARGO_PKG_VERSION").into(),
         input_fingerprint: plan.input_fingerprint.clone(),
@@ -45,7 +47,12 @@ pub fn verify_retained_plan(
 ) -> Result<VerificationReport> {
     options.validate()?;
     let e = read_retained_plan(reader, receipt)?;
-    let mut report = verify_motions(&e.endmill.job, &e.endmill.motions, &e.vbit_motions, options)?;
+    let mut report = verify_motions(
+        &e.endmill.input,
+        &e.endmill.motions,
+        &e.vbit_motions,
+        options,
+    )?;
     bind_plan_report(
         &mut report,
         &e.input_fingerprint,
@@ -107,7 +114,7 @@ pub fn export_retained_plan(
     let e = read_retained_plan(reader, receipt)?;
     crate::post::export_source(
         crate::post::SourcePlan {
-            job: &e.endmill.job,
+            input: &e.endmill.input,
             input_fingerprint: &e.input_fingerprint,
             motion_fingerprint: &e.motion_fingerprint,
             endmill: &e.endmill.motions,

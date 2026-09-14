@@ -1,7 +1,7 @@
 //! Authenticate the new plan and query it at the previous plan's profile
 //! witnesses. The old artifact is comparison data, not trusted machining input.
 use cam_core::{
-    job::{Job, ToolGeometry},
+    job::{ToolGeometry, VcarveInput},
     model::VBit,
     motion::{Motion, Position},
     stock::vbit_removed_depth_at,
@@ -12,7 +12,7 @@ use std::{collections::HashMap, fs::File, io::BufReader};
 
 #[derive(Deserialize)]
 struct PreviousEndmill {
-    job: Job,
+    input: VcarveInput,
 }
 #[derive(Deserialize)]
 struct PreviousPlan {
@@ -27,8 +27,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let previous: PreviousPlan = serde_json::from_reader(BufReader::new(File::open(&args[1])?))?;
     let plan = CombinedPlan::from_reader(BufReader::new(File::open(&args[2])?))?;
-    let job = &plan.endmill.job;
-    if serde_json::to_value(&previous.endmill.job)? != serde_json::to_value(job)? {
+    let job = &plan.endmill.input;
+    if serde_json::to_value(&previous.endmill.input)? != serde_json::to_value(job)? {
         return Err("comparison requires the same saved job".into());
     }
     let slot = job

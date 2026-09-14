@@ -671,14 +671,14 @@ mod parallel_endmill_tests {
     #[test]
     fn indexed_air_proofs_match_exhaustive_sweeps_for_islands_ramps_and_depths() {
         use crate::{
-            job::{Job, ToolGeometry},
+            job::ToolGeometry,
             motion::{MotionKind, Position},
         };
         for input in [
             include_str!("../../../fixtures/m4/island.json"),
             include_str!("../../../fixtures/m4/ramp-roughing.json"),
         ] {
-            let job = Job::from_fixture(input).unwrap();
+            let job = crate::job::input_from_fixture_json(input).unwrap();
             let plan = crate::pocket::plan_endmill(&job).unwrap();
             let Some(ToolGeometry::Vbit(spec)) = &job.tools[1].geometry else {
                 panic!("V-bit fixture")

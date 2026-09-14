@@ -11,12 +11,12 @@ use std::sync::OnceLock;
 fn plan() -> &'static CombinedPlan {
     static PLAN: OnceLock<CombinedPlan> = OnceLock::new();
     PLAN.get_or_init(|| {
-        let mut job = cam_core::job::input_from_fixture_json(include_str!(
+        let mut form = cam_core::job::FixtureJob::parse(include_str!(
             "../../../fixtures/m4/narrow-channel.json"
         ))
         .unwrap();
-        job.source.svg = job.source.svg.replace("M0 0h3v20h-3z", "M0 0h12v10h-12z");
-        plan_combined(&job).unwrap()
+        form.source.svg = form.source.svg.replace("M0 0h3v20h-3z", "M0 0h12v10h-12z");
+        plan_combined(&form.resolve().unwrap()).unwrap()
     })
 }
 fn profile() -> LinuxCncProfile {
@@ -281,7 +281,7 @@ fn comments_are_not_motion_authority_and_no_cached_pass_is_trusted() {
 
 #[test]
 fn path_control_modes_default_blend_and_bound_the_verification_tolerance() {
-    let job = &plan().endmill.job;
+    let job = &plan().endmill.input;
     // Profiles without the field keep working and select the blend default.
     let mut legacy = serde_json::from_str::<serde_json::Value>(include_str!(
         "../../../fixtures/m6/macro-stock-bottom.json"
@@ -466,7 +466,7 @@ fn one_to_one_tool_numbers_accept_job_ids_and_report_each_mapping_problem() {
 
 #[test]
 fn profile_contracts_mapping_clearance_and_numeric_precision_are_required() {
-    let job = &plan().endmill.job;
+    let job = &plan().endmill.input;
     let mut p = profile();
     p.m6.reviewed = false;
     assert!(p.validate(job).is_err());
@@ -580,7 +580,7 @@ fn retained_export_matches_full_replay_and_rejects_changed_artifacts() {
         }
         let original: serde_json::Value = serde_json::from_str(&json).unwrap();
         for pointer in [
-            "/endmill/job/tools/1/spindle_rpm",
+            "/endmill/input/tools/1/spindle_rpm",
             "/vbit_motions/0/end/x",
             "/executions/0/pass_depth_mm",
         ] {
@@ -625,7 +625,7 @@ fn empty_endmill_stage_is_omitted_without_inventing_a_tool_change() {
 
 #[test]
 fn fractional_stock_datum_and_clearance_are_decoded_before_stock_verification() {
-    let mut job = plan().endmill.job.clone();
+    let mut job = plan().endmill.input.clone();
     job.stock.thickness_mm = Some(8.2);
     job.endmill_planning.as_mut().unwrap().clearance_z_mm = 1.1;
     let plan = plan_combined(&job).unwrap();

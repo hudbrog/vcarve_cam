@@ -308,7 +308,8 @@ Quality acceptance has separate criteria: overcut must stay within the stated nu
 
 | Type | Required information |
 | --- | --- |
-| `Job` | Schema version, embedded source snapshot, selection, transform/origin, stock, operation, tools, tolerances, optional machine profile. |
+| The job document (`CamJobV5`, schema 5) | Artwork items with their embedded bytes and placement, job tools, the ordered operations with their references and assignments, setup, tolerances and the applied machine configuration. The only shape a command reads or writes. |
+| The engine input (`VcarveInput`) | The resolved selected region with its import error, stock, one operation's settings, the two cutter slots with their process values, tolerances and the rough/finish limits. Built by fusing the planner context with the operation's settings; never read from a document. |
 | `Tool` | Stable ID, kind, dimensions, cutting limits, spindle speed, cutting/plunge feeds, stepdown and relevant stepover. |
 | `FlatVCarveOperation` | Selected region IDs, depth cap, endmill/V-bit IDs, horizontal wall allowance, floor-ridge/detail-residual limits, clearing strategy. |
 | `NormalizedGeometry` | Rings with hierarchy, source mapping, integer scale, geometric bounds, normalization diagnostics. |

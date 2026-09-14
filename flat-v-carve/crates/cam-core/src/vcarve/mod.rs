@@ -9,7 +9,7 @@ mod settings;
 mod verify;
 use crate::{
     geometry::{BooleanOp, Point, Region, Result},
-    job::Job,
+    job::VcarveInput,
     model::Depth,
     motion::{Motion, MotionKind, Position},
     pocket::{EndmillPlan, GenerationIssue, PlanStatus},
@@ -189,7 +189,7 @@ impl CombinedPlan {
                 "combined settings or motions changed; regenerate the plan",
             ));
         }
-        let ctx = Context::new(&endmill.job)?;
+        let ctx = Context::new(&endmill.input)?;
         let (axis, candidates) = candidates(&ctx, &endmill)?;
         let checked = verify::executions(
             &ctx,
@@ -227,7 +227,7 @@ impl CombinedPlan {
 /// execution order, stock, and required final finishing families.
 pub fn verify_combined_plan(plan: &CombinedPlan) -> Result<CombinedAnalysis> {
     let endmill = plan.endmill.revalidated()?;
-    let ctx = Context::new(&endmill.job)?;
+    let ctx = Context::new(&endmill.input)?;
     let (axis, candidates) = candidates(&ctx, &endmill)?;
     let checked = verify::executions(
         &ctx,
@@ -600,7 +600,7 @@ fn execute(
     let mut base = endmill.motions.len() + moves.len();
     let previous = moves.last().or(endmill.motions.last()).map_or(
         Position::new(
-            endmill.job.endmill_planning.as_ref().unwrap().start_xy_mm,
+            endmill.input.endmill_planning.as_ref().unwrap().start_xy_mm,
             ctx.clearance,
         ),
         |m| m.end,
@@ -649,20 +649,13 @@ fn execute(
     });
     Ok(())
 }
-pub fn plan_combined(job: &Job) -> Result<CombinedPlan> {
-    let geometry = job.inspect()?;
-    plan_combined_with_region(job, geometry.geometry.selected)
-}
-
-/// Combined planning over a caller-resolved selected region: the shared
-/// machining entry point for the schema-4 adapter and the H3 collection
-/// planner (plan section 22.4). No source is imported or re-imported here;
-/// the region is the resolved union of the selected filled components.
-pub fn plan_combined_with_region(job: &Job, region: Region) -> Result<CombinedPlan> {
+/// Combined planning for one Flat V-carve operation. The selected region is
+/// part of the input, so no source is imported or re-imported here.
+pub fn plan_combined(input: &VcarveInput) -> Result<CombinedPlan> {
     let mut timing = crate::timing::Timer::new("combined");
-    let mut ctx = Context::with_region(job, region)?;
+    let mut ctx = Context::new(input)?;
     timing.lap("context");
-    let (endmill, target) = crate::pocket::plan_with_target(job, Some(ctx.target.clone()))?;
+    let (endmill, target) = crate::pocket::plan_with_target(input, Some(ctx.target.clone()))?;
     // Both contexts use this job's selected geometry, depth and V-bit angle.
     // Retain the endmill's populated Voronoi/access caches for V-bit queries.
     ctx.target = target;
@@ -673,14 +666,14 @@ pub fn plan_combined_with_region(job: &Job, region: Region) -> Result<CombinedPl
     timing.lap("candidates");
     let start = endmill.motions.last().map_or(
         Position::new(
-            job.endmill_planning.as_ref().unwrap().start_xy_mm,
+            input.endmill_planning.as_ref().unwrap().start_xy_mm,
             ctx.clearance,
         ),
         |m| m.end,
     );
     let transition = StageTransition {
         after_motion_count: endmill.motions.len(),
-        from_tool_id: job.operation.endmill_id.clone(),
+        from_tool_id: input.operation.endmill_id.clone(),
         to_tool_id: ctx.tool_id.clone(),
         position: start,
     };
@@ -857,7 +850,7 @@ mod slice_reuse_tests {
             include_str!("../../../../fixtures/m4/finite-tip.json"),
             include_str!("../../../../fixtures/m4/exact-fit.json"),
         ] {
-            let job = Job::from_fixture(input).unwrap();
+            let job = crate::job::input_from_fixture_json(input).unwrap();
             let (endmill, target) = crate::pocket::plan_with_target(&job, None).unwrap();
             let ctx = Context::new(&job).unwrap();
             assert_eq!(
@@ -896,7 +889,7 @@ mod slice_reuse_tests {
             include_str!("../../../../fixtures/m4/contact-point.json"),
             include_str!("../../../../fixtures/m4/resource-limit.json"),
         ] {
-            let job = Job::from_fixture(input).unwrap();
+            let job = crate::job::input_from_fixture_json(input).unwrap();
             let endmill = plan_endmill(&job).unwrap();
             // Separate contexts also exercise concurrent initialization of the
             // shared target's lazy geometric data, without a warm serial cache.
@@ -919,8 +912,10 @@ mod slice_reuse_tests {
     #[test]
     fn reused_stock_matches_fresh_sweeps_for_plunges_ramps_and_multiple_layers() {
         for ramp in [false, true] {
-            let mut job =
-                Job::from_fixture(include_str!("../../../../fixtures/m4/island.json")).unwrap();
+            let mut job = crate::job::input_from_fixture_json(include_str!(
+                "../../../../fixtures/m4/island.json"
+            ))
+            .unwrap();
             if ramp {
                 job.tools[0].ramp_capable = Some(true);
                 job.endmill_planning.as_mut().unwrap().entry = EntryStrategy::Ramp {

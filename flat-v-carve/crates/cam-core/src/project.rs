@@ -6,9 +6,11 @@
 //! struct from a file. Its serde representation survives for the planner
 //! regression fixtures under `fixtures/`, which are test data.
 //!
-//! The V-carve engine still runs on [`crate::job::Job`]; adapt through
-//! [`crate::operations::flat_vcarve::to_legacy_job`] and never construct a
-//! fake engine input for a planner that has its own.
+//! The V-carve engine runs on [`crate::job::VcarveInput`]; build one through
+//! [`CamJob::plan_input`] (or
+//! [`crate::operations::flat_vcarve::vcarve_input`] with an already-resolved
+//! region) and never construct a fake engine input for a planner that has its
+//! own.
 use crate::{
     geometry::{Diagnostic, Point, Result},
     job::{PlanningTolerances, SourceSnapshot},
@@ -307,7 +309,7 @@ pub struct MillingAssignment {
     pub tool_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spindle_rpm: Option<f64>,
-    /// Unset for migrated legacy jobs until a machine profile is applied;
+    /// Unset until a machine profile is applied;
     /// required before new Face/Profile planning and before process export.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spindle_direction: Option<SpindleDirection>,
@@ -1147,7 +1149,7 @@ impl CamJob {
     /// only way an engine input is built from a stored job, and the same call
     /// the collection planner makes. Operation kinds with a native planner
     /// (face, profile, drag knife) have no engine input.
-    pub fn plan_input(&self, operation_id: &str) -> Result<crate::job::Job> {
+    pub fn plan_input(&self, operation_id: &str) -> Result<crate::job::VcarveInput> {
         let operation = self
             .operations
             .iter()
@@ -1160,7 +1162,15 @@ impl CamJob {
             })?;
         match &operation.settings {
             OperationSettings::FlatVcarve(settings) => {
-                crate::operations::flat_vcarve::to_legacy_job(self, operation_id, settings)
+                let (region, _, source_error_mm) =
+                    crate::operations::flat_vcarve::resolve_substrate_region(self, settings)?;
+                crate::operations::flat_vcarve::vcarve_input(
+                    &crate::operations::PlanContext::from_v4(self),
+                    operation_id,
+                    settings,
+                    region,
+                    source_error_mm,
+                )
             }
             _ => Err(error(
                 "PROJECT_PLANNER",

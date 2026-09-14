@@ -17,10 +17,10 @@
 //!   disabled operation or outside a planned prefix never blocks that prefix.
 //!
 //! This is the only parseable job document. [`crate::project::CamJob`] and
-//! [`crate::job::Job`] survive as in-memory substrates — the engine's input
-//! and the collection catalogue's source — with no parse surface of their
-//! own, and nothing converts a document into this model: an older document is
-//! refused by name (docs/flat-v-carve/schema-diet-plan.md).
+//! [`crate::job::VcarveInput`] survive as in-memory planning types — the
+//! collection substrate and the V-carve engine's input — with no document
+//! reader of their own, and nothing converts a document into this model: an
+//! older document is refused by name (docs/flat-v-carve/schema-diet-plan.md).
 use crate::{
     geometry::{Diagnostic, Result},
     job::{PlanningTolerances, SourceSnapshot},
@@ -472,7 +472,7 @@ pub struct MillingAssignmentV5 {
     pub tool_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spindle_rpm: Option<f64>,
-    /// Unset for migrated legacy jobs until explicitly supplied; required
+    /// Unset until explicitly supplied; required
     /// before new Face/Profile planning and before process export.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spindle_direction: Option<crate::project::SpindleDirection>,

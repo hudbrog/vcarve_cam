@@ -1,5 +1,5 @@
 use cam_core::{
-    job::Job,
+    job::VcarveInput,
     pocket::{EndmillPlan, plan_endmill},
     tool_library::{
         CuttingPreset, LibraryChange, LibraryTool, MAX_LIBRARY_BYTES, MAX_LIBRARY_REVISION,
@@ -8,7 +8,7 @@ use cam_core::{
 };
 use serde_json::{Value, json};
 
-fn job() -> Job {
+fn job() -> VcarveInput {
     cam_core::job::input_from_fixture_json(include_str!("../../../fixtures/m4/island.json"))
         .unwrap()
 }
@@ -281,7 +281,7 @@ fn applying_copies_snapshots_and_preserves_job_ids_and_other_settings() {
     let saved = serde_json::to_string(&result).unwrap();
     library.tools.clear();
     assert_eq!(
-        serde_json::to_string(&cam_core::job::input_from_fixture_json(&saved).unwrap()).unwrap(),
+        serde_json::to_string(&cam_core::job::input_from_json(&saved).unwrap()).unwrap(),
         saved
     );
     assert_eq!(original.tools[1].cutting_feed_mm_min, Some(300.));
@@ -417,7 +417,7 @@ fn applying_a_changed_preset_invalidates_existing_plan_identity() {
         tools: vec![tool],
         ..ToolLibrary::default()
     };
-    plan.job = library
+    plan.input = library
         .apply_to_job(&original, ToolSlot::Endmill, "new", Some("new"))
         .unwrap();
     assert_eq!(
