@@ -877,26 +877,33 @@ impl Viewport {
                             },
                             budget_bytes: self.page_budget,
                             contour_vertices: scene.meta.contour_vertices,
-                            contour_draw_ranges: scene.meta.report["gui2"]["artworkSpans"]
-                                .as_array()
-                                .filter(|_| self.stock_style.show_artwork)
-                                .map(|spans| {
-                                    spans
-                                        .iter()
-                                        .filter(|s| {
-                                            !self
-                                                .artwork
-                                                .hidden
-                                                .contains(s[0].as_str().unwrap_or(""))
-                                        })
-                                        .filter_map(|s| {
-                                            Some(s[1].as_u64()? as u32..s[2].as_u64()? as u32)
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_else(|| {
-                                    std::iter::once(0..scene.meta.contour_vertices as u32).collect()
-                                }),
+                            // Hidden artwork draws no range at all; the
+                            // fallback below is for a scene that carries no
+                            // per-item spans, not for the toggle.
+                            contour_draw_ranges: if !self.stock_style.show_artwork {
+                                Vec::new()
+                            } else {
+                                scene.meta.report["gui2"]["artworkSpans"]
+                                    .as_array()
+                                    .map(|spans| {
+                                        spans
+                                            .iter()
+                                            .filter(|s| {
+                                                !self
+                                                    .artwork
+                                                    .hidden
+                                                    .contains(s[0].as_str().unwrap_or(""))
+                                            })
+                                            .filter_map(|s| {
+                                                Some(s[1].as_u64()? as u32..s[2].as_u64()? as u32)
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_else(|| {
+                                        std::iter::once(0..scene.meta.contour_vertices as u32)
+                                            .collect()
+                                    })
+                            },
                             contour_range: scene
                                 .meta
                                 .sections

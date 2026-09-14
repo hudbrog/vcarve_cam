@@ -20,6 +20,16 @@ pub const WALL_BUDGET_INSTANCES: usize = 131_072;
 /// Identity of a wall whose material no cutter has touched. `stage | tool << 8`
 /// can never produce it.
 pub const NO_CUTTER: u32 = u32::MAX;
+/// How steep a step has to be before it is a wall rather than a slope.
+///
+/// A step height alone cannot tell a vertical face from a V-bit flank: a 90°
+/// V-bit's flank descends cell by cell at a 45° gradient, and every one of those
+/// steps would pass a `0.25 × cell` height test, which is exactly the staircase
+/// the tester reported. A step counts as a wall only when it rises faster than
+/// this many millimetres per cell — about 56°, so a V-bit's 45° flank stays a
+/// shaded slope while an endmill's vertical face (the whole depth in one cell)
+/// is a wall.
+pub const MIN_WALL_SLOPE: f64 = 1.5;
 
 /// One wall quad, in grid-cell units so the shader multiplies by its own cell
 /// size. Axis 0 stands at a fixed x and runs along y; axis 1 at a fixed y and
@@ -94,7 +104,9 @@ impl Grid<'_> {
 
 /// Build the walls of one field state.
 pub fn build(grid: &Grid, threshold_mm: f64, budget: usize) -> WallSet {
-    let mut threshold = threshold_mm.max(1e-6);
+    // The style's threshold is a minimum: a slope that is merely steep is not a
+    // wall, however deep the material beside it is.
+    let mut threshold = threshold_mm.max(grid.cell_mm * MIN_WALL_SLOPE).max(1e-6);
     for _ in 0..4 {
         let mut walls = Vec::new();
         detect(grid, threshold, &mut walls);
@@ -494,8 +506,9 @@ mod tests {
     /// a shaded slope instead of becoming a staircase.
     #[test]
     fn a_slope_below_the_threshold_is_not_a_staircase() {
-        // 0.02 mm steps on a 10 mm stock with a 0.25 mm threshold.
-        let cells = packed(6, 2, |col, _| col as f64 * 0.002, |_, _| 2);
+        // A 45° flank at 1 mm cells: every step is 1 mm, four times the style's
+        // 0.25 mm threshold, so only the slope rule keeps it off the walls.
+        let cells = packed(6, 2, |col, _| col as f64 * 0.1, |_, _| 2);
         let set = build(&grid(&cells, 6, 2), THRESHOLD, WALL_BUDGET_INSTANCES);
         // Only the stock's own edge remains: every wall stands on the boundary,
         // where the cell beside it was cut by the slope's operation.
