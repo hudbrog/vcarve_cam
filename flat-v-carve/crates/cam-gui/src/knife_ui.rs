@@ -213,13 +213,29 @@ impl App {
             .map(|i| (i.id.clone(), i.name.clone()))
             .collect::<Vec<_>>();
         if chains.is_empty() {
-            ui.label("No knife paths available. Stroked SVG paths can be selected here. Filled artwork needs an explicit outline conversion.");
+            ui.label("No knife paths available. Every drawn path is offered here: strokes and lines, and the outlines of filled shapes.");
         } else {
             if button(ui, "Select all knife chains", self.active.is_none()).clicked() {
                 selected = chains.iter().map(|c| c.reference.clone()).collect();
             }
             if button(ui, "Clear knife selection", self.active.is_none()).clicked() {
                 selected.clear();
+            }
+            if self.active.is_none() {
+                let rows: Vec<source_identity::SourceRow<'_, cam_core::project::v5::GeometryRef>> =
+                    chains
+                        .iter()
+                        .map(|chain| source_identity::SourceRow {
+                            value: chain.reference.clone(),
+                            label: chain.label.as_deref(),
+                            group: chain.group.as_deref(),
+                            paint: chain.paint,
+                            id: &chain.reference.local_geometry_id,
+                        })
+                        .collect();
+                if let Some(chosen) = source_identity::select_all(ui, &rows) {
+                    selected = chosen;
+                }
             }
             egui::ScrollArea::vertical()
                 .id_salt("knife-geometry-list")
@@ -237,17 +253,30 @@ impl App {
                         ui.strong(&item.name);
                         for chain in local {
                             let mut on = selected.contains(&chain.reference);
-                            let response = ui.add_enabled(
-                                self.active.is_none(),
-                                egui::Checkbox::new(
-                                    &mut on,
-                                    format!(
-                                        "{} · {}",
-                                        chain.reference.local_geometry_id,
-                                        if chain.closed { "closed" } else { "open" }
-                                    ),
-                                ),
-                            );
+                            let row = source_identity::SourceRow {
+                                value: chain.reference.clone(),
+                                label: chain.label.as_deref(),
+                                group: chain.group.as_deref(),
+                                paint: chain.paint,
+                                id: &chain.reference.local_geometry_id,
+                            };
+                            let response = ui
+                                .horizontal(|ui| {
+                                    let response = ui.add_enabled(
+                                        self.active.is_none(),
+                                        egui::Checkbox::new(
+                                            &mut on,
+                                            format!(
+                                                "{} · {}",
+                                                source_identity::source_name(&row),
+                                                if chain.closed { "closed" } else { "open" }
+                                            ),
+                                        ),
+                                    );
+                                    source_identity::paint_swatch(ui, row.paint);
+                                    response
+                                })
+                                .inner;
                             observe_control(
                                 &format!(
                                     "Knife chain {} / {}",
@@ -283,7 +312,7 @@ impl App {
         }
         if !sources.is_empty() {
             let menu=ui.menu_button("Create knife outlines",|ui| {
-                ui.label("Create a stroked copy of the imported outer and hole boundaries. Original artwork stays intact; curves use its import tolerance. Choose paths after creating the copy.");
+                ui.label("Optional. Every filled shape already offers its own outline as a knife path; this copies the resolved outer and hole boundaries into a separate artwork item instead. Original artwork stays intact; curves use its import tolerance.");
                 for (id,name) in sources {
                     if button(ui,&format!("Outlines of {name}"),self.active.is_none()).clicked() {
                         self.artwork_command(engine::ArtworkCommand::KnifeOutlines {item:id},ctx);

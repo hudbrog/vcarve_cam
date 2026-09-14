@@ -1,9 +1,6 @@
 //! Passive-knife GUI adapter. Geometry, compensation and replay stay in core.
 use crate::compute::{Package, SceneMeta, SimPackage, package, vertex};
-use cam_core::{
-    project::{self, v5::*},
-    svg::ImportMode,
-};
+use cam_core::project::{self, v5::*};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -42,13 +39,6 @@ fn first_knife_id(job: &CamJobV5) -> String {
         .find(|operation| matches!(operation.settings, OperationSettingsV5::DragKnife(_)))
         .map(|operation| operation.id.clone())
         .unwrap_or_default()
-}
-
-pub fn interpretation() -> SvgInterpretation {
-    SvgInterpretation {
-        mode: ImportMode::Centerline,
-        ..Default::default()
-    }
 }
 
 pub fn value(job: &CamJobV5, field: usize) -> Option<f64> {
@@ -230,7 +220,7 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
             filename: filename.clone(),
             svg,
         }),
-        import_settings: interpretation(),
+        import_settings: SvgInterpretation::default(),
         placement: Default::default(),
     };
     let catalogue = artwork::resolve_artwork_item(&item).map_err(|e| e.to_string())?;
@@ -306,6 +296,12 @@ pub struct Chain {
     pub reference: GeometryRef,
     pub closed: bool,
     pub vertices: Vec<[f64; 2]>,
+    /// The element's own `inkscape:label`, when the editor recorded one.
+    pub label: Option<String>,
+    /// The nearest enclosing named layer or group.
+    pub group: Option<String>,
+    /// The colour the source element is drawn in, for identity only.
+    pub paint: Option<cam_core::svg::SourcePaint>,
 }
 pub fn chains(job: &CamJobV5) -> Result<Vec<Chain>, String> {
     let catalogue = artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
@@ -325,6 +321,9 @@ pub fn chains(job: &CamJobV5) -> Result<Vec<Chain>, String> {
                     reference: entry.reference.clone(),
                     closed: contour.closed,
                     vertices: contour.vertices.iter().map(|p| [p.x, p.y]).collect(),
+                    label: entry.label.clone(),
+                    group: entry.group.clone(),
+                    paint: entry.paint,
                 })
             })
         })

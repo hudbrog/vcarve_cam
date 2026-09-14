@@ -321,7 +321,6 @@ pub(crate) fn to_legacy_job_v5(
             geometry_tolerance_mm: 0.001,
             ticks_per_mm: None,
             placement: crate::svg::Placement::default(),
-            mode: crate::svg::ImportMode::Fill,
         },
         selected_region_ids: mapped.component_ids.clone(),
         stock: LegacyStockSettings {

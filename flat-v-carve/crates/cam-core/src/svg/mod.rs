@@ -115,32 +115,16 @@ impl Placement {
     }
 }
 
-/// How the importer interprets the artwork (plan section 7.3). `Fill` is the
-/// legacy behavior: filled closed regions only, strokes and line elements are
-/// errors. `Centerline` additionally imports stroked and line geometry as
-/// explicit centerline chains — one per subpath, stroke width ignored — while
-/// filled elements keep importing as regions exactly as before.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ImportMode {
-    #[default]
-    Fill,
-    Centerline,
-}
-
+/// What the importer needs to turn an SVG file into artwork. There is no
+/// interpretation mode: the importer publishes every reading the drawing
+/// supports — each subpath as a centreline, each filled subpath as a region —
+/// and the operation that consumes the artwork decides which reading it uses.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ImportOptions {
     pub geometry_tolerance_mm: f64,
     pub ticks_per_mm: Option<f64>,
     pub placement: Placement,
-    /// Centerline import mode is omitted while it is the default so legacy
-    /// documents stay byte-identical.
-    #[serde(default, skip_serializing_if = "is_default_mode")]
-    pub mode: ImportMode,
-}
-fn is_default_mode(mode: &ImportMode) -> bool {
-    *mode == ImportMode::Fill
 }
 impl Default for ImportOptions {
     fn default() -> Self {
@@ -148,7 +132,6 @@ impl Default for ImportOptions {
             geometry_tolerance_mm: 0.001,
             ticks_per_mm: None,
             placement: Placement::default(),
-            mode: ImportMode::Fill,
         }
     }
 }
@@ -156,6 +139,54 @@ impl Default for ImportOptions {
 pub struct Bounds {
     pub min: Point,
     pub max: Point,
+}
+
+/// A solid paint taken from the drawing, kept for display only.
+///
+/// Geometry is decided by whether a paint is *present*, never by which colour
+/// it is: two shapes that differ only in colour describe the same cutting
+/// geometry. The colour still matters to the person picking that geometry, so
+/// it is carried through as identity — the artwork panel and the viewport can
+/// show the carving and the part outline apart at a glance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourcePaint {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+    pub alpha: u8,
+}
+
+impl SourcePaint {
+    /// Parse a paint value, resolving `currentColor` against the inherited
+    /// colour. Anything that is not a solid colour (a paint server) has no
+    /// single colour to show and returns `None`.
+    fn parse(value: &str, current_color: &str) -> Option<Self> {
+        let value = if value == "currentColor" {
+            current_color
+        } else {
+            value
+        };
+        value.parse::<svgtypes::Color>().ok().map(|color| Self {
+            red: color.red,
+            green: color.green,
+            blue: color.blue,
+            alpha: color.alpha,
+        })
+    }
+    /// The colour in the 0..1 RGBA the viewport draws with.
+    pub fn rgba_unit(self) -> [f32; 4] {
+        [
+            f32::from(self.red) / 255.,
+            f32::from(self.green) / 255.,
+            f32::from(self.blue) / 255.,
+            f32::from(self.alpha) / 255.,
+        ]
+    }
+    /// How the colour is written in the panel (`#rrggbb`).
+    pub fn hex(self) -> String {
+        format!("#{:02x}{:02x}{:02x}", self.red, self.green, self.blue)
+    }
 }
 impl Bounds {
     pub fn of(region: &Region) -> Option<Self> {
@@ -181,18 +212,25 @@ impl Bounds {
 pub struct SourceComponent {
     pub id: String,
     pub source_id: String,
+    /// The element's own `inkscape:label`, when the editor recorded one.
     pub label: Option<String>,
+    /// The nearest enclosing named layer or group.
+    pub group: Option<String>,
+    /// The colour the element is drawn in, for identity only.
+    pub paint: Option<SourcePaint>,
     pub geometry: Region,
 }
-/// One centerline subpath in page coordinates, kept exactly as drawn: open
-/// subpaths stay open (`closed` is false), vertex order is source order, and
-/// the stroke that produced it is interpreted as a centerline — its width is
-/// ignored, never offset into two parallel cuts (plan section 7.3).
+/// One subpath in page coordinates, kept exactly as drawn: open subpaths stay
+/// open (`closed` is false) and vertex order is source order. A stroked
+/// subpath is a centreline — the stroke width is never offset into two
+/// parallel cuts (plan section 7.3) — and a filled subpath is also a region.
 #[derive(Clone, Debug, Serialize)]
 pub struct SourceChain {
     pub id: String,
     pub source_id: String,
     pub label: Option<String>,
+    pub group: Option<String>,
+    pub paint: Option<SourcePaint>,
     pub closed: bool,
     pub points: Vec<Point>,
 }
@@ -211,8 +249,8 @@ pub struct NormalizedGeometry {
     pub source_snap_bound_mm: f64,
     pub grid: Grid,
     pub sources: Vec<SourceComponent>,
-    /// Centerline chains (centerline import mode only; always empty in fill
-    /// mode, where strokes remain errors).
+    /// Every subpath as drawn, one per subpath, in document and subpath order.
+    /// A knife cuts these; a profile may cut the closed ones as contours.
     pub chains: Vec<SourceChain>,
     pub selected_region_ids: Vec<String>,
     pub selected: Region,
@@ -224,12 +262,16 @@ pub struct NormalizedGeometry {
 struct RawShape {
     id: String,
     label: Option<String>,
+    group: Option<String>,
+    paint: Option<SourcePaint>,
     rings: Vec<Vec<Point>>,
     rule: WindingRule,
 }
 struct RawChain {
     id: String,
     label: Option<String>,
+    group: Option<String>,
+    paint: Option<SourcePaint>,
     closed: bool,
     points: Vec<Point>,
 }
@@ -245,7 +287,6 @@ struct Reader {
     width: f64,
     height: f64,
     namespaced: bool,
-    centerline: bool,
     stylesheet: Stylesheet,
 }
 
@@ -365,11 +406,10 @@ pub fn import_svg(
         width,
         height,
         namespaced: root.tag_name().namespace() == Some(SVG_NS),
-        centerline: options.mode == ImportMode::Centerline,
         stylesheet,
     };
     reader.diagnostics.extend(stylesheet_warnings);
-    reader.walk(root, Matrix::ID, &Style::default(), 0, true)?;
+    reader.walk(root, Matrix::ID, &Style::default(), 0, true, None)?;
     let extent = reader
         .shapes
         .iter()
@@ -439,6 +479,8 @@ pub fn import_svg(
                 id: format!("{}::{index}", shape.id),
                 source_id: shape.id.clone(),
                 label: shape.label.clone(),
+                group: shape.group.clone(),
+                paint: shape.paint,
                 geometry,
             });
         }
@@ -460,6 +502,8 @@ pub fn import_svg(
             id: format!("{}::chain-{subpath}", chain.id),
             source_id: chain.id,
             label: chain.label,
+            group: chain.group,
+            paint: chain.paint,
             closed: chain.closed,
             points: chain.points,
         });
@@ -467,7 +511,7 @@ pub fn import_svg(
     if sources.is_empty() && chains.is_empty() {
         return Err(error(
             "SVG_NO_REGIONS",
-            "SVG has no supported visible filled regions",
+            "SVG has no supported visible geometry: nothing is filled and nothing is stroked",
         ));
     }
     let selection = selection.map_or_else(
@@ -657,6 +701,7 @@ impl Reader {
         inherited: &Style,
         depth: usize,
         root: bool,
+        group: Option<&str>,
     ) -> Result<()> {
         if depth > 64 {
             return Err(error(
@@ -723,8 +768,16 @@ impl Reader {
         let transform = self.page_matrix.then(matrix);
         transform.validate()?;
         if tag == "g" || (root && tag == "svg") {
+            // A named layer or group is how the drawing is organised; it is
+            // part of the geometry's identity, so it travels to every element
+            // inside it. The nearest name wins.
+            let group = node
+                .attribute((INKSCAPE_NS, "label"))
+                .map(str::trim)
+                .filter(|label| !label.is_empty())
+                .or(group);
             for child in node.children() {
-                self.walk(child, matrix, &style, depth + 1, false)?;
+                self.walk(child, matrix, &style, depth + 1, false, group)?;
             }
             return Ok(());
         }
@@ -736,13 +789,12 @@ impl Reader {
             ));
             return Ok(());
         }
-        let line_geometry = matches!(tag, "line" | "polyline");
-        if !(matches!(tag, "path" | "rect" | "circle" | "ellipse" | "polygon")
-            || self.centerline && line_geometry)
-        {
+        if !matches!(
+            tag,
+            "path" | "rect" | "circle" | "ellipse" | "polygon" | "line" | "polyline"
+        ) {
             let code = match tag {
                 "text" | "tspan" | "flowRoot" => "SVG_TEXT",
-                "line" | "polyline" => "SVG_OPEN_PATH",
                 _ => "SVG_UNSUPPORTED_ELEMENT",
             };
             return Err(element_scope(
@@ -758,74 +810,54 @@ impl Reader {
         }
         let has_stroke =
             style.stroke != "none" && style.stroke_width > 0. && style.stroke_opacity > 0.;
-        let has_fill = style.fill != "none" && style.fill_opacity != 0.;
-        if self.centerline {
-            // Centerline import mode (plan section 7.3): a visible stroke is
-            // an explicit centerline — one chain per subpath, width ignored,
-            // never doubled into two parallel cuts. Filled elements keep
-            // importing as regions below, exactly as in fill mode.
-            if line_geometry {
-                if !has_stroke {
-                    self.diagnostics.push(element_scope(
-                        error("SVG_NO_STROKE", "line geometry has no visible stroke").warning(),
-                        node,
-                        &id,
-                    ));
-                    return Ok(());
-                }
-                return self
-                    .chain_element(node, tag, &id, transform)
-                    .map_err(|d| element_scope(d, node, &id));
-            }
-            if has_stroke {
-                if has_fill {
-                    return Err(element_scope(
-                        error(
-                            "SVG_STROKE",
-                            "element has both visible fill and stroke; move the stroke onto a fill-none element to use it as a knife centerline",
-                        ),
-                        node,
-                        &id,
-                    ));
-                }
-                return self
-                    .chain_element(node, tag, &id, transform)
-                    .map_err(|d| element_scope(d, node, &id));
-            }
-        } else if has_stroke {
-            // Fill mode carves filled regions only. A stroke-only element is
-            // refused, but the refusal names the element and both remedies:
-            // convert the stroke to a filled outline, or import the artwork as
-            // centerlines, which cuts along the middle of the stroke.
-            return Err(element_scope(
+        let painted_fill = style.fill != "none" && style.fill_opacity != 0.;
+        let (alpha, assumed_opaque) = if painted_fill {
+            style
+                .paint_alpha()
+                .map_err(|d| element_scope(d, node, &id))?
+        } else {
+            (255, false)
+        };
+        if assumed_opaque {
+            self.diagnostics.push(element_scope(
                 error(
-                    "SVG_STROKE",
-                    "visible stroke: convert it with Inkscape Stroke to Path (Path ▸ Stroke to Path), or import this artwork as centerlines to cut along the middle of the stroke",
-                ),
+                    "SVG_PAINT_OPACITY",
+                    "gradient or pattern fill is imported as an opaque region; its opacity is not evaluated, so the whole drawn area is carved",
+                )
+                .warning(),
                 node,
                 &id,
             ));
         }
-        if !has_fill {
+        // A <line> has no interior, so its fill never paints anything; the
+        // other shapes read their fill as a region.
+        let has_fill = painted_fill && alpha != 0 && tag != "line";
+        // The colour the element is drawn in, carried as identity only: a
+        // paint server has no single colour, and a fully transparent fill
+        // shows nothing, in which case the stroke's colour stands in.
+        let paint = SourcePaint::parse(&style.fill, &style.color)
+            .filter(|paint| paint.alpha > 0)
+            .or_else(|| {
+                has_stroke
+                    .then(|| SourcePaint::parse(&style.stroke, &style.color))
+                    .flatten()
+                    .filter(|paint| paint.alpha > 0)
+            });
+        if !has_stroke && !has_fill {
+            // Nothing is drawn: no stroke to follow and no solid fill to
+            // carve. Say so instead of inventing geometry.
             self.diagnostics.push(element_scope(
-                error("SVG_NO_FILL", "element has no visible fill").warning(),
+                error(
+                    "SVG_NO_PAINT",
+                    "element has no visible fill or stroke, so it contributes no geometry",
+                )
+                .warning(),
                 node,
                 &id,
             ));
             return Ok(());
         }
-        let alpha = style
-            .paint_alpha()
-            .map_err(|d| element_scope(d, node, &id))?;
-        if alpha == 0 {
-            self.diagnostics.push(element_scope(
-                error("SVG_NO_FILL", "transparent fill excludes this element").warning(),
-                node,
-                &id,
-            ));
-            return Ok(());
-        }
-        if style.opacity < 1. || style.fill_opacity < 1. || alpha < 255 {
+        if style.opacity < 1. || (painted_fill && (style.fill_opacity < 1. || alpha < 255)) {
             self.diagnostics.push(element_scope(error("SVG_OPACITY","positive fill opacity selects the same geometric region; color intensity is not a carve depth").warning(), node, &id));
         }
         if node.children().any(|c| {
@@ -840,10 +872,12 @@ impl Reader {
                 &id,
             ));
         }
-        let rings = self
-            .shape(node, transform)
+        // One flattening pass: every subpath as drawn. Each reading below is
+        // derived from it, so an element can be an area and a line at once.
+        let chains = self
+            .flatten(node, transform)
             .map_err(|d| element_scope(d, node, &id))?;
-        self.vertices += rings.iter().map(Vec::len).sum::<usize>();
+        self.vertices += chains.iter().map(|c| c.points.len()).sum::<usize>();
         if self.vertices > MAX_VERTICES {
             return Err(error(
                 "SVG_RESOURCE_LIMIT",
@@ -851,7 +885,7 @@ impl Reader {
             ));
         }
         // We do not emulate viewport clipping. Refuse artwork that could be cropped.
-        if rings.iter().flatten().any(|p| {
+        if chains.iter().flat_map(|c| c.points.iter()).any(|p| {
             p.x < -self.tolerance
                 || p.y < -self.tolerance
                 || p.x > self.width + self.tolerance
@@ -867,33 +901,110 @@ impl Reader {
             ));
         }
         let label = node.attribute((INKSCAPE_NS, "label")).map(str::to_owned);
-        self.shapes.push(RawShape {
-            id,
-            label,
-            rings,
-            rule: style.rule,
-        });
+        // The centreline reading: every subpath as drawn, open or closed. It
+        // is what a drag knife follows and what a stroke means; a filled
+        // element reads the same way, because its path is the boundary the
+        // user drew.
+        if has_stroke {
+            self.diagnostics.push(element_scope(
+                error(
+                    "SVG_STROKE_CENTERLINE",
+                    format!(
+                        "stroke read as a centreline: the {} mm stroke width is ignored, so the line is cut where it is drawn (use Inkscape's Stroke to Path if you want the outline instead)",
+                        style.stroke_width
+                    ),
+                )
+                .warning(),
+                node,
+                &id,
+            ));
+        }
+        let mut dropped = 0usize;
+        for chain in &chains {
+            if chain.points.len() < 2 {
+                dropped += 1;
+                continue;
+            }
+            self.chains.push(RawChain {
+                id: id.clone(),
+                label: label.clone(),
+                group: group.map(str::to_owned),
+                paint,
+                closed: chain.closed,
+                points: chain.points.clone(),
+            });
+        }
+        // The fill reading: the same subpaths taken as rings. A renderer closes
+        // an open subpath implicitly when it fills it, so CAM does too — out
+        // loud, because that closing edge is not in the file.
+        let mut implicitly_closed = 0usize;
+        let mut rings: Vec<Vec<Point>> = vec![];
+        if has_fill {
+            for chain in &chains {
+                if chain.points.len() < 3 {
+                    dropped += 1;
+                    continue;
+                }
+                if !chain.closed {
+                    implicitly_closed += 1;
+                }
+                rings.push(chain.points.clone());
+            }
+            if rings.is_empty() {
+                self.diagnostics.push(element_scope(
+                    error(
+                        "SVG_NO_FILL",
+                        "filled element has no subpath with enough vertices to enclose an area",
+                    )
+                    .warning(),
+                    node,
+                    &id,
+                ));
+            }
+        }
+        if implicitly_closed > 0 {
+            self.diagnostics.push(element_scope(
+                error(
+                    "SVG_OPEN_PATH",
+                    format!(
+                        "{implicitly_closed} open subpath(s) carry a fill: every renderer closes them for filling, so that closing edge is added. Close the path in Inkscape, or draw it with a stroke if you meant a line."
+                    ),
+                )
+                .warning(),
+                node,
+                &id,
+            ));
+        }
+        if dropped > 0 {
+            self.diagnostics.push(element_scope(
+                error(
+                    "SVG_DEGENERATE_PATH",
+                    format!("{dropped} subpath(s) have too few distinct vertices to use"),
+                )
+                .warning(),
+                node,
+                &id,
+            ));
+        }
+        if has_fill && !rings.is_empty() {
+            self.shapes.push(RawShape {
+                id,
+                label,
+                group: group.map(str::to_owned),
+                paint,
+                rings,
+                rule: style.rule,
+            });
+        }
         Ok(())
     }
 
-    /// Extract one element's subpaths as centerline chains. Subpath order is
-    /// the source order; open subpaths stay open and are never implicitly
-    /// closed (plan section 7.3).
-    fn chain_element(
-        &mut self,
-        node: Node<'_, '_>,
-        tag: &str,
-        id: &str,
-        transform: Matrix,
-    ) -> Result<()> {
-        if node.children().any(|c| {
-            c.is_element() && !matches!(c.tag_name().name(), "title" | "desc" | "metadata")
-        }) {
-            return Err(error(
-                "SVG_UNSUPPORTED_CHILD",
-                "geometry elements cannot contain nested rendering elements",
-            ));
-        }
+    /// Flatten one element into its subpaths as drawn. Subpath order is the
+    /// source order; open subpaths stay open and nothing is closed or opened
+    /// implicitly (plan section 7.3). This is the single geometry extraction
+    /// both readings share: a subpath is a centreline as drawn, and a ring
+    /// when the element carries a fill.
+    fn flatten(&self, node: Node<'_, '_>, transform: Matrix) -> Result<Vec<ChainPoints>> {
         let points = |list: &str, code: &str| -> Result<Vec<Point>> {
             let numbers = svgtypes::NumberListParser::from(list)
                 .map(|n| n.map_err(|e| error(code, format!("{e}"))))
@@ -903,9 +1014,10 @@ impl Reader {
                 .map(|xy| transform.apply(Point::new(xy[0], xy[1])))
                 .collect())
         };
-        let chains: Vec<ChainPoints> = match tag {
-            "path" => Flattener::new_open(transform, self.tolerance)
-                .chain_path(node.attribute("d").unwrap_or(""))?,
+        Ok(match node.tag_name().name() {
+            "path" => {
+                Flattener::new(transform, self.tolerance).path(node.attribute("d").unwrap_or(""))?
+            }
             "line" => {
                 let at = |name: &str| {
                     node.attribute(name)
@@ -952,61 +1064,14 @@ impl Reader {
                     points: list,
                 }]
             }
-            // Closed basic shapes: the same outlines the fill importer uses,
-            // as one closed chain each.
-            "rect" | "circle" | "ellipse" => self
-                .shape(node, transform)?
-                .into_iter()
-                .map(|points| ChainPoints {
-                    closed: true,
-                    points,
-                })
-                .collect(),
+            // Closed basic shapes: one closed subpath each.
+            "rect" | "circle" | "ellipse" => self.shape(node, transform)?,
             _ => unreachable!("dispatch checked the tag"),
-        };
-        self.vertices += chains.iter().map(|c| c.points.len()).sum::<usize>();
-        if self.vertices > MAX_VERTICES {
-            return Err(error(
-                "SVG_RESOURCE_LIMIT",
-                "total flattened input exceeds two million vertices",
-            ));
-        }
-        // We do not emulate viewport clipping. Refuse artwork that could be cropped.
-        if chains.iter().flat_map(|c| c.points.iter()).any(|p| {
-            p.x < -self.tolerance
-                || p.y < -self.tolerance
-                || p.x > self.width + self.tolerance
-                || p.y > self.height + self.tolerance
-        }) {
-            return Err(error(
-                "SVG_VIEWPORT_CLIPPING",
-                "artwork extends outside the page; resize the page to the drawing before import",
-            ));
-        }
-        let label = node.attribute((INKSCAPE_NS, "label")).map(str::to_owned);
-        // The interpretation is visible: each chain reports that its stroke
-        // became a centerline with the width ignored.
-        self.diagnostics.push(element_scope(
-            error(
-                "SVG_STROKE_CENTERLINE",
-                "stroke interpreted as a knife centerline; stroke width ignored",
-            )
-            .warning(),
-            node,
-            id,
-        ));
-        for chain in chains {
-            self.chains.push(RawChain {
-                id: id.to_owned(),
-                label: label.clone(),
-                closed: chain.closed,
-                points: chain.points,
-            });
-        }
-        Ok(())
+        })
     }
 
-    fn shape(&self, node: Node<'_, '_>, matrix: Matrix) -> Result<Vec<Vec<Point>>> {
+    /// The closed outline of a basic shape, as one chain.
+    fn shape(&self, node: Node<'_, '_>, matrix: Matrix) -> Result<Vec<ChainPoints>> {
         let length = |name: &str, default: f64| {
             node.attribute(name)
                 .map(user_length)
@@ -1025,23 +1090,6 @@ impl Reader {
         };
         let flattener = Flattener::new(matrix, self.tolerance);
         match node.tag_name().name() {
-            "path" => flattener.path(node.attribute("d").unwrap_or("")),
-            "polygon" => {
-                let nums = svgtypes::NumberListParser::from(node.attribute("points").unwrap_or(""))
-                    .map(|n| n.map_err(|e| error("SVG_POINTS", format!("{e}"))))
-                    .collect::<Result<Vec<_>>>()?;
-                if nums.len() < 6 || nums.len() % 2 != 0 {
-                    return Err(error(
-                        "SVG_POINTS",
-                        "polygon requires complete XY pairs for at least three points",
-                    ));
-                }
-                Ok(vec![
-                    nums.chunks_exact(2)
-                        .map(|xy| matrix.apply(Point::new(xy[0], xy[1])))
-                        .collect(),
-                ])
-            }
             "circle" | "ellipse" => {
                 let c = Point::new(length("cx", 0.)?, length("cy", 0.)?);
                 let rx = positive(length(
@@ -1070,7 +1118,10 @@ impl Reader {
                     *p = first;
                 }
                 f.points.pop();
-                Ok(vec![f.points])
+                Ok(vec![ChainPoints {
+                    closed: true,
+                    points: f.points,
+                }])
             }
             "rect" => {
                 let x = length("x", 0.)?;
@@ -1085,8 +1136,9 @@ impl Reader {
                 let rx = rx.min(w / 2.);
                 let ry = ry.min(h / 2.);
                 if rx == 0. || ry == 0. {
-                    return Ok(vec![
-                        [
+                    return Ok(vec![ChainPoints {
+                        closed: true,
+                        points: [
                             Point::new(x, y),
                             Point::new(x + w, y),
                             Point::new(x + w, y + h),
@@ -1094,7 +1146,7 @@ impl Reader {
                         ]
                         .map(|p| matrix.apply(p))
                         .to_vec(),
-                    ]);
+                    }]);
                 }
                 let d = format!(
                     "M {} {} H {} A {rx} {ry} 0 0 1 {} {} V {} A {rx} {ry} 0 0 1 {} {} H {} A {rx} {ry} 0 0 1 {} {} V {} A {rx} {ry} 0 0 1 {} {} Z",

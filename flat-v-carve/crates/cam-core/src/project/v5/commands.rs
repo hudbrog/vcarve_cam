@@ -1144,9 +1144,9 @@ pub fn add_operation(
         NewOperationKind::DragKnife => {
             let tool = push_job_tool(&mut candidate, "knife-tool", "Drag knife");
             affected.push(AffectedEntity::JobTool(tool.clone()));
-            for item in &mut candidate.artwork {
-                item.import_settings.mode = crate::svg::ImportMode::Centerline;
-            }
+            // Adding a knife no longer reinterprets the artwork: every item
+            // already publishes its subpaths as centrelines, and the
+            // operation's own chain selection decides what gets cut.
             OperationSettingsV5::DragKnife(super::DragKnifeSettingsV5 {
                 chains: vec![],
                 assignment: super::KnifeAssignmentV5 {

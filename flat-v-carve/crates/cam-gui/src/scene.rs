@@ -345,6 +345,23 @@ fn role_color(role: StageRole) -> [f32; 4] {
     }
 }
 
+/// How one piece of artwork is drawn: the operation's selection colour when it
+/// is selected, and otherwise the colour the drawing itself used. Two shapes
+/// that differ only in colour cut identically, so this is identity, never
+/// geometry — it is what lets a carving and the outline of the part be told
+/// apart while they are being picked.
+fn artwork_color(selected: bool, paint: Option<cam_core::svg::SourcePaint>) -> [f32; 4] {
+    if selected {
+        return [0.25, 0.8, 0.85, 1.];
+    }
+    // The line is an overlay on the stock, so it is drawn opaque whatever the
+    // source alpha was; a faint fill would otherwise be invisible.
+    paint.map_or([0.5, 0.55, 0.6, 1.], |paint| {
+        let [red, green, blue, _] = paint.rgba_unit();
+        [red, green, blue, 1.]
+    })
+}
+
 /// Build the complete scene for `job`; `plan` is the retained execution of the
 /// chosen scope, or `None` for the artwork/stock preview before generation.
 pub fn build(
@@ -411,11 +428,7 @@ pub fn build_with_preset(
     let mut spans = Vec::new();
     for component in &components {
         let start = contour_points.len();
-        let color = if selected.contains(&component.reference) {
-            [0.25, 0.8, 0.85, 1.]
-        } else {
-            [0.5, 0.55, 0.6, 1.]
-        };
+        let color = artwork_color(selected.contains(&component.reference), component.paint);
         for ring in &component.rings {
             for i in 0..ring.len() {
                 for p in [ring[i], ring[(i + 1) % ring.len()]] {
@@ -431,11 +444,7 @@ pub fn build_with_preset(
     }
     for chain in &chains {
         let start = contour_points.len();
-        let color = if selected.contains(&chain.reference) {
-            [0.25, 0.8, 0.85, 1.]
-        } else {
-            [0.5, 0.55, 0.6, 1.]
-        };
+        let color = artwork_color(selected.contains(&chain.reference), chain.paint);
         let segments = chain
             .vertices
             .len()
@@ -789,5 +798,24 @@ mod tests {
                 "{role:?} paths are opaque cutting moves"
             );
         }
+    }
+
+    #[test]
+    fn artwork_is_drawn_in_its_own_colour_until_it_is_selected() {
+        let source = cam_core::svg::SourcePaint {
+            red: 0xc0,
+            green: 0x39,
+            blue: 0x2b,
+            alpha: 255,
+        };
+        let drawn = artwork_color(false, Some(source));
+        assert!((drawn[0] - 192. / 255.).abs() < 1e-6);
+        assert!((drawn[1] - 57. / 255.).abs() < 1e-6);
+        assert!((drawn[2] - 43. / 255.).abs() < 1e-6);
+        assert_eq!(drawn[3], 1., "an overlay line is drawn opaque");
+        // A source with no single colour keeps the neutral artwork colour.
+        assert_eq!(artwork_color(false, None), [0.5, 0.55, 0.6, 1.]);
+        // Selection is the operation's own signal and outranks the drawing.
+        assert_eq!(artwork_color(true, Some(source)), artwork_color(true, None));
     }
 }

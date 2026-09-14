@@ -3,16 +3,10 @@
 //! `<style>` block or is refused with a message that names the element and the
 //! way out.
 use cam_core::geometry::Severity;
-use cam_core::svg::{ImportMode, ImportOptions, NormalizedGeometry, import_svg};
+use cam_core::svg::{ImportOptions, NormalizedGeometry, import_svg};
 
 fn read(raw: &str) -> NormalizedGeometry {
     import_svg(raw, &ImportOptions::default(), None).unwrap()
-}
-fn centerline_options() -> ImportOptions {
-    ImportOptions {
-        mode: ImportMode::Centerline,
-        ..Default::default()
-    }
 }
 fn near(a: f64, b: f64, e: f64) {
     assert!((a - b).abs() <= e, "{a} != {b} +/- {e}");
@@ -35,25 +29,30 @@ const CASCADE: &str = include_str!("../../../fixtures/fieldtest/inkscape-named-c
 const EXTERNAL: &str = include_str!("../../../fixtures/fieldtest/inkscape-external-stylesheet.svg");
 
 #[test]
-fn a_stroke_only_circle_is_refused_with_its_own_name_and_both_remedies() {
-    let error = import_svg(STROKE, &ImportOptions::default(), None).unwrap_err();
-    assert_eq!(error.code, "SVG_STROKE");
-    assert_eq!(error.source_id.as_deref(), Some("circle1"));
-    // The user has to be able to find the element: id and inkscape:label.
-    assert!(error.message.contains("circle1"), "{error}");
-    assert!(error.message.contains("Test circle"), "{error}");
-    // ...and both ways forward are named: convert the stroke, or cut its
-    // middle as a centerline.
-    assert!(error.message.contains("Stroke to Path"), "{error}");
-    assert!(error.message.contains("centerline"), "{error}");
-    // The same file is accepted where a centerline is what is being asked for.
-    let geometry = import_svg(STROKE, &centerline_options(), None).unwrap();
+fn a_stroke_only_circle_imports_as_a_line_and_says_what_it_lost() {
+    // The report's first file: a circle with a stroke and no fill. It is a
+    // drawn line, so it imports as one — and the reading names the element,
+    // the width it discarded and the way to get an outline instead.
+    let geometry = read(STROKE);
     assert_eq!(geometry.chains.len(), 1);
+    assert!(geometry.sources.is_empty(), "a stroke is not an area");
+    let reading = geometry
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "SVG_STROKE_CENTERLINE")
+        .expect("the stroke reading is reported");
+    assert_eq!(reading.source_id.as_deref(), Some("circle1"));
+    assert!(reading.message.contains("circle1"), "{reading}");
+    assert!(reading.message.contains("Test circle"), "{reading}");
+    assert!(reading.message.contains("1 mm"), "{reading}");
+    assert!(reading.message.contains("Stroke to Path"), "{reading}");
     assert!(
-        geometry
+        !geometry
             .diagnostics
             .iter()
-            .any(|d| d.code == "SVG_STROKE_CENTERLINE" && d.source_id.as_deref() == Some("circle1"))
+            .any(|d| matches!(d.severity, Severity::Error)),
+        "{:?}",
+        geometry.diagnostics
     );
 }
 
@@ -131,7 +130,7 @@ fn important_and_class_rules_win_over_inline_and_presentation_attributes() {
         geometry
             .diagnostics
             .iter()
-            .any(|d| d.code == "SVG_NO_FILL" && d.source_id.as_deref() == Some("named-1")),
+            .any(|d| d.code == "SVG_NO_PAINT" && d.source_id.as_deref() == Some("named-1")),
         "{:?}",
         geometry.diagnostics
     );
@@ -171,4 +170,42 @@ fn a_malformed_inline_declaration_still_stops_the_import() {
     let error = import_svg(raw, &ImportOptions::default(), None).unwrap_err();
     assert_eq!(error.code, "SVG_STYLE");
     assert_eq!(error.source_id.as_deref(), Some("box"));
+}
+
+#[test]
+fn a_source_keeps_its_name_layer_and_colour_as_identity() {
+    // Colour and layer never decide geometry: two shapes that differ only in
+    // colour cut identically. They are how the drawing is recognised, though,
+    // so they travel with the geometry all the way to the pickers.
+    let geometry = read(LAYER);
+    let rect = geometry
+        .sources
+        .iter()
+        .find(|source| source.source_id == "plate-1")
+        .expect("the inset plate");
+    assert_eq!(rect.label.as_deref(), Some("Inset plate"));
+    assert_eq!(rect.group.as_deref(), Some("Layer 1"));
+    // The colour is the one the cascade resolved, not the one an attribute
+    // happens to spell: `.plate.inset` beats `.plate` on specificity.
+    assert_eq!(rect.paint.expect("a solid fill").hex(), "#404040");
+    let path = geometry
+        .sources
+        .iter()
+        .find(|source| source.source_id == "ring-1")
+        .expect("the ring");
+    assert_eq!(path.label.as_deref(), Some("Ring"));
+    assert_eq!(path.group.as_deref(), Some("Layer 1"));
+    assert_eq!(path.paint.expect("a solid fill").hex(), "#808080");
+
+    // A stroke with no fill takes its colour from the stroke, and the chain
+    // carries the same identity as the shape it came from.
+    let stroke = read(STROKE);
+    let circle = stroke
+        .chains
+        .iter()
+        .find(|chain| chain.source_id == "circle1")
+        .expect("the stroked circle");
+    assert_eq!(circle.label.as_deref(), Some("Test circle"));
+    assert_eq!(circle.group.as_deref(), Some("Layer 1"));
+    assert_eq!(circle.paint.expect("a solid stroke").hex(), "#000000");
 }

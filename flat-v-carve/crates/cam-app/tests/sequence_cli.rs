@@ -193,7 +193,7 @@ fn knife_job_adds_exports_and_publishes_evidence_through_the_cli() {
         "schema_version": 4,
         "name": "knife-cli",
         "source": {"filename": "cut.svg", "svg": svg},
-        "import": {"mode": "centerline", "geometry_tolerance_mm": 0.001,
+        "import": {"geometry_tolerance_mm": 0.001,
             "placement": {"origin_mm": {"x": 0.0, "y": 0.0}, "rotation_deg": 0.0, "scale": 1.0}},
         "setup": {
             "stock": {"thickness_mm": 3.0, "xy": {"min_x_mm": 0.0, "min_y_mm": 0.0, "width_mm": 40.0, "length_mm": 30.0}},

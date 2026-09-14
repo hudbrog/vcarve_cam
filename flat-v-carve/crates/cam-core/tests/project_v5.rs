@@ -22,7 +22,7 @@ use cam_core::{
         Operation, OperationSettings, ProfileContour, ProfileSettings, RectXY, SetupSettings,
         StockSetup, TabPlacement, TabSettings, ToolCapabilities, ToolGeometry,
     },
-    svg::{ImportMode, ImportOptions, Placement},
+    svg::{ImportOptions, Placement},
 };
 
 /// One filled region plus one stroked centerline: with the centerline import
@@ -114,7 +114,6 @@ fn v4_job(svg: &str, operations: Vec<Operation>) -> CamJob {
             geometry_tolerance_mm: 0.001,
             ticks_per_mm: None,
             placement: placement(),
-            mode: ImportMode::Centerline,
         },
         setup: SetupSettings {
             stock: StockSetup {
@@ -341,7 +340,6 @@ fn single_source_job_migrates_with_placements_selections_and_anchors() {
         placement(),
         "the placement formula survives"
     );
-    assert_eq!(item.import_settings.mode, ImportMode::Centerline);
     assert_eq!(item.import_settings.geometry_tolerance_mm, 0.001);
     let revision = item.source_revision().unwrap();
 

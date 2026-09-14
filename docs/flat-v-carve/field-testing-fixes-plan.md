@@ -22,6 +22,45 @@ cutting mat; **P1** = correctness; **P2** = workflow.
 
 ---
 
+## 0. Compatibility policy (2026-09-14)
+
+The project is pre-release and does not preserve saved jobs. Backward
+compatibility is therefore **not** an input to any decision in this document:
+schema versions, field names, defaults, the import mapping and the meaning of
+an existing field may all change when the change is the better design.
+Compatibility is not an acceptable reason to keep a mode, a default, a field
+or a migration path alive.
+
+What this does *not* license:
+
+* removing the schema-4 planning substrate (`project::CamJob`). It is not a
+  compatibility layer: the planners, the contour catalogue and post all run on
+  it, and `plan_v5` converts to it internally. Collapsing it is a refactor to
+  justify on its own merits, not a deletion.
+* renaming GUI field labels without updating the tests in the same commit
+  (`state.rs::FIELDS` doubles as the probe contract). That is a test contract,
+  not compatibility.
+* fabricating geometry. A stroke stays a centreline rather than an outline
+  because of caps, joins, miters and dashes — that is mathematics, not history.
+
+Decisions that were previously deferred or bent for compatibility are
+re-opened and are being taken now:
+
+* **W4:** `ImportMode` is deleted, not defaulted. The importer publishes every
+  reading the file supports and the operation chooses.
+* **W1:** the exemption that let profile and pocket entries plunge with an
+  undeclared capability is removed; the schema-4 model's explicit
+  `plunge_capable` contract returns everywhere.
+* **W5:** the stock-resize anchor can become a document field with a default
+  chosen on merit rather than "what the fields always did", and the import
+  mapping may be changed if a better one is found. Both are follow-ups recorded
+  here; the landed behaviour is unchanged until they are taken.
+* **Open question 9** (new): the schema-3 `job::Job` document exists only for
+  the `cam` CLI. Re-pointing the CLI at schema 5 would leave exactly one
+  document model behind the GUI.
+
+---
+
 ## 1. Provenance and the reproduction rule
 
 Every finding is treated as a claim about a specific binary, not about `main`.
@@ -94,7 +133,7 @@ Invariants to enforce with tests, not prose:
 | 1.2 | Z reference not prominent | P0/P1 | **Present** | `cam-gui/src/inspector.rs:512-513` |
 | 2.1 | Offset/overhang semantics unclear | P1 | **Present**; parameters exist, semantics undocumented | `cam-core/src/project.rs:512-544`, `face.rs:219-256` |
 | 2.2 | Facing offsets distort the preview | P1 | **Reproduced and fixed** for the artwork/stock scale; camera fit still open | `cam-gui/src/scene.rs::build_with_preset`, `executed_frame` |
-| 3.1 | Inkscape CSS/`<style>` rejected | P1 | **Fixed** (W4): `<style>` cascaded, ignored properties warned, refusals name the element | `svg/style.rs`, `svg/mod.rs` |
+| 3.1 | Inkscape CSS/`<style>` rejected | P1 | **Fixed** (W4): `<style>` cascaded, ignored properties warned, no interpretation mode — every reading is published and the operation picks | `svg/style.rs`, `svg/mod.rs` |
 | 3.2 | SVG Y transform wrong | P1 | **Documented and asserted** (W5): page top → stock max Y, one conversion, golden A4 test | `svg::page_to_artwork`, `technical-design.md` §1/§4 |
 | 3.3 | Stock resize breaks relative position | P1 | **Fixed** (W5): named resize anchor (min corner default), *Stock from artwork bounds*, outside-stock issue naming items | `project/v5/commands.rs`, `cam-gui/src/inspector.rs` |
 | 4.1 | Flat Z cuts thin features too high | P1 | **Root cause identified** | `vcarve/settings.rs:196-205` |
@@ -185,13 +224,13 @@ material is never authorized. The Face panel now carries the cutter's plunge
 capability next to the tool geometry, and its field path routes back there from
 the issue list.
 
-**Follow-up (recorded, not done).** Profile and pocket entries may still plunge
-with an *undeclared* capability: the plan's own planners do not yet require the
-declaration there, and making the check refuse an undeclared capability today
-would stop saved jobs that never declared it. Deciding that is a product call —
-the legacy schema-4 model required `plunge_capable` explicitly and verified it,
-so requiring it again for profile and pocket entries would restore that
-contract at the cost of declaring the value in existing jobs and fixtures.
+**Follow-up (unblocked by the compatibility policy, §0).** Profile and pocket
+entries may still plunge with an *undeclared* capability: the plan's own
+planners do not yet require the declaration there. This used to be a
+compatibility question — requiring it would have stopped jobs that never
+declared the value — and is now simply unfinished work: the schema-4 model
+required `plunge_capable` explicitly and verified it, and requiring it again
+for profile and pocket entries restores that contract.
 
 ### W2 — Z datum safety and machine tool reference (P0/P1, 1.2 + 7.1)
 
@@ -352,7 +391,8 @@ two failing fixtures from §1.1 verbatim.
 **Acceptance.** The report's scenario imports with no XML editing, and each
 ignored property is listed as a warning in the import report.
 
-**Status: landed.** `<style>` elements are parsed once and cascaded with the
+**Status: landed, then superseded by the mode-free importer (§0).** `<style>`
+elements are parsed once and cascaded with the
 inline `style` attribute and the presentation attributes by `!important`,
 specificity (element / `.class` / `#id`) and source order, so the report's
 Stroke-to-Path file imports with no XML editing and its `fill-rule` reaches the
@@ -365,12 +405,38 @@ refused, as is a rule whose selector this subset cannot match
 (`SVG_STYLE_SELECTOR`). External stylesheets stay hard failures
 (`SVG_STYLESHEET`): `<?xml-stylesheet?>` and `@import`, since the importer has
 no file or network access. Every element-scoped diagnostic now names the
-element's `id` and its `inkscape:label`, and the fill-mode stroke refusal names
-both remedies (Stroke to Path, or import as centerlines). Step 4's decision is
-the second branch: the fill-mode refusal stays, with the one-click route named
-in the same message. The fixtures are `flat-v-carve/fixtures/fieldtest/` with
-their own README, and `crates/cam-core/tests/svg_fieldtest.rs` pins each
-acceptance line.
+element's `id` and its `inkscape:label`. The fixtures are
+`flat-v-carve/fixtures/fieldtest/` with their own README, and
+`crates/cam-core/tests/svg_fieldtest.rs` pins each acceptance line.
+
+Step 4 was first landed as "keep rejecting, name both remedies". §0 then
+removed the reason to keep a mode at all, so the refusal is gone: the importer
+has no `ImportMode`, publishes every reading a drawing supports (see §4 of
+`technical-design.md`), and the operation picks the one it needs. A filled
+shape therefore offers its own outline to a knife, a closed stroked outline is
+selectable by a profile, and an element carrying both a fill and a stroke is
+both an area and a line instead of an error telling the user to separate them.
+What stays a refusal is anything the importer cannot describe honestly: text,
+references, masks, clip paths, filters, external stylesheets and the CSS
+`transform` property. What was an error and is now a diagnostic: an open
+subpath carrying a fill (closed for filling, `SVG_OPEN_PATH`), a stroke read as
+a centreline (`SVG_STROKE_CENTERLINE`, naming the width it discarded), a
+too-short subpath (`SVG_DEGENERATE_PATH`), a gradient fill
+(`SVG_PAINT_OPACITY`) and an element that draws nothing (`SVG_NO_PAINT`).
+Progress note: [fieldtest-import-readings-progress.md](fieldtest-import-readings-progress.md).
+
+**Slice B of the same decision (identity).** Because two shapes that differ
+only in colour or layer cut identically, neither is ever used to decide
+geometry — but they are how the drawing is recognised. Each catalogue entry
+now carries the element's `id`, its `inkscape:label`, its nearest named layer
+and its resolved colour; the pickers name rows from them (`Flower`, not
+`carve::0`) with a colour swatch, the viewport draws excluded artwork in the
+colour the drawing used, and each picker offers "select all in <layer>" and one
+swatch per colour. The pickers also say what each reading is for, so "no filled
+components to carve" now reads as "nothing in the drawing is filled: strokes
+and the outlines of filled shapes are knife and profile geometry". One
+consequence left to decide: *Create knife outlines* is now redundant, because a
+filled shape already offers its own outline as a knife path.
 
 ### W5 — Artwork and stock coordinates (P1, 3.2 + 3.3, architecture spine)
 
@@ -414,14 +480,16 @@ page corners) asserts the exact setup bounds in
 example (`y = 80…100`).
 
 Stock resize now carries an explicit anchor, offered in Setup as *Stock resize
-anchor* with help: **Min corner** (the default, exactly what the fields already
-did, so no saved job changes meaning), **Stock centre**, and **Artwork
-bounds**. `commands::anchor_stock_rectangle` owns the geometry and is a pure
+anchor* with help: **Min corner** (the default — chosen because it was the
+existing behaviour at the time, not because saved jobs demanded it; §0 re-opens
+the default), **Stock centre**, and **Artwork bounds**.
+`commands::anchor_stock_rectangle` owns the geometry and is a pure
 function of the requested rectangle, the previous rectangle and the placed
 artwork bounds; an explicit min-corner edit is taken as written, and only the
 stock rectangle moves — artwork placement is never touched by any anchor. The
-anchor is workspace state rather than document state, so the rectangle it
-produces is the saved value. *Stock from artwork bounds* is the artwork
+anchor is workspace state rather than document state today; §0 makes a document
+field with a better default a legitimate follow-up, since no saved job has to
+keep its meaning. *Stock from artwork bounds* is the artwork
 analogue of *Stock XY from SVG page* (all items, zero margins, through the
 existing fit-stock proposal).
 
@@ -596,10 +664,11 @@ artifact under `flat-v-carve/artifacts/`.
 * **Thin-feature semantics.** Changing the depth rule changes material
   removal; it must be a documented, visible setting rather than a silent
   improvement (W6, Q4).
-* **Coordinate-contract changes.** Any change to the import mapping invalidates
-  saved jobs. Prefer documenting and testing the existing mapping (W5) over
-  changing it unless Q4/Q6 says otherwise; if it does change, it needs a
-  project-version migration in `project/v5/migrate.rs`.
+* **Coordinate-contract changes.** No longer a compatibility question (§0):
+  saved jobs need not survive a mapping change, so the mapping can be chosen on
+  merit. The landed mapping (page top → stock maximum Y) is kept because it is
+  the convention a CNC operator expects, not because changing it is expensive;
+  changing it would still churn the fixtures and tests that pin it.
 * **Machine settings growth.** Every new machine field must follow the
   "never fabricate a default" rule in `project/v5/machine.rs` — a missing
   field is reported, not guessed.
@@ -640,3 +709,8 @@ artifact under `flat-v-carve/artifacts/`.
 8. **Plunge capability:** should a non-plunge-capable tool be a hard export
    gate everywhere (profile, facing, pocket entries), or only where the
    planner already has an outside-stock entry?
+9. **The `cam` CLI's document format.** The CLI still reads and writes the
+   schema-3 `job::Job`, which is the last consumer of that model. Should the
+   CLI speak schema 5 (leaving one document model), or is the schema-3 format
+   worth keeping for its own sake? §0 means compatibility is not part of this
+   question.

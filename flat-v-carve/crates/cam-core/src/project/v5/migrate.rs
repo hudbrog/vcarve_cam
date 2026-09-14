@@ -293,7 +293,6 @@ pub fn migrate_v4(job: &CamJob) -> Result<CamJobV5> {
             import_settings: super::SvgInterpretation {
                 geometry_tolerance_mm: job.import.geometry_tolerance_mm,
                 ticks_per_mm: job.import.ticks_per_mm,
-                mode: job.import.mode,
             },
             placement: job.import.placement.clone(),
         }

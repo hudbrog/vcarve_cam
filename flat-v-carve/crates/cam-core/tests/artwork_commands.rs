@@ -32,7 +32,7 @@ use cam_core::{
             references::planning_readiness,
         },
     },
-    svg::{ImportMode, ImportOptions, Placement},
+    svg::{ImportOptions, Placement},
 };
 
 /// One filled region plus one stroked centerline (see project_v5.rs).
@@ -115,7 +115,6 @@ fn migrated_job() -> v5::CamJobV5 {
             geometry_tolerance_mm: 0.001,
             ticks_per_mm: None,
             placement: placement(),
-            mode: ImportMode::Centerline,
         },
         setup: SetupSettings {
             stock: StockSetup {
@@ -266,11 +265,10 @@ fn migrated_job() -> v5::CamJobV5 {
     migrate_v4(&v4(operations)).unwrap()
 }
 
-fn centerline_interpretation() -> v5::SvgInterpretation {
+fn import_settings() -> v5::SvgInterpretation {
     v5::SvgInterpretation {
         geometry_tolerance_mm: 0.001,
         ticks_per_mm: None,
-        mode: ImportMode::Centerline,
     }
 }
 
@@ -278,7 +276,7 @@ fn file_input(filename: &str, svg: &str, origin: Point) -> ArtworkInput {
     ArtworkInput {
         filename: filename.into(),
         svg: svg.into(),
-        interpretation: centerline_interpretation(),
+        interpretation: import_settings(),
         placement: Placement {
             origin_mm: origin,
             scale: 1.,
@@ -348,14 +346,36 @@ fn readiness(job: &v5::CamJobV5) -> std::collections::BTreeMap<String, bool> {
 }
 
 fn pick_of(job: &v5::CamJobV5, item: &str, kind: GeometryRefKind) -> artwork::GeometryPick {
+    pick_of_id_opt(job, item, kind, None)
+}
+
+/// The pick of one *named* subpath. A filled shape contributes a centreline
+/// of its own now, so "the first centreline" no longer names a stable thing.
+fn pick_of_id(
+    job: &v5::CamJobV5,
+    item: &str,
+    kind: GeometryRefKind,
+    local_id: &str,
+) -> artwork::GeometryPick {
+    pick_of_id_opt(job, item, kind, Some(local_id))
+}
+
+fn pick_of_id_opt(
+    job: &v5::CamJobV5,
+    item: &str,
+    kind: GeometryRefKind,
+    local_id: Option<&str>,
+) -> artwork::GeometryPick {
     let catalogue = inspect_artwork(job).unwrap();
     let entry = catalogue
         .item(&ArtworkItemId(item.into()))
         .unwrap()
         .entries
         .iter()
-        .find(|entry| entry.kind == kind)
-        .unwrap();
+        .find(|entry| {
+            entry.kind == kind && local_id.is_none_or(|id| entry.reference.local_geometry_id == id)
+        })
+        .unwrap_or_else(|| panic!("entry {local_id:?}/{kind:?} missing"));
     parse_wire_id(&entry.wire_id).unwrap()
 }
 
@@ -402,7 +422,12 @@ fn reassign_all(job: &v5::CamJobV5, item: &str) -> v5::CamJobV5 {
     set_chain_selection(
         &job,
         "knife-1",
-        &[pick_of(&job, item, GeometryRefKind::Centerline)],
+        &[pick_of_id(
+            &job,
+            item,
+            GeometryRefKind::Centerline,
+            "cut-chain-0",
+        )],
     )
     .unwrap()
     .job
@@ -1173,7 +1198,7 @@ fn aggregate_document_limit_preserves_the_prior_document() {
             filename: "art.svg".into(),
             svg: ARTWORK.into(),
         }),
-        import_settings: centerline_interpretation(),
+        import_settings: import_settings(),
         placement: placement(),
     });
     assert!(

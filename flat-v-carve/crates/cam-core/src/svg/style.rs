@@ -502,13 +502,21 @@ impl Style {
             .collect();
         Ok((s, warnings))
     }
-    pub fn paint_alpha(&self) -> Result<u8> {
+    /// The alpha of the resolved fill, plus whether it had to be assumed.
+    ///
+    /// A gradient or pattern paints a region with a fill server, whose opacity
+    /// cannot be known without rendering it. The region itself is unambiguous,
+    /// so it is imported as opaque and the caller says so.
+    pub fn paint_alpha(&self) -> Result<(u8, bool)> {
         let paint = if self.fill == "currentColor" {
             &self.color
         } else {
             &self.fill
         };
-        paint.parse::<svgtypes::Color>().map(|c|c.alpha).map_err(|_|error("SVG_PAINT","only solid fills/currentColor are supported; gradients and paint servers need conversion"))
+        if paint.starts_with("url(") {
+            return Ok((255, true));
+        }
+        paint.parse::<svgtypes::Color>().map(|c|(c.alpha,false)).map_err(|_|error("SVG_PAINT","only solid fills, currentColor, gradients and patterns are supported; convert other paint servers to plain geometry"))
     }
 }
 fn opacity(value: &str) -> Result<f64> {

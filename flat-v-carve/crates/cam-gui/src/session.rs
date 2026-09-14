@@ -271,16 +271,10 @@ fn artwork_command(
     action: ArtworkCommand,
 ) -> Result<(CamJobV5, Value), String> {
     use v5::commands;
-    let knife_target = if operation_id.is_empty() {
-        crate::knife::settings(job).is_some()
-    } else {
-        crate::knife::settings_in(job, operation_id).is_some()
-    };
-    let interpretation = if knife_target {
-        crate::knife::interpretation()
-    } else {
-        Default::default()
-    };
+    // Artwork has one reading now: every element publishes its subpaths as
+    // centrelines and its filled subpaths as regions, so adding artwork does
+    // not depend on which operation happens to be selected.
+    let interpretation = v5::SvgInterpretation::default();
     let target = if operation_id.is_empty() {
         job.operations
             .first()

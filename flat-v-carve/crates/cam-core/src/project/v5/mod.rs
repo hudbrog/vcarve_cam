@@ -25,7 +25,7 @@ use crate::{
     motion::Position,
     post::{Coolant, LengthCompensation, M6Contract, PathControl},
     preview,
-    svg::{ImportMode, ImportOptions, Placement},
+    svg::{ImportOptions, Placement},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -102,31 +102,31 @@ impl ArtworkItemId {
     }
 }
 
-/// How one artwork item interprets its source. This is `ImportOptions`
-/// split at the collection boundary: interpretation here, placement on the
-/// item. Reassembling both through [`ArtworkItem::import_options`] is the
-/// only way the current SVG importer is called, so a placement can never be
-/// applied twice or stay editable in two places.
+/// The import settings one artwork item carries. This is `ImportOptions` split
+/// at the collection boundary: settings here, placement on the item.
+/// Reassembling both through [`ArtworkItem::import_options`] is the only way
+/// the SVG importer is called, so a placement can never be applied twice or
+/// stay editable in two places.
+///
+/// There is deliberately no interpretation mode: the importer publishes every
+/// reading the drawing supports (each subpath as a centreline, each filled
+/// subpath as a region) and the operation that consumes the artwork picks the
+/// reading it needs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SvgInterpretation {
     pub geometry_tolerance_mm: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticks_per_mm: Option<f64>,
-    /// Centerline mode is omitted while it is the default, mirroring the
-    /// frozen schema-4 spelling of the same setting.
-    #[serde(default, skip_serializing_if = "is_default_mode")]
-    pub mode: ImportMode,
-}
-fn is_default_mode(mode: &ImportMode) -> bool {
-    *mode == ImportMode::Fill
+    // There is no interpretation mode here any more: every element is
+    // published as both a centreline and (when filled) a region, and the
+    // operation that consumes the artwork selects the reading it needs.
 }
 impl Default for SvgInterpretation {
     fn default() -> Self {
         Self {
             geometry_tolerance_mm: 0.001,
             ticks_per_mm: None,
-            mode: ImportMode::Fill,
         }
     }
 }
@@ -180,7 +180,6 @@ impl ArtworkItem {
             geometry_tolerance_mm: self.import_settings.geometry_tolerance_mm,
             ticks_per_mm: self.import_settings.ticks_per_mm,
             placement: self.placement.clone(),
-            mode: self.import_settings.mode,
         }
     }
 

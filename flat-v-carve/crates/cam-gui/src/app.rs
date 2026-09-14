@@ -27,6 +27,8 @@ mod operation_list;
 mod resource_ui;
 #[path = "resume.rs"]
 mod resume;
+#[path = "source_identity.rs"]
+pub(crate) mod source_identity;
 #[path = "workspace_ui.rs"]
 mod workspace_ui;
 

@@ -32,13 +32,57 @@ fn knife_start_uses_qualified_source_anchor_and_core_planning() {
 }
 
 #[test]
-fn filled_regions_require_explicit_centerline_source() {
+fn filled_artwork_offers_its_own_outline_as_a_knife_line() {
+    // A filled shape used to need "Create knife outlines" before a knife could
+    // cut it, because only strokes were read as lines. Its drawn boundary is a
+    // line in its own right, so the knife is offered it directly — no copy, no
+    // conversion step.
     let filled = "<svg xmlns='http://www.w3.org/2000/svg' width='20mm' height='20mm' viewBox='0 0 20 20'><path d='M2 2H10V10H2Z'/></svg>";
-    assert!(
-        knife::import_svg("filled.svg".into(), filled.into())
-            .unwrap_err()
-            .contains("fill=none")
-    );
+    let job = knife::import_svg("filled.svg".into(), filled.into()).unwrap();
+    let chains = knife::chains(&job).unwrap();
+    assert_eq!(chains.len(), 1, "the square's own outline");
+    assert!(chains[0].closed);
+    // The operation starts with nothing selected: an import never assigns
+    // geometry on its own.
+    assert!(knife::settings(&job).unwrap().chains.is_empty());
+    let chosen = knife::select(&job, &[chains[0].reference.clone()]).unwrap();
+    assert_eq!(knife::settings(&chosen).unwrap().chains.len(), 1);
+
+    // Offered is not enough: the line has to cut. Take the configured knife
+    // job, swap in filled artwork and plan the shape's own outline.
+    let mut configured =
+        v5::CamJobV5::from_json(include_str!("../../../fixtures/gui6/knife.job.json")).unwrap();
+    configured.artwork = vec![v5::ArtworkItem {
+        id: v5::ArtworkItemId("artwork-1".into()),
+        name: "square.svg".into(),
+        content: v5::ArtworkContent::Svg(cam_core::job::SourceSnapshot {
+            filename: "square.svg".into(),
+            svg: "<svg xmlns='http://www.w3.org/2000/svg' width='20mm' height='20mm' viewBox='0 0 20 20'><path id='square' d='M4 4H16V16H4Z'/></svg>".into(),
+        }),
+        import_settings: v5::SvgInterpretation::default(),
+        placement: Default::default(),
+    }];
+    configured.operations[0].settings = {
+        let v5::OperationSettingsV5::DragKnife(mut settings) =
+            configured.operations[0].settings.clone()
+        else {
+            unreachable!("the fixture is a knife job")
+        };
+        settings.chains.clear();
+        v5::OperationSettingsV5::DragKnife(settings)
+    };
+    let outline = knife::chains(&configured)
+        .unwrap()
+        .into_iter()
+        .find(|chain| chain.closed)
+        .expect("the filled square's outline");
+    let cut = knife::select(&configured, &[outline.reference]).unwrap();
+    let mut service = Retained::new();
+    let (meta, _) =
+        session::execute(&mut service, Command::generate(cut.to_json().unwrap())).unwrap();
+    assert_eq!(meta.report["gui2"]["checks"]["exportReady"], true);
+    assert!(meta.motions > 0, "the outline must produce cutting motion");
+
     let flower =
         v5::CamJobV5::from_json(include_str!("../../../fixtures/gui6/flower-knife.job.json"))
             .unwrap();

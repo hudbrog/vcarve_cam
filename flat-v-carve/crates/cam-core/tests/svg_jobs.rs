@@ -294,18 +294,13 @@ fn smooth_bezier_commands_match_explicit_controls() {
 fn unsupported_visible_content_has_source_diagnostics() {
     for (body, code) in [
         (r#"<text id="bad">Hello</text>"#, "SVG_TEXT"),
-        (
-            r#"<rect id="bad" width="10" height="10" stroke="red"/>"#,
-            "SVG_STROKE",
-        ),
-        (r#"<path id="bad" d="M0 0L10 0L10 10"/>"#, "SVG_OPEN_PATH"),
         (r##"<use id="bad" href="#object"/>"##, "SVG_REFERENCE"),
         (
             r#"<image id="bad" href="https://example.invalid/a.png"/>"#,
             "SVG_REFERENCE",
         ),
         (
-            r#"<rect id="bad" width="10" height="10" fill="url(#paint)"/>"#,
+            r#"<rect id="bad" width="10" height="10" fill="context-fill"/>"#,
             "SVG_PAINT",
         ),
         (

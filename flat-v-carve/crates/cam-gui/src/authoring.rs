@@ -101,6 +101,12 @@ pub struct Component {
     pub bounds: [f64; 4],
     /// Canonical imported boundaries in setup millimeters, including holes.
     pub rings: Vec<Vec<[f64; 2]>>,
+    /// The element's own `inkscape:label`, when the editor recorded one.
+    pub label: Option<String>,
+    /// The nearest enclosing named layer or group.
+    pub group: Option<String>,
+    /// The colour the source element is drawn in, for identity only.
+    pub paint: Option<cam_core::svg::SourcePaint>,
 }
 pub fn catalogue_components(catalogue: &artwork::CombinedCatalogue) -> Vec<Component> {
     catalogue
@@ -112,6 +118,9 @@ pub fn catalogue_components(catalogue: &artwork::CombinedCatalogue) -> Vec<Compo
                 .filter(|e| e.kind == GeometryRefKind::FilledComponent)
                 .map(|entry| Component {
                     reference: entry.reference.clone(),
+                    label: entry.label.clone(),
+                    group: entry.group.clone(),
+                    paint: entry.paint,
                     bounds: [
                         entry.bounds.min_x_mm,
                         entry.bounds.min_y_mm,

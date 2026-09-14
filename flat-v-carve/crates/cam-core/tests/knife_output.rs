@@ -19,7 +19,7 @@ use cam_core::{
         SpindleDirection, StockSetup, ToolCapabilities, ToolGeometry,
     },
     sequence::{GenerationStatus, OperationPlan, PlanLimits, StageRole, TrustedPlan},
-    svg::{ImportMode, ImportOptions},
+    svg::ImportOptions,
 };
 use sha2::Digest;
 
@@ -152,10 +152,7 @@ fn base_job(operations: Vec<Operation>) -> CamJob {
             filename: "cut.svg".into(),
             svg: SVG.into(),
         }),
-        import: ImportOptions {
-            mode: ImportMode::Centerline,
-            ..Default::default()
-        },
+        import: ImportOptions::default(),
         setup: SetupSettings {
             stock: stock(),
             work_zero: Default::default(),

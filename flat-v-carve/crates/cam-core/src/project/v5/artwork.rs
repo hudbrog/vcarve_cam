@@ -147,6 +147,12 @@ pub struct CatalogueEntry {
     pub kind: GeometryRefKind,
     pub role: ContourRole,
     pub closed: bool,
+    /// The element's own `inkscape:label`, when the editor recorded one.
+    pub label: Option<String>,
+    /// The nearest enclosing named layer or group.
+    pub group: Option<String>,
+    /// The colour the source element is drawn in, for identity only.
+    pub paint: Option<crate::svg::SourcePaint>,
     /// Advisory side (outside for outers, inside for holes, on for chains);
     /// the stored side stays an explicit assignment choice.
     pub suggested_side: ContourSide,
@@ -186,6 +192,9 @@ fn entry(
         kind,
         role: contour.role,
         closed: contour.closed,
+        label: contour.label.clone(),
+        group: contour.group.clone(),
+        paint: contour.paint,
         suggested_side: contour.suggested_side(),
         source_fingerprint: contour.source_fingerprint.clone(),
         bounds: SetupBounds::of_vertices(&contour.vertices)?,

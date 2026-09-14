@@ -334,7 +334,7 @@ impl App {
         let mut next = selected.clone();
         self.operation_group(ui, "Geometry to carve", true, |app, ui| {
             ui.small(format!(
-                "{} of {} filled components selected. Cyan = selected; gray = excluded.",
+                "{} of {} filled components selected. Cyan = selected; source colours = excluded.",
                 selected.len(),
                 components.len()
             ));
@@ -349,8 +349,23 @@ impl App {
                     next.clear();
                 }
             });
+            if idle {
+                let rows: Vec<source_identity::SourceRow<'_, cam_core::project::v5::GeometryRef>> = components
+                    .iter()
+                    .map(|component| source_identity::SourceRow {
+                        value: component.reference.clone(),
+                        label: component.label.as_deref(),
+                        group: component.group.as_deref(),
+                        paint: component.paint,
+                        id: &component.reference.local_geometry_id,
+                    })
+                    .collect();
+                if let Some(chosen) = source_identity::select_all(ui, &rows) {
+                    next = chosen;
+                }
+            }
             if components.is_empty() {
-                ui.label("This artwork has no filled components to carve. Stroked paths are knife geometry, not carving regions.");
+                ui.label("This artwork has no filled components to carve: nothing in the drawing is filled. Stroked paths and the outlines of filled shapes are knife and profile geometry, not carving regions.");
             } else {
                 egui::ScrollArea::vertical()
                     .id_salt("carving-geometry-list")
@@ -368,13 +383,26 @@ impl App {
                             ui.strong(name);
                             for component in local {
                                 let mut on = next.contains(&component.reference);
-                                let response = ui.add_enabled(
-                                    idle,
-                                    egui::Checkbox::new(
-                                        &mut on,
-                                        component.reference.local_geometry_id.clone(),
-                                    ),
-                                );
+                                let row = source_identity::SourceRow {
+                                    value: component.reference.clone(),
+                                    label: component.label.as_deref(),
+                                    group: component.group.as_deref(),
+                                    paint: component.paint,
+                                    id: &component.reference.local_geometry_id,
+                                };
+                                let response = ui
+                                    .horizontal(|ui| {
+                                        let response = ui.add_enabled(
+                                            idle,
+                                            egui::Checkbox::new(
+                                                &mut on,
+                                                source_identity::source_name(&row),
+                                            ),
+                                        );
+                                        source_identity::paint_swatch(ui, row.paint);
+                                        response
+                                    })
+                                    .inner;
                                 observe_control(
                                     &format!(
                                         "Carving component {} / {}",
@@ -643,6 +671,60 @@ mod tests {
             );
         }
         CONTROLS.with(|c| c.borrow().clone())
+    }
+
+    /// Two filled shapes with their own names, in one named layer, drawn in
+    /// two colours: the carving/outline workflow in miniature.
+    fn two_named_shapes() -> App {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="60mm" height="40mm" viewBox="0 0 60 40">
+            <g inkscape:label="Layer 1" inkscape:groupmode="layer">
+              <rect id="carve" inkscape:label="Flower" x="4" y="4" width="20" height="20" fill="#c0392b" />
+              <rect id="outline" inkscape:label="Part outline" x="32" y="4" width="20" height="20" fill="#2980b9" />
+            </g>
+          </svg>"##;
+        let artwork = crate::authoring::import_svg("two.svg".into(), svg.into()).unwrap();
+        let job = crate::operation_authoring::apply(
+            &artwork,
+            crate::operation_authoring::add(crate::operation_authoring::Kind::FlatVcarve, &artwork),
+        )
+        .unwrap();
+        // The picker lists the components the workspace resolved from the last
+        // artwork reply, exactly as `adopt_artwork` fills them in.
+        let catalogue = cam_core::project::v5::artwork::inspect_artwork(&job).unwrap();
+        App {
+            document: Some(Document::new(job)),
+            components: crate::authoring::catalogue_components(&catalogue),
+            inspector_tab: 2,
+            // The geometry-to-carve group.
+            operation_tab: 0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn carving_rows_are_named_and_layered_and_offer_bulk_selection() {
+        let ctx = egui::Context::default();
+        let mut app = two_named_shapes();
+        assert!(
+            !app.components.is_empty(),
+            "the workspace resolves the filled components"
+        );
+        let controls = render(&mut app, &ctx);
+        // Each row is named by the element's own label, and the layer is
+        // offered as a single action.
+        for label in [
+            "Carving component artwork-1 / carve::0",
+            "Carving component artwork-1 / outline::0",
+            "Select all in Layer 1",
+        ] {
+            assert!(
+                controls.contains_key(label),
+                "{label} missing: {controls:?}"
+            );
+        }
+        // Each colour is offered too, and only when more than one is present.
+        assert!(controls.contains_key("Select all #c0392b"), "{controls:?}");
+        assert!(controls.contains_key("Select all #2980b9"), "{controls:?}");
     }
 
     #[test]

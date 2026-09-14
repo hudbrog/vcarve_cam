@@ -89,6 +89,36 @@ impl App {
                 if button(ui, "Clear profile selection", app.active.is_none()).clicked() {
                     rows.clear();
                 }
+                if app.active.is_none() {
+                    let source_rows: Vec<
+                        source_identity::SourceRow<'_, cam_core::project::v5::GeometryRef>,
+                    > = available
+                        .iter()
+                        .map(|contour| source_identity::SourceRow {
+                            value: contour.reference.clone(),
+                            label: contour.label.as_deref(),
+                            group: contour.group.as_deref(),
+                            paint: contour.paint,
+                            id: &contour.reference.local_geometry_id,
+                        })
+                        .collect();
+                    if let Some(chosen) = source_identity::select_all(ui, &source_rows) {
+                        rows = chosen
+                            .into_iter()
+                            .filter_map(|reference| {
+                                let contour = available
+                                    .iter()
+                                    .find(|contour| contour.reference == reference)?;
+                                Some(SelectionRow {
+                                    reference,
+                                    side: contour.suggested_side,
+                                    traversal: (contour.suggested_side == ContourSide::On)
+                                        .then_some(TraversalDirection::Forward),
+                                })
+                            })
+                            .collect();
+                    }
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("profile-geometry-list")
                     .auto_shrink([false, true])
@@ -111,18 +141,31 @@ impl App {
                                     .iter()
                                     .position(|row| row.reference == contour.reference);
                                 let mut on = index.is_some();
-                                let response = ui.add_enabled(
-                                    app.active.is_none(),
-                                    egui::Checkbox::new(
-                                        &mut on,
-                                        format!(
-                                            "{} · {} · {:.1} mm around",
-                                            contour.reference.local_geometry_id,
-                                            contour.role,
-                                            contour.perimeter_mm
-                                        ),
-                                    ),
-                                );
+                                let row = source_identity::SourceRow {
+                                    value: contour.reference.clone(),
+                                    label: contour.label.as_deref(),
+                                    group: contour.group.as_deref(),
+                                    paint: contour.paint,
+                                    id: &contour.reference.local_geometry_id,
+                                };
+                                let response = ui
+                                    .horizontal(|ui| {
+                                        let response = ui.add_enabled(
+                                            app.active.is_none(),
+                                            egui::Checkbox::new(
+                                                &mut on,
+                                                format!(
+                                                    "{} · {} · {:.1} mm around",
+                                                    source_identity::source_name(&row),
+                                                    contour.role,
+                                                    contour.perimeter_mm
+                                                ),
+                                            ),
+                                        );
+                                        source_identity::paint_swatch(ui, row.paint);
+                                        response
+                                    })
+                                    .inner;
                                 observe_control(
                                     &format!(
                                         "Profile contour {} / {}",

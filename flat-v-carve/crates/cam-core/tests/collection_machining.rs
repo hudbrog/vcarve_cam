@@ -28,7 +28,7 @@ use cam_core::{
         GenerationStatus, OPERATION_PLAN_V5_SCHEMA_VERSION, OperationPlan, OperationPlanV5,
         PlanLimits, StageRole,
     },
-    svg::{ImportMode, ImportOptions, Placement},
+    svg::{ImportOptions, Placement},
     toolpath::{MotionEffect, MotionPurpose},
 };
 
@@ -148,7 +148,6 @@ fn centerline_item(id: &str, name: &str, svg: &str, placement: Placement) -> v5:
         import_settings: v5::SvgInterpretation {
             geometry_tolerance_mm: 0.001,
             ticks_per_mm: None,
-            mode: ImportMode::Centerline,
         },
         placement,
     }
@@ -165,14 +164,38 @@ fn identity() -> Placement {
 /// Resolve the current reference of one catalogue entry (selections bind
 /// the item's live revision exactly like the H2 assignment commands).
 fn reference_of(job: &v5::CamJobV5, item: &str, kind: GeometryRefKind) -> GeometryRef {
+    reference_of_id_opt(job, item, kind, None)
+}
+
+/// The reference of one *named* subpath. Two readings per element means "the
+/// first centreline of this item" is no longer a stable way to address the
+/// geometry: a filled shape contributes a centreline of its own, so tests name
+/// the subpath they mean.
+fn reference_of_id(
+    job: &v5::CamJobV5,
+    item: &str,
+    kind: GeometryRefKind,
+    local_id: &str,
+) -> GeometryRef {
+    reference_of_id_opt(job, item, kind, Some(local_id))
+}
+
+fn reference_of_id_opt(
+    job: &v5::CamJobV5,
+    item: &str,
+    kind: GeometryRefKind,
+    local_id: Option<&str>,
+) -> GeometryRef {
     let combined = inspect_artwork(job).unwrap();
     combined
         .item(&ArtworkItemId(item.into()))
         .unwrap()
         .entries
         .iter()
-        .find(|entry| entry.kind == kind)
-        .unwrap()
+        .find(|entry| {
+            entry.kind == kind && local_id.is_none_or(|id| entry.reference.local_geometry_id == id)
+        })
+        .unwrap_or_else(|| panic!("entry {local_id:?}/{kind:?} missing"))
         .reference
         .clone()
 }
@@ -335,7 +358,6 @@ fn migrated_job_plans_identically_through_both_models() {
             geometry_tolerance_mm: 0.001,
             ticks_per_mm: None,
             placement: identity(),
-            mode: ImportMode::Centerline,
         },
         setup: setup(),
         tools: vec![
@@ -379,7 +401,9 @@ fn migrated_job_plans_identically_through_both_models() {
     let bare = v4(vec![]);
     let catalogue = cam_core::contours::ContourCatalogue::build(&bare).unwrap();
     let contour = catalogue.contours[0].id.clone();
-    let chain = catalogue.open_chains[0].id.clone();
+    // The stroked cut line, named: the plate's own outline is a chain too now,
+    // and cutting a closed loop needs a start or a closure overlap besides.
+    let chain = catalogue.chain("cut-chain-0").unwrap().id.clone();
     let v4_milling = |tool_id: &str| MillingAssignment {
         tool_id: tool_id.into(),
         spindle_rpm: Some(10_000.),
@@ -485,7 +509,13 @@ fn migrated_job_plans_identically_through_both_models() {
         v4_plan
             .operation_results
             .iter()
-            .all(|r| r.generation_status == GenerationStatus::Complete)
+            .all(|r| r.generation_status == GenerationStatus::Complete),
+        "{:?}",
+        v4_plan
+            .operation_results
+            .iter()
+            .map(|r| (&r.operation_id, r.generation_status))
+            .collect::<Vec<_>>()
     );
 
     let v5_job = migrate_v4(&source).unwrap();
@@ -652,10 +682,11 @@ fn mixed_profile_and_knife_selections_span_sources() {
             };
             operation
         },
-        knife_operation(vec![reference_of(
+        knife_operation(vec![reference_of_id(
             &job,
             "plate",
             GeometryRefKind::Centerline,
+            "cut-chain-0",
         )]),
     ];
     let plan =

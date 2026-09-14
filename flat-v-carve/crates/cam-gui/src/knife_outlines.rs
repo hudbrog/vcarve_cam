@@ -50,14 +50,12 @@ pub fn create(job: &CamJobV5, id: &ArtworkItemId) -> Result<CamJobV5, String> {
         }
     }
     svg.push_str("</svg>\n");
-    let mut interpretation = source.import_settings.clone();
-    interpretation.mode = cam_core::svg::ImportMode::Centerline;
     let added = commands::add_artwork(
         job,
         vec![commands::ArtworkInput {
             filename: format!("{}-knife-outlines.svg", source.id.0),
             svg,
-            interpretation,
+            interpretation: source.import_settings.clone(),
             placement: source.placement.clone(),
             name: Some(format!("{} · knife outlines", source.name)),
         }],
@@ -99,7 +97,14 @@ mod tests {
         let copy = create(&job, &job.artwork[0].id).unwrap();
         assert_eq!(&copy.artwork[..job.artwork.len()], job.artwork);
         assert_eq!(copy.setup, job.setup);
-        let chains = crate::knife::chains(&copy).unwrap();
+        // The copy's own chains: the original artwork contributes its outlines
+        // as knife lines too now, so the list is scoped to the new item.
+        let copy_item = copy.artwork.last().unwrap().id.clone();
+        let chains: Vec<_> = crate::knife::chains(&copy)
+            .unwrap()
+            .into_iter()
+            .filter(|chain| chain.reference.artwork_item_id == copy_item)
+            .collect();
         assert_eq!(chains.len(), catalogue.contours.len());
         for (chain, contour) in chains.iter().zip(&catalogue.contours) {
             assert!(chain.closed);

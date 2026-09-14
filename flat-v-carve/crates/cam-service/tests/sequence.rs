@@ -844,7 +844,7 @@ fn mixed_fixture_job() -> Value {
 fn open_chains_project_and_knife_planning_round_trips() {
     use cam_core::job::{PlanningTolerances, SourceSnapshot};
     use cam_core::project::*;
-    use cam_core::svg::{ImportMode, ImportOptions};
+    use cam_core::svg::ImportOptions;
 
     let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><path id="cut" fill="none" stroke="#000" stroke-width="0.4" d="M5 5 L25 5"/></svg>"##;
     let job = CamJob {
@@ -854,10 +854,7 @@ fn open_chains_project_and_knife_planning_round_trips() {
             filename: "cut.svg".into(),
             svg: svg.into(),
         }),
-        import: ImportOptions {
-            mode: ImportMode::Centerline,
-            ..Default::default()
-        },
+        import: ImportOptions::default(),
         setup: SetupSettings {
             stock: StockSetup {
                 thickness_mm: Some(3.),
@@ -1010,7 +1007,7 @@ fn open_chains_project_and_knife_planning_round_trips() {
 fn knife_service_job() -> Value {
     use cam_core::job::{PlanningTolerances, SourceSnapshot};
     use cam_core::project::*;
-    use cam_core::svg::{ImportMode, ImportOptions};
+    use cam_core::svg::ImportOptions;
 
     let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><path id="cut" fill="none" stroke="#000" stroke-width="0.4" d="M5 5 L25 5"/></svg>"##;
     let settings = DragKnifeSettings {
@@ -1047,10 +1044,7 @@ fn knife_service_job() -> Value {
             filename: "cut.svg".into(),
             svg: svg.into(),
         }),
-        import: ImportOptions {
-            mode: ImportMode::Centerline,
-            ..Default::default()
-        },
+        import: ImportOptions::default(),
         setup: SetupSettings {
             stock: StockSetup {
                 thickness_mm: Some(3.),

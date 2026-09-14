@@ -153,7 +153,7 @@ The preview compares `A_v` with the unchanged nominal `T`. This is V-bit capabil
 
 ## 4. SVG normalization
 
-The first importer accepts filled closed paths and basic closed shapes from Inkscape, transforms, physical units, `viewBox`, compound paths, and both `evenodd` and `nonzero` fill rules. Preserve stable source IDs for selection and diagnostics.
+The importer accepts paths and basic shapes from Inkscape — closed or open — transforms, physical units, `viewBox`, compound paths, and both `evenodd` and `nonzero` fill rules. Preserve stable source IDs for selection and diagnostics.
 
 Process in this order:
 
@@ -167,7 +167,26 @@ Process in this order:
 
 Flattening tolerance applies after transforms so scaling does not amplify an untracked error. SVG arc commands must also be supported or reported explicitly. Reversed ring orientation alone must not change the selected filled region.
 
-Initially require text and strokes to be converted to paths in Inkscape. Report open paths, external references, masks, clip paths, filters, and unsupported styling. A visible stroke in fill mode is refused with the element named and both remedies stated: convert it with Stroke to Path, or import the artwork as centerlines, which cuts along the middle of the stroke. Ignore non-geometric editor metadata. Do not automatically close a substantial gap or remove a tiny island without a diagnostic.
+**There is no interpretation mode.** One flattening pass turns every element into its subpaths as drawn, and the importer publishes *every reading the drawing supports* from it:
+
+| Reading | Produced when | Consumed by |
+| --- | --- | --- |
+| Region | the element has a visible fill with a subpath of three or more vertices | Flat V-carve (a filled component), and Profile (the boundary of that region) |
+| Centreline | the element has a visible fill or stroke and a subpath of two or more vertices | Drag knife; Profile also cuts closed ones |
+| Closed contour | the subpath is closed and the element has no fill (so no region already describes it) | Profile |
+
+An element can be an area and a line at once; a filled shape therefore offers its own drawn outline to a knife without any conversion step, and a closed outline drawn as a stroked path is offered to a profile. The consumer decides what it can use: a carving needs an area, a profile needs a closed boundary, a knife follows any line. Nothing is doubled — a stroke is never offset into two parallel cuts, and a subpath is never closed unless the drawing closes it or a fill makes it an area.
+
+Text, external references, masks, clip paths, filters and unsupported styling stay hard failures. Everything else is a diagnostic that names the element and lets the file import:
+
+* an element with no visible fill or stroke contributes nothing (`SVG_NO_PAINT`);
+* a stroke is read as a centreline and its width is ignored (`SVG_STROKE_CENTERLINE`, naming the width) — an outline needs Inkscape's Stroke to Path, because caps, joins, miters and dashes make the outline of a stroke a derived shape this importer does not emulate;
+* an open subpath that carries a fill is closed at the implicit edge every renderer uses, and says so (`SVG_OPEN_PATH`);
+* a subpath too short for a reading is dropped from that reading only (`SVG_DEGENERATE_PATH`);
+* a gradient or pattern fill imports as an opaque region (`SVG_PAINT_OPACITY`), because its opacity cannot be known without rendering it;
+* a file that draws nothing at all is refused (`SVG_NO_REGIONS`).
+
+Identity travels with the geometry: each source carries the element's `id`, its `inkscape:label`, the nearest enclosing named layer or group, and the resolved solid colour, and every catalogue entry carries them on to the pickers and the viewport. Colour and layer never decide geometry — two shapes that differ only in colour cut identically — but they are how a person tells the carving from the outline of the part and takes a whole layer in one action.
 
 Supported styling is a documented CSS subset, not the full language: presentation attributes, the inline `style` attribute, and `<style>` rules whose selectors are element names, `.class` or `#id`, cascaded by `!important`, then specificity, then source order. A property outside the subset is ignored with a warning (`SVG_STYLE_IGNORED`) naming the element and the property; a property that changes the geometry drawn (filter, mask, clip-path, markers, `transform-origin`, the CSS `transform` property) is refused rather than dropped, and a rule whose selector this subset cannot match is reported (`SVG_STYLE_SELECTOR`). External stylesheets — `<?xml-stylesheet?>`, `@import` — stay hard failures because the importer has no file or network access. Every element-scoped diagnostic names the element's `id` and, when Inkscape recorded one, its `inkscape:label`.
 

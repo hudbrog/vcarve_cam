@@ -6,6 +6,14 @@ Workstreams: W4 (Inkscape/SVG import compatibility, report §3.1) and W5
 [field-testing-fixes-plan.md](field-testing-fixes-plan.md).\
 Engine 0.7.7.
 
+> **Superseded in part.** The compatibility policy added to the plan as §0
+> (2026-09-14) removed the reason W4 kept an interpretation mode, so the
+> importer now publishes every reading a drawing supports and the operation
+> picks: see
+> [fieldtest-import-readings-progress.md](fieldtest-import-readings-progress.md).
+> Everything in this note about W5 still holds; the W4 paragraphs about a
+> stroke being refused in fill mode describe the state before that slice.
+
 Both workstreams are landed with tests, and the plan document now carries the
 `Status:` paragraphs that record the decisions. Nothing here changes the
 import mapping itself, so no saved job changes meaning and no project version

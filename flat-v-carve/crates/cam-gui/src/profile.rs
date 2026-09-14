@@ -470,6 +470,12 @@ pub struct Contour {
     pub owner: String,
     pub role: String,
     pub suggested_side: ContourSide,
+    /// The element's own `inkscape:label`, when the editor recorded one.
+    pub label: Option<String>,
+    /// The nearest enclosing named layer or group.
+    pub group: Option<String>,
+    /// The colour the source element is drawn in, for identity only.
+    pub paint: Option<cam_core::svg::SourcePaint>,
     pub bounds: [f64; 4],
     pub perimeter_mm: f64,
     pub vertices: Vec<[f64; 2]>,
@@ -500,6 +506,9 @@ pub fn contours(job: &CamJobV5) -> Result<Vec<Contour>, String> {
                     }
                     .into(),
                     suggested_side: entry.suggested_side,
+                    label: entry.label.clone(),
+                    group: entry.group.clone(),
+                    paint: entry.paint,
                     bounds: [
                         entry.bounds.min_x_mm,
                         entry.bounds.min_y_mm,

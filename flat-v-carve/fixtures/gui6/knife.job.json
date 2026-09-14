@@ -33,8 +33,7 @@
         "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40mm\" height=\"30mm\" viewBox=\"0 0 40 30\">\n  <path id=\"corner\" fill=\"none\" stroke=\"black\" d=\"M5 8 L15 8 L15 18\"/>\n  <path id=\"closed\" fill=\"none\" stroke=\"black\" d=\"M23 8 L33 8 L33 18 L23 18 Z\"/>\n</svg>\n"
       },
       "import_settings": {
-        "geometry_tolerance_mm": 0.001,
-        "mode": "centerline"
+        "geometry_tolerance_mm": 0.001
       },
       "placement": {
         "origin_mm": {
@@ -74,7 +73,7 @@
               "kind": "centerline",
               "local_geometry_id": "corner-chain-0",
               "source_revision": {
-                "content_digest": "b575e584ec6f2268bd8393d5680dc7d9ce411720d44dc1cf93f97ecf4289cfbc",
+                "content_digest": "82cbd8cbc6a1714682a728e48c5ceca3c71e64243d36119c8d3a605d5205fe5b",
                 "algorithm_version": 1
               }
             },
@@ -83,7 +82,7 @@
               "kind": "centerline",
               "local_geometry_id": "closed-chain-0",
               "source_revision": {
-                "content_digest": "b575e584ec6f2268bd8393d5680dc7d9ce411720d44dc1cf93f97ecf4289cfbc",
+                "content_digest": "82cbd8cbc6a1714682a728e48c5ceca3c71e64243d36119c8d3a605d5205fe5b",
                 "algorithm_version": 1
               }
             }
@@ -163,4 +162,3 @@
     ]
   }
 }
-

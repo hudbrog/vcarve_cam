@@ -23,7 +23,7 @@ use cam_core::{
     sequence::{
         GenerationStatus, OperationPlan, OperationPlanV5, PlanLimits, StageRole, TrustedPlan,
     },
-    svg::{ImportMode, ImportOptions, Placement},
+    svg::{ImportOptions, Placement},
     toolpath::{MotionEffect, MotionPurpose, PlannedMotion, knife_tip},
 };
 
@@ -88,7 +88,6 @@ fn job_with_offset(svg_body: &str, settings: DragKnifeSettings, blade_offset_mm:
         }),
         import: ImportOptions {
             placement: Placement::default(),
-            mode: ImportMode::Centerline,
             ..Default::default()
         },
         setup: SetupSettings {

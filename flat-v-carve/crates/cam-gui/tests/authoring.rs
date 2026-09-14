@@ -400,10 +400,7 @@ fn starting_a_project_admits_artwork_and_refuses_sources_without_geometry() {
     let error = authoring::import_svg("empty.svg".into(), empty.into()).unwrap_err();
     // The refusal is the core importer's own diagnostic, not a Flat V-carve
     // shaped gate in the workspace.
-    assert!(
-        error.contains("no supported visible filled regions"),
-        "{error}"
-    );
+    assert!(error.contains("no supported visible geometry"), "{error}");
 }
 #[test]
 fn units_placement_selection_and_partial_geometry_round_trip() {

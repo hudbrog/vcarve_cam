@@ -72,6 +72,12 @@ pub struct Contour {
     pub id: String,
     pub source_id: String,
     pub component_id: String,
+    /// The element's own `inkscape:label`, when the editor recorded one.
+    pub label: Option<String>,
+    /// The nearest enclosing named layer or group.
+    pub group: Option<String>,
+    /// The colour the source element is drawn in, for identity only.
+    pub paint: Option<crate::svg::SourcePaint>,
     pub closed: bool,
     pub role: ContourRole,
     /// The enclosing outer contour of a hole, when applicable.
@@ -226,6 +232,9 @@ impl ContourCatalogue {
                 id: outer_id.clone(),
                 source_id: component.source_id.clone(),
                 component_id: component.id.clone(),
+                label: component.label.clone(),
+                group: component.group.clone(),
+                paint: component.paint,
                 closed: true,
                 role: ContourRole::Outer,
                 parent_contour_id: None,
@@ -240,6 +249,9 @@ impl ContourCatalogue {
                     id: contour_id(&component.id, &format!("hole-{index}")),
                     source_id: component.source_id.clone(),
                     component_id: component.id.clone(),
+                    label: component.label.clone(),
+                    group: component.group.clone(),
+                    paint: component.paint,
                     closed: true,
                     role: ContourRole::Hole,
                     parent_contour_id: Some(outer_id.clone()),
@@ -280,6 +292,9 @@ impl ContourCatalogue {
                 id: normalize_id(&chain.id),
                 source_id: chain.source_id.clone(),
                 component_id: chain.source_id.clone(),
+                label: chain.label.clone(),
+                group: chain.group.clone(),
+                paint: chain.paint,
                 closed: chain.closed,
                 role: ContourRole::Open,
                 parent_contour_id: None,
@@ -298,6 +313,47 @@ impl ContourCatalogue {
                 "CONTOUR_ID_COLLISION",
                 "source chain IDs normalize to colliding contour IDs; rename them in the SVG",
             ));
+        }
+        // A closed subpath that carries no fill is still a boundary the user
+        // drew — typically the outline of the finished part. Publish it as a
+        // closed contour as well, so a profile can cut along it exactly as it
+        // would along the outline of a filled region. Elements that do carry a
+        // fill already contribute their rings above, and re-adding them here
+        // would list every filled shape twice.
+        let filled: std::collections::BTreeSet<&str> = geometry
+            .sources
+            .iter()
+            .map(|component| component.source_id.as_str())
+            .collect();
+        for chain in &open_chains {
+            if !chain.closed || filled.contains(chain.source_id.as_str()) {
+                continue;
+            }
+            let vertices = canonical_ring(&chain.vertices);
+            if vertices.len() < 3 {
+                continue;
+            }
+            // The page ring is derived from the canonical order, exactly as
+            // the region-derived contours above do it, so the fingerprint
+            // describes the same boundary the setup vertices do.
+            let page = page_space(&placement);
+            let page_vertices: Vec<Point> = vertices.iter().map(|p| page(*p)).collect();
+            contours.push(Contour {
+                id: format!("{}-outline", chain.id),
+                source_id: chain.source_id.clone(),
+                component_id: chain.component_id.clone(),
+                label: chain.label.clone(),
+                group: chain.group.clone(),
+                paint: chain.paint,
+                closed: true,
+                role: ContourRole::Outer,
+                parent_contour_id: None,
+                perimeter_mm: perimeter_of(&vertices, true),
+                source_fingerprint: fingerprint(&page_vertices),
+                vertices,
+                page_vertices,
+                placement: placement.clone(),
+            });
         }
         Ok(Self {
             contours,

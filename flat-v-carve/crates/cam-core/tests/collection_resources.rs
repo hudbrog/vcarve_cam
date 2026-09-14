@@ -33,7 +33,7 @@ use cam_core::{
         },
     },
     sequence::{OperationPlanV5, PlanLimits, TrustedPlanV5},
-    svg::{ImportMode, Placement},
+    svg::Placement,
     tool_library::{
         CuttingPreset, KnifeCuttingPreset, LIBRARY_SCHEMA_VERSION, LibraryGeometry, LibraryTool,
         ToolLibrary,
@@ -138,7 +138,6 @@ fn base_job() -> CamJobV5 {
             import_settings: v5::SvgInterpretation {
                 geometry_tolerance_mm: 0.001,
                 ticks_per_mm: None,
-                mode: ImportMode::Centerline,
             },
             placement: Placement {
                 origin_mm: Point::new(0., 0.),

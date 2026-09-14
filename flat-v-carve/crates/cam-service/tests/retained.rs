@@ -8,7 +8,7 @@ use cam_core::{
     job::{PlanningTolerances, SourceSnapshot},
     post::sequence::OutputLayout,
     project::v5::{self, ArtworkContent, ArtworkItemId, CamJobV5, GeometryRef, GeometryRefKind},
-    svg::{ImportMode, Placement},
+    svg::Placement,
 };
 use cam_service::{
     collection::{CollectionCommand, CollectionScope, execute},
@@ -30,7 +30,6 @@ fn plate_item() -> v5::ArtworkItem {
         import_settings: v5::SvgInterpretation {
             geometry_tolerance_mm: 0.001,
             ticks_per_mm: None,
-            mode: ImportMode::Centerline,
         },
         placement: Placement {
             origin_mm: Point::new(0., 0.),
@@ -70,6 +69,16 @@ fn tools() -> Vec<v5::JobToolV5> {
 }
 
 fn catalogue_reference(kind: GeometryRefKind) -> GeometryRef {
+    catalogue_reference_id_opt(kind, None)
+}
+
+/// One named subpath: a filled shape contributes a centreline of its own, so
+/// "the first centreline of this item" is no longer a stable address.
+fn catalogue_reference_id(kind: GeometryRefKind, local_id: &str) -> GeometryRef {
+    catalogue_reference_id_opt(kind, Some(local_id))
+}
+
+fn catalogue_reference_id_opt(kind: GeometryRefKind, local_id: Option<&str>) -> GeometryRef {
     let job = base_job(vec![]);
     let combined = v5::artwork::inspect_artwork(&job).unwrap();
     combined
@@ -77,8 +86,10 @@ fn catalogue_reference(kind: GeometryRefKind) -> GeometryRef {
         .unwrap()
         .entries
         .iter()
-        .find(|entry| entry.kind == kind)
-        .unwrap()
+        .find(|entry| {
+            entry.kind == kind && local_id.is_none_or(|id| entry.reference.local_geometry_id == id)
+        })
+        .unwrap_or_else(|| panic!("entry {local_id:?}/{kind:?} missing"))
         .reference
         .clone()
 }
@@ -134,7 +145,12 @@ fn knife_operation() -> v5::OperationV5 {
         name: "Knife".into(),
         enabled: true,
         settings: v5::OperationSettingsV5::DragKnife(v5::DragKnifeSettingsV5 {
-            chains: vec![catalogue_reference(GeometryRefKind::Centerline)],
+            // The stroked cut line, named: the plate's filled outline is a
+            // centreline too now.
+            chains: vec![catalogue_reference_id(
+                GeometryRefKind::Centerline,
+                "cut-chain-0",
+            )],
             assignment: v5::KnifeAssignmentV5 {
                 tool_id: "t3".into(),
                 cutting_feed_mm_min: Some(150.),
