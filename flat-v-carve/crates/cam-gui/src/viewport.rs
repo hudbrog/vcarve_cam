@@ -749,7 +749,9 @@ impl Viewport {
                 {
                     self.overlay_signature = None;
                 }
-                ui.checkbox(&mut self.stock_style.show_paths, "Paths");
+                ui.checkbox(&mut self.stock_style.show_cutting, "Cutting");
+                ui.checkbox(&mut self.stock_style.show_travel, "Travel");
+                ui.checkbox(&mut self.stock_style.show_edges, "Edges");
             });
             self.artwork_toolbar(ui);
             ui.label(
@@ -870,9 +872,11 @@ impl Viewport {
                             table: page_table(scene),
                             hashes: self.page_hashes.clone(),
                             required: self.required_pages.clone(),
-                            // Path display is a draw-range decision: an empty
-                            // span hides the paths without touching the plan.
-                            visible: if self.stock_style.show_paths {
+                            // An empty span hides the paths without touching the
+                            // plan; the two kinds are filtered in the shader.
+                            visible: if self.stock_style.show_cutting
+                                || self.stock_style.show_travel
+                            {
                                 self.visible_motion_range()
                             } else {
                                 0..0
@@ -914,7 +918,7 @@ impl Viewport {
                                 .map(|s| s.offset..s.offset + s.len)
                                 .unwrap_or(0..0),
                             revision: self.overlay_revision,
-                            camera: self.camera(rect).uniform(),
+                            camera: self.scene_camera(rect),
                             lines: self.overlay_lines.clone(),
                             triangles: self.overlay_triangles.clone(),
                             drill: self.drill,
@@ -965,6 +969,7 @@ impl Viewport {
                                 palette_revision,
                                 walls: walls.clone(),
                                 wall_revision,
+                                show_edges: self.stock_style.show_edges,
                                 drill: stock_drill(self.drill),
                             },
                         ));
@@ -1316,7 +1321,9 @@ impl Viewport {
             "xrayOpacity": self.stock_style.xray_opacity,
             "showStock": self.stock_style.show_stock,
             "showArtwork": self.stock_style.show_artwork,
-            "showPaths": self.stock_style.show_paths,
+            "showCutting": self.stock_style.show_cutting,
+            "showTravel": self.stock_style.show_travel,
+            "showEdges": self.stock_style.show_edges,
             "paletteRevision": self.palette_revision,
             "stages": self.stages.len(),
             "wallRevision": self.wall_revision,
@@ -1622,6 +1629,16 @@ impl Viewport {
             uniform.ramp_bottom = span.clamp(1e-6, 1.) as f32;
         }
         (uniform, palette, self.palette_revision)
+    }
+
+    /// The scene pass's camera uniform, with the two path filters in its spare
+    /// slots: cutting moves and travel moves are filtered in the shader by the
+    /// alpha `scene.rs` writes on each motion.
+    fn scene_camera(&self, rect: egui::Rect) -> [f32; 8] {
+        let mut camera = self.camera(rect).uniform();
+        camera[6] = f32::from(self.stock_style.show_cutting);
+        camera[7] = f32::from(self.stock_style.show_travel);
+        camera
     }
 
     /// The walls of the displayed field state, rebuilt when the state or the
@@ -2208,11 +2225,13 @@ mod tests {
 
         // The appearance and the toggles reach the probe the harness reads.
         view.stock_style.appearance = stock_style::Appearance::XRay;
-        view.stock_style.show_paths = false;
+        view.stock_style.show_cutting = false;
         view.stock_style.show_artwork = false;
         let probe = view.display_probe();
         assert_eq!(probe["style"]["appearance"], "xray");
-        assert_eq!(probe["style"]["showPaths"], false);
+        assert_eq!(probe["style"]["showCutting"], false);
+        assert_eq!(probe["style"]["showTravel"], true);
+        assert_eq!(probe["style"]["showEdges"], false);
         assert_eq!(probe["style"]["showArtwork"], false);
         assert_eq!(probe["style"]["surface"], "by_operation");
     }
@@ -2310,7 +2329,7 @@ mod tests {
         view.stock_style.walls = stock_style::WallMode::ByDepth;
         view.stock_style.appearance = stock_style::Appearance::XRay;
         view.stock_style.xray_opacity = 0.25;
-        view.stock_style.show_paths = false;
+        view.stock_style.show_cutting = false;
         view.stock_style
             .overrides
             .insert("op-a".into(), [1., 0., 0.]);
@@ -2322,7 +2341,7 @@ mod tests {
         assert_eq!(restored.stock_style.surface, stock_style::ColorMode::ByTool);
         assert_eq!(restored.stock_style.walls, stock_style::WallMode::ByDepth);
         assert_eq!(restored.stock_style.xray_opacity, 0.25);
-        assert!(!restored.stock_style.show_paths);
+        assert!(!restored.stock_style.show_cutting);
         assert_eq!(
             restored.stock_style.overrides.get("op-a"),
             Some(&[1., 0., 0.])

@@ -46,6 +46,8 @@ pub struct Resources {
     /// The same pass drawn as a translucent x-ray: no depth writes, alpha
     /// blending, so artwork and paths read across the material.
     xray_pipeline: wgpu::RenderPipeline,
+    /// Line-list overlay of the wall creases, for the shaded-with-edges view.
+    wire_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     bind: wgpu::BindGroup,
     camera: wgpu::Buffer,
@@ -102,7 +104,7 @@ impl Resources {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let (pipeline, xray_pipeline, layout, bind) = build_gpu(
+        let (pipeline, xray_pipeline, wire_pipeline, layout, bind) = build_gpu(
             device,
             format,
             &Buffers {
@@ -117,6 +119,7 @@ impl Resources {
         Self {
             pipeline,
             xray_pipeline,
+            wire_pipeline,
             layout,
             bind,
             camera,
@@ -137,7 +140,7 @@ impl Resources {
     }
 
     fn rebuild(&mut self, device: &wgpu::Device) {
-        let (pipeline, xray_pipeline, layout, bind) = build_gpu(
+        let (pipeline, xray_pipeline, wire_pipeline, layout, bind) = build_gpu(
             device,
             self.format,
             &Buffers {
@@ -151,6 +154,7 @@ impl Resources {
         );
         self.pipeline = pipeline;
         self.xray_pipeline = xray_pipeline;
+        self.wire_pipeline = wire_pipeline;
         self.layout = layout;
         self.bind = bind;
     }
@@ -185,6 +189,7 @@ fn build_gpu(
     format: wgpu::TextureFormat,
     buffers: &Buffers<'_>,
 ) -> (
+    wgpu::RenderPipeline,
     wgpu::RenderPipeline,
     wgpu::RenderPipeline,
     wgpu::BindGroupLayout,
@@ -318,7 +323,41 @@ fn build_gpu(
             cache: None,
         })
     };
-    (pipeline(false), pipeline(true), layout, bind)
+    let wire = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("CAM GUI stock edges"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_wire"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_stock"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::LineList,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth24Plus,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview: None,
+        cache: None,
+    });
+    (pipeline(false), pipeline(true), wire, layout, bind)
 }
 
 fn entry_with(
@@ -367,6 +406,8 @@ pub struct Callback {
     pub walls: Arc<Vec<Wall>>,
     /// Changes when the wall set changes.
     pub wall_revision: u64,
+    /// Draw the wall creases as lines over the solid pass.
+    pub show_edges: bool,
     pub drill: Drill,
 }
 
@@ -502,6 +543,12 @@ impl egui_wgpu::CallbackTrait for Callback {
                 0..draw_vertices(self.cols, self.rows, self.walls.len()),
                 0..1,
             );
+            // Edges last, over the solid pass: the crease each wall instance
+            // makes, one line per instance.
+            if self.show_edges && !self.walls.is_empty() {
+                pass.set_pipeline(&r.wire_pipeline);
+                pass.draw(0..wire_vertices(self.walls.len()), 0..1);
+            }
         }
     }
 }
@@ -512,6 +559,11 @@ impl egui_wgpu::CallbackTrait for Callback {
 /// stay in step with it.
 pub fn draw_vertices(cols: usize, rows: usize, walls: usize) -> u32 {
     (cols * rows * 6 + walls * 6 + 6) as u32
+}
+
+/// Vertices the edge overlay draws: one line, two endpoints, per wall instance.
+pub fn wire_vertices(walls: usize) -> u32 {
+    (walls * 2) as u32
 }
 
 #[cfg(test)]
@@ -706,6 +758,11 @@ mod tests {
         }
         // An empty field still draws the stock's bottom face.
         assert_eq!(draw_vertices(0, 0, 0), 6);
+        // The edge overlay is one line per wall, and it is the only pass that
+        // reads `vs_wire`.
+        assert!(shader.contains("@vertex fn vs_wire"), "edge entry point");
+        assert_eq!(wire_vertices(0), 0);
+        assert_eq!(wire_vertices(1_500), 3_000);
         // A fine 200 × 100 mm field at the standard 0.4 mm cells adds one wall
         // quad per wall instance: the edges of a faced plate are four runs, so
         // the walls cost a fraction of a percent of the surface.

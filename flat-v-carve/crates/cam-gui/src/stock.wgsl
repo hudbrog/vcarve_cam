@@ -190,3 +190,25 @@ fn neighbour_depth(col: u32, row: u32, dx: i32, dy: i32) -> f32 {
     return depth_of(packed_at(c,r));
 }
 @fragment fn fs_stock(in: Output) -> @location(0) vec4<f32> {return in.color;}
+
+// Optional edge overlay: one line per wall instance, along the crease its top
+// edge makes, drawn with the line-list pipeline after the solid pass. It is the
+// cheap half of a shaded-with-edges view - the part's creases and outline
+// rather than every triangle.
+@vertex fn vs_wire(@builtin(vertex_index) id: u32) -> Output {
+    let instance = walls[id/2u];
+    let along = instance.start+(f32(id%2u)*instance.length)*select(vec2(0.,1.),vec2(1.,0.),instance.axis == 1u);
+    let p = vec3(grid.origin+along*grid.cell,-instance.top*grid.thickness);
+    let a = camera.yaw;
+    let x = p.x*cos(a)-p.y*sin(a);
+    let y = p.x*sin(a)+p.y*cos(a);
+    let t = camera.tilt;
+    let yy = y*cos(t)+p.z*sin(t);
+    let depth = clamp(0.5-(p.z*cos(t)-y*sin(t))*0.2,0.01,0.99);
+    var out: Output;
+    // Pulled a hair toward the viewer so the line sits on the face it belongs
+    // to instead of fighting it in the depth buffer.
+    out.position = vec4((x+camera.pan_x)*camera.zoom/camera.aspect,(yy+camera.pan_y)*camera.zoom,depth-0.002,1.);
+    out.color = vec4(wall_color(instance.identity,instance.top)*0.3,1.);
+    return out;
+}

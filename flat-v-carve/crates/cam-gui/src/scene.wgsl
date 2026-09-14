@@ -1,6 +1,9 @@
 // Field order mirrors `camera::Camera::uniform` (two trailing pad slots keep
 // the uniform's 16-byte alignment).
-struct Camera { yaw: f32, tilt: f32, zoom: f32, pan_x: f32, pan_y: f32, aspect: f32, _pad0: f32, _pad1: f32 }
+// The two trailing slots carry the path filters: `_pad0` draws cutting moves,
+// `_pad1` travel moves. A vertex whose alpha is below one is a travel move, the
+// convention `scene.rs` writes when it colours the motion stream.
+struct Camera { yaw: f32, tilt: f32, zoom: f32, pan_x: f32, pan_y: f32, aspect: f32, show_cutting: f32, show_travel: f32 }
 @group(0) @binding(0) var<uniform> camera: Camera;
 struct Output { @builtin(position) position: vec4<f32>, @location(0) color: vec4<f32> }
 @vertex fn vs_main(@location(0) p: vec3<f32>, @location(1) color: vec4<f32>) -> Output {
@@ -13,6 +16,13 @@ struct Output { @builtin(position) position: vec4<f32>, @location(0) color: vec4
     var out: Output;
     out.position = vec4((x+camera.pan_x)*camera.zoom/camera.aspect, (yy+camera.pan_y)*camera.zoom, depth, 1.0);
     out.color = color;
+    // Hiding a kind of move collapses its vertices out of the clip volume, so
+    // travel and cutting can be shown independently.
+    let travel = color.a < 0.99;
+    let shown = select(camera.show_cutting, camera.show_travel, travel);
+    if (shown < 0.5) {
+        out.position = vec4(2.,2.,2.,1.);
+    }
     return out;
 }
 @fragment fn fs_main(in: Output) -> @location(0) vec4<f32> { return in.color; }

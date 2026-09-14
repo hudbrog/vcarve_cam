@@ -51,6 +51,12 @@ pub struct Group {
     pub role: &'static str,
 }
 
+/// Colour of a travel move, in the motion stream the viewport draws. Its alpha
+/// is also the display's marker for "this vertex is a travel move": the path
+/// filters in `scene.wgsl` split travel from cutting by it, so a cutting colour
+/// must stay opaque.
+pub const TRAVEL_COLOR: [f32; 4] = [0.3, 0.36, 0.44, 0.45];
+
 /// Path labels stay exactly as GUI2–GUI6 published them for a single
 /// operation; a sequence qualifies a duplicated role word with the operation
 /// name instead of inventing a second vocabulary.
@@ -594,14 +600,14 @@ pub fn build_with_preset(
     for (index, motion) in plan.motions.iter().enumerate() {
         let color = match stage_of(index) {
             Some(stage) => role_color(stage.role),
-            None => [0.3, 0.36, 0.44, 0.45],
+            None => TRAVEL_COLOR,
         };
         let color = if motion.effect == cam_core::toolpath::MotionEffect::MillingSweep
             || motion.effect == cam_core::toolpath::MotionEffect::KnifeTrace
         {
             color
         } else {
-            [0.3, 0.36, 0.44, 0.45]
+            TRAVEL_COLOR
         };
         vertices.push(vertex(
             [motion.start.x, motion.start.y, motion.start.z],
@@ -756,4 +762,32 @@ pub fn build_with_preset(
             motions,
         }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `scene.wgsl` tells travel from cutting moves by alpha: a travel vertex is
+    /// translucent, a cutting one opaque. The path filters depend on that
+    /// convention, so it is pinned here rather than left implicit in a colour.
+    #[test]
+    fn travel_moves_are_the_only_translucent_path_vertices() {
+        let travel_alpha = TRAVEL_COLOR[3];
+        assert!(travel_alpha < 1., "a travel vertex is translucent");
+        for role in [
+            StageRole::Face,
+            StageRole::VcarveRough,
+            StageRole::VcarveFinish,
+            StageRole::ProfileRough,
+            StageRole::ProfileFinish,
+            StageRole::Knife,
+        ] {
+            assert_eq!(
+                role_color(role)[3],
+                1.,
+                "{role:?} paths are opaque cutting moves"
+            );
+        }
+    }
 }
