@@ -335,7 +335,9 @@ fn unsupported_visible_content_has_source_diagnostics() {
 fn xml_stylesheets_units_and_ambiguous_dimensions_are_rejected() {
     for (raw,code) in [
         ("<!DOCTYPE svg [<!ENTITY x 'bad'>]><svg>&x;</svg>".into(),"SVG_XML"),
-        (svg("<style>rect {display:none}</style><rect width='10' height='10'/>"),"SVG_STYLESHEET"),
+        // A `<style>` block is supported since W4; an external stylesheet is
+        // still refused because the importer has no file or network access.
+        (svg("<style>@import url('theme.css');</style><rect width='10' height='10'/>"),"SVG_STYLESHEET"),
         ("<?xml-stylesheet href='foo.css'?><svg width='10mm' height='10mm'/>".into(),"SVG_STYLESHEET"),
         ("<svg viewBox='0 0 10 10'/>".into(),"SVG_PAGE_SIZE"),
         ("<svg width='100%' height='100%'/>".into(),"SVG_LENGTH_UNIT"),

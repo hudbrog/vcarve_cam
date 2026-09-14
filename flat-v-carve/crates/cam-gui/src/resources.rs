@@ -3,7 +3,7 @@
 use cam_core::{
     post::sequence::SequenceProfile,
     project::v5::{
-        self, CamJobV5,
+        self, CamJobV5, commands,
         resources::{self as core, AssignmentRole},
     },
     tool_library::{CuttingPreset, LibraryGeometry, LibraryTool, ToolLibrary},
@@ -168,6 +168,10 @@ pub enum ResourceCommand {
     StockPage {
         item: v5::ArtworkItemId,
     },
+    /// Fit the stock rectangle to the placed bounds of every artwork item,
+    /// with no margins. The analogue of page capture for the drawn geometry:
+    /// it rescales nothing and moves no artwork.
+    StockArtworkBounds,
     SelectLibraryTool {
         catalog: Catalog,
         tool: String,
@@ -216,7 +220,7 @@ impl ResourceCommand {
     pub fn clear_fields(&self, job: &CamJobV5) -> Vec<usize> {
         // Page capture rewrites the stock rectangle, which belongs to the job
         // rather than to any operation: it clears with an empty operation list.
-        if matches!(self, Self::StockPage { .. }) {
+        if matches!(self, Self::StockPage { .. } | Self::StockArtworkBounds) {
             return vec![40, 41, 42, 43];
         }
         if job.operations.is_empty() {
@@ -369,6 +373,24 @@ impl ResourceCommand {
                     .ok_or("Artwork no longer exists")?;
                 let mut candidate = job.clone();
                 candidate.setup.stock.xy = Some(crate::authoring::svg_page_stock(source)?);
+                candidate.validate_structure().map_err(|e| e.to_string())?;
+                return Ok(candidate);
+            }
+            Self::StockArtworkBounds => {
+                let ids: Vec<_> = job.artwork.iter().map(|item| item.id.clone()).collect();
+                if ids.is_empty() {
+                    return Err("Add artwork before fitting the stock to it".into());
+                }
+                let proposal = commands::propose_fit_stock(
+                    job,
+                    &commands::FitStockRequest {
+                        item_ids: ids,
+                        margins: commands::FitStockMargins::default(),
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+                let mut candidate = job.clone();
+                candidate.setup.stock.xy = Some(proposal.rect);
                 candidate.validate_structure().map_err(|e| e.to_string())?;
                 return Ok(candidate);
             }

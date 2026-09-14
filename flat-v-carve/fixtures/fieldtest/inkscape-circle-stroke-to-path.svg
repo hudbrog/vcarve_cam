@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Field-test fixture B: the same circle after Inkscape's Stroke to Path,
+     saved with a CSS <style> block and a class selector. This is the file the
+     report could not import at all. -->
+<svg
+   width="210mm"
+   height="297mm"
+   viewBox="0 0 210 297"
+   version="1.1"
+   id="svg1"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs id="defs1">
+    <style id="style1">.cls-1{fill:#000000;fill-rule:evenodd;stroke:none}</style>
+  </defs>
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:document-units="mm" />
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1">
+    <path
+       class="cls-1"
+       id="path1"
+       inkscape:label="Test circle"
+       d="M 125.5,148.5 A 20.5,20.5 0 1 1 84.5,148.5 A 20.5,20.5 0 1 1 125.5,148.5 Z M 124.5,148.5 A 19.5,19.5 0 1 0 85.5,148.5 A 19.5,19.5 0 1 0 124.5,148.5 Z" />
+  </g>
+</svg>

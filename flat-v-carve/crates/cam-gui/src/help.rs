@@ -178,6 +178,9 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
         "View controls" => {
             "Drag with the left button to orbit the view; drag with the middle button, or hold Shift and drag, to pan. The wheel (or a pinch and ctrl-wheel gesture) zooms toward the pointer. Top and Isometric set two familiar views; Front, Back, Left and Right are true elevations, and in those the stock is drawn as a section and a click moves the section along the axis you are facing. View sets the elevation numerically, Fit re-frames the scene without changing the elevation. The camera is display only: it never changes the job, the machining or the exported program."
         }
+        "Stock resize anchor" => {
+            "Which point of the stock rectangle stays put when you change its width or length. Min corner is what this editor has always done: the lower-left corner keeps its setup coordinates. Stock centre keeps the rectangle's own centre. Artwork bounds keeps the placed artwork centred in the stock. No anchor ever moves the artwork: only the stock rectangle moves, and geometry that ends up outside it is reported with the item names."
+        }
         _ if label.starts_with("Configuration T ") => FIELD_HELP[32],
         _ if label.starts_with("Configuration H ") => FIELD_HELP[33],
         _ => return None,

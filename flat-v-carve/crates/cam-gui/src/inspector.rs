@@ -144,7 +144,15 @@ impl App {
                     self.remember();
                     self.edit_group = Some(field);
                 }
-                let result = self.document.as_mut().unwrap().edit(field, text.clone());
+                let stock = crate::app::StockEditContext {
+                    anchor: self.stock_anchor,
+                    artwork: self.artwork_bounds(),
+                };
+                let result = self
+                    .document
+                    .as_mut()
+                    .unwrap()
+                    .edit_with(field, text.clone(), stock);
                 self.changed(ctx);
                 self.status = match result {
                     Ok(()) => "Setting changed; generate to update simulation.".into(),
@@ -417,7 +425,7 @@ impl App {
                 }
             });
             ui.label(format!("{} · {}", item.name, item.id.0));
-            ui.small("SVG units become mm. Origin is in the SVG page: placement = scale × rotate(page − origin).");
+            ui.small("SVG units become mm. The page is flipped once about its physical height, so the page's top edge is the stock's maximum Y and the page's bottom-left corner is the setup origin; after that, placement = scale × rotate(artwork − origin).");
             self.numbers(ui, ctx, &[26, 27, 28, 29]);
         } else {
             ui.label("Add an SVG to this project. Unresolved selections can be repaired after adding artwork or with Undo.");
@@ -429,6 +437,52 @@ impl App {
             self.operation_tab = 0;
             self.navigate(2);
         }
+    }
+    /// Name every artwork item that now reaches past the stock rectangle. The
+    /// fix is always the stock or the item's placement, chosen by the user:
+    /// nothing here moves anything.
+    fn stock_outside_notice(&mut self, ui: &mut egui::Ui) {
+        let Some(stock) = self.document.as_ref().and_then(|d| d.job.setup.stock.xy) else {
+            return;
+        };
+        let outside: Vec<String> = self
+            .placed_artwork_bounds()
+            .into_iter()
+            .filter_map(|(name, bounds)| {
+                cam_core::project::v5::commands::stock_overhang(bounds, stock)
+                    .map(|(side, overhang)| format!("{name} ({overhang:.2} mm past {side})"))
+            })
+            .collect();
+        if outside.is_empty() {
+            return;
+        }
+        let r = ui.colored_label(
+            Color32::from_rgb(176, 42, 35),
+            format!(
+                "Outside the stock: {}. Nothing was moved; use Stock from artwork bounds, or a resize anchor that re-centres the stock.",
+                outside.join(", ")
+            ),
+        );
+        observe_control("Stock artwork outside", r.rect);
+    }
+    /// The W5 resize anchor: which point of the stock rectangle a width or
+    /// length edit keeps still. Artwork never moves, whatever is chosen here.
+    fn stock_anchor_controls(&mut self, ui: &mut egui::Ui) {
+        use cam_core::project::v5::commands::StockAnchor;
+        help::label(ui, "Stock resize anchor");
+        ui.small(
+            "Which point of the stock rectangle stays put when width or length changes. Artwork is never moved.",
+        );
+        ui.horizontal_wrapped(|ui| {
+            for anchor in StockAnchor::ALL {
+                let r = ui.selectable_label(self.stock_anchor == anchor, anchor.label());
+                observe_control(&format!("Stock anchor {}", anchor.label()), r.rect);
+                if r.clicked() {
+                    self.stock_anchor = anchor;
+                }
+            }
+        });
+        ui.small(self.stock_anchor.help());
     }
     fn setup_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Physical stock");
@@ -453,6 +507,19 @@ impl App {
                 .clone();
             self.resource_command(crate::resources::ResourceCommand::StockPage { item }, ctx);
         }
+        let has_artwork = self
+            .document
+            .as_ref()
+            .is_some_and(|d| !d.job.artwork.is_empty());
+        if button(
+            ui,
+            "Stock from artwork bounds",
+            self.active.is_none() && has_artwork,
+        )
+        .clicked()
+        {
+            self.resource_command(crate::resources::ResourceCommand::StockArtworkBounds, ctx);
+        }
         if let Some(item) = self.document.as_ref().and_then(|d| d.active_artwork()) {
             ui.small(format!(
                 "Page source: {} (includes placement and scale)",
@@ -460,6 +527,8 @@ impl App {
             ));
         }
         self.numbers(ui, ctx, &[6, 40, 41, 42, 43]);
+        self.stock_outside_notice(ui);
+        self.stock_anchor_controls(ui);
         if button(ui, "Unset stock XY", true).clicked() {
             self.edit_job(ctx, &[40, 41, 42, 43], |job| {
                 job.setup.stock.xy = None;
@@ -896,5 +965,170 @@ mod tests {
             assert!(present, "{label} missing from the setup tab");
         }
         assert!(help::explanation("Z datum").is_some_and(|s| s.len() > 30));
+    }
+
+    /// Every control label the last few rendered frames published.
+    fn controls(app: &mut App, ctx: &egui::Context) -> std::collections::BTreeSet<String> {
+        for _ in 0..3 {
+            CONTROLS.with(|c| c.borrow_mut().clear());
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 900.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| app.inspector(ctx),
+            );
+        }
+        CONTROLS.with(|c| c.borrow().keys().cloned().collect())
+    }
+
+    /// A job with one imported artwork item and its page-sized stock.
+    fn artwork_job() -> CamJobV5 {
+        crate::authoring::import_svg(
+            "letters.svg".into(),
+            include_str!("../../../fixtures/gui3/lettering.svg").into(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_setup_tab_names_the_resize_anchor_and_offers_the_stock_fit() {
+        // W5 finding 3.3: a stock resize needs a stated anchor, and the fix
+        // for geometry left outside it has to be next to the stock numbers.
+        let mut app = App {
+            document: Some(Document::new(artwork_job())),
+            inspector_tab: 1,
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let labels = controls(&mut app, &ctx);
+        for label in [
+            "Stock resize anchor",
+            "Stock anchor Min corner",
+            "Stock anchor Stock centre",
+            "Stock anchor Artwork bounds",
+            "Stock from artwork bounds",
+        ] {
+            assert!(
+                labels.contains(label) || labels.contains(&format!("Help {label}")),
+                "{label} missing from the setup tab: {labels:?}"
+            );
+        }
+        assert!(help::explanation("Stock resize anchor").is_some_and(|s| s.len() > 30));
+        // Artwork inside the stock says nothing.
+        assert!(!labels.contains("Stock artwork outside"));
+    }
+
+    #[test]
+    fn artwork_left_outside_a_shrunk_stock_is_named_next_to_the_numbers() {
+        let mut app = App {
+            document: Some(Document::new(artwork_job())),
+            inspector_tab: 1,
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        // Shrink the stock to a tenth of its width and length, min-corner
+        // anchored: the artwork no longer fits, and nothing moves it.
+        let document = app.document.as_mut().unwrap();
+        document
+            .edit(42, "20".into())
+            .expect("a size edit is legal");
+        document
+            .edit(43, "10".into())
+            .expect("a size edit is legal");
+        // The workspace resolves the artwork bounds from the last artwork
+        // reply; this test supplies the same bounds the importer measured.
+        let bounds = crate::authoring::catalogue_components(
+            &cam_core::project::v5::inspect_artwork(&document.job).unwrap(),
+        );
+        assert!(!bounds.is_empty());
+        app.components = bounds;
+        let labels = controls(&mut app, &ctx);
+        assert!(
+            labels.contains("Stock artwork outside"),
+            "the outside-stock notice must be visible: {labels:?}"
+        );
+        // The notice is a report: the artwork is exactly where it was.
+        let placement = app.document.as_ref().unwrap().job.artwork[0]
+            .placement
+            .clone();
+        assert_eq!(placement, artwork_job().artwork[0].placement);
+    }
+
+    #[test]
+    fn a_stock_size_edit_keeps_the_chosen_anchor_and_never_the_artwork() {
+        use cam_core::project::v5::commands::StockAnchor;
+        let job = artwork_job();
+        let page = job.setup.stock.xy.unwrap();
+        let placement = job.artwork[0].placement.clone();
+        // The default is today's behaviour: the minimum corner never moves.
+        let mut default = Document::new(job.clone());
+        default.edit(42, "50".into()).unwrap();
+        let rect = default.job.setup.stock.xy.unwrap();
+        assert_eq!(
+            (rect.min_x_mm, rect.min_y_mm),
+            (page.min_x_mm, page.min_y_mm)
+        );
+        assert_eq!(rect.width_mm, 50.);
+        // Centre: the rectangle's own centre stays, so the corner follows.
+        let mut centred = Document::new(job.clone());
+        centred
+            .edit_with(
+                42,
+                "50".into(),
+                StockEditContext {
+                    anchor: StockAnchor::Centre,
+                    artwork: None,
+                },
+            )
+            .unwrap();
+        let rect = centred.job.setup.stock.xy.unwrap();
+        assert!((rect.min_x_mm - (page.min_x_mm + (page.width_mm - 50.) / 2.)).abs() < 1e-9);
+        // Artwork bounds: the placed artwork stays centred in the stock.
+        let artwork = cam_core::project::v5::SetupBounds {
+            min_x_mm: 10.,
+            min_y_mm: 20.,
+            max_x_mm: 30.,
+            max_y_mm: 40.,
+        };
+        let mut anchored = Document::new(job.clone());
+        anchored
+            .edit_with(
+                43,
+                "50".into(),
+                StockEditContext {
+                    anchor: StockAnchor::ArtworkBounds,
+                    artwork: Some(artwork),
+                },
+            )
+            .unwrap();
+        let rect = anchored.job.setup.stock.xy.unwrap();
+        assert!((rect.min_y_mm - (30. - 25.)).abs() < 1e-9);
+        // An explicit corner edit is taken as written, whatever the anchor is.
+        let mut corner = Document::new(job.clone());
+        corner
+            .edit_with(
+                40,
+                "5".into(),
+                StockEditContext {
+                    anchor: StockAnchor::ArtworkBounds,
+                    artwork: Some(artwork),
+                },
+            )
+            .unwrap();
+        assert_eq!(corner.job.setup.stock.xy.unwrap().min_x_mm, 5.);
+        // Every anchor moved the rectangle and left the artwork alone.
+        for document in [&default, &centred, &anchored, &corner] {
+            assert_eq!(document.job.artwork[0].placement, placement);
+        }
+        // The field being typed into keeps its own spelling, so a partially
+        // typed number is not rewritten under the cursor.
+        let mut typed = Document::new(job.clone());
+        typed.edit(42, "70.50".into()).unwrap();
+        assert_eq!(typed.text(42), "70.50");
+        assert_eq!(typed.job.setup.stock.xy.unwrap().width_mm, 70.5);
     }
 }

@@ -117,6 +117,47 @@ pub fn operation_selection(
 /// Stable field IDs use the same recovery keys as the qualified input binder.
 pub const LIVE_FIELDS: [usize; 10] = [0, 1, 2, 3, 4, 5, 6, 8, 9, 10];
 
+/// The workspace's stock-editing context. It is deliberately outside the
+/// document: the rectangle a resize produces is what gets saved, so a job
+/// edited by an older build still means exactly the same thing.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StockEditContext {
+    /// Which point of the rectangle a width or length edit keeps still.
+    pub anchor: cam_core::project::v5::commands::StockAnchor,
+    /// Placed artwork bounds, when the workspace has resolved them.
+    pub artwork: Option<cam_core::project::v5::SetupBounds>,
+}
+
+/// Resolve a stock-rectangle edit against the chosen anchor. Only a size edit
+/// (width or length, fields 42/43) consults it — moving the minimum corner is
+/// already an explicit statement about where the stock is. Returns the values
+/// to commit and the corner the fields should then show. The placement of one
+/// artwork item is never part of this: only the stock rectangle moves.
+pub fn anchored_stock_values(
+    values: &[f64],
+    previous: Option<cam_core::project::RectXY>,
+    field: usize,
+    anchor: cam_core::project::v5::commands::StockAnchor,
+    artwork: Option<cam_core::project::v5::SetupBounds>,
+) -> (Vec<f64>, [f64; 4]) {
+    use cam_core::project::v5::commands::{StockAnchor, anchor_stock_rectangle};
+    let requested = cam_core::project::RectXY {
+        min_x_mm: values[0],
+        min_y_mm: values[1],
+        width_mm: values[2],
+        length_mm: values[3],
+    };
+    let rect = if matches!(field, 42 | 43) && anchor != StockAnchor::MinCorner {
+        anchor_stock_rectangle(requested, previous, anchor, artwork)
+    } else {
+        requested
+    };
+    (
+        vec![rect.min_x_mm, rect.min_y_mm, rect.width_mm, rect.length_mm],
+        [rect.min_x_mm, rect.min_y_mm, rect.width_mm, rect.length_mm],
+    )
+}
+
 fn kind_name(kind: OperationKind) -> &'static str {
     match kind {
         OperationKind::FlatVcarve => "flat_vcarve",
@@ -327,6 +368,17 @@ impl Document {
             })
     }
     pub fn edit(&mut self, field: usize, text: String) -> Result<(), String> {
+        self.edit_with(field, text, StockEditContext::default())
+    }
+    /// One field edit with the workspace's stock context: which point of the
+    /// stock rectangle a size edit keeps still, and the placed artwork bounds
+    /// the artwork anchor is measured against.
+    pub fn edit_with(
+        &mut self,
+        field: usize,
+        text: String,
+        stock: StockEditContext,
+    ) -> Result<(), String> {
         let group = crate::authoring::group(field);
         let face_group = crate::face::group(field);
         let group = if group.is_empty() { face_group } else { group };
@@ -370,6 +422,48 @@ impl Document {
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             let mut candidate = self.job.clone();
+            if matches!(field, 40..=43) {
+                // A width or length edit is also a decision about where the
+                // rectangle sits. The anchor moves the stock rectangle only;
+                // an explicit min-corner edit is taken as written.
+                let (values, corner) = anchored_stock_values(
+                    &values,
+                    self.job.setup.stock.xy,
+                    field,
+                    stock.anchor,
+                    stock.artwork,
+                );
+                crate::authoring::set_group_in(
+                    &mut candidate,
+                    &self.raw.operation,
+                    field,
+                    &values,
+                )?;
+                candidate.validate_structure().map_err(|e| e.to_string())?;
+                self.job = candidate;
+                // The fields carry the corner the anchor resolved, so the next
+                // size edit starts from the rectangle the job actually has.
+                // Only fields the user is not typing into are rewritten, and
+                // only when the number actually changed: the field being
+                // edited keeps its own text, and a value that already parses
+                // to the resolved number keeps its spelling.
+                for member in 40..=43 {
+                    if member == field {
+                        continue;
+                    }
+                    let key = self.raw.key(member);
+                    let resolved = corner[member - 40];
+                    let current = self
+                        .raw
+                        .raw
+                        .get(&key)
+                        .and_then(|text| Draft::parse(text).ok().flatten());
+                    if current.is_none_or(|value| (value - resolved).abs() > 1e-9) {
+                        self.raw.raw.insert(key, resolved.to_string());
+                    }
+                }
+                return Ok(());
+            }
             crate::authoring::set_group_in(&mut candidate, &self.raw.operation, field, &values)?;
             candidate.validate_structure().map_err(|e| e.to_string())?;
             self.job = candidate;
@@ -525,6 +619,11 @@ pub struct App {
     resource_request: Option<(u64, ResourceIntent)>,
     resource_import_stamp: Option<String>,
     profile_io_revision: Option<u64>,
+    /// Which point of the stock rectangle a width/length edit keeps still
+    /// (W5). Workspace state, not document state: the rectangle it produces
+    /// is the saved value, so a job saved by an older build still means the
+    /// same thing.
+    pub stock_anchor: cam_core::project::v5::commands::StockAnchor,
 }
 #[derive(Clone, Copy)]
 enum ResourceIntent {
@@ -598,6 +697,7 @@ impl Default for App {
             resource_request: None,
             resource_import_stamp: None,
             profile_io_revision: None,
+            stock_anchor: Default::default(),
         }
     }
 }
@@ -616,6 +716,63 @@ impl App {
     fn id(&mut self) -> u64 {
         self.next += 1;
         self.next
+    }
+    /// The placed artwork bounds the workspace already holds: the resolved
+    /// component bounds from the last artwork reply, unioned. `None` until a
+    /// reply arrives, and when nothing placed.
+    pub fn artwork_bounds(&self) -> Option<cam_core::project::v5::SetupBounds> {
+        self.components.iter().fold(None, |bounds, component| {
+            let [min_x_mm, min_y_mm, max_x_mm, max_y_mm] = component.bounds;
+            let next = cam_core::project::v5::SetupBounds {
+                min_x_mm,
+                min_y_mm,
+                max_x_mm,
+                max_y_mm,
+            };
+            Some(match bounds {
+                Some(bounds) => bounds.union(next),
+                None => next,
+            })
+        })
+    }
+    /// Placed bounds per artwork item, in document order, named as the user
+    /// sees them. Items that place nothing are left out.
+    pub fn placed_artwork_bounds(&self) -> Vec<(String, cam_core::project::v5::SetupBounds)> {
+        let Some(document) = &self.document else {
+            return vec![];
+        };
+        let mut items: Vec<(String, Option<cam_core::project::v5::SetupBounds>)> = document
+            .job
+            .artwork
+            .iter()
+            .map(|item| (item.name.clone(), None))
+            .collect();
+        for component in &self.components {
+            let id = &component.reference.artwork_item_id.0;
+            let Some(index) = document
+                .job
+                .artwork
+                .iter()
+                .position(|item| &item.id.0 == id)
+            else {
+                continue;
+            };
+            let [min_x_mm, min_y_mm, max_x_mm, max_y_mm] = component.bounds;
+            let next = cam_core::project::v5::SetupBounds {
+                min_x_mm,
+                min_y_mm,
+                max_x_mm,
+                max_y_mm,
+            };
+            items[index].1 = Some(match items[index].1 {
+                Some(bounds) => bounds.union(next),
+                None => next,
+            });
+        }
+        items
+            .into_iter()
+            .filter_map(|(name, bounds)| bounds.map(|bounds| (name, bounds)))
+            .collect()
     }
     /// The selected operation ID (empty when the job has no operations).
     pub(super) fn operation_id(&self) -> String {

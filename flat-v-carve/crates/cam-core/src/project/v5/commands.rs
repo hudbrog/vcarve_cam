@@ -18,8 +18,8 @@
 //! explicitly applied.
 use super::{
     ArtworkContent, ArtworkItemId, CamJobV5, ContourAnchorV5, GeometryRef, GeometryRefKind,
-    OperationSettingsV5, ProfileContourV5, ProfileSettingsV5, StartSelectionV5, SvgInterpretation,
-    TabPlacementV5, artwork,
+    OperationSettingsV5, ProfileContourV5, ProfileSettingsV5, SetupBounds, StartSelectionV5,
+    SvgInterpretation, TabPlacementV5, artwork,
 };
 use crate::{
     geometry::{Diagnostic, Result},
@@ -28,6 +28,7 @@ use crate::{
     project::{ContourSide, RectXY, TraversalDirection},
     svg::{MAX_SVG_BYTES, Placement},
 };
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// A stable entity a command affected, for undo grouping and UI refresh.
@@ -806,6 +807,193 @@ pub fn apply_stock_rectangle(job: &CamJobV5, rect: RectXY) -> Result<CommandOutc
     let mut candidate = job.clone();
     candidate.setup.stock.xy = Some(rect);
     CommandOutcome::commit(candidate, vec![AffectedEntity::Setup])
+}
+
+// ---------------------------------------------------------------------------
+// Stock anchoring and the outside-stock report (W5 in the field-test plan).
+//
+// A stock rectangle is an absolute rectangle in setup coordinates, so
+// resizing it is also a decision about *where* it sits. Artwork is never
+// moved by any of this: only the stock rectangle moves, and geometry that
+// ends up outside it is reported rather than relocated.
+// ---------------------------------------------------------------------------
+
+/// Which point of the stock rectangle stays put when its size changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StockAnchor {
+    /// The minimum corner never moves. This is what the fields have always
+    /// done, so a saved job keeps its meaning.
+    #[default]
+    MinCorner,
+    /// The rectangle's own centre never moves.
+    Centre,
+    /// The placed artwork stays centred in the stock.
+    ArtworkBounds,
+}
+
+impl StockAnchor {
+    pub const ALL: [Self; 3] = [Self::MinCorner, Self::Centre, Self::ArtworkBounds];
+    /// Short UI label naming the point that stays still.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::MinCorner => "Min corner",
+            Self::Centre => "Stock centre",
+            Self::ArtworkBounds => "Artwork bounds",
+        }
+    }
+    pub fn help(self) -> &'static str {
+        match self {
+            Self::MinCorner => "Changing width or length keeps stock (min X, min Y) where it is.",
+            Self::Centre => {
+                "Changing width or length keeps the stock rectangle's own centre; the minimum corner follows."
+            }
+            Self::ArtworkBounds => {
+                "Changing width or length keeps the placed artwork centred in the stock. The artwork never moves; the stock rectangle does."
+            }
+        }
+    }
+}
+
+/// One artwork item's placed extent in setup coordinates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArtworkExtent {
+    pub id: ArtworkItemId,
+    pub name: String,
+    /// `None` when the item imports cleanly but places no geometry.
+    pub bounds: Option<SetupBounds>,
+}
+
+/// The placed extent of every item, in document order. An item whose content
+/// fails to import is resolved state, not an error: it simply has no bounds.
+pub fn artwork_extents(job: &CamJobV5) -> Result<Vec<ArtworkExtent>> {
+    let catalogue = artwork::inspect_artwork(job)?;
+    Ok(job
+        .artwork
+        .iter()
+        .map(|item| ArtworkExtent {
+            id: item.id.clone(),
+            name: item.name.clone(),
+            bounds: catalogue.item(&item.id).and_then(|item| {
+                item.entries
+                    .iter()
+                    .fold(None, |bounds: Option<SetupBounds>, entry| {
+                        Some(match bounds {
+                            Some(bounds) => bounds.union(entry.bounds),
+                            None => entry.bounds,
+                        })
+                    })
+            }),
+        })
+        .collect())
+}
+
+/// Place a resized stock rectangle at its anchor.
+///
+/// `requested` is the rectangle the editor fields describe: its size is
+/// authoritative and its minimum corner is whatever the fields still carried.
+/// The anchor decides where the resized rectangle sits, using the stock
+/// rectangle from before the edit and (for [`StockAnchor::ArtworkBounds`]) the
+/// placed artwork bounds. With no reference to anchor against, the requested
+/// rectangle is returned unchanged.
+pub fn anchor_stock_rectangle(
+    requested: RectXY,
+    previous: Option<RectXY>,
+    anchor: StockAnchor,
+    artwork: Option<SetupBounds>,
+) -> RectXY {
+    let rect_centre = |r: RectXY| (r.min_x_mm + r.width_mm / 2., r.min_y_mm + r.length_mm / 2.);
+    let bounds_centre = |b: SetupBounds| {
+        (
+            (b.min_x_mm + b.max_x_mm) / 2.,
+            (b.min_y_mm + b.max_y_mm) / 2.,
+        )
+    };
+    let centre = match anchor {
+        StockAnchor::MinCorner => return requested,
+        StockAnchor::Centre => previous.map(rect_centre).unwrap_or(rect_centre(requested)),
+        StockAnchor::ArtworkBounds => artwork
+            .map(bounds_centre)
+            .or_else(|| previous.map(rect_centre))
+            .unwrap_or(rect_centre(requested)),
+    };
+    RectXY {
+        min_x_mm: centre.0 - requested.width_mm / 2.,
+        min_y_mm: centre.1 - requested.length_mm / 2.,
+        width_mm: requested.width_mm,
+        length_mm: requested.length_mm,
+    }
+}
+
+/// One artwork item that reaches past the stock rectangle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StockOverflow {
+    pub item: ArtworkItemId,
+    pub name: String,
+    /// The stock side the item passes, and by how much (positive outward).
+    pub side: &'static str,
+    pub overhang_mm: f64,
+}
+
+/// The worst way one placed item passes the stock rectangle, or `None` when
+/// it is inside. An item that only touches an edge counts as inside: tangent
+/// contact is legal.
+pub fn stock_overhang(bounds: SetupBounds, stock: RectXY) -> Option<(&'static str, f64)> {
+    [
+        ("min X", stock.min_x_mm - bounds.min_x_mm),
+        ("max X", bounds.max_x_mm - (stock.min_x_mm + stock.width_mm)),
+        ("min Y", stock.min_y_mm - bounds.min_y_mm),
+        (
+            "max Y",
+            bounds.max_y_mm - (stock.min_y_mm + stock.length_mm),
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, overhang)| *overhang > 0.)
+    .max_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// Which items lie outside the stock rectangle, and by how much. An item that
+/// only touches an edge counts as inside: tangent contact is legal.
+pub fn artwork_outside_stock(job: &CamJobV5) -> Result<Vec<StockOverflow>> {
+    let Some(stock) = job.setup.stock.xy else {
+        return Ok(vec![]);
+    };
+    let mut overflow = vec![];
+    for extent in artwork_extents(job)? {
+        let Some(bounds) = extent.bounds else {
+            continue;
+        };
+        if let Some((side, overhang_mm)) = stock_overhang(bounds, stock) {
+            overflow.push(StockOverflow {
+                item: extent.id,
+                name: extent.name,
+                side,
+                overhang_mm,
+            });
+        }
+    }
+    Ok(overflow)
+}
+
+/// The outside-stock findings as located issues naming every offending item.
+/// The field path is `setup.stock.xy`, so a surface can route the user to the
+/// stock fields and the anchor or fit action that resolves it. Nothing here
+/// moves the artwork.
+pub fn stock_overlap_issues(job: &CamJobV5) -> Result<Vec<LocatedDiagnostic>> {
+    Ok(artwork_outside_stock(job)?
+        .into_iter()
+        .map(|overflow| LocatedDiagnostic {
+            code: "STOCK_ARTWORK_OUTSIDE".into(),
+            message: format!(
+                "artwork '{}' lies {:.3} mm outside the stock past {}; fit the stock to the artwork or pick a stock anchor that re-centres it. The artwork itself is never moved.",
+                overflow.name, overflow.overhang_mm, overflow.side
+            ),
+            operation_id: None,
+            tool_id: None,
+            field_path: Some("setup.stock.xy".into()),
+        })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------

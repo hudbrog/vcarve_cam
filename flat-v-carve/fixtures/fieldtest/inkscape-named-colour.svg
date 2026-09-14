@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Field-test fixture D: the CSS cascade. An `!important` id rule must beat
+     the element's own inline declaration, and a class rule must beat a
+     presentation attribute. Both outcomes are observable in the imported
+     geometry: the first element drops out, the second stays in. -->
+<svg
+   width="100mm"
+   height="60mm"
+   viewBox="0 0 100 60"
+   version="1.1"
+   id="svg1"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns="http://www.w3.org/2000/svg">
+  <defs id="defs1">
+    <style id="style1">
+      /* An important id rule must beat the element's inline `style`... */
+      #named-1 { fill: transparent !important; }
+      /* ...while a class rule must beat a presentation attribute. */
+      .opaque { fill: navy; }
+      rect { fill: red; }
+    </style>
+  </defs>
+  <g inkscape:label="Layer 1" inkscape:groupmode="layer" id="layer1">
+    <rect
+       id="named-1"
+       inkscape:label="Important transparent"
+       fill="lime"
+       style="fill:yellow"
+       x="5"
+       y="5"
+       width="40"
+       height="20" />
+    <rect
+       id="named-2"
+       class="opaque"
+       inkscape:label="Named colour"
+       fill="transparent"
+       x="55"
+       y="5"
+       width="40"
+       height="20" />
+  </g>
+</svg>

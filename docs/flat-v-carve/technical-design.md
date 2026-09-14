@@ -15,6 +15,19 @@ The M5 milestone defines the implemented continuous verifier. Independent analyt
 
 Use millimeters for all internal lengths, millimeters per minute for feeds, and RPM for spindle speed. The workpiece top is Z = 0. Internal depth `d` is nonnegative downward; its machine coordinate is `z = -d`. Transform SVG coordinates into a right-handed XY workpiece plane once during import, including the SVG Y-axis reversal. Tool positions always refer to the center of the physical tool tip plane, not a virtual cone apex.
 
+There are four named XY spaces and exactly one conversion between each pair:
+
+| Space | Definition | Converted where |
+| --- | --- | --- |
+| SVG/document | `viewBox` and page size in millimeters, Y down, origin at the visual top-left corner | — |
+| Artwork/model | page millimeters, Y up, origin at the page's bottom-left corner | once, in `svg/mod.rs` (`page_to_artwork`, the page matrix) |
+| Stock/work | setup millimeters, relative to the stock rectangle and `setup.work_zero` | the stock rectangle, then each operation's geometry |
+| Machine | output coordinates after the work offset and the machine profile | `post/sequence.rs` only |
+
+The single SVG conversion is `y_artwork = page_height_mm − y_svg`. The page's top edge (SVG `y = 0`) is therefore the artwork's maximum Y, and the page's bottom-left corner is the artwork origin. `Placement` (scale, rotation, origin) then maps artwork millimeters to setup millimeters and is the identity at its default, so the page's bottom-left corner is the setup origin for a newly imported file. The flip is applied once, to page geometry, before placement.
+
+Nothing downstream re-imports, re-flips or re-scales. In particular: changing stock dimensions or any operation parameter never re-places imported artwork; preview, verification and post consume the same transformed geometry; and artwork (or selected geometry) found outside the stock rectangle is reported as an issue naming the offending items (`STOCK_ARTWORK_OUTSIDE`, path `setup.stock.xy`), never moved as a side effect.
+
 Use named domain types for lengths, angles, tool IDs, operation IDs, and depths where this prevents mixing meanings. Reject non-finite numbers, invalid angles, nonpositive dimensions/feeds, and inconsistent cutting dimensions before planning.
 
 Separate these controls:
@@ -154,7 +167,9 @@ Process in this order:
 
 Flattening tolerance applies after transforms so scaling does not amplify an untracked error. SVG arc commands must also be supported or reported explicitly. Reversed ring orientation alone must not change the selected filled region.
 
-Initially require text and strokes to be converted to paths in Inkscape. Report open paths, external references, masks, clip paths, filters, and unsupported styling. Ignore non-geometric editor metadata. Do not automatically close a substantial gap or remove a tiny island without a diagnostic.
+Initially require text and strokes to be converted to paths in Inkscape. Report open paths, external references, masks, clip paths, filters, and unsupported styling. A visible stroke in fill mode is refused with the element named and both remedies stated: convert it with Stroke to Path, or import the artwork as centerlines, which cuts along the middle of the stroke. Ignore non-geometric editor metadata. Do not automatically close a substantial gap or remove a tiny island without a diagnostic.
+
+Supported styling is a documented CSS subset, not the full language: presentation attributes, the inline `style` attribute, and `<style>` rules whose selectors are element names, `.class` or `#id`, cascaded by `!important`, then specificity, then source order. A property outside the subset is ignored with a warning (`SVG_STYLE_IGNORED`) naming the element and the property; a property that changes the geometry drawn (filter, mask, clip-path, markers, `transform-origin`, the CSS `transform` property) is refused rather than dropped, and a rule whose selector this subset cannot match is reported (`SVG_STYLE_SELECTOR`). External stylesheets — `<?xml-stylesheet?>`, `@import` — stay hard failures because the importer has no file or network access. Every element-scoped diagnostic names the element's `id` and, when Inkscape recorded one, its `inkscape:label`.
 
 M2 implements the supported subset with `roxmltree` 0.21.1 and `svgtypes` 0.16.1. It resolves filled components in page coordinates before workpiece placement, preserving IDs across placement edits; both source and final snapping budgets are recorded. Unsupported rendering effects and out-of-page geometry are rejected.
 

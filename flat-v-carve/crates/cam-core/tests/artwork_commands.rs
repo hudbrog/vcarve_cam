@@ -21,10 +21,12 @@ use cam_core::{
             artwork::{self, inspect_artwork, parse_wire_id},
             commands::{
                 AddArtworkOutcome, AnchorTarget, ArtworkInput, CommandOutcome, FitStockMargins,
-                FitStockRequest, ProfileContourPick, add_artwork, apply_stock_rectangle,
-                duplicate_artwork, place_artwork, propose_fit_stock, reattach_anchor,
-                remove_artwork, rename_artwork, reorder_artwork, replace_artwork,
+                FitStockRequest, ProfileContourPick, StockAnchor, add_artwork,
+                anchor_stock_rectangle, apply_stock_rectangle, artwork_extents,
+                artwork_outside_stock, duplicate_artwork, place_artwork, propose_fit_stock,
+                reattach_anchor, remove_artwork, rename_artwork, reorder_artwork, replace_artwork,
                 set_chain_selection, set_component_selection, set_contour_selection,
+                stock_overlap_issues,
             },
             migrate::migrate_v4,
             references::planning_readiness,
@@ -1263,4 +1265,199 @@ fn unknown_targets_and_broken_reorders_are_located_errors() {
     .unwrap_err();
     assert!(error.message.contains("exactly once"), "{error}");
     assert_eq!(base.artwork.len(), 1);
+}
+
+/// The union of every item's placed bounds, or `None` when nothing places.
+fn placed_union(job: &v5::CamJobV5) -> Option<artwork::SetupBounds> {
+    artwork_extents(job)
+        .unwrap()
+        .into_iter()
+        .filter_map(|extent| extent.bounds)
+        .reduce(artwork::SetupBounds::union)
+}
+
+fn near(a: f64, b: f64) {
+    assert!((a - b).abs() < 1e-9, "{a} != {b}");
+}
+
+/// W5: resizing the stock is a decision about where the rectangle sits.
+/// Every anchor moves only the rectangle — never the artwork — and the
+/// default keeps the minimum corner, which is what saved jobs already mean.
+#[test]
+fn stock_resize_anchors_move_the_rectangle_and_never_the_artwork() {
+    let previous = RectXY {
+        min_x_mm: 0.,
+        min_y_mm: 0.,
+        width_mm: 100.,
+        length_mm: 100.,
+    };
+    let job = apply_stock_rectangle(&two_source_job(), previous)
+        .unwrap()
+        .job;
+    let extents = artwork_extents(&job).unwrap();
+    assert_eq!(extents.len(), 2);
+    let union = placed_union(&job).unwrap();
+    let artwork_centre = (
+        (union.min_x_mm + union.max_x_mm) / 2.,
+        (union.min_y_mm + union.max_y_mm) / 2.,
+    );
+    // The fields a width or length edit submits still carry the old minimum
+    // corner, exactly as the group draft does.
+    let requested = RectXY {
+        min_x_mm: previous.min_x_mm,
+        min_y_mm: previous.min_y_mm,
+        width_mm: 60.,
+        length_mm: 40.,
+    };
+    for (anchor, expected) in [
+        // Default: what the fields have always done.
+        (StockAnchor::MinCorner, (0., 0.)),
+        (StockAnchor::Centre, (20., 30.)),
+        (
+            StockAnchor::ArtworkBounds,
+            (artwork_centre.0 - 30., artwork_centre.1 - 20.),
+        ),
+    ] {
+        let rect = anchor_stock_rectangle(requested, Some(previous), anchor, Some(union));
+        near(rect.min_x_mm, expected.0);
+        near(rect.min_y_mm, expected.1);
+        near(rect.width_mm, 60.);
+        near(rect.length_mm, 40.);
+        let resized = apply_stock_rectangle(&job, rect).unwrap().job;
+        // Every imported coordinate survives the stock edit untouched.
+        assert_eq!(
+            artwork_extents(&resized).unwrap(),
+            extents,
+            "{anchor:?} moved the artwork"
+        );
+    }
+    // An explicit corner edit is passed through: the anchor is only consulted
+    // for the size the user asked for.
+    let moved = RectXY {
+        min_x_mm: -10.,
+        min_y_mm: -20.,
+        ..requested
+    };
+    assert_eq!(
+        anchor_stock_rectangle(moved, Some(previous), StockAnchor::MinCorner, None),
+        moved
+    );
+    // With no rectangle to anchor against, the request stands as written.
+    for anchor in StockAnchor::ALL {
+        assert_eq!(
+            anchor_stock_rectangle(requested, None, anchor, None),
+            requested
+        );
+    }
+    // The labels are the UI contract for the control.
+    assert_eq!(
+        StockAnchor::ALL.map(StockAnchor::label),
+        ["Min corner", "Stock centre", "Artwork bounds"]
+    );
+    assert_eq!(StockAnchor::default(), StockAnchor::MinCorner);
+}
+
+/// W5: geometry outside the stock is reported by name, with the fix offered
+/// next to it, and the artwork is never moved as a side effect.
+#[test]
+fn artwork_outside_the_stock_is_named_in_an_issue_that_offers_the_fix() {
+    let job = two_source_job();
+    let extents = artwork_extents(&job).unwrap();
+    let first = extents
+        .iter()
+        .find(|e| e.id.0 == MIGRATED_ARTWORK_ITEM_ID)
+        .unwrap()
+        .bounds
+        .unwrap();
+    // Stock exactly the first item: tangent, so legal, and nothing is said.
+    let job = apply_stock_rectangle(
+        &job,
+        RectXY {
+            min_x_mm: first.min_x_mm,
+            min_y_mm: first.min_y_mm,
+            width_mm: first.max_x_mm - first.min_x_mm,
+            length_mm: first.max_y_mm - first.min_y_mm,
+        },
+    )
+    .unwrap()
+    .job;
+    // The first item only touches the stock, and touching is legal: it is not
+    // reported, while the lettering beside it is.
+    let tangent = artwork_outside_stock(&job).unwrap();
+    assert_eq!(tangent.len(), 1, "{tangent:?}");
+    assert_eq!(tangent[0].name, "lettering.svg");
+
+    // Shrink the stock inside the first item: now both it and the lettering
+    // stand outside, and both are named.
+    let inner = apply_stock_rectangle(
+        &job,
+        RectXY {
+            min_x_mm: first.min_x_mm + 5.,
+            min_y_mm: first.min_y_mm + 5.,
+            width_mm: 10.,
+            length_mm: 10.,
+        },
+    )
+    .unwrap()
+    .job;
+    let outside = artwork_outside_stock(&inner).unwrap();
+    let mut names: Vec<&str> = outside.iter().map(|o| o.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["art.svg", "lettering.svg"]);
+    assert!(outside.iter().all(|o| o.overhang_mm > 0.));
+    assert!(
+        outside
+            .iter()
+            .all(|o| matches!(o.side, "min X" | "max X" | "min Y" | "max Y"))
+    );
+
+    let issues = stock_overlap_issues(&inner).unwrap();
+    assert_eq!(issues.len(), 2);
+    assert!(issues.iter().all(|i| i.code == "STOCK_ARTWORK_OUTSIDE"));
+    assert!(
+        issues
+            .iter()
+            .all(|i| i.field_path.as_deref() == Some("setup.stock.xy"))
+    );
+    assert!(issues.iter().any(|i| i.message.contains("art.svg")));
+    assert!(issues.iter().any(|i| i.message.contains("lettering.svg")));
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.message.contains("never moved") && i.message.contains("fit the stock"))
+    );
+    // The report is a report: the artwork extents and the stock rectangle are
+    // exactly what they were before the query.
+    assert_eq!(artwork_extents(&inner).unwrap(), extents);
+    assert_eq!(
+        inner.setup.stock.xy,
+        Some(RectXY {
+            min_x_mm: first.min_x_mm + 5.,
+            min_y_mm: first.min_y_mm + 5.,
+            width_mm: 10.,
+            length_mm: 10.,
+        })
+    );
+
+    // Fitting the stock to the artwork clears the issue without moving
+    // anything: the proposal covers the placed bounds it was measured from.
+    let union = placed_union(&inner).unwrap();
+    let fitted = apply_stock_rectangle(
+        &inner,
+        RectXY {
+            min_x_mm: union.min_x_mm,
+            min_y_mm: union.min_y_mm,
+            width_mm: union.max_x_mm - union.min_x_mm,
+            length_mm: union.max_y_mm - union.min_y_mm,
+        },
+    )
+    .unwrap()
+    .job;
+    assert!(artwork_outside_stock(&fitted).unwrap().is_empty());
+    assert_eq!(artwork_extents(&fitted).unwrap(), extents);
+
+    // A job without a stock rectangle has nothing to violate.
+    let mut no_stock = job.clone();
+    no_stock.setup.stock.xy = None;
+    assert!(artwork_outside_stock(&no_stock).unwrap().is_empty());
 }

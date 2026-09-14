@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Field-test fixture C: an Inkscape layer saved with editor properties that
+     do not change the drawn geometry. They are listed as warnings, and the
+     rectangle still imports with the geometry the CSS cascade resolves. -->
+<svg
+   width="100mm"
+   height="60mm"
+   viewBox="0 0 100 60"
+   version="1.1"
+   id="svg1"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg">
+  <defs id="defs1">
+    <style id="style1">
+      .plate { fill: #808080; }
+      .plate.inset { fill: #404040; }
+      #plate-1 { stroke: none; }
+      * { stroke-linecap: butt; }
+      /* Element selector, then class selector: the class must win on
+         specificity, which shows up as an even-odd hole in the area. */
+      path { fill-rule: nonzero; }
+      .ring { fill-rule: evenodd; }
+    </style>
+  </defs>
+  <sodipodi:namedview
+     id="namedview1"
+     borderopacity="1.0"
+     inkscape:document-units="mm" />
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1"
+     style="enable-background:new;-inkscape-font-specification:sans-serif">
+    <rect
+       class="plate inset"
+       id="plate-1"
+       inkscape:label="Inset plate"
+       style="opacity:1;stroke-width:0.5"
+       x="10"
+       y="10"
+       width="40"
+       height="40" />
+    <path
+       class="plate ring"
+       id="ring-1"
+       inkscape:label="Ring"
+       d="M 60,10 H 80 V 30 H 60 Z M 65,15 H 75 V 25 H 65 Z" />
+  </g>
+</svg>

@@ -94,9 +94,9 @@ Invariants to enforce with tests, not prose:
 | 1.2 | Z reference not prominent | P0/P1 | **Present** | `cam-gui/src/inspector.rs:512-513` |
 | 2.1 | Offset/overhang semantics unclear | P1 | **Present**; parameters exist, semantics undocumented | `cam-core/src/project.rs:512-544`, `face.rs:219-256` |
 | 2.2 | Facing offsets distort the preview | P1 | **Reproduced and fixed** for the artwork/stock scale; camera fit still open | `cam-gui/src/scene.rs::build_with_preset`, `executed_frame` |
-| 3.1 | Inkscape CSS/`<style>` rejected | P1 | **Reproduced** | `svg/mod.rs:291`, `svg/style.rs:100` |
-| 3.2 | SVG Y transform wrong | P1 | **Convention exists**, undocumented/untested in user terms | `svg/mod.rs:315`, `:548-601` |
-| 3.3 | Stock resize breaks relative position | P1 | **Present by design** (absolute rect, no anchor, no warning) | `project/v5/commands.rs:805` |
+| 3.1 | Inkscape CSS/`<style>` rejected | P1 | **Fixed** (W4): `<style>` cascaded, ignored properties warned, refusals name the element | `svg/style.rs`, `svg/mod.rs` |
+| 3.2 | SVG Y transform wrong | P1 | **Documented and asserted** (W5): page top → stock max Y, one conversion, golden A4 test | `svg::page_to_artwork`, `technical-design.md` §1/§4 |
+| 3.3 | Stock resize breaks relative position | P1 | **Fixed** (W5): named resize anchor (min corner default), *Stock from artwork bounds*, outside-stock issue naming items | `project/v5/commands.rs`, `cam-gui/src/inspector.rs` |
 | 4.1 | Flat Z cuts thin features too high | P1 | **Root cause identified** | `vcarve/settings.rs:196-205` |
 | 5.1 | Drag knife motion discontinuous | P1 | **Root cause identified** | `post/sequence.rs:497-500`, `:946-953` |
 | 6.1 | No plain New project | P2 | **Present** | `cam-gui/src/workspace_ui.rs:130-158` |
@@ -352,6 +352,26 @@ two failing fixtures from §1.1 verbatim.
 **Acceptance.** The report's scenario imports with no XML editing, and each
 ignored property is listed as a warning in the import report.
 
+**Status: landed.** `<style>` elements are parsed once and cascaded with the
+inline `style` attribute and the presentation attributes by `!important`,
+specificity (element / `.class` / `#id`) and source order, so the report's
+Stroke-to-Path file imports with no XML editing and its `fill-rule` reaches the
+geometry (the fixture is asserted to be a ring, not a disc). A CSS property
+outside the supported subset — including Inkscape's own editor properties — is
+now a warning (`SVG_STYLE_IGNORED`) naming the element and the property, never a
+silent drop; a property that changes the drawn geometry (`filter`, `mask`,
+`clip-path`, markers, `transform-origin`, the CSS `transform` property) is
+refused, as is a rule whose selector this subset cannot match
+(`SVG_STYLE_SELECTOR`). External stylesheets stay hard failures
+(`SVG_STYLESHEET`): `<?xml-stylesheet?>` and `@import`, since the importer has
+no file or network access. Every element-scoped diagnostic now names the
+element's `id` and its `inkscape:label`, and the fill-mode stroke refusal names
+both remedies (Stroke to Path, or import as centerlines). Step 4's decision is
+the second branch: the fill-mode refusal stays, with the one-click route named
+in the same message. The fixtures are `flat-v-carve/fixtures/fieldtest/` with
+their own README, and `crates/cam-core/tests/svg_fieldtest.rs` pins each
+acceptance line.
+
 ### W5 — Artwork and stock coordinates (P1, 3.2 + 3.3, architecture spine)
 
 **Current behaviour.** Import flips Y about the *physical page height*
@@ -380,6 +400,44 @@ page-sized stock leaves the artwork "floating in space" exactly as reported.
 **Acceptance.** Resizing the stock to 100×100 or 110×110 leaves every imported
 coordinate unchanged; the user is told when geometry now lies outside the
 stock.
+
+**Status: landed.** The mapping is written down where the contract lives:
+`technical-design.md` §1 now names the four XY spaces and their single
+conversions, and §4 states the mapping in user terms. `svg::page_to_artwork`
+(`y_artwork = page_height − y_svg`) is the one expression of the flip, and the
+Artwork panel caption states it: the page's top edge is the stock's maximum Y,
+the page's bottom-left corner is the setup origin, and placement is the second,
+independent step. A golden fixture
+(`fixtures/fieldtest/a4-corner-square.svg`, A4 in mm, shapes pinned to both
+page corners) asserts the exact setup bounds in
+`crates/cam-core/tests/svg_coordinates.rs`, including the plan's own 100 mm
+example (`y = 80…100`).
+
+Stock resize now carries an explicit anchor, offered in Setup as *Stock resize
+anchor* with help: **Min corner** (the default, exactly what the fields already
+did, so no saved job changes meaning), **Stock centre**, and **Artwork
+bounds**. `commands::anchor_stock_rectangle` owns the geometry and is a pure
+function of the requested rectangle, the previous rectangle and the placed
+artwork bounds; an explicit min-corner edit is taken as written, and only the
+stock rectangle moves — artwork placement is never touched by any anchor. The
+anchor is workspace state rather than document state, so the rectangle it
+produces is the saved value. *Stock from artwork bounds* is the artwork
+analogue of *Stock XY from SVG page* (all items, zero margins, through the
+existing fit-stock proposal).
+
+Geometry outside the stock is reported, never relocated:
+`commands::artwork_outside_stock` / `stock_overlap_issues` name each offending
+item and how far past which side it reaches (`STOCK_ARTWORK_OUTSIDE`, path
+`setup.stock.xy`), tangent contact counts as inside, and the Setup panel shows
+the same names next to the stock numbers with the two fixes beside them. Tests:
+`stock_resize_anchors_move_the_rectangle_and_never_the_artwork` and
+`artwork_outside_the_stock_is_named_in_an_issue_that_offers_the_fix` in
+`crates/cam-core/tests/artwork_commands.rs`, plus the Setup-panel probes in
+`crates/cam-gui/src/inspector.rs`.
+
+Leave the acceptance question (open question 6: which default anchor) with the
+plan: the default is deliberately today's min-corner behaviour, and the tester
+sees and can change it in the same panel.
 
 ### W6 — Flat Z engraving on thin features (P1, 4.1)
 

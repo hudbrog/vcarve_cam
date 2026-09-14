@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Field-test fixture F: an A4 page in millimetres with shapes pinned to the
+     page corners, for the W5 coordinate contract. On import the page's top
+     edge becomes the artwork's maximum Y, so the square drawn at the XML
+     origin (the visual top-left corner) lands at the *top* of the stock. -->
+<svg
+   width="210mm"
+   height="297mm"
+   viewBox="0 0 210 297"
+   version="1.1"
+   id="svg1"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs id="defs1" />
+  <sodipodi:namedview
+     id="namedview1"
+     borderopacity="1.0"
+     inkscape:document-units="mm" />
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1">
+    <rect
+       id="top-left"
+       inkscape:label="Page top-left"
+       x="0"
+       y="0"
+       width="20"
+       height="20" />
+    <rect
+       id="bottom-left"
+       inkscape:label="Page bottom-left"
+       x="0"
+       y="277"
+       width="20"
+       height="20" />
+    <circle
+       id="top-tangent"
+       inkscape:label="Tangent to page top"
+       cx="105"
+       cy="10"
+       r="10" />
+  </g>
+</svg>

@@ -7,22 +7,55 @@ use path::{ChainPoints, Flattener, MAX_VERTICES, Matrix};
 use roxmltree::{Document, Node};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use style::Style;
+use style::{Style, Stylesheet};
 
 const SVG_NS: &str = "http://www.w3.org/2000/svg";
+const INKSCAPE_NS: &str = "http://www.inkscape.org/namespaces/inkscape";
+const SODIPODI_NS: &str = "http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd";
 pub const MAX_SVG_BYTES: usize = 32_000_000;
 
 pub(super) fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("svg")
 }
 
+/// Every element-scoped diagnostic names the element the user has to find in
+/// the file: its `id` and, when the editor recorded one, its `inkscape:label`.
+fn element_scope(mut diagnostic: Diagnostic, node: Node<'_, '_>, id: &str) -> Diagnostic {
+    diagnostic.source_id = Some(id.to_owned());
+    let label = node
+        .attribute((INKSCAPE_NS, "label"))
+        .map(str::trim)
+        .filter(|label| !label.is_empty());
+    let name = match label {
+        Some(label) => format!("element id '{id}' (label \"{label}\")"),
+        None => format!("element id '{id}'"),
+    };
+    diagnostic.message = format!("{name}: {}", diagnostic.message);
+    diagnostic
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Placement {
-    /// Workpiece coordinate = scale * rotate(page XY - origin_mm).
+    /// Workpiece coordinate = scale * rotate(artwork XY - origin_mm), where
+    /// artwork XY is the page in millimetres with Y up (see
+    /// [`page_to_artwork`]).
     pub origin_mm: Point,
     pub scale: f64,
     pub rotation_deg: f64,
+}
+
+/// The one conversion from SVG (document) coordinates to artwork (model)
+/// coordinates.
+///
+/// The SVG page is measured in millimetres with Y down and the origin at the
+/// visual top-left; the artwork is the same page with Y up and the origin at
+/// the page's bottom-left. Y is therefore flipped exactly once, about the
+/// physical page height, so the page's top edge becomes the artwork's maximum
+/// Y. Every later stage — placement, stock, planning, preview and post —
+/// consumes artwork/setup millimetres and never flips or rescales again.
+pub fn page_to_artwork(page: Point, page_height_mm: f64) -> Point {
+    Point::new(page.x, page_height_mm - page.y)
 }
 impl Default for Placement {
     fn default() -> Self {
@@ -213,6 +246,7 @@ struct Reader {
     height: f64,
     namespaced: bool,
     centerline: bool,
+    stylesheet: Stylesheet,
 }
 
 pub fn import_svg(
@@ -253,6 +287,7 @@ pub fn import_svg(
         ));
     }
     let mut ids = BTreeSet::new();
+    let mut style_texts: Vec<String> = vec![];
     for node in doc.descendants().filter(Node::is_element) {
         if matches!(
             node.tag_name().name(),
@@ -287,12 +322,17 @@ pub fn import_svg(
         if node.tag_name().name() == "style"
             && matches!(node.tag_name().namespace(), None | Some(SVG_NS))
         {
-            return Err(error(
-                "SVG_STYLESHEET",
-                "CSS stylesheets are unsupported; use presentation attributes or inline styles",
-            ));
+            // `<style>` is data, parsed below and applied through the same
+            // cascade as presentation attributes and inline styles.
+            style_texts.push(
+                node.children()
+                    .filter(|child| child.is_text())
+                    .filter_map(|child| child.text())
+                    .collect(),
+            );
         }
     }
+    let (stylesheet, stylesheet_warnings) = Stylesheet::parse(&style_texts)?;
     let width = physical(root.attribute("width").ok_or_else(|| {
         error(
             "SVG_PAGE_SIZE",
@@ -326,7 +366,9 @@ pub fn import_svg(
         height,
         namespaced: root.tag_name().namespace() == Some(SVG_NS),
         centerline: options.mode == ImportMode::Centerline,
+        stylesheet,
     };
+    reader.diagnostics.extend(stylesheet_warnings);
     reader.walk(root, Matrix::ID, &Style::default(), 0, true)?;
     let extent = reader
         .shapes
@@ -627,13 +669,7 @@ impl Reader {
         }
         let tag = node.tag_name().name();
         let ns = node.tag_name().namespace();
-        if matches!(
-            ns,
-            Some(
-                "http://www.inkscape.org/namespaces/inkscape"
-                    | "http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-            )
-        ) {
+        if matches!(ns, Some(INKSCAPE_NS | SODIPODI_NS)) {
             return Ok(());
         }
         if ns != if self.namespaced { Some(SVG_NS) } else { None } {
@@ -642,7 +678,8 @@ impl Reader {
                 format!("unsupported element namespace on {tag}"),
             ));
         }
-        if matches!(tag, "defs" | "metadata" | "title" | "desc") {
+        // Editor metadata and the parsed stylesheet carry no geometry.
+        if matches!(tag, "defs" | "metadata" | "title" | "desc" | "style") {
             return Ok(());
         }
         self.serial += 1;
@@ -657,16 +694,23 @@ impl Reader {
                 id
             }
         };
-        let style = Style::resolve(node, inherited).map_err(|d| d.source(&id))?;
+        let (style, style_warnings) = Style::resolve(node, inherited, &self.stylesheet)
+            .map_err(|d| element_scope(d, node, &id))?;
+        self.diagnostics.extend(
+            style_warnings
+                .into_iter()
+                .map(|d| element_scope(d, node, &id)),
+        );
         if style.suppressed {
-            self.diagnostics.push(
+            self.diagnostics.push(element_scope(
                 error(
                     "SVG_HIDDEN",
                     "display:none or zero opacity excludes this element and its descendants",
                 )
-                .source(&id)
                 .warning(),
-            );
+                node,
+                &id,
+            ));
             return Ok(());
         }
         let local = node
@@ -685,11 +729,11 @@ impl Reader {
             return Ok(());
         }
         if !style.visible {
-            self.diagnostics.push(
-                error("SVG_HIDDEN", "visibility excludes this element")
-                    .source(&id)
-                    .warning(),
-            );
+            self.diagnostics.push(element_scope(
+                error("SVG_HIDDEN", "visibility excludes this element").warning(),
+                node,
+                &id,
+            ));
             return Ok(());
         }
         let line_geometry = matches!(tag, "line" | "polyline");
@@ -701,13 +745,16 @@ impl Reader {
                 "line" | "polyline" => "SVG_OPEN_PATH",
                 _ => "SVG_UNSUPPORTED_ELEMENT",
             };
-            return Err(error(
-                code,
-                format!(
-                    "unsupported <{tag}>; convert visible text/strokes to closed paths in Inkscape"
+            return Err(element_scope(
+                error(
+                    code,
+                    format!(
+                        "unsupported <{tag}>; convert visible text/strokes to closed paths in Inkscape"
+                    ),
                 ),
-            )
-            .source(&id));
+                node,
+                &id,
+            ));
         }
         let has_stroke =
             style.stroke != "none" && style.stroke_width > 0. && style.stroke_opacity > 0.;
@@ -719,66 +766,83 @@ impl Reader {
             // importing as regions below, exactly as in fill mode.
             if line_geometry {
                 if !has_stroke {
-                    self.diagnostics.push(
-                        error("SVG_NO_STROKE", "line geometry has no visible stroke")
-                            .source(&id)
-                            .warning(),
-                    );
+                    self.diagnostics.push(element_scope(
+                        error("SVG_NO_STROKE", "line geometry has no visible stroke").warning(),
+                        node,
+                        &id,
+                    ));
                     return Ok(());
                 }
                 return self
                     .chain_element(node, tag, &id, transform)
-                    .map_err(|d| d.source(&id));
+                    .map_err(|d| element_scope(d, node, &id));
             }
             if has_stroke {
                 if has_fill {
-                    return Err(error(
-                        "SVG_STROKE",
-                        "element has both visible fill and stroke; move the stroke onto a fill-none element to use it as a knife centerline",
-                    )
-                    .source(&id));
+                    return Err(element_scope(
+                        error(
+                            "SVG_STROKE",
+                            "element has both visible fill and stroke; move the stroke onto a fill-none element to use it as a knife centerline",
+                        ),
+                        node,
+                        &id,
+                    ));
                 }
                 return self
                     .chain_element(node, tag, &id, transform)
-                    .map_err(|d| d.source(&id));
+                    .map_err(|d| element_scope(d, node, &id));
             }
         } else if has_stroke {
-            return Err(error(
-                "SVG_STROKE",
-                "visible strokes must be converted with Inkscape Stroke to Path",
-            )
-            .source(&id));
+            // Fill mode carves filled regions only. A stroke-only element is
+            // refused, but the refusal names the element and both remedies:
+            // convert the stroke to a filled outline, or import the artwork as
+            // centerlines, which cuts along the middle of the stroke.
+            return Err(element_scope(
+                error(
+                    "SVG_STROKE",
+                    "visible stroke: convert it with Inkscape Stroke to Path (Path ▸ Stroke to Path), or import this artwork as centerlines to cut along the middle of the stroke",
+                ),
+                node,
+                &id,
+            ));
         }
         if !has_fill {
-            self.diagnostics.push(
-                error("SVG_NO_FILL", "element has no visible fill")
-                    .source(&id)
-                    .warning(),
-            );
+            self.diagnostics.push(element_scope(
+                error("SVG_NO_FILL", "element has no visible fill").warning(),
+                node,
+                &id,
+            ));
             return Ok(());
         }
-        let alpha = style.paint_alpha().map_err(|d| d.source(&id))?;
+        let alpha = style
+            .paint_alpha()
+            .map_err(|d| element_scope(d, node, &id))?;
         if alpha == 0 {
-            self.diagnostics.push(
-                error("SVG_NO_FILL", "transparent fill excludes this element")
-                    .source(&id)
-                    .warning(),
-            );
+            self.diagnostics.push(element_scope(
+                error("SVG_NO_FILL", "transparent fill excludes this element").warning(),
+                node,
+                &id,
+            ));
             return Ok(());
         }
         if style.opacity < 1. || style.fill_opacity < 1. || alpha < 255 {
-            self.diagnostics.push(error("SVG_OPACITY","positive fill opacity selects the same geometric region; color intensity is not a carve depth").source(&id).warning());
+            self.diagnostics.push(element_scope(error("SVG_OPACITY","positive fill opacity selects the same geometric region; color intensity is not a carve depth").warning(), node, &id));
         }
         if node.children().any(|c| {
             c.is_element() && !matches!(c.tag_name().name(), "title" | "desc" | "metadata")
         }) {
-            return Err(error(
-                "SVG_UNSUPPORTED_CHILD",
-                "geometry elements cannot contain nested rendering elements",
-            )
-            .source(&id));
+            return Err(element_scope(
+                error(
+                    "SVG_UNSUPPORTED_CHILD",
+                    "geometry elements cannot contain nested rendering elements",
+                ),
+                node,
+                &id,
+            ));
         }
-        let rings = self.shape(node, transform).map_err(|d| d.source(&id))?;
+        let rings = self
+            .shape(node, transform)
+            .map_err(|d| element_scope(d, node, &id))?;
         self.vertices += rings.iter().map(Vec::len).sum::<usize>();
         if self.vertices > MAX_VERTICES {
             return Err(error(
@@ -793,15 +857,16 @@ impl Reader {
                 || p.x > self.width + self.tolerance
                 || p.y > self.height + self.tolerance
         }) {
-            return Err(error(
-                "SVG_VIEWPORT_CLIPPING",
-                "artwork extends outside the page; resize the page to the drawing before import",
-            )
-            .source(&id));
+            return Err(element_scope(
+                error(
+                    "SVG_VIEWPORT_CLIPPING",
+                    "artwork extends outside the page; resize the page to the drawing before import",
+                ),
+                node,
+                &id,
+            ));
         }
-        let label = node
-            .attribute(("http://www.inkscape.org/namespaces/inkscape", "label"))
-            .map(str::to_owned);
+        let label = node.attribute((INKSCAPE_NS, "label")).map(str::to_owned);
         self.shapes.push(RawShape {
             id,
             label,
@@ -827,8 +892,7 @@ impl Reader {
             return Err(error(
                 "SVG_UNSUPPORTED_CHILD",
                 "geometry elements cannot contain nested rendering elements",
-            )
-            .source(id));
+            ));
         }
         let points = |list: &str, code: &str| -> Result<Vec<Point>> {
             let numbers = svgtypes::NumberListParser::from(list)
@@ -863,8 +927,7 @@ impl Reader {
                     return Err(error(
                         "SVG_POINTS",
                         "polyline requires complete XY pairs for at least two points",
-                    )
-                    .source(id));
+                    ));
                 }
                 vec![ChainPoints {
                     closed: false,
@@ -877,8 +940,7 @@ impl Reader {
                     return Err(error(
                         "SVG_POINTS",
                         "polygon requires complete XY pairs for at least three points",
-                    )
-                    .source(id));
+                    ));
                 }
                 // A polygon is closed by definition; do not duplicate the
                 // closing vertex.
@@ -919,22 +981,20 @@ impl Reader {
             return Err(error(
                 "SVG_VIEWPORT_CLIPPING",
                 "artwork extends outside the page; resize the page to the drawing before import",
-            )
-            .source(id));
+            ));
         }
-        let label = node
-            .attribute(("http://www.inkscape.org/namespaces/inkscape", "label"))
-            .map(str::to_owned);
+        let label = node.attribute((INKSCAPE_NS, "label")).map(str::to_owned);
         // The interpretation is visible: each chain reports that its stroke
         // became a centerline with the width ignored.
-        self.diagnostics.push(
+        self.diagnostics.push(element_scope(
             error(
                 "SVG_STROKE_CENTERLINE",
                 "stroke interpreted as a knife centerline; stroke width ignored",
             )
-            .source(id)
             .warning(),
-        );
+            node,
+            id,
+        ));
         for chain in chains {
             self.chains.push(RawChain {
                 id: id.to_owned(),
