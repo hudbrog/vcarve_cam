@@ -242,13 +242,13 @@ fn detect(grid: &Grid, threshold: f64, walls: &mut Vec<Wall>) {
         let x = (col + 1) as f64;
         let mut row = 0;
         while row < grid.rows {
-            let Some(step) = between(grid, threshold, (col, row), (col + 1, row)) else {
+            let Some(boundary) = between(grid, threshold, (col, row), (col + 1, row)) else {
                 row += 1;
                 continue;
             };
             let mut run = row + 1;
             while run < grid.rows
-                && between(grid, threshold, (col, run), (col + 1, run)) == Some(step)
+                && between(grid, threshold, (col, run), (col + 1, run)) == Some(boundary)
             {
                 run += 1;
             }
@@ -257,7 +257,7 @@ fn detect(grid: &Grid, threshold: f64, walls: &mut Vec<Wall>) {
                 [x.min(grid.width_cells), row as f64],
                 (run - row) as f64,
                 0,
-                step,
+                boundary.step,
             );
             row = run;
         }
@@ -266,13 +266,13 @@ fn detect(grid: &Grid, threshold: f64, walls: &mut Vec<Wall>) {
         let y = (row + 1) as f64;
         let mut col = 0;
         while col < grid.cols {
-            let Some(step) = between(grid, threshold, (col, row), (col, row + 1)) else {
+            let Some(boundary) = between(grid, threshold, (col, row), (col, row + 1)) else {
                 col += 1;
                 continue;
             };
             let mut run = col + 1;
             while run < grid.cols
-                && between(grid, threshold, (run, row), (run, row + 1)) == Some(step)
+                && between(grid, threshold, (run, row), (run, row + 1)) == Some(boundary)
             {
                 run += 1;
             }
@@ -281,7 +281,7 @@ fn detect(grid: &Grid, threshold: f64, walls: &mut Vec<Wall>) {
                 [col as f64, y.min(grid.length_cells)],
                 (run - col) as f64,
                 1,
-                step,
+                boundary.step,
             );
             col = run;
         }
@@ -296,7 +296,10 @@ fn detect(grid: &Grid, threshold: f64, walls: &mut Vec<Wall>) {
 }
 
 /// The step between two neighbouring cells: `(top, bottom, identity)` of the
-/// wall, where the identity is the cutter that removed the lower side.
+/// wall, where the identity is the cutter that removed the lower side. A
+/// *crease* is the same record with no height at all: a step too gentle to be a
+/// wall, but with untouched material on one side, which is the rim of a cut.
+/// Its solid quad is degenerate, so only the edge overlay draws it.
 #[derive(Clone, Copy, PartialEq)]
 struct Step {
     top: f64,
@@ -304,16 +307,40 @@ struct Step {
     identity: u32,
 }
 
-fn between(grid: &Grid, threshold: f64, a: (usize, usize), b: (usize, usize)) -> Option<Step> {
+#[derive(Clone, Copy, PartialEq)]
+struct Boundary {
+    step: Step,
+    /// Whether this is a wall or only a crease line.
+    wall: bool,
+}
+
+fn between(grid: &Grid, threshold: f64, a: (usize, usize), b: (usize, usize)) -> Option<Boundary> {
     let (da, db) = (grid.depth(a.0, a.1), grid.depth(b.0, b.1));
-    if grid.height_mm((da - db).abs()) <= threshold {
+    let delta = grid.height_mm((da - db).abs());
+    if delta <= 1e-9 {
+        return None;
+    }
+    let wall = delta > threshold;
+    // A cut's rim: untouched material beside machined material. The line lies
+    // on the untouched side, which is the stock top.
+    let crease = !wall && (da == 0.) != (db == 0.);
+    if !wall && !crease {
         return None;
     }
     let lower = if da >= db { a } else { b };
-    Some(Step {
-        top: da.min(db),
-        bottom: da.max(db),
-        identity: grid.identity(lower.0, lower.1),
+    let (top, bottom) = if wall {
+        (da.min(db), da.max(db))
+    } else {
+        let height = da.min(db);
+        (height, height)
+    };
+    Some(Boundary {
+        step: Step {
+            top,
+            bottom,
+            identity: grid.identity(lower.0, lower.1),
+        },
+        wall,
     })
 }
 
@@ -533,15 +560,21 @@ mod tests {
         let set = build(&grid(&cells, 6, 2), THRESHOLD, WALL_BUDGET_INSTANCES);
         // Only the stock's own edge remains: every wall stands on the boundary,
         // where the cell beside it was cut by the slope's operation.
+        // No interior *walls*: a slope may only leave the stock's edges. It may
+        // leave rim lines, which carry no height and are the edge overlay's
+        // business.
         assert!(
-            set.walls.iter().all(|wall| {
-                let fixed = if wall.axis == 0 {
-                    wall.start[0]
-                } else {
-                    wall.start[1]
-                };
-                fixed == 0. || fixed == 6. || fixed == 2.
-            }),
+            set.walls
+                .iter()
+                .filter(|wall| wall.top < wall.bottom)
+                .all(|wall| {
+                    let fixed = if wall.axis == 0 {
+                        wall.start[0]
+                    } else {
+                        wall.start[1]
+                    };
+                    fixed == 0. || fixed == 6. || fixed == 2.
+                }),
             "no interior staircase, only edges: {:?}",
             set.walls
         );
@@ -670,5 +703,50 @@ mod tests {
             );
             assert!(wall.top < wall.bottom, "wall {wall:?} has no height");
         }
+    }
+
+    /// A cut's rim: untouched material beside machined material earns a
+    /// line-only instance even where the step is far too gentle to be a wall.
+    /// Without it the edge overlay can only draw the stock's own outline, which
+    /// is what the tester saw.
+    #[test]
+    fn a_cut_rim_gets_a_line_even_where_the_step_is_gentle() {
+        // A 10 mm stock at 1 mm cells: the style threshold is 0.25 mm, but the
+        // slope rule makes the effective wall threshold 1.5 mm, and this cut's
+        // flank steps by only 1 mm.
+        let cells = packed(6, 2, |col, _| if col >= 3 { 0.1 } else { 0. }, |_, _| 2);
+        let view = grid(&cells, 6, 2);
+        let set = build(&view, THRESHOLD, WALL_BUDGET_INSTANCES);
+        let creases: Vec<_> = set
+            .walls
+            .iter()
+            .filter(|wall| wall.top == wall.bottom)
+            .collect();
+        assert!(!creases.is_empty(), "the rim line: {:?}", set.walls);
+        assert!(
+            creases
+                .iter()
+                .any(|wall| wall.axis == 0 && wall.start[0] == 3.),
+            "the rim of the cut at x = 3: {creases:?}"
+        );
+        assert!(
+            creases.iter().all(|wall| wall.top == 0.),
+            "the line lies on the untouched side: {creases:?}"
+        );
+        // Inside the cut, and between two equally cut cells, nothing is drawn.
+        assert!(
+            !creases
+                .iter()
+                .any(|wall| wall.axis == 0 && (wall.start[0] == 4. || wall.start[0] == 5.)),
+            "{creases:?}"
+        );
+        // The stock's own edge still keeps its height: those are real walls.
+        assert!(
+            set.walls
+                .iter()
+                .any(|wall| wall.top < wall.bottom && wall.top > 0.),
+            "{:?}",
+            set.walls
+        );
     }
 }
