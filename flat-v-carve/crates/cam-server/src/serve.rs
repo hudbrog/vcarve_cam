@@ -1,18 +1,17 @@
 //! Shared startup for `cam serve` and the development `cam-web` executable.
-use crate::{library, load_assets, planning::Planning, router_with_library};
+use crate::{load_assets, router};
 use std::{
     io::{self, Write},
     path::PathBuf,
     process::Command,
 };
 
-pub const HELP: &str = "Local browser workspace\nUsage: cam serve --ui-dir <directory> [--port <0..65535>] [--open] [--library-dir <directory>]\n\nBind is always 127.0.0.1; default port is 4848. Port 0 selects an available port.\n--open launches the default browser after the service is ready.\n--ui-dir serves a prebuilt UI directory, for example the browser GUI build\nartifacts/gui/browser; the executable embeds no UI of its own.\nThe library uses local application data unless --library-dir is supplied.\nLibrary creation is explicit in the UI. Ctrl+C cancels workers and stops the service.\n";
+pub const HELP: &str = "Local browser workspace (static hosting)\nUsage: cam serve --ui-dir <directory> [--port <0..65535>] [--open]\n\nBind is always 127.0.0.1; default port is 4848. Port 0 selects an available port.\n--open launches the default browser after the service is ready.\n--ui-dir serves a prebuilt UI directory, for example the browser GUI build\nartifacts/gui/browser; the executable embeds no UI of its own.\nThe browser build plans in its own WebAssembly worker, so the service serves\nfiles only: there is no planning API, no task ledger and no server-side tool\nlibrary (docs/flat-v-carve/schema-diet-plan.md).\n";
 
 #[derive(Default, Debug)]
 struct Options {
     port: Option<u16>,
     ui: Option<PathBuf>,
-    library: Option<PathBuf>,
     open: bool,
 }
 impl Options {
@@ -32,10 +31,6 @@ impl Options {
                 "--ui-dir" if options.ui.is_none() => {
                     options.ui = Some(args.next().ok_or("--ui-dir needs a directory")?.into());
                 }
-                "--library-dir" if options.library.is_none() => {
-                    options.library =
-                        Some(args.next().ok_or("--library-dir needs a directory")?.into());
-                }
                 "--open" if !options.open => options.open = true,
                 _ => return Err(format!("unknown/repeated argument {arg}; use --help")),
             }
@@ -53,10 +48,6 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error:
         "--ui-dir <directory> is required: this executable embeds no UI. Pass a prebuilt UI directory such as artifacts/gui/browser.",
     )?;
     let assets = load_assets(&ui).map_err(|e| format!("Cannot load {}: {e}", ui.display()))?;
-    let directory = std::path::absolute(match options.library {
-        Some(path) => path,
-        None => library::default_directory()?,
-    })?;
     tokio::runtime::Runtime::new()?.block_on(async move {
         let listener = tokio::net::TcpListener::bind((
             std::net::Ipv4Addr::LOCALHOST,
@@ -64,8 +55,7 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error:
         ))
         .await?;
         let port = listener.local_addr()?.port();
-        let planning = Planning::new()?;
-        let app = router_with_library(port, assets, planning.clone(), Some(directory))?;
+        let app = router(port, assets)?;
         let url = format!("http://127.0.0.1:{port}");
         println!("CAM_WEB_URL={url}");
         io::stdout().flush()?;
@@ -77,7 +67,6 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error:
         axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 let _ = tokio::signal::ctrl_c().await;
-                planning.shutdown().await;
             })
             .await?;
         Ok(())
@@ -125,7 +114,7 @@ mod tests {
     #[test]
     fn server_arguments_are_explicit_and_strict() {
         let options = Options::parse(
-            ["--port", "0", "--open", "--library-dir", "tools"]
+            ["--port", "0", "--open", "--ui-dir", "dist"]
                 .map(str::to_owned)
                 .into_iter(),
         )
@@ -133,13 +122,15 @@ mod tests {
         .unwrap();
         assert_eq!(options.port, Some(0));
         assert!(options.open);
-        assert_eq!(options.library.unwrap().to_str(), Some("tools"));
+        assert_eq!(options.ui.unwrap().to_str(), Some("dist"));
         for args in [
             vec!["--port"],
             vec!["--port", "65536"],
             vec!["--port", "1", "--port", "2"],
             vec!["--open", "--open"],
             vec!["--host", "0.0.0.0"],
+            // The server-side tool library went with the schema diet.
+            vec!["--library-dir", "tools"],
         ] {
             assert!(Options::parse(args.into_iter().map(str::to_owned)).is_err());
         }

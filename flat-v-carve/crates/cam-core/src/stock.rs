@@ -678,7 +678,7 @@ mod parallel_endmill_tests {
             include_str!("../../../fixtures/m4/island.json"),
             include_str!("../../../fixtures/m4/ramp-roughing.json"),
         ] {
-            let job = Job::from_json(input).unwrap();
+            let job = Job::from_fixture(input).unwrap();
             let plan = crate::pocket::plan_endmill(&job).unwrap();
             let Some(ToolGeometry::Vbit(spec)) = &job.tools[1].geometry else {
                 panic!("V-bit fixture")

@@ -192,7 +192,6 @@ fn mixed_job() -> CamJob {
         length_mm: 30.,
     };
     CamJob {
-        schema_version: 4,
         name: "Face, carve, profile".into(),
         source: Some(SourceSnapshot {
             filename: "art.svg".into(),

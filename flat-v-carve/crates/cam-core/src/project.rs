@@ -1,11 +1,14 @@
-//! Canonical schema-4 CAM job: editable setup, tools and an ordered operation list.
+//! The collection planning substrate: editable setup, tools and an ordered
+//! operation list, in the shape the planners and the contour catalogue read.
 //!
-//! This is the frozen schema-4 migration DTO: the schema-5 collection model
-//! ([`v5`]) migrates through `CamJob::from_json`, and later slices must not
-//! change this serialized shape without a new named compatibility step. The
-//! legacy schema-3 [`crate::job::Job`] remains the model used by the existing
-//! V-carve engine; import it as `LegacyJob` when adapting, and never construct
-//! a fake legacy job for non-V-carve planners.
+//! This is **not** a document format any more. The only document is schema 5
+//! ([`v5`]); nothing converts between schemas, and no command reads this
+//! struct from a file. Its serde representation survives for the planner
+//! regression fixtures under `fixtures/`, which are test data.
+//!
+//! The V-carve engine still runs on [`crate::job::Job`]; adapt through
+//! [`crate::operations::flat_vcarve::to_legacy_job`] and never construct a
+//! fake engine input for a planner that has its own.
 use crate::{
     geometry::{Diagnostic, Point, Result},
     job::{MachineProfile, PlanningTolerances, SourceSnapshot},
@@ -18,10 +21,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub mod migrate;
 pub mod v5;
-
-pub const CAM_JOB_SCHEMA_VERSION: u32 = 4;
 
 fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("project")
@@ -838,7 +838,6 @@ fn default_enabled() -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CamJob {
-    pub schema_version: u32,
     pub name: String,
     /// `None` is valid for source-free jobs (e.g. stock facing only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1168,15 +1167,37 @@ fn validate_machine_profile(profile: &MachineProfile) -> Result<()> {
 }
 
 impl CamJob {
+    /// The engine's planning input for one Flat V-carve operation.
+    ///
+    /// This is the bridge between the substrate and the V-carve engine: the
+    /// only way an engine input is built from a stored job, and the same call
+    /// the collection planner makes. Operation kinds with a native planner
+    /// (face, profile, drag knife) have no engine input.
+    pub fn plan_input(&self, operation_id: &str) -> Result<crate::job::Job> {
+        let operation = self
+            .operations
+            .iter()
+            .find(|operation| operation.id == operation_id)
+            .ok_or_else(|| {
+                error(
+                    "PROJECT_OPERATION_ID",
+                    format!("cannot build an engine input for unknown operation '{operation_id}'"),
+                )
+            })?;
+        match &operation.settings {
+            OperationSettings::FlatVcarve(settings) => {
+                crate::operations::flat_vcarve::to_legacy_job(self, operation_id, settings)
+            }
+            _ => Err(error(
+                "PROJECT_PLANNER",
+                format!("operation '{operation_id}' is planned natively and has no engine input"),
+            )),
+        }
+    }
+
     /// Structural and supplied-value validation. Missing editable values are
     /// allowed here; they are reported by resolution before planning.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != CAM_JOB_SCHEMA_VERSION {
-            return Err(error(
-                "CAM_JOB_SCHEMA_VERSION",
-                "unsupported or missing CamJob schema version",
-            ));
-        }
         if self.name.trim().is_empty()
             || self.name.len() > 1000
             || self
@@ -1278,25 +1299,5 @@ impl CamJob {
             validate_machine_profile(profile)?;
         }
         Ok(())
-    }
-
-    pub fn from_json(json: &str) -> Result<Self> {
-        if json.len() > 64_000_000 {
-            return Err(error(
-                "PROJECT_RESOURCE_LIMIT",
-                "job exceeds the 64 MB input limit",
-            ));
-        }
-        let job: Self =
-            serde_json::from_str(json).map_err(|e| error("PROJECT_JSON", e.to_string()))?;
-        job.validate()?;
-        Ok(job)
-    }
-
-    pub fn to_json(&self) -> Result<String> {
-        self.validate()?;
-        serde_json::to_string_pretty(self)
-            .map(|s| s + "\n")
-            .map_err(|e| error("PROJECT_JSON", e.to_string()))
     }
 }

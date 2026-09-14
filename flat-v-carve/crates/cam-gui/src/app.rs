@@ -641,7 +641,6 @@ enum IoKind {
     AddSvg,
     ReplaceSvg,
     Open,
-    Migrate,
     Profile,
     LibraryImport,
     MachineImport,
@@ -864,7 +863,6 @@ impl App {
             Command::Seek { .. } => "Loading stock position…",
             Command::DisplayPreset { .. } => "Rebuilding the display raster…",
             Command::Open { .. } => "Opening document…",
-            Command::Migrate { .. } => "Importing older job into the portable format…",
             Command::ApplyProfile { .. } => "Applying machine configuration…",
             Command::Generate { .. } => "Generating toolpaths and stock checkpoints…",
             Command::Prepare { .. } => {
@@ -1596,7 +1594,6 @@ impl App {
                             self.import_file(kind, "Imported.svg".into(), json, ctx)
                         }
                         IoKind::Open => self.submit(Command::Open { json }, ctx),
-                        IoKind::Migrate => self.submit(Command::Migrate { json }, ctx),
                         IoKind::LibraryImport | IoKind::MachineImport => {
                             if self.resource_import_stamp.take().as_deref()
                                 != Some(self.resource_stamp().as_str())

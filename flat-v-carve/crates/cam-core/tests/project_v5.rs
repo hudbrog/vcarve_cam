@@ -1,278 +1,30 @@
 //! H1 schema-5 collection model: artwork/ref/provenance shapes, the
-//! integrity-vs-readiness validation split, migration from the frozen
-//! schema-4 DTO, and scope-local blocking of dangling references (plan
-//! sections 22.2, 22.3, 22.5 and 22.11).
+//! integrity-vs-readiness validation split and scope-local blocking of
+//! dangling references (plan sections 22.2, 22.3, 22.5 and 22.11). The
+//! fixtures are stored schema-5 documents: nothing here converts a schema.
 use cam_core::{
-    contours::ContourCatalogue,
     geometry::Point,
-    job::{MachineProfile, PlanningTolerances, SourceSnapshot},
-    model::VBitSpec,
+    job::SourceSnapshot,
     project::v5::{
         self, AppliedMachineConfiguration, AppliedProfile, AppliedToolMapping, ArtworkContent,
-        ArtworkItemId, CamJobV5, ConfigurationOrigin, CuttingBaseline, GeometryRef,
-        GeometryRefKind, LibraryOrigin, MIGRATED_ARTWORK_ITEM_ID, ReadinessScope,
-        artwork::item_catalogue,
-        migrate::{migrate_json, migrate_v4},
+        ArtworkItemId, CamJobV5, ConfigurationOrigin, CuttingBaseline, GeometryRef, LibraryOrigin,
+        ReadinessScope,
         references::{inspect_references, planning_readiness},
     },
-    project::{
-        CAM_JOB_SCHEMA_VERSION, CamJob, ContourAnchor, ContourSide, CutDirection, DragKnifeSpec,
-        EndmillGeometry, FaceArea, FacePattern, FaceSettings, FlatVcarveMode, FlatVcarveSettings,
-        HeightRef, HeightReference, JobTool, KnifeAlignment, KnifeAssignment, MillingAssignment,
-        Operation, OperationSettings, ProfileContour, ProfileSettings, RectXY, SetupSettings,
-        StockSetup, TabPlacement, TabSettings, ToolCapabilities, ToolGeometry,
-    },
-    svg::{ImportOptions, Placement},
 };
 
-/// One filled region plus one stroked centerline: with the centerline import
-/// mode this yields exactly one component (`plate::0`) with one outer
-/// contour, and one open chain (`cut-chain-0`).
-const ARTWORK: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><rect id="plate" x="2" y="2" width="10" height="6" fill="#fff"/><path id="cut" fill="none" stroke="#000" stroke-width="0.4" d="M20 4 L30 4"/></svg>"##;
+/// The single artwork item the collection fixtures carry.
+const FIXTURE_ARTWORK: &str = "artwork-1";
 /// The same artwork with a sub-fingerprint-grid edit (0.001 mm, below the
 /// 0.01 mm contour fingerprint quantization).
 const ARTWORK_EDITED: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><rect id="plate" x="2" y="2" width="10" height="6" fill="#fff"/><path id="cut" fill="none" stroke="#000" stroke-width="0.4" d="M20 4 L30 4.001"/></svg>"##;
 
-const M3_RECTANGLE: &str = include_str!("../../../fixtures/m3/rectangle.json");
-
-fn milling(tool_id: &str) -> MillingAssignment {
-    MillingAssignment {
-        tool_id: tool_id.into(),
-        spindle_rpm: Some(10_000.),
-        spindle_direction: None,
-        cutting_feed_mm_min: Some(300.),
-        plunge_feed_mm_min: Some(100.),
-        max_stepdown_mm: Some(1.),
-        stepover_mm: Some(1.5),
-    }
-}
-
-fn knife_assignment() -> KnifeAssignment {
-    KnifeAssignment {
-        tool_id: "t3".into(),
-        cutting_feed_mm_min: Some(150.),
-        plunge_feed_mm_min: Some(50.),
-        swivel_feed_mm_min: Some(75.),
-        max_stepdown_mm: Some(1.),
-    }
-}
-
-fn tools() -> Vec<JobTool> {
-    vec![
-        JobTool {
-            id: "t1".into(),
-            name: "3mm endmill".into(),
-            geometry: Some(ToolGeometry::Endmill(EndmillGeometry {
-                diameter_mm: 3.,
-                cutting_length_mm: 8.,
-            })),
-            capabilities: ToolCapabilities {
-                plunge_capable: Some(true),
-                ramp_capable: Some(true),
-            },
-        },
-        JobTool {
-            id: "t2".into(),
-            name: "90 degree V-bit".into(),
-            geometry: Some(ToolGeometry::Vbit(VBitSpec {
-                included_angle_deg: 90.,
-                tip_diameter_mm: 0.2,
-                max_cutting_diameter_mm: 12.,
-                cutting_height_mm: 3.,
-            })),
-            capabilities: ToolCapabilities::default(),
-        },
-        JobTool {
-            id: "t3".into(),
-            name: "drag knife".into(),
-            geometry: Some(ToolGeometry::DragKnife(DragKnifeSpec {
-                blade_offset_mm: 1.5,
-                max_cut_depth_mm: 2.,
-            })),
-            capabilities: ToolCapabilities::default(),
-        },
-    ]
-}
-
-fn placement() -> Placement {
-    Placement {
-        origin_mm: Point::new(3., 4.),
-        scale: 2.,
-        rotation_deg: 90.,
-    }
-}
-
-fn v4_job(svg: &str, operations: Vec<Operation>) -> CamJob {
-    CamJob {
-        schema_version: CAM_JOB_SCHEMA_VERSION,
-        name: "collection source".into(),
-        source: Some(SourceSnapshot {
-            filename: "art.svg".into(),
-            svg: svg.into(),
-        }),
-        import: ImportOptions {
-            geometry_tolerance_mm: 0.001,
-            ticks_per_mm: None,
-            placement: placement(),
-        },
-        setup: SetupSettings {
-            stock: StockSetup {
-                thickness_mm: Some(8.),
-                xy: None,
-            },
-            work_zero: Default::default(),
-            clearance_above_stock_mm: Some(5.),
-            start_xy_mm: Some(Point::new(0., 0.)),
-        },
-        tools: tools(),
-        operations,
-        tolerances: PlanningTolerances::default(),
-        legacy_machine_profile: Some(MachineProfile {
-            id: "legacy-machine".into(),
-            work_offset: Some("G54".into()),
-            clearance_z_mm: Some(5.),
-            endmill_tool_number: Some(1),
-            vbit_tool_number: Some(2),
-            m6_contract: None,
-        }),
-    }
-}
-
-fn face_operation() -> Operation {
-    Operation {
-        id: "face-1".into(),
-        name: "Face".into(),
-        enabled: true,
-        settings: OperationSettings::Face(FaceSettings {
-            area: FaceArea::Rectangle {
-                rect: RectXY {
-                    min_x_mm: 0.,
-                    min_y_mm: 0.,
-                    width_mm: 100.,
-                    length_mm: 60.,
-                },
-            },
-            margins: Default::default(),
-            entry_overrun_mm: Some(2.),
-            exit_overrun_mm: Some(2.),
-            top: HeightRef {
-                reference: HeightReference::StockTop,
-                offset_mm: 0.,
-            },
-            bottom: HeightRef {
-                reference: HeightReference::StockTop,
-                offset_mm: -0.5,
-            },
-            stepdown_mm: Some(0.5),
-            stepover_mm: Some(2.),
-            pass_angle_deg: Some(0.),
-            pattern: FacePattern::ZigZag,
-            assignment: milling("t1"),
-        }),
-    }
-}
-
-/// The complete single-source job: every operation kind with real catalogue
-/// selections and anchors. Contour/chain IDs and fingerprints come from the
-/// catalogue itself, exactly like a user's picks.
-fn full_v4_job() -> CamJob {
-    let bare = v4_job(ARTWORK, vec![]);
-    let catalogue = ContourCatalogue::build(&bare).unwrap();
-    let contour = &catalogue.contours[0];
-    let chain = &catalogue.open_chains[0];
-    let anchor = |fraction: f64| ContourAnchor {
-        contour_id: contour.id.clone(),
-        source_geometry_fingerprint: contour.source_fingerprint.clone(),
-        fraction_along_source_contour: fraction,
-    };
-    let operations = vec![
-        face_operation(),
-        Operation {
-            id: "carve-1".into(),
-            name: "Carve the plate".into(),
-            enabled: true,
-            settings: OperationSettings::FlatVcarve(FlatVcarveSettings {
-                component_ids: vec!["plate::0".into()],
-                mode: FlatVcarveMode::EndmillOnly,
-                endmill: milling("t1"),
-                vbit: milling("t2"),
-                top: Default::default(),
-                max_depth_mm: Some(1.5),
-                wall_allowance_mm: None,
-                max_floor_ridge_mm: None,
-                max_detail_residual_mm: None,
-                rough: None,
-                finish: None,
-            }),
-        },
-        Operation {
-            id: "profile-1".into(),
-            name: "Cut the plate free".into(),
-            enabled: true,
-            settings: OperationSettings::Profile(ProfileSettings {
-                contours: vec![ProfileContour {
-                    contour_id: contour.id.clone(),
-                    side: ContourSide::Outside,
-                    traversal: None,
-                }],
-                assignment: milling("t1"),
-                top: HeightRef {
-                    reference: HeightReference::FaceResult {
-                        operation_id: "face-1".into(),
-                    },
-                    offset_mm: 0.,
-                },
-                bottom: HeightRef {
-                    reference: HeightReference::OperationTop,
-                    offset_mm: -2.,
-                },
-                stepdown_mm: None,
-                through_cut_allowance_mm: None,
-                direction: Some(CutDirection::Climb),
-                order: Default::default(),
-                start: cam_core::project::StartSelection::Anchor(Box::new(anchor(0.25))),
-                finish: Default::default(),
-                entry: Default::default(),
-                lead_in: Default::default(),
-                lead_out: Default::default(),
-                tabs: Some(TabSettings {
-                    height_mm: Some(2.),
-                    width_mm: Some(5.),
-                    shape: Default::default(),
-                    placement: TabPlacement::Manual {
-                        anchors: vec![anchor(0.6)],
-                    },
-                }),
-            }),
-        },
-        Operation {
-            id: "knife-1".into(),
-            name: "Score the cut line".into(),
-            enabled: true,
-            settings: OperationSettings::DragKnife(cam_core::project::DragKnifeSettings {
-                chains: vec![chain.id.clone()],
-                assignment: knife_assignment(),
-                top: HeightRef {
-                    reference: HeightReference::StockTop,
-                    offset_mm: 0.,
-                },
-                bottom: HeightRef {
-                    reference: HeightReference::StockTop,
-                    offset_mm: -1.,
-                },
-                stepdown_mm: Some(1.),
-                swivel_depth_mm: Some(0.5),
-                corner_threshold_deg: Some(90.),
-                through_cut_allowance_mm: None,
-                start: Default::default(),
-                closure_overlap_mm: None,
-                alignment: KnifeAlignment {
-                    initial_heading_deg: Some(90.),
-                },
-            }),
-        },
-    ];
-    v4_job(ARTWORK, operations)
+/// The collection fixture: one artwork item with face, carve, profile
+/// (anchor start + manual tab) and knife operations, stored as a schema-5
+/// document. It was generated once from the schema-4 fixture the deleted
+/// migration used to produce, so this suite tests the model, not a conversion.
+fn full_v5_job() -> CamJobV5 {
+    serde_json::from_str(include_str!("../../../fixtures/v5/full-job-machine.json")).unwrap()
 }
 
 fn issue_codes(issues: &[cam_core::operations::LocatedDiagnostic]) -> Vec<String> {
@@ -292,219 +44,8 @@ fn readiness_of(
 }
 
 #[test]
-fn source_free_face_job_migrates_to_an_empty_collection() {
-    let mut job = full_v4_job();
-    job.source = None;
-    // A source-free job cannot carry geometry selections; strip them so the
-    // document is a plain face-only job.
-    job.operations.retain(|op| op.id == "face-1");
-    if let OperationSettings::Face(settings) = &mut job.operations[0].settings {
-        settings.stepover_mm = None;
-    }
-    let migrated = migrate_v4(&job).unwrap();
-    assert!(migrated.artwork.is_empty(), "face-only jobs migrate to []");
-    assert_eq!(migrated.operations.len(), 1);
-    assert_eq!(migrated.setup, job.setup);
-    match &migrated.operations[0].settings {
-        v5::OperationSettingsV5::Face(settings) => {
-            assert_eq!(settings.stepover_mm, None, "missing values stay missing");
-            assert_eq!(settings.assignment.cutting_feed_mm_min, Some(300.));
-        }
-        other => panic!("unexpected settings {other:?}"),
-    }
-    let json = migrated.to_json().unwrap();
-    assert_eq!(CamJobV5::from_json(&json).unwrap(), migrated);
-    assert!(
-        !json.contains("\"source\"") && !json.contains("\"import\""),
-        "no top-level source/import fallback authorities exist"
-    );
-    let readiness = planning_readiness(&migrated, &ReadinessScope::AllEnabled).unwrap();
-    assert!(
-        readiness.ready(),
-        "a face-only collection job is reference-ready"
-    );
-}
-
-#[test]
-fn single_source_job_migrates_with_placements_selections_and_anchors() {
-    let job = full_v4_job();
-    let catalogue_v4 = ContourCatalogue::build(&job).unwrap();
-    let migrated = migrate_v4(&job).unwrap();
-
-    assert_eq!(migrated.artwork.len(), 1);
-    let item = &migrated.artwork[0];
-    assert_eq!(item.id, ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()));
-    assert_eq!(item.name, "art.svg");
-    assert_eq!(
-        item.placement,
-        placement(),
-        "the placement formula survives"
-    );
-    assert_eq!(item.import_settings.geometry_tolerance_mm, 0.001);
-    let revision = item.source_revision().unwrap();
-
-    // Identical placed geometry: the item catalogue rebuilt through the
-    // reassembled temporary import matches the schema-4 catalogue exactly.
-    let catalogue_v5 = item_catalogue(item).unwrap();
-    for (a, b) in catalogue_v4.contours.iter().zip(&catalogue_v5.contours) {
-        assert_eq!(a.id, b.id);
-        assert_eq!(a.vertices, b.vertices);
-        assert_eq!(a.source_fingerprint, b.source_fingerprint);
-        assert!((a.perimeter_mm - b.perimeter_mm).abs() < 1e-9);
-    }
-    for (a, b) in catalogue_v4
-        .open_chains
-        .iter()
-        .zip(&catalogue_v5.open_chains)
-    {
-        assert_eq!(a.id, b.id);
-        assert_eq!(a.vertices, b.vertices);
-    }
-
-    assert_eq!(
-        migrated
-            .operations
-            .iter()
-            .map(|o| o.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["face-1", "carve-1", "profile-1", "knife-1"],
-        "operation order and IDs are preserved"
-    );
-    let expected_ref = |kind, local: &str| GeometryRef {
-        artwork_item_id: ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()),
-        kind,
-        local_geometry_id: local.into(),
-        source_revision: revision.clone(),
-    };
-    match &migrated.operations[1].settings {
-        v5::OperationSettingsV5::FlatVcarve(settings) => {
-            assert_eq!(
-                settings.components,
-                vec![expected_ref(GeometryRefKind::FilledComponent, "plate::0")]
-            );
-            assert_eq!(settings.mode, FlatVcarveMode::EndmillOnly);
-            assert_eq!(settings.endmill.cutting_feed_mm_min, Some(300.));
-        }
-        other => panic!("unexpected settings {other:?}"),
-    }
-    let contour_id = catalogue_v4.contours[0].id.clone();
-    match &migrated.operations[2].settings {
-        v5::OperationSettingsV5::Profile(settings) => {
-            assert_eq!(
-                settings.contours[0].geometry,
-                expected_ref(GeometryRefKind::ClosedContour, &contour_id)
-            );
-            assert_eq!(settings.contours[0].side, ContourSide::Outside);
-            match &settings.start {
-                v5::StartSelectionV5::Anchor(anchor) => {
-                    assert_eq!(
-                        anchor.geometry,
-                        expected_ref(GeometryRefKind::ClosedContour, &contour_id)
-                    );
-                    assert_eq!(anchor.fraction_along_source_contour, 0.25);
-                    assert_eq!(
-                        anchor.source_geometry_fingerprint,
-                        catalogue_v4.contours[0].source_fingerprint
-                    );
-                }
-                other => panic!("unexpected start {other:?}"),
-            }
-            match &settings.tabs.as_ref().unwrap().placement {
-                v5::TabPlacementV5::Manual { anchors } => {
-                    assert_eq!(anchors[0].fraction_along_source_contour, 0.6);
-                }
-                other => panic!("unexpected tab placement {other:?}"),
-            }
-        }
-        other => panic!("unexpected settings {other:?}"),
-    }
-    let chain_id = catalogue_v4.open_chains[0].id.clone();
-    match &migrated.operations[3].settings {
-        v5::OperationSettingsV5::DragKnife(settings) => {
-            assert_eq!(
-                settings.chains,
-                vec![expected_ref(GeometryRefKind::Centerline, &chain_id)]
-            );
-            assert_eq!(settings.alignment.initial_heading_deg, Some(90.));
-        }
-        other => panic!("unexpected settings {other:?}"),
-    }
-
-    // Everything resolves: no inspection issues and a fully ready scope.
-    assert!(inspect_references(&migrated).unwrap().issues.is_empty());
-    assert!(
-        planning_readiness(&migrated, &ReadinessScope::AllEnabled)
-            .unwrap()
-            .ready()
-    );
-
-    let json = migrated.to_json().unwrap();
-    assert_eq!(CamJobV5::from_json(&json).unwrap(), migrated);
-}
-
-#[test]
-fn migration_fabricates_nothing() {
-    let job = full_v4_job();
-    let migrated = migrate_v4(&job).unwrap();
-    assert_eq!(migrated.machine_configuration, None);
-    assert_eq!(migrated.legacy_machine_profile, job.legacy_machine_profile);
-    for tool in &migrated.tools {
-        assert_eq!(tool.library_origin, None);
-    }
-    let assignments: Vec<_> = migrated
-        .operations
-        .iter()
-        .flat_map(|op| match &op.settings {
-            v5::OperationSettingsV5::FlatVcarve(s) => {
-                vec![&s.endmill.applied_profile, &s.vbit.applied_profile]
-            }
-            v5::OperationSettingsV5::Face(s) => vec![&s.assignment.applied_profile],
-            v5::OperationSettingsV5::Profile(s) => vec![&s.assignment.applied_profile],
-            v5::OperationSettingsV5::DragKnife(s) => vec![&s.assignment.applied_profile],
-        })
-        .collect();
-    assert!(assignments.iter().all(|p| p.is_none()));
-}
-
-#[test]
-fn unknown_local_ids_migrate_to_typed_dangling_references() {
-    let mut job = full_v4_job();
-    if let OperationSettings::Profile(settings) = &mut job.operations[2].settings {
-        settings.contours[0].contour_id = "ghost-contour".into();
-    }
-    if let OperationSettings::FlatVcarve(settings) = &mut job.operations[1].settings {
-        settings.component_ids = vec!["ghost::9".into()];
-    }
-    let migrated = migrate_v4(&job).unwrap();
-    match &migrated.operations[2].settings {
-        v5::OperationSettingsV5::Profile(settings) => {
-            assert_eq!(
-                settings.contours[0].geometry.local_geometry_id,
-                "ghost-contour"
-            );
-        }
-        other => panic!("unexpected settings {other:?}"),
-    }
-    let inspection = inspect_references(&migrated).unwrap();
-    assert!(issue_codes(&inspection.issues).contains(&"GEOMETRY_REFERENCE".into()));
-    let readiness = readiness_of(&migrated, &ReadinessScope::AllEnabled);
-    assert_eq!(
-        readiness,
-        vec![
-            ("carve-1".to_string(), false),
-            ("face-1".to_string(), true),
-            ("knife-1".to_string(), true),
-            ("profile-1".to_string(), false)
-        ]
-        .into_iter()
-        .collect(),
-        "unknown local IDs block exactly the operations that select them"
-    );
-}
-
-#[test]
 fn dangling_references_round_trip_and_block_only_the_affected_scope() {
-    let mut migrated = migrate_v4(&full_v4_job()).unwrap();
+    let mut migrated = full_v5_job();
     // Deleting the artwork item keeps its references dangling but saveable.
     migrated.artwork.clear();
     let json = migrated.to_json().unwrap();
@@ -575,7 +116,7 @@ fn dangling_references_round_trip_and_block_only_the_affected_scope() {
 
 #[test]
 fn forward_face_references_are_saveable_and_block_only_their_operation() {
-    let mut migrated = migrate_v4(&full_v4_job()).unwrap();
+    let mut migrated = full_v5_job();
     // Move the face after the profile: its FaceResult reference becomes
     // forward while staying structurally valid and saveable.
     let face = migrated.operations.remove(0);
@@ -598,7 +139,7 @@ fn forward_face_references_are_saveable_and_block_only_their_operation() {
 
 #[test]
 fn source_revision_changes_invalidate_references_until_reattached() {
-    let migrated = migrate_v4(&full_v4_job()).unwrap();
+    let migrated = full_v5_job();
 
     // Any content change invalidates, including sub-fingerprint-grid edits.
     let mut edited = migrated.clone();
@@ -629,7 +170,7 @@ fn source_revision_changes_invalidate_references_until_reattached() {
 
 #[test]
 fn identical_byte_items_stay_distinct() {
-    let mut job = migrate_v4(&full_v4_job()).unwrap();
+    let mut job = full_v5_job();
     let first = job.artwork[0].clone();
     let mut second = first.clone();
     second.id = ArtworkItemId("lettering".into());
@@ -646,7 +187,7 @@ fn identical_byte_items_stay_distinct() {
         ..reference.clone()
     };
     let to_first = |reference: &GeometryRef| GeometryRef {
-        artwork_item_id: ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()),
+        artwork_item_id: ArtworkItemId(FIXTURE_ARTWORK.into()),
         source_revision: first_revision.clone(),
         ..reference.clone()
     };
@@ -680,7 +221,7 @@ fn identical_byte_items_stay_distinct() {
 
 #[test]
 fn provenance_and_machine_configuration_round_trip() {
-    let mut job = migrate_v4(&full_v4_job()).unwrap();
+    let mut job = full_v5_job();
     job.tools[0].library_origin = Some(LibraryOrigin {
         library_id: "library-1".into(),
         tool_id: "lib-tool-7".into(),
@@ -761,7 +302,7 @@ fn provenance_and_machine_configuration_round_trip() {
 
 #[test]
 fn machine_mapping_dangling_rows_are_inspection_issues() {
-    let mut job = migrate_v4(&full_v4_job()).unwrap();
+    let mut job = full_v5_job();
     job.machine_configuration = Some(AppliedMachineConfiguration {
         origin: ConfigurationOrigin {
             configuration_id: "machine-1".into(),
@@ -796,7 +337,7 @@ fn machine_mapping_dangling_rows_are_inspection_issues() {
 
 #[test]
 fn structural_integrity_still_rejects_malformed_documents() {
-    let base = migrate_v4(&full_v4_job()).unwrap();
+    let base = full_v5_job();
 
     let mut duplicate_item = base.clone();
     duplicate_item
@@ -850,56 +391,12 @@ fn structural_integrity_still_rejects_malformed_documents() {
     // The frozen schema-4 parser refuses schema-5 documents instead of
     // flattening them: the collection shape has no schema-4 spelling (no
     // top-level import), so strict parsing rejects it outright.
-    assert!(CamJob::from_json(&json).is_err());
-}
-
-#[test]
-fn migrate_json_routes_every_supported_schema() {
-    let v4 = full_v4_job();
-    let v5 = migrate_v4(&v4).unwrap();
-
-    // Schema 5 parses directly.
-    assert_eq!(migrate_json(&v5.to_json().unwrap()).unwrap(), v5);
-    // Schema 4 migrates.
-    assert_eq!(migrate_json(&v4.to_json().unwrap()).unwrap(), v5);
-    // Legacy schema 2 chains through the frozen compatibility steps.
-    let legacy = migrate_json(M3_RECTANGLE).unwrap();
-    assert_eq!(legacy.schema_version, v5::CAM_JOB_V5_SCHEMA_VERSION);
-    assert_eq!(legacy.artwork.len(), 1);
-    assert_eq!(
-        legacy.artwork[0].id,
-        ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into())
-    );
-    assert_eq!(legacy.operations.len(), 1);
-    match &legacy.operations[0].settings {
-        v5::OperationSettingsV5::FlatVcarve(settings) => {
-            assert_eq!(settings.mode, FlatVcarveMode::EndmillOnly);
-            assert_eq!(
-                settings.max_depth_mm,
-                Some(2.),
-                "cutting values are preserved"
-            );
-        }
-        other => panic!("unexpected settings {other:?}"),
-    }
-    assert!(
-        inspect_references(&legacy).unwrap().issues.is_empty(),
-        "the migrated legacy selection resolves against its snapshot"
-    );
-    // Unknown schema versions stay rejected.
-    let unknown = v5
-        .to_json()
-        .unwrap()
-        .replace("\"schema_version\": 5", "\"schema_version\": 99");
-    assert_eq!(
-        migrate_json(&unknown).unwrap_err().code,
-        "CAM_JOB_SCHEMA_VERSION"
-    );
+    assert!(cam_core::job::input_from_fixture_json(&json).is_err());
 }
 
 #[test]
 fn unresolvable_items_report_import_failures_without_blocking_saves() {
-    let mut job = migrate_v4(&full_v4_job()).unwrap();
+    let mut job = full_v5_job();
     job.artwork[0].content = ArtworkContent::Svg(SourceSnapshot {
         filename: "art.svg".into(),
         svg: "not xml at all".into(),

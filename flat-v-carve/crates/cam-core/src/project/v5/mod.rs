@@ -16,9 +16,11 @@
 //!   the requested enabled scope; an unresolved reference in an unrelated
 //!   disabled operation or outside a planned prefix never blocks that prefix.
 //!
-//! The frozen schema-4 DTO ([`crate::project::CamJob`]) is the migration
-//! input; [`migrate`] upgrades validated schema-4 documents (and, through the
-//! existing compatibility step, legacy schema-1/2/3 jobs) into this model.
+//! This is the only parseable job document. [`crate::project::CamJob`] and
+//! [`crate::job::Job`] survive as in-memory substrates — the engine's input
+//! and the collection catalogue's source — with no parse surface of their
+//! own, and nothing converts a document into this model: an older document is
+//! refused by name (docs/flat-v-carve/schema-diet-plan.md).
 use crate::{
     geometry::{Diagnostic, Result},
     job::{MachineProfile, PlanningTolerances, SourceSnapshot},
@@ -31,10 +33,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 pub mod artwork;
+pub mod authoring;
 pub mod commands;
 pub mod inspection;
 pub mod machine;
-pub mod migrate;
 pub mod references;
 pub mod resolve;
 pub mod resources;
@@ -43,10 +45,6 @@ pub use artwork::{CombinedCatalogue, GeometryPick, SetupBounds, inspect_artwork,
 pub use references::ReadinessScope;
 
 pub const CAM_JOB_V5_SCHEMA_VERSION: u32 = 5;
-
-/// Deterministic item ID assigned to the single source of a migrated
-/// schema-4 job (plan section 22.3, migration rule 2).
-pub const MIGRATED_ARTWORK_ITEM_ID: &str = "artwork-1";
 
 /// Version of the source-revision digest algorithm (content + interpretation).
 /// Bumping it invalidates every stored geometry reference conservatively when

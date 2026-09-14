@@ -102,7 +102,6 @@ fn knife_operation() -> Operation {
 
 fn job() -> CamJob {
     let job = CamJob {
-        schema_version: 4,
         name: "knife-stage".into(),
         source: None,
         import: Default::default(),

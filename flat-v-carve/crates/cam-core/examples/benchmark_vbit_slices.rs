@@ -1,7 +1,7 @@
 //! Diagnostic reconstruction of stock from saved motions; does not authenticate
 //! the plan or rerun planning. Reports geometry hashes as well as elapsed time.
 use cam_core::{
-    job::{Job, ToolGeometry},
+    job::ToolGeometry,
     model::{Depth, VBit},
     motion::Motion,
     stock::vbit_removal_at_slice,
@@ -21,7 +21,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input = fs::read(&args[1])?;
     let input_hash = format!("{:x}", Sha256::digest(&input));
     let value: serde_json::Value = serde_json::from_slice(&input)?;
-    let job = Job::from_json(&serde_json::to_string(&value["endmill"]["job"])?)?;
+    let job =
+        cam_core::job::input_from_fixture_json(&serde_json::to_string(&value["endmill"]["job"])?)?;
     let geometry = job.inspect()?.geometry;
     let settings = job
         .tools

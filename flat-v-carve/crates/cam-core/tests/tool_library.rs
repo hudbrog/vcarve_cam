@@ -9,7 +9,8 @@ use cam_core::{
 use serde_json::{Value, json};
 
 fn job() -> Job {
-    Job::from_json(include_str!("../../../fixtures/m4/island.json")).unwrap()
+    cam_core::job::input_from_fixture_json(include_str!("../../../fixtures/m4/island.json"))
+        .unwrap()
 }
 fn tool(index: usize) -> LibraryTool {
     let settings = &job().tools[index];
@@ -194,7 +195,7 @@ fn tool_and_preset_crud_are_immutable_transactions() {
 #[test]
 fn conflicts_bad_references_and_import_collisions_leave_original_unchanged() {
     let library = library();
-    let before = library.to_json().unwrap();
+    let before = serde_json::to_string(&library).unwrap();
     assert_eq!(
         library
             .changed(
@@ -259,7 +260,7 @@ fn conflicts_bad_references_and_import_collisions_leave_original_unchanged() {
             .code,
         "LIBRARY_DUPLICATE_ID"
     );
-    assert_eq!(library.to_json().unwrap(), before);
+    assert_eq!(serde_json::to_string(&library).unwrap(), before);
 }
 
 #[test]
@@ -278,9 +279,12 @@ fn applying_copies_snapshots_and_preserves_job_ids_machine_and_other_settings() 
     let mut expected = value(&original);
     expected["tools"][1]["cutting_feed_mm_min"] = json!(444.);
     assert_eq!(value(&result), expected);
-    let saved = result.to_json().unwrap();
+    let saved = serde_json::to_string(&result).unwrap();
     library.tools.clear();
-    assert_eq!(Job::from_json(&saved).unwrap().to_json().unwrap(), saved);
+    assert_eq!(
+        serde_json::to_string(&cam_core::job::input_from_fixture_json(&saved).unwrap()).unwrap(),
+        saved
+    );
     assert_eq!(original.tools[1].cutting_feed_mm_min, Some(300.));
 }
 
@@ -314,7 +318,7 @@ fn no_preset_and_partial_presets_clear_previous_cutting_values_without_inference
 fn apply_rejects_wrong_kind_missing_preset_and_insufficient_cutting_length_without_mutation() {
     let mut library = library();
     let original = job();
-    let before = original.to_json().unwrap();
+    let before = serde_json::to_string(&original).unwrap();
     assert_eq!(
         library
             .apply_to_job(&original, ToolSlot::Vbit, "saved-0", None)
@@ -340,7 +344,7 @@ fn apply_rejects_wrong_kind_missing_preset_and_insufficient_cutting_length_witho
             .code,
         "ENDMILL_CUTTING_LENGTH"
     );
-    assert_eq!(original.to_json().unwrap(), before);
+    assert_eq!(serde_json::to_string(&original).unwrap(), before);
 }
 
 #[test]
@@ -400,7 +404,9 @@ fn resource_and_revision_limits_are_checked_on_reads_and_changes() {
 
 #[test]
 fn applying_a_changed_preset_invalidates_existing_plan_identity() {
-    let original = Job::from_json(include_str!("../../../fixtures/m3/no-access.json")).unwrap();
+    let original =
+        cam_core::job::input_from_fixture_json(include_str!("../../../fixtures/m3/no-access.json"))
+            .unwrap();
     let mut plan = plan_endmill(&original).unwrap();
     let mut tool =
         LibraryTool::from_settings("new".into(), "Synthetic".into(), &original.tools[0]).unwrap();
@@ -416,7 +422,7 @@ fn applying_a_changed_preset_invalidates_existing_plan_identity() {
         .apply_to_job(&original, ToolSlot::Endmill, "new", Some("new"))
         .unwrap();
     assert_eq!(
-        EndmillPlan::from_json(&plan.to_json().unwrap())
+        EndmillPlan::from_json(&serde_json::to_string(&plan).unwrap())
             .unwrap_err()
             .code,
         "STALE_PLAN"
@@ -486,7 +492,6 @@ fn knife_job() -> CamJob {
         })
     };
     let job = CamJob {
-        schema_version: 4,
         name: "knife-library".into(),
         source: None,
         import: Default::default(),
@@ -744,7 +749,10 @@ fn knife_presets_apply_to_exactly_one_canonical_operation() {
     assert_eq!(
         library
             .apply_to_job(
-                &Job::from_json(include_str!("../../../fixtures/m3/no-access.json")).unwrap(),
+                &cam_core::job::input_from_fixture_json(include_str!(
+                    "../../../fixtures/m3/no-access.json"
+                ))
+                .unwrap(),
                 ToolSlot::Endmill,
                 "blade",
                 None

@@ -1,6 +1,5 @@
 //! Opt-in real-artwork regression for generation, authentication and output.
 use cam_core::{
-    job::Job,
     motion::{Motion, MotionKind},
     pocket::PlanStatus,
     post::{LinuxCncProfile, ProgramLayout, export_plan, verify_programs},
@@ -16,7 +15,7 @@ fn tiny(m: &Motion) -> bool {
 #[ignore = "real flower planning, saved-plan replay, and full-stock G-code verification"]
 fn flower_has_no_grid_tick_moves_and_replays_and_exports() {
     let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../real_data");
-    let job = Job::from_json(
+    let job = cam_core::job::input_from_fixture_json(
         &std::fs::read_to_string(data.join("flower_box-svg.job-real.json")).unwrap(),
     )
     .unwrap();

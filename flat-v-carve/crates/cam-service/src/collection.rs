@@ -9,7 +9,7 @@
 //! commands take the library or configuration document as an explicit input
 //! and return independent copied values: reopening the result needs neither
 //! file, and later edits to them cannot change a saved job.
-use crate::document::{ENGINE_VERSION, UiDiagnostic};
+use crate::{ENGINE_VERSION, UiDiagnostic};
 use cam_core::{
     checks::check_plan_v5,
     geometry::{Diagnostic, Result},
@@ -20,7 +20,6 @@ use cam_core::{
         commands::AffectedEntity,
         inspection::{self, DocumentInspection, PlanInspection},
         machine,
-        migrate::migrate_json,
         references::ReadinessScope,
         resources::{self, AssignmentRole},
     },
@@ -201,25 +200,42 @@ pub fn fingerprint(job: &CamJobV5) -> String {
 
 pub(crate) fn parse_job(value: &Value) -> Result<CamJobV5> {
     let raw = value.to_string();
-    if raw.len() > crate::document::JOB_BYTES {
+    if raw.len() > crate::JOB_BYTES {
         return Err(error("JOB_RESOURCE_LIMIT", "job exceeds 64 MB"));
     }
+    require_current_schema(&raw)?;
+    CamJobV5::from_json(&raw)
+}
+
+/// One document model: a schema-5 job. An older document is refused by name,
+/// never converted — the compatibility policy (§0) is what makes that the
+/// cheaper answer, and a converted document would hide which fields the
+/// caller never supplied.
+fn require_current_schema(raw: &str) -> Result<()> {
     let version: Value =
-        serde_json::from_str(&raw).map_err(|e| error("COLLECTION_JOB_JSON", e.to_string()))?;
+        serde_json::from_str(raw).map_err(|e| error("COLLECTION_JOB_JSON", e.to_string()))?;
     let schema = version.get("schema_version").and_then(Value::as_u64);
-    if schema > Some(u64::from(CAM_JOB_V5_SCHEMA_VERSION)) {
+    if schema != Some(u64::from(CAM_JOB_V5_SCHEMA_VERSION)) {
         return Err(error(
             "COLLECTION_SCHEMA_UNSUPPORTED",
             format!(
-                "schema {} documents need a newer client; this ui-9 client refuses them",
-                schema.unwrap_or_default()
+                "this is a schema {} job; schema {CAM_JOB_V5_SCHEMA_VERSION} is the only document model, and older documents are not converted",
+                schema.map_or("without a version".to_owned(), |v| v.to_string())
             ),
         ));
     }
-    migrate_json(&raw)
+    Ok(())
 }
 
 fn parse_library(value: &Value) -> Result<ToolLibrary> {
+    // The workspace exports its resource catalog — `{schema, id, library}` —
+    // and the library object inside it is what the copy commands take. Accept
+    // either shape so a user can feed back the file they exported without
+    // unpacking it by hand.
+    let value = value
+        .get("library")
+        .filter(|library| library.is_object())
+        .unwrap_or(value);
     let raw = value.to_string();
     if raw.len() > tool_library::MAX_LIBRARY_BYTES {
         return Err(error("LIBRARY_RESOURCE_LIMIT", "tool library exceeds 8 MB"));
@@ -280,11 +296,10 @@ fn issues_value(job: &CamJobV5) -> Result<Value> {
     Ok(json!(v5::references::inspect_references(job)?.issues))
 }
 
-fn document_projection(job: &CamJobV5, migrated: bool) -> Result<Value> {
+fn document_projection(job: &CamJobV5) -> Result<Value> {
     let inspection: DocumentInspection = inspection::inspect_document(job);
     Ok(json!({
         "job": serde_json::to_value(job).expect("validated job serializes"),
-        "migrated": migrated,
         "artwork": artwork_projection(job)?,
         "inspection": inspection,
         "issues": issues_value(job)?,
@@ -377,24 +392,12 @@ pub(crate) fn inspect_plan_value(plan: &OperationPlanV5) -> Result<PlanInspectio
 }
 
 fn open(raw: &str) -> Result<Value> {
-    if raw.len() > crate::document::JOB_BYTES {
+    if raw.len() > crate::JOB_BYTES {
         return Err(error("JOB_RESOURCE_LIMIT", "job exceeds 64 MB"));
     }
-    let version: Value =
-        serde_json::from_str(raw).map_err(|e| error("COLLECTION_JOB_JSON", e.to_string()))?;
-    let schema = version.get("schema_version").and_then(Value::as_u64);
-    if schema > Some(u64::from(CAM_JOB_V5_SCHEMA_VERSION)) {
-        return Err(error(
-            "COLLECTION_SCHEMA_UNSUPPORTED",
-            format!(
-                "schema {} documents need a newer client; this ui-9 client refuses them",
-                schema.unwrap_or_default()
-            ),
-        ));
-    }
-    let migrated = schema != Some(u64::from(CAM_JOB_V5_SCHEMA_VERSION));
-    let job = migrate_json(raw)?;
-    document_projection(&job, migrated)
+    require_current_schema(raw)?;
+    let job = CamJobV5::from_json(raw)?;
+    document_projection(&job)
 }
 
 /// Execute one stateless ui-9 command. Planning recomputes from the
@@ -599,7 +602,7 @@ pub fn execute(command: CollectionCommand) -> Result<Value> {
             },
             "limits": {
                 "pageMotions": crate::task::PAGE_MOTIONS,
-                "jobBytes": crate::document::JOB_BYTES,
+                "jobBytes": crate::JOB_BYTES,
                 "libraryBytes": tool_library::MAX_LIBRARY_BYTES,
                 "programBytes": crate::export::PROGRAM_BYTES,
                 "retainedPlans": crate::retained::RETAINED_PLANS,

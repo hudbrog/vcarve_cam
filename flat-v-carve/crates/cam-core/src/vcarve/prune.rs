@@ -243,7 +243,8 @@ mod tests {
 
     #[test]
     fn endpoint_bound_covers_the_whole_sweep_and_finite_tip_at_all_test_points() {
-        let job = Job::from_json(include_str!("../../../../fixtures/m4/finite-tip.json")).unwrap();
+        let job =
+            Job::from_fixture(include_str!("../../../../fixtures/m4/finite-tip.json")).unwrap();
         let ctx = Context::new(&job).unwrap();
         let slope = ctx.tool.angle().slope();
         let q = Position::new(Point::new(3., 0.), -2.);
@@ -280,7 +281,7 @@ mod tests {
             vcarve::{medial, routing},
         };
         let mut job =
-            Job::from_json(include_str!("../../../../fixtures/m4/narrow-channel.json")).unwrap();
+            Job::from_fixture(include_str!("../../../../fixtures/m4/narrow-channel.json")).unwrap();
         job.import.geometry_tolerance_mm = 0.001;
         job.source.svg = job.source.svg.replace(
             "M0 0h3v20h-3z",
@@ -339,7 +340,8 @@ mod tests {
     #[test]
     fn contour_simplification_bounds_flank_coverage_and_keeps_closed_loops() {
         use crate::stock::StockQuery;
-        let job = Job::from_json(include_str!("../../../../fixtures/m4/wide-floor.json")).unwrap();
+        let job =
+            Job::from_fixture(include_str!("../../../../fixtures/m4/wide-floor.json")).unwrap();
         let ctx = Context::new(&job).unwrap();
         let original = Candidate {
             family: PathFamily::Boundary,
@@ -394,7 +396,7 @@ mod tests {
     fn isolated_witnesses_survive_and_approximation_does_not_chain() {
         use crate::vcarve::medial;
         let job =
-            Job::from_json(include_str!("../../../../fixtures/m4/narrow-channel.json")).unwrap();
+            Job::from_fixture(include_str!("../../../../fixtures/m4/narrow-channel.json")).unwrap();
         let ctx = Context::new(&job).unwrap();
         let (axis, _) = medial::build(&ctx).unwrap();
         let id = axis

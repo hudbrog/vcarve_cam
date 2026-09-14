@@ -19,7 +19,7 @@ pub fn validate_identity(
     revision: u64,
     expected_instance: &str,
 ) -> Result<(), Failure> {
-    if api_version != crate::document::API_VERSION || instance_id != expected_instance {
+    if api_version != crate::API_VERSION || instance_id != expected_instance {
         return Err(Failure::new(
             409,
             "TASK_INSTANCE",

@@ -184,7 +184,6 @@ fn profile_op(id: &str, face_id: Option<&str>, through: Option<f64>) -> Operatio
 
 fn job(operations: Vec<Operation>) -> CamJob {
     CamJob {
-        schema_version: 4,
         name: "Face, carve, profile".into(),
         source: Some(SourceSnapshot {
             filename: "art.svg".into(),

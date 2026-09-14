@@ -1,5 +1,4 @@
 {
-  "schema_version": 2,
   "name": "Synthetic narrow-margin",
   "source": {
     "filename": "synthetic.svg",

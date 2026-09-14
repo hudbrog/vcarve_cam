@@ -39,7 +39,7 @@ fn parallel_cells_preserve_serial_results_and_global_resource_limits() {
 }
 
 fn job() -> Job {
-    Job::from_json(include_str!(
+    Job::from_fixture(include_str!(
         "../../../../../fixtures/m4/curved-medial.json"
     ))
     .unwrap()

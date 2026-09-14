@@ -1,0 +1,327 @@
+{
+  "schema_version": 5,
+  "name": "collection source",
+  "setup": {
+    "stock": {
+      "thickness_mm": 8.0
+    },
+    "work_zero": {
+      "xy": {
+        "kind": "setup_origin"
+      },
+      "z": "stock_top"
+    },
+    "clearance_above_stock_mm": 5.0,
+    "start_xy_mm": {
+      "x": 0.0,
+      "y": 0.0
+    }
+  },
+  "artwork": [
+    {
+      "id": "artwork-1",
+      "name": "art.svg",
+      "content": {
+        "kind": "svg",
+        "filename": "art.svg",
+        "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40mm\" height=\"30mm\" viewBox=\"0 0 40 30\"><rect id=\"plate\" x=\"2\" y=\"2\" width=\"10\" height=\"6\" fill=\"#fff\"/><path id=\"cut\" fill=\"none\" stroke=\"#000\" stroke-width=\"0.4\" d=\"M20 4 L30 4\"/></svg>"
+      },
+      "import_settings": {
+        "geometry_tolerance_mm": 0.001
+      },
+      "placement": {
+        "origin_mm": {
+          "x": 3.0,
+          "y": 4.0
+        },
+        "scale": 2.0,
+        "rotation_deg": 90.0
+      }
+    }
+  ],
+  "tools": [
+    {
+      "id": "t1",
+      "name": "3mm endmill",
+      "geometry": {
+        "kind": "endmill",
+        "dimensions": {
+          "diameter_mm": 3.0,
+          "cutting_length_mm": 8.0
+        }
+      },
+      "capabilities": {
+        "plunge_capable": true,
+        "ramp_capable": true
+      }
+    },
+    {
+      "id": "t2",
+      "name": "90 degree V-bit",
+      "geometry": {
+        "kind": "vbit",
+        "dimensions": {
+          "included_angle_deg": 90.0,
+          "tip_diameter_mm": 0.2,
+          "max_cutting_diameter_mm": 12.0,
+          "cutting_height_mm": 3.0
+        }
+      },
+      "capabilities": {}
+    },
+    {
+      "id": "t3",
+      "name": "drag knife",
+      "geometry": {
+        "kind": "drag_knife",
+        "dimensions": {
+          "blade_offset_mm": 1.5,
+          "max_cut_depth_mm": 2.0
+        }
+      },
+      "capabilities": {}
+    }
+  ],
+  "operations": [
+    {
+      "id": "face-1",
+      "name": "Face",
+      "enabled": true,
+      "settings": {
+        "kind": "face",
+        "settings": {
+          "area": {
+            "kind": "rectangle",
+            "rect": {
+              "min_x_mm": 0.0,
+              "min_y_mm": 0.0,
+              "width_mm": 100.0,
+              "length_mm": 60.0
+            }
+          },
+          "margins": {},
+          "entry_overrun_mm": 2.0,
+          "exit_overrun_mm": 2.0,
+          "top": {
+            "reference": {
+              "kind": "stock_top"
+            },
+            "offset_mm": 0.0
+          },
+          "bottom": {
+            "reference": {
+              "kind": "stock_top"
+            },
+            "offset_mm": -0.5
+          },
+          "stepdown_mm": 0.5,
+          "stepover_mm": 2.0,
+          "pass_angle_deg": 0.0,
+          "pattern": "zig_zag",
+          "assignment": {
+            "tool_id": "t1",
+            "spindle_rpm": 10000.0,
+            "cutting_feed_mm_min": 300.0,
+            "plunge_feed_mm_min": 100.0,
+            "max_stepdown_mm": 1.0,
+            "stepover_mm": 1.5
+          }
+        }
+      }
+    },
+    {
+      "id": "carve-1",
+      "name": "Carve the plate",
+      "enabled": true,
+      "settings": {
+        "kind": "flat_vcarve",
+        "settings": {
+          "components": [
+            {
+              "artwork_item_id": "artwork-1",
+              "kind": "filled_component",
+              "local_geometry_id": "plate::0",
+              "source_revision": {
+                "content_digest": "56af3056675a53aff0c8986a0e3ccdb0372166d0ff4d3932702e5ab0a970ad48",
+                "algorithm_version": 1
+              }
+            }
+          ],
+          "mode": "endmill_only",
+          "endmill": {
+            "tool_id": "t1",
+            "spindle_rpm": 10000.0,
+            "cutting_feed_mm_min": 300.0,
+            "plunge_feed_mm_min": 100.0,
+            "max_stepdown_mm": 1.0,
+            "stepover_mm": 1.5
+          },
+          "vbit": {
+            "tool_id": "t2",
+            "spindle_rpm": 10000.0,
+            "cutting_feed_mm_min": 300.0,
+            "plunge_feed_mm_min": 100.0,
+            "max_stepdown_mm": 1.0,
+            "stepover_mm": 1.5
+          },
+          "top": {
+            "reference": {
+              "kind": "stock_top"
+            },
+            "offset_mm": 0.0
+          },
+          "max_depth_mm": 1.5
+        }
+      }
+    },
+    {
+      "id": "profile-1",
+      "name": "Cut the plate free",
+      "enabled": true,
+      "settings": {
+        "kind": "profile",
+        "settings": {
+          "contours": [
+            {
+              "geometry": {
+                "artwork_item_id": "artwork-1",
+                "kind": "closed_contour",
+                "local_geometry_id": "plate-0-outer",
+                "source_revision": {
+                  "content_digest": "56af3056675a53aff0c8986a0e3ccdb0372166d0ff4d3932702e5ab0a970ad48",
+                  "algorithm_version": 1
+                }
+              },
+              "side": "outside"
+            }
+          ],
+          "assignment": {
+            "tool_id": "t1",
+            "spindle_rpm": 10000.0,
+            "cutting_feed_mm_min": 300.0,
+            "plunge_feed_mm_min": 100.0,
+            "max_stepdown_mm": 1.0,
+            "stepover_mm": 1.5
+          },
+          "top": {
+            "reference": {
+              "kind": "face_result",
+              "operation_id": "face-1"
+            },
+            "offset_mm": 0.0
+          },
+          "bottom": {
+            "reference": {
+              "kind": "operation_top"
+            },
+            "offset_mm": -2.0
+          },
+          "direction": "climb",
+          "order": "inner_before_outer",
+          "start": {
+            "kind": "anchor",
+            "geometry": {
+              "artwork_item_id": "artwork-1",
+              "kind": "closed_contour",
+              "local_geometry_id": "plate-0-outer",
+              "source_revision": {
+                "content_digest": "56af3056675a53aff0c8986a0e3ccdb0372166d0ff4d3932702e5ab0a970ad48",
+                "algorithm_version": 1
+              }
+            },
+            "source_geometry_fingerprint": "d7369552b5227444b44133fe22af763af28043ccefadda1333eaa5b8ceddd6ed",
+            "fraction_along_source_contour": 0.25
+          },
+          "finish": {
+            "enabled": false
+          },
+          "entry": {
+            "kind": "plunge"
+          },
+          "lead_in": {
+            "kind": "none"
+          },
+          "lead_out": {
+            "kind": "none"
+          },
+          "tabs": {
+            "height_mm": 2.0,
+            "width_mm": 5.0,
+            "shape": "rectangular",
+            "placement": {
+              "kind": "manual",
+              "anchors": [
+                {
+                  "geometry": {
+                    "artwork_item_id": "artwork-1",
+                    "kind": "closed_contour",
+                    "local_geometry_id": "plate-0-outer",
+                    "source_revision": {
+                      "content_digest": "56af3056675a53aff0c8986a0e3ccdb0372166d0ff4d3932702e5ab0a970ad48",
+                      "algorithm_version": 1
+                    }
+                  },
+                  "source_geometry_fingerprint": "d7369552b5227444b44133fe22af763af28043ccefadda1333eaa5b8ceddd6ed",
+                  "fraction_along_source_contour": 0.6
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "knife-1",
+      "name": "Score the cut line",
+      "enabled": true,
+      "settings": {
+        "kind": "drag_knife",
+        "settings": {
+          "chains": [
+            {
+              "artwork_item_id": "artwork-1",
+              "kind": "centerline",
+              "local_geometry_id": "plate-chain-0",
+              "source_revision": {
+                "content_digest": "56af3056675a53aff0c8986a0e3ccdb0372166d0ff4d3932702e5ab0a970ad48",
+                "algorithm_version": 1
+              }
+            }
+          ],
+          "assignment": {
+            "tool_id": "t3",
+            "cutting_feed_mm_min": 150.0,
+            "plunge_feed_mm_min": 50.0,
+            "swivel_feed_mm_min": 75.0,
+            "max_stepdown_mm": 1.0
+          },
+          "top": {
+            "reference": {
+              "kind": "stock_top"
+            },
+            "offset_mm": 0.0
+          },
+          "bottom": {
+            "reference": {
+              "kind": "stock_top"
+            },
+            "offset_mm": -1.0
+          },
+          "stepdown_mm": 1.0,
+          "swivel_depth_mm": 0.5,
+          "corner_threshold_deg": 90.0,
+          "start": {
+            "kind": "automatic"
+          },
+          "alignment": {
+            "initial_heading_deg": 90.0
+          }
+        }
+      }
+    }
+  ],
+  "tolerances": {
+    "motion_tolerance_mm": null,
+    "verification_tolerance_mm": null
+  }
+}

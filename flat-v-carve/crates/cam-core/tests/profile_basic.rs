@@ -111,7 +111,6 @@ fn contour_ref(id: &str, side: ContourSide) -> ProfileContour {
 
 fn job(svg: &str, operation: Operation, stock: (f64, f64, f64)) -> CamJob {
     CamJob {
-        schema_version: 4,
         name: "profile".into(),
         source: Some(SourceSnapshot {
             filename: "art.svg".into(),

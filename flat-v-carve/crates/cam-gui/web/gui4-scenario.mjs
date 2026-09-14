@@ -96,17 +96,19 @@ export async function gui4Scenario({control,edit,state,waitFor,send,evaluate,sle
   await waitFor(s=>!s.active&&s.current&&s.job.artworks.length===4,'dropped SVG adds to the existing project');
   if((await state()).job.components!==2)throw new Error('Dropping SVG changed the existing carving assignment');
   record('SVG drop adds artwork and preserves the existing project',await state());
-  // The schema-3 revision of the real job: the tester's `real_data/` file is
-  // saved from their own session and is schema 5, so it is no longer an
-  // "older job" for this migration walk.
-  await control('File');await chooseFile('Import older job','fixtures/m4/flower-combined-legacy.json');
-  await waitFor(s=>!s.active&&s.job.artworks.length===1&&s.job.name!=='lettering.svg','explicit older-job import');
+  // One document model: an earlier-format file is refused by name instead of
+  // being converted, and the open project is left exactly as it was.
+  revision=(await state()).revision;
+  await control('File');await chooseFile('Open job','fixtures/m4/flower-combined-legacy.json');
+  await waitFor(s=>!s.active&&/schema/i.test(String(s.status)),'older document refused by name');
+  if((await state()).revision!==revision)throw new Error('A refused older document changed the open project');
+  record('older document refused by name and the open project unchanged',await state());
   await control('Machine');await control('Example machine');await control('Apply flower machine profile');
-  await waitFor(s=>!s.active&&s.job.machine,'migrated project has one applied machine');
-  await control('Save job');await waitFor(s=>s.status.includes('Download requested'),'migrated portable job download');await sleep(700);
-  const migratedName=(await state()).job.name;
-  const migrated=readdirSync(out).filter(n=>n.endsWith('.json')).map(n=>readFileSync(path.join(out,n),'utf8')).find(text=>{try{const j=JSON.parse(text);return j.schema_version===5&&j.name===migratedName&&j.machine_configuration&&j.artwork.length===1;}catch{return false;}});
-  if(!migrated)throw new Error('Migrated job and machine were not saved together');
-  revision=(await state()).revision;await drop(migrated,'migrated-portable.job.json');await waitFor(s=>s.revision>revision&&!s.active&&s.job.machine&&s.job.name===migratedName,'migrated portable project reopens without separate resources');
-  record('explicit migration applied profile portable save and independent reopen',await state());
+  await waitFor(s=>!s.active&&s.job.machine,'applied machine configuration');
+  await control('Save job');await waitFor(s=>s.status.includes('Download requested'),'portable job download');await sleep(700);
+  const savedName=(await state()).job.name;
+  const saved=readdirSync(out).filter(n=>n.endsWith('.json')).map(n=>readFileSync(path.join(out,n),'utf8')).find(text=>{try{const j=JSON.parse(text);return j.schema_version===5&&j.name===savedName&&j.machine_configuration&&j.artwork.length>0;}catch{return false;}});
+  if(!saved)throw new Error('Portable job and machine configuration were not saved together');
+  revision=(await state()).revision;await drop(saved,'portable.job.json');await waitFor(s=>s.revision>revision&&!s.active&&s.job.machine&&s.job.name===savedName,'portable project reopens without separate resources');
+  record('applied profile portable save and independent reopen',await state());
 }

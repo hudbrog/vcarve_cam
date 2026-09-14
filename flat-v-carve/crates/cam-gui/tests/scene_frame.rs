@@ -6,14 +6,8 @@
 //! rendered larger than the stock material", and switching the pass angle to
 //! 90 degrees made it stop reproducing.
 use cam_core::{
-    job::{PlanningTolerances, SourceSnapshot},
-    project::{
-        CamJob, EndmillGeometry, FaceArea, FaceMargins, FacePattern, FaceSettings, HeightRef,
-        HeightReference, JobTool, MillingAssignment, Operation, OperationSettings, RectXY,
-        SetupSettings, SpindleDirection, StockSetup, ToolCapabilities, ToolGeometry, WorkZero,
-        WorkZeroXY, WorkZeroZ,
-        v5::{CamJobV5, migrate::migrate_v4},
-    },
+    job::SourceSnapshot,
+    project::v5::{ArtworkContent, CamJobV5, OperationSettingsV5},
 };
 use cam_gui_runtime::{
     compute, pages,
@@ -33,85 +27,21 @@ const PAGE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" hei
 /// artwork, and one whole-stock face operation with the 50.2 mm plate that
 /// made the toolpath travel a full cutter radius past every row end.
 fn facing_job(pass_angle_deg: f64) -> CamJobV5 {
-    let job = CamJob {
-        schema_version: 4,
-        name: "facing_job".into(),
-        source: Some(SourceSnapshot {
-            filename: "flower_box.svg".into(),
-            svg: PAGE.into(),
-        }),
-        import: Default::default(),
-        setup: SetupSettings {
-            stock: StockSetup {
-                thickness_mm: Some(18.),
-                xy: Some(RectXY {
-                    min_x_mm: 0.,
-                    min_y_mm: 0.,
-                    width_mm: 200.,
-                    length_mm: 100.,
-                }),
-            },
-            work_zero: WorkZero {
-                xy: WorkZeroXY::SetupOrigin,
-                z: WorkZeroZ::StockTop,
-            },
-            clearance_above_stock_mm: Some(5.),
-            start_xy_mm: None,
-        },
-        tools: vec![JobTool {
-            id: "tool-4".into(),
-            name: "50.2 plate".into(),
-            geometry: Some(ToolGeometry::Endmill(EndmillGeometry {
-                diameter_mm: 50.2,
-                cutting_length_mm: 12.,
-            })),
-            // The reported tool was marked unable to plunge; the frame must
-            // not depend on that, so the fixture declares the capability and
-            // leaves the entry question to the facing tests.
-            capabilities: ToolCapabilities {
-                plunge_capable: Some(true),
-                ramp_capable: Some(false),
-            },
-        }],
-        operations: vec![Operation {
-            id: "face-1".into(),
-            name: "Face".into(),
-            enabled: true,
-            settings: OperationSettings::Face(FaceSettings {
-                area: FaceArea::EntireStock,
-                margins: FaceMargins::default(),
-                entry_overrun_mm: None,
-                exit_overrun_mm: None,
-                top: HeightRef {
-                    reference: HeightReference::StockTop,
-                    offset_mm: 0.,
-                },
-                bottom: HeightRef {
-                    reference: HeightReference::StockBottom,
-                    offset_mm: 14.,
-                },
-                stepdown_mm: Some(1.),
-                stepover_mm: Some(25.),
-                pass_angle_deg: Some(pass_angle_deg),
-                pattern: FacePattern::ZigZag,
-                assignment: MillingAssignment {
-                    tool_id: "tool-4".into(),
-                    spindle_rpm: Some(16_000.),
-                    spindle_direction: Some(SpindleDirection::Clockwise),
-                    cutting_feed_mm_min: Some(2400.),
-                    plunge_feed_mm_min: Some(600.),
-                    max_stepdown_mm: Some(1.),
-                    stepover_mm: Some(25.),
-                },
-            }),
-        }],
-        tolerances: PlanningTolerances {
-            motion_tolerance_mm: Some(0.01),
-            verification_tolerance_mm: Some(0.05),
-        },
-        legacy_machine_profile: None,
+    // The tester's own job file, which is the fixture this test reproduces.
+    let mut job: CamJobV5 =
+        serde_json::from_str(include_str!("../../../../real_data/facing_job.json")).unwrap();
+    // The report's artwork fills the page, so the frame's artwork and stock
+    // extents are the same rectangle; the tester's saved file keeps a smaller
+    // drawing on the same page.
+    job.artwork[0].content = ArtworkContent::Svg(SourceSnapshot {
+        filename: "flower_box.svg".into(),
+        svg: PAGE.into(),
+    });
+    let OperationSettingsV5::Face(settings) = &mut job.operations[0].settings else {
+        panic!("the fixture carries one face operation")
     };
-    migrate_v4(&job).unwrap()
+    settings.pass_angle_deg = Some(pass_angle_deg);
+    job
 }
 
 fn generate(job: &CamJobV5) -> compute::Scene {

@@ -1,5 +1,15 @@
 # Local tool library backend
 
+> **Status after the schema diet (2026-09-14).** The *model* below is current:
+> `cam_core::tool_library` still defines `ToolLibrary`/`LibraryTool`/
+> `CuttingPreset`, the GUI owns the portable `library.json` file, and
+> `cam collection apply-profile|apply-tool|reapply` consume it as an explicit
+> input that copies values into the document. The *file-backed backend* is not:
+> `cam-storage`, the `cam tool-library` command, and the server-side library
+> endpoints were deleted, so the lock-file, directory, and CLI sections below
+> are historical. See
+> [schema-diet-progress.md](schema-diet-progress.md).
+
 The Rust backend stores named endmill/V-bit definitions and their optional cutting
 presets. It supports create, read, replace, duplicate, delete, import/export,
 capture from a job, and explicit application to a job. The CLI and reusable Rust

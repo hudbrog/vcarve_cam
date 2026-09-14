@@ -1,8 +1,5 @@
 //! Artwork and cutting authoring over the canonical model.
-use cam_core::{
-    job::SourceSnapshot,
-    project::{self, FlatVcarveMode, ToolGeometry, WorkZeroXY, v5::*},
-};
+use cam_core::project::{self, FlatVcarveMode, ToolGeometry, WorkZeroXY, v5::*};
 use serde::{Deserialize, Serialize};
 
 /// Start a project from one SVG: the artwork item, its page stock and the
@@ -14,50 +11,10 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
     if svg.len() > 8_000_000 {
         return Err("SVG exceeds 8 MB".into());
     }
-    let item = ArtworkItem {
-        id: ArtworkItemId("artwork-1".into()),
-        name: filename.clone(),
-        content: ArtworkContent::Svg(SourceSnapshot {
-            filename: filename.clone(),
-            svg,
-        }),
-        import_settings: SvgInterpretation::default(),
-        placement: Default::default(),
-    };
-    // Actual import admission belongs to the core: units, geometry
-    // interpretation and unsupported content are resolved by the one SVG
-    // importer, so a source without usable geometry is refused there instead
-    // of by a gate shaped around one operation kind.
-    let catalogue = artwork::resolve_artwork_item(&item).map_err(|e| e.to_string())?;
-    if let Some(error) = catalogue.import_error {
-        return Err(error);
-    }
-    let job = CamJobV5 {
-        schema_version: 5,
-        name: filename,
-        setup: project::SetupSettings {
-            stock: project::StockSetup {
-                thickness_mm: Some(18.),
-                xy: Some(svg_page_stock(&item)?),
-            },
-            clearance_above_stock_mm: Some(5.),
-            start_xy_mm: Some(cam_core::geometry::Point::new(0., 0.)),
-            ..Default::default()
-        },
-        artwork: vec![item],
-        tools: vec![],
-        // Importing artwork never invents a machining step: the ordered
-        // operation list stays empty until the user adds an operation, exactly
-        // as it does for artwork added to an open job.
-        operations: vec![],
-        tolerances: cam_core::job::PlanningTolerances {
-            motion_tolerance_mm: Some(0.01),
-            verification_tolerance_mm: Some(0.05),
-        },
-        machine_configuration: None,
-        legacy_machine_profile: None,
-    };
-    job.validate_structure().map_err(|e| e.to_string())?;
+    // The constructor is shared with the command line, so both produce the
+    // same document.
+    let job = cam_core::project::v5::authoring::from_svg(filename, svg, 0.001)
+        .map_err(|e| e.to_string())?;
     if job.to_json().map_err(|e| e.to_string())?.len() > 8_000_000 {
         return Err("Embedded SVG exceeds the 8 MB portable job limit".into());
     }

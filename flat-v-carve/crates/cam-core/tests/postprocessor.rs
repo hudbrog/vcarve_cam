@@ -1,5 +1,4 @@
 use cam_core::{
-    job::Job,
     post::{
         LengthCompensation, LinuxCncProfile, M6Return, PathControl, Program, ProgramLayout,
         export_plan, verify_programs,
@@ -12,8 +11,10 @@ use std::sync::OnceLock;
 fn plan() -> &'static CombinedPlan {
     static PLAN: OnceLock<CombinedPlan> = OnceLock::new();
     PLAN.get_or_init(|| {
-        let mut job =
-            Job::from_json(include_str!("../../../fixtures/m4/narrow-channel.json")).unwrap();
+        let mut job = cam_core::job::input_from_fixture_json(include_str!(
+            "../../../fixtures/m4/narrow-channel.json"
+        ))
+        .unwrap();
         job.source.svg = job.source.svg.replace("M0 0h3v20h-3z", "M0 0h12v10h-12z");
         plan_combined(&job).unwrap()
     })
@@ -411,7 +412,10 @@ fn exact_path_profiles_reject_blending_tamper() {
 
 #[test]
 fn one_to_one_tool_numbers_accept_job_ids_and_report_each_mapping_problem() {
-    let job = Job::from_json(include_str!("../../../fixtures/m4/narrow-channel.json")).unwrap();
+    let job = cam_core::job::input_from_fixture_json(include_str!(
+        "../../../fixtures/m4/narrow-channel.json"
+    ))
+    .unwrap();
     let mut p = profile();
     assert_eq!(p.tools[0].tool_number, 1);
     assert_eq!(p.tools[1].tool_number, 2);
@@ -546,7 +550,7 @@ fn resource_exhaustion_blocks_output_and_precision_increases_preserve_motions() 
 fn retained_export_matches_full_replay_and_rejects_changed_artifacts() {
     use cam_core::vcarve::{export_retained_plan, plan_combined_with_receipt};
     for name in ["narrow-channel", "finite-tip", "resource-limit"] {
-        let job = Job::from_json(
+        let job = cam_core::job::input_from_fixture_json(
             &std::fs::read_to_string(format!("../../fixtures/m4/{name}.json")).unwrap(),
         )
         .unwrap();
@@ -600,7 +604,10 @@ fn retained_export_matches_full_replay_and_rejects_changed_artifacts() {
 
 #[test]
 fn empty_endmill_stage_is_omitted_without_inventing_a_tool_change() {
-    let job = Job::from_json(include_str!("../../../fixtures/m4/narrow-channel.json")).unwrap();
+    let job = cam_core::job::input_from_fixture_json(include_str!(
+        "../../../fixtures/m4/narrow-channel.json"
+    ))
+    .unwrap();
     let plan = plan_combined(&job).unwrap();
     assert!(plan.endmill.motions.is_empty());
     let result = export_plan(&plan, &profile(), ProgramLayout::PerTool, &options()).unwrap();

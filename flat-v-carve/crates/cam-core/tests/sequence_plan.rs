@@ -1,14 +1,12 @@
-//! A2 sequence contract: adapted Flat V-carve plans are equivalent to the
-//! legacy planners' motion geometry, order and completeness, and independent
-//! operations keep distinct identities.
+//! A2 sequence contract: the sequence planner and the V-carve engine agree on
+//! motion geometry, order and completeness for the same substrate job, and
+//! independent operations keep distinct identities.
 use cam_core::{
     job::Job as LegacyJob,
     motion::{Motion, MotionKind},
     pocket::plan_endmill,
     project::CamJob,
-    project::FlatVcarveSettings,
     project::OperationSettings,
-    project::migrate::{migrate_job, migrate_legacy_json},
     sequence::{
         ExecutionItem, GenerationStatus, OperationPlan, PlanLimits, ProcessSpindle, StageRole,
     },
@@ -16,66 +14,12 @@ use cam_core::{
     vcarve::plan_combined,
 };
 
-const M3_RECTANGLE: &str = include_str!("../../../fixtures/m3/rectangle.json");
-const M4_CONTACT_LINE: &str = include_str!("../../../fixtures/m4/contact-line.json");
-const M4_RESOURCE_LIMIT: &str = include_str!("../../../fixtures/m4/resource-limit.json");
-// The schema-3 revision of the tester's real job: `real_data/` now holds the
-// same job as a schema-5 document, which the legacy adapter cannot read.
-const FLOWER_COMBINED: &str = include_str!("../../../fixtures/m4/flower-combined-legacy.json");
-
-fn flat_vcarve(job: &CamJob) -> &FlatVcarveSettings {
-    job.operations
-        .iter()
-        .find_map(|op| match &op.settings {
-            OperationSettings::FlatVcarve(settings) => Some(settings),
-            _ => None,
-        })
-        .unwrap()
-}
+const M3_RECTANGLE: &str = include_str!("../../../fixtures/v4/rectangle.json");
+const M4_CONTACT_LINE: &str = include_str!("../../../fixtures/v4/contact-line.json");
+const M4_RESOURCE_LIMIT: &str = include_str!("../../../fixtures/v4/resource-limit.json");
 
 fn operation_id(job: &CamJob) -> &str {
     &job.operations[0].id
-}
-
-/// The legacy endmill slot-level plunge flag is redundant with the spec and
-/// jobs spell it either way (`null` or the spec value). Drop it from both
-/// sides before comparing reconstructed and original legacy jobs.
-fn canonical_legacy_json(job: &serde_json::Value) -> serde_json::Value {
-    let mut value = job.clone();
-    if let Some(tools) = value.get_mut("tools").and_then(|t| t.as_array_mut()) {
-        for tool in tools {
-            let is_endmill = tool
-                .get("geometry")
-                .and_then(|g| g.get("kind"))
-                .and_then(|k| k.as_str())
-                == Some("endmill");
-            if is_endmill && let Some(object) = tool.as_object_mut() {
-                object.remove("plunge_capable");
-            }
-        }
-    }
-    value
-}
-
-/// The adapter must reconstruct a legacy job equivalent to the one that was
-/// migrated: same selection, controls and tool snapshots.
-#[test]
-fn adapter_reconstructs_the_migrated_legacy_job() {
-    for json in [M3_RECTANGLE, M4_CONTACT_LINE, FLOWER_COMBINED] {
-        let legacy = LegacyJob::from_json(json).unwrap();
-        let cam = migrate_job(&legacy).unwrap();
-        let reconstructed = cam_core::operations::flat_vcarve::to_legacy_job(
-            &cam,
-            operation_id(&cam),
-            flat_vcarve(&cam),
-        )
-        .unwrap();
-        assert_eq!(
-            canonical_legacy_json(&serde_json::to_value(&reconstructed).unwrap()),
-            canonical_legacy_json(&serde_json::to_value(&legacy).unwrap()),
-            "adapter legacy job must equal the migrated source"
-        );
-    }
 }
 
 /// One legacy planning pass; returns the concatenated motion stream, the
@@ -111,8 +55,8 @@ fn expected_effect(kind: MotionKind) -> MotionEffect {
 }
 
 fn check_equivalence(json: &str) -> (OperationPlan, GenerationStatus, usize) {
-    let legacy = LegacyJob::from_json(json).unwrap();
-    let cam = migrate_job(&legacy).unwrap();
+    let cam: CamJob = serde_json::from_str(json).unwrap();
+    let legacy = cam.plan_input(operation_id(&cam)).unwrap();
     let plan = OperationPlan::plan_job(&cam, &PlanLimits::default()).unwrap();
     let (legacy_motions, finish_start, shortfall) = legacy_reference(&legacy);
     assert_eq!(
@@ -157,7 +101,7 @@ fn check_equivalence(json: &str) -> (OperationPlan, GenerationStatus, usize) {
 
 #[test]
 fn migrated_m4_and_flower_plans_match_legacy_geometry_order_and_completeness() {
-    for json in [M3_RECTANGLE, M4_CONTACT_LINE, FLOWER_COMBINED] {
+    for json in [M3_RECTANGLE, M4_CONTACT_LINE] {
         let (plan, status, finish_start) = check_equivalence(json);
         assert_eq!(
             status,
@@ -166,7 +110,8 @@ fn migrated_m4_and_flower_plans_match_legacy_geometry_order_and_completeness() {
         );
         // Stage and execution assembly: nonempty stages only, in order, each
         // preceded by a tool change (when the tool changes) and process intent.
-        let legacy = LegacyJob::from_json(json).unwrap();
+        let cam: CamJob = serde_json::from_str(json).unwrap();
+        let legacy = cam.plan_input(operation_id(&cam)).unwrap();
         let rough_present = legacy.vbit_planning.is_none() || finish_start > 0;
         let finish_present = legacy.vbit_planning.is_some() && plan.motions.len() > finish_start;
         let expected_stages = rough_present as usize + finish_present as usize;
@@ -263,8 +208,7 @@ fn vbit_finish_motions_carry_execution_pass_ids() {
 
 #[test]
 fn resource_limit_fixture_is_inconclusive_not_truncated_success() {
-    let legacy = LegacyJob::from_json(M4_RESOURCE_LIMIT).unwrap();
-    let cam = migrate_job(&legacy).unwrap();
+    let cam: CamJob = serde_json::from_str(M4_RESOURCE_LIMIT).unwrap();
     let plan = OperationPlan::plan_job(&cam, &PlanLimits::default()).unwrap();
     let status = plan.operation_results[0].generation_status;
     assert!(
@@ -276,7 +220,7 @@ fn resource_limit_fixture_is_inconclusive_not_truncated_success() {
 
 #[test]
 fn two_independent_operations_keep_distinct_identities() {
-    let cam = migrate_legacy_json(M3_RECTANGLE).unwrap();
+    let cam: CamJob = serde_json::from_str(M3_RECTANGLE).unwrap();
     let mut two = cam.clone();
     let first = two.operations[0].clone();
     let mut second = first.clone();
@@ -357,7 +301,7 @@ fn two_independent_operations_keep_distinct_identities() {
 
 #[test]
 fn missing_machining_fields_yield_incomplete_result_not_silent_skip() {
-    let cam = migrate_legacy_json(M4_CONTACT_LINE).unwrap();
+    let cam: CamJob = serde_json::from_str(M4_CONTACT_LINE).unwrap();
     let mut incomplete = cam.clone();
     let OperationSettings::FlatVcarve(settings) = &mut incomplete.operations[0].settings else {
         panic!("flat vcarve settings expected");
@@ -384,7 +328,7 @@ fn missing_machining_fields_yield_incomplete_result_not_silent_skip() {
 
 #[test]
 fn unconfigured_knife_operations_plan_incomplete_never_silently() {
-    let mut cam = migrate_legacy_json(M4_CONTACT_LINE).unwrap();
+    let mut cam: CamJob = serde_json::from_str(M4_CONTACT_LINE).unwrap();
     // The knife planner ships with F2: an enabled but unconfigured knife
     // operation is an incomplete result with located missing fields — never
     // a silent skip — and a disabled one is excluded from readiness.

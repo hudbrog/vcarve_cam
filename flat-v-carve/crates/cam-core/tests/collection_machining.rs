@@ -3,32 +3,24 @@
 //! the Flat V-carve planner consumes a resolved union, Profile/Knife
 //! selections stay per-contour across items, and the semantic machining
 //! identity separates machining edits from display/provenance/output-only
-//! changes. Migrated documents machine identically to their schema-4
-//! originals.
+//! changes.
 use cam_core::{
     checks::{CheckStatus, check_plan_v5},
     geometry::Point,
     job::{PlanningTolerances, SourceSnapshot},
     model::VBitSpec,
     project::{
-        CAM_JOB_SCHEMA_VERSION, CamJob, ContourOrder, ContourSide, CutDirection, DragKnifeSpec,
-        EndmillGeometry, FaceArea, FacePattern, FlatVcarveMode, FlatVcarveSettings, HeightRef,
-        HeightReference, JobTool, KnifeAlignment, KnifeAssignment, MillingAssignment, Operation,
-        OperationSettings, ProfileContour, ProfileEntry, ProfileSettings, RectXY, SetupSettings,
-        SpindleDirection, StockSetup, ToolCapabilities, ToolGeometry, WorkZero, WorkZeroXY,
-        WorkZeroZ,
+        ContourOrder, ContourSide, CutDirection, DragKnifeSpec, EndmillGeometry, FaceArea,
+        FacePattern, FlatVcarveMode, HeightRef, HeightReference, KnifeAlignment, ProfileEntry,
+        RectXY, SetupSettings, SpindleDirection, StockSetup, ToolCapabilities, ToolGeometry,
+        WorkZero, WorkZeroXY, WorkZeroZ,
         v5::{
             self, ArtworkItemId, GeometryRef, GeometryRefKind, OperationSettingsV5, OperationV5,
-            ReadinessScope,
-            artwork::{inspect_artwork, parse_wire_id},
-            migrate::migrate_v4,
+            ReadinessScope, artwork::inspect_artwork,
         },
     },
-    sequence::{
-        GenerationStatus, OPERATION_PLAN_V5_SCHEMA_VERSION, OperationPlan, OperationPlanV5,
-        PlanLimits, StageRole,
-    },
-    svg::{ImportOptions, Placement},
+    sequence::{GenerationStatus, OperationPlanV5, PlanLimits, StageRole},
+    svg::Placement,
     toolpath::{MotionEffect, MotionPurpose},
 };
 
@@ -40,7 +32,6 @@ const PLATE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" hei
 const WORD: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="10mm" viewBox="0 0 20 10"><rect id="word" x="1" y="1" width="8" height="6" fill="#fff"/></svg>"##;
 /// The plate source with a sub-fingerprint-grid content edit.
 const PLATE_EDITED: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><rect id="plate" x="2" y="2" width="16.001" height="10" fill="#fff"/><path id="cut" fill="none" stroke="#000" stroke-width="0.4" d="M25 25 L35 25"/></svg>"##;
-const M4_CONTACT_LINE: &str = include_str!("../../../fixtures/m4/contact-line.json");
 
 fn tools() -> Vec<v5::JobToolV5> {
     let tool = |id: &str, name: &str, geometry, plunge, ramp| v5::JobToolV5 {
@@ -322,249 +313,6 @@ fn two_source_job(operations: Vec<OperationV5>) -> v5::CamJobV5 {
         machine_configuration: None,
         legacy_machine_profile: None,
     }
-}
-
-/// Normalize a collection plan's motion contour IDs (owner-qualified wire
-/// IDs) down to their local IDs so migrated outputs compare against the
-/// schema-4 plan field by field.
-fn normalized_motions(plan: &OperationPlanV5) -> Vec<cam_core::toolpath::PlannedMotion> {
-    plan.motions
-        .iter()
-        .map(|motion| {
-            let mut motion = motion.clone();
-            if let Some(wire) = &motion.contour_id
-                && let Some(pick) = parse_wire_id(wire)
-            {
-                motion.contour_id = Some(pick.local_geometry_id);
-            }
-            motion
-        })
-        .collect()
-}
-
-#[test]
-fn migrated_job_plans_identically_through_both_models() {
-    // A schema-4 job with every operation kind (face is exercised through
-    // the profile's face-referenced top), planned directly and through the
-    // migrated collection document: identical motions, stages and execution.
-    let v4 = |operations: Vec<Operation>| CamJob {
-        schema_version: CAM_JOB_SCHEMA_VERSION,
-        name: "single source".into(),
-        source: Some(SourceSnapshot {
-            filename: "art.svg".into(),
-            svg: PLATE.into(),
-        }),
-        import: ImportOptions {
-            geometry_tolerance_mm: 0.001,
-            ticks_per_mm: None,
-            placement: identity(),
-        },
-        setup: setup(),
-        tools: vec![
-            JobTool {
-                id: "t1".into(),
-                name: "3mm endmill".into(),
-                geometry: Some(ToolGeometry::Endmill(EndmillGeometry {
-                    diameter_mm: 3.,
-                    cutting_length_mm: 8.,
-                })),
-                capabilities: ToolCapabilities {
-                    plunge_capable: Some(true),
-                    ramp_capable: Some(true),
-                },
-            },
-            JobTool {
-                id: "t2".into(),
-                name: "90 degree V-bit".into(),
-                geometry: Some(ToolGeometry::Vbit(VBitSpec {
-                    included_angle_deg: 90.,
-                    tip_diameter_mm: 0.2,
-                    max_cutting_diameter_mm: 12.,
-                    cutting_height_mm: 3.,
-                })),
-                capabilities: ToolCapabilities::default(),
-            },
-            JobTool {
-                id: "t3".into(),
-                name: "drag knife".into(),
-                geometry: Some(ToolGeometry::DragKnife(DragKnifeSpec {
-                    blade_offset_mm: 1.,
-                    max_cut_depth_mm: 2.,
-                })),
-                capabilities: ToolCapabilities::default(),
-            },
-        ],
-        operations,
-        tolerances: tolerances(),
-        legacy_machine_profile: None,
-    };
-    let bare = v4(vec![]);
-    let catalogue = cam_core::contours::ContourCatalogue::build(&bare).unwrap();
-    let contour = catalogue.contours[0].id.clone();
-    // The stroked cut line, named: the plate's own outline is a chain too now,
-    // and cutting a closed loop needs a start or a closure overlap besides.
-    let chain = catalogue.chain("cut-chain-0").unwrap().id.clone();
-    let v4_milling = |tool_id: &str| MillingAssignment {
-        tool_id: tool_id.into(),
-        spindle_rpm: Some(10_000.),
-        spindle_direction: Some(SpindleDirection::Clockwise),
-        cutting_feed_mm_min: Some(300.),
-        plunge_feed_mm_min: Some(100.),
-        max_stepdown_mm: Some(1.),
-        stepover_mm: Some(1.5),
-    };
-    let operations = vec![
-        Operation {
-            id: "profile-1".into(),
-            name: "Profile".into(),
-            enabled: true,
-            settings: OperationSettings::Profile(ProfileSettings {
-                contours: vec![ProfileContour {
-                    contour_id: contour.clone(),
-                    side: ContourSide::Outside,
-                    traversal: None,
-                }],
-                assignment: v4_milling("t1"),
-                top: HeightRef {
-                    reference: HeightReference::StockTop,
-                    offset_mm: 0.,
-                },
-                bottom: HeightRef {
-                    reference: HeightReference::OperationTop,
-                    offset_mm: -2.,
-                },
-                stepdown_mm: Some(2.),
-                through_cut_allowance_mm: None,
-                direction: Some(CutDirection::Climb),
-                order: ContourOrder::InnerBeforeOuter,
-                start: Default::default(),
-                finish: Default::default(),
-                entry: ProfileEntry::Plunge,
-                lead_in: Default::default(),
-                lead_out: Default::default(),
-                tabs: None,
-            }),
-        },
-        Operation {
-            id: "carve-1".into(),
-            name: "Carve".into(),
-            enabled: true,
-            settings: OperationSettings::FlatVcarve(FlatVcarveSettings {
-                component_ids: vec!["plate::0".into()],
-                mode: FlatVcarveMode::EndmillOnly,
-                endmill: v4_milling("t1"),
-                vbit: v4_milling("t2"),
-                top: Default::default(),
-                max_depth_mm: Some(1.5),
-                wall_allowance_mm: Some(0.2),
-                max_floor_ridge_mm: None,
-                max_detail_residual_mm: None,
-                rough: Some(cam_core::project::FlatVcarveRoughSettings {
-                    strategy: cam_core::pocket::ClearingStrategy::DepthDependent,
-                    entry: cam_core::pocket::EntryStrategy::Plunge,
-                    max_layers: 32,
-                    max_loops_per_layer: 512,
-                    max_motions: 100_000,
-                }),
-                finish: None,
-            }),
-        },
-        Operation {
-            id: "knife-1".into(),
-            name: "Knife".into(),
-            enabled: true,
-            settings: OperationSettings::DragKnife(cam_core::project::DragKnifeSettings {
-                chains: vec![chain],
-                assignment: KnifeAssignment {
-                    tool_id: "t3".into(),
-                    cutting_feed_mm_min: Some(150.),
-                    plunge_feed_mm_min: Some(50.),
-                    swivel_feed_mm_min: Some(75.),
-                    max_stepdown_mm: Some(1.),
-                },
-                top: HeightRef {
-                    reference: HeightReference::StockTop,
-                    offset_mm: 0.,
-                },
-                bottom: HeightRef {
-                    reference: HeightReference::StockTop,
-                    offset_mm: -1.,
-                },
-                stepdown_mm: Some(1.),
-                swivel_depth_mm: Some(0.5),
-                corner_threshold_deg: Some(90.),
-                through_cut_allowance_mm: None,
-                start: Default::default(),
-                closure_overlap_mm: None,
-                alignment: KnifeAlignment {
-                    initial_heading_deg: Some(180.),
-                },
-            }),
-        },
-    ];
-    let source = v4(operations);
-    let v4_plan = OperationPlan::plan_job(&source, &PlanLimits::default()).unwrap();
-    assert_eq!(v4_plan.operation_results.len(), 3);
-    assert!(
-        v4_plan
-            .operation_results
-            .iter()
-            .all(|r| r.generation_status == GenerationStatus::Complete),
-        "{:?}",
-        v4_plan
-            .operation_results
-            .iter()
-            .map(|r| (&r.operation_id, r.generation_status))
-            .collect::<Vec<_>>()
-    );
-
-    let v5_job = migrate_v4(&source).unwrap();
-    let v5_plan =
-        OperationPlanV5::plan_job_v5(&v5_job, &ReadinessScope::AllEnabled, &PlanLimits::default())
-            .unwrap();
-    assert_eq!(v5_plan.schema_version, OPERATION_PLAN_V5_SCHEMA_VERSION);
-    assert_eq!(v5_plan.operation_results.len(), 3);
-    assert!(
-        v5_plan
-            .operation_results
-            .iter()
-            .all(|r| r.generation_status == GenerationStatus::Complete)
-    );
-    // Identical machining: motions (wire IDs normalized to the local IDs the
-    // schema-4 plan carries), stages and execution item for item.
-    assert_eq!(normalized_motions(&v5_plan), v4_plan.motions);
-    assert_eq!(v5_plan.stages, v4_plan.stages);
-    assert_eq!(v5_plan.execution, v4_plan.execution);
-    for (v5, v4) in v5_plan
-        .operation_results
-        .iter()
-        .zip(&v4_plan.operation_results)
-    {
-        assert_eq!(v5.operation_id, v4.operation_id);
-        assert_eq!(v5.generation_status, v4.generation_status);
-        assert_eq!(v5.stage_ids, v4.stage_ids);
-    }
-    assert_eq!(check_plan_v5(&v5_plan).unwrap().status, CheckStatus::Passed);
-}
-
-#[test]
-fn real_combined_fixture_plans_identically_after_migration() {
-    let legacy = cam_core::job::Job::from_json(M4_CONTACT_LINE).unwrap();
-    let v4 = cam_core::project::migrate::migrate_job(&legacy).unwrap();
-    let v4_plan = OperationPlan::plan_job(&v4, &PlanLimits::default()).unwrap();
-    let v5_job = migrate_v4(&v4).unwrap();
-    let v5_plan =
-        OperationPlanV5::plan_job_v5(&v5_job, &ReadinessScope::AllEnabled, &PlanLimits::default())
-            .unwrap();
-    assert!(
-        v5_plan
-            .operation_results
-            .iter()
-            .all(|r| r.generation_status == GenerationStatus::Complete)
-    );
-    assert_eq!(normalized_motions(&v5_plan), v4_plan.motions);
-    assert_eq!(v5_plan.stages, v4_plan.stages);
-    assert_eq!(v5_plan.execution, v4_plan.execution);
 }
 
 #[test]

@@ -104,7 +104,6 @@ fn profile_op(
 
 fn job(svg: &str, operation: Operation, stock: (f64, f64, f64), diameter: f64) -> CamJob {
     CamJob {
-        schema_version: 4,
         name: "finish".into(),
         source: Some(SourceSnapshot {
             filename: "art.svg".into(),

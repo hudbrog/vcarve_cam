@@ -67,23 +67,12 @@ fn batch_import_duplicate_and_reorder_preserve_assignments() {
     assert_eq!(reordered.artwork[2], job.artwork[0]);
 }
 #[test]
-fn explicit_migration_and_applied_profile_produce_one_portable_project() {
-    // A schema-3 document, so this test still exercises the migration path:
-    // `real_data/` holds the tester's session file, which is schema 5.
-    let legacy = include_str!("../../../fixtures/m4/flower-combined-legacy.json");
-    let expected = v5::migrate::migrate_json(legacy).unwrap();
-    let (migrated, _) = session::execute(
-        &mut Retained::new(),
-        Command::Migrate {
-            json: legacy.into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(session::open(&migrated.job).unwrap(), expected);
+fn an_applied_profile_produces_one_portable_project() {
+    let expected = session::open(include_str!("../../../fixtures/gui2/flower.job.json")).unwrap();
     let (applied, _) = session::execute(
         &mut Retained::new(),
         Command::ApplyProfile {
-            job: migrated.job,
+            job: expected.to_json().unwrap(),
             json: session::PROFILE.into(),
         },
     )
@@ -99,12 +88,13 @@ fn explicit_migration_and_applied_profile_produce_one_portable_project() {
         session::open(&portable.to_json().unwrap()).unwrap(),
         portable
     );
+    // A newer schema is refused, never converted.
     let mut newer = serde_json::to_value(&portable).unwrap();
     newer["schema_version"] = serde_json::json!(6);
     assert!(
         session::execute(
             &mut Retained::new(),
-            Command::Migrate {
+            Command::Open {
                 json: newer.to_string()
             }
         )

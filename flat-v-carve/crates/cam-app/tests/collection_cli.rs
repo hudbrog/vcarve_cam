@@ -1,7 +1,7 @@
-//! ui-9 CLI workflow (H5): a migrated collection document gains the applied
-//! machine configuration and exports through the retained runtime — the
-//! written files match their manifest digests, and the one-program layout
-//! names its single file exactly.
+//! ui-9 CLI workflow (H5): a stored schema-5 document gains the applied machine
+//! configuration and exports through the retained runtime — the written files
+//! match their manifest digests, and the one-program layout names its single
+//! file exactly.
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -37,91 +37,27 @@ fn run_ok(command: &mut Command) -> String {
     stderr
 }
 
-/// The schema-2 fixture predates per-assignment spindle direction; give
-/// every assignment one so preparation has complete process state.
-fn set_spindle_direction(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            let needs = map.contains_key("tool_id")
-                && map.get("spindle_direction").is_none_or(Value::is_null);
-            if needs {
-                map.insert("spindle_direction".into(), json!("clockwise"));
-            }
-            for (_, child) in map.iter_mut() {
-                set_spindle_direction(child);
-            }
-        }
-        Value::Array(items) => {
-            for item in items.iter_mut() {
-                set_spindle_direction(item);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn machine_profile(job: &Value, scratch: &Scratch) -> PathBuf {
-    let tools: Vec<Value> = job["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-        .map(|(index, tool)| {
-            json!({"tool_id": tool["id"], "tool_number": 3 + index,
-                "length_offset_number": null})
-        })
-        .collect();
-    let profile = json!({
-        "schema_version": 2, "id": "workbench", "work_offset": "G54",
-        "clearance_z_mm": 5.0, "decimal_places": 3,
-        "program_start_position_mm": null,
-        "length_compensation": "macro_managed",
-        "path_control": {"kind": "exact_path"},
-        "tools": tools, "spindle_spinup_seconds": 0.5, "coolant": "off",
-        "m6": {
-            "reference": "test-contract", "reviewed": true,
-            "return_position": {"kind": "caller_position"},
-            "preserves_work_datum": true, "local_offsets_unused": true,
-            "tool_offsets_z_only": true,
-        },
-    });
-    let path = scratch.0.join("machine-profile.json");
-    fs::write(&path, serde_json::to_string_pretty(&profile).unwrap()).unwrap();
-    path
-}
-
 #[test]
-fn migrated_document_exports_retained_files_matching_their_manifest() {
+fn a_stored_document_exports_retained_files_matching_their_manifest() {
     let s = Scratch::new("export");
-    // Open: the legacy schema-2 document migrates once into schema 5.
-    let schema5 = s.0.join("schema5.json");
+    // The stored document is already the one document model, and the fixture
+    // is copied in whole: the applied configuration is the profile's one
+    // snapshot, and the profile file is never needed again afterwards.
+    let configured = s.0.join("configured.json");
     let stderr = run_ok(
         cam()
-            .args(["collection", "open"])
-            .arg(fixture("fixtures/m3/rectangle.json"))
-            .arg("--output")
-            .arg(&schema5),
-    );
-    assert!(stderr.contains("migrated: true"), "{stderr}");
-    let mut job = json(&schema5);
-    assert_eq!(job["schema_version"], json!(5));
-    set_spindle_direction(&mut job);
-    let patched = s.0.join("patched.json");
-    fs::write(&patched, serde_json::to_string_pretty(&job).unwrap()).unwrap();
-
-    // Apply the machine configuration; the profile file is never needed
-    // again afterwards.
-    let configured = s.0.join("configured.json");
-    run_ok(
-        cam()
             .args(["collection", "apply-machine"])
-            .arg(&patched)
+            .arg(fixture("fixtures/gui2/flower.job.json"))
             .arg("--profile")
-            .arg(machine_profile(&job, &s))
+            .arg(fixture("fixtures/gui2/machine.json"))
             .arg("--name")
             .arg("Workbench")
             .arg("--output")
             .arg(&configured),
+    );
+    assert!(
+        stderr.contains("2 mapping rows"),
+        "the readout counts the applied mappings: {stderr}"
     );
 
     // Retained export: one generation, one preparation, ordered files whose
@@ -190,4 +126,48 @@ fn migrated_document_exports_retained_files_matching_their_manifest() {
         .unwrap();
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("unknown layout"));
+}
+
+#[test]
+fn the_exported_library_catalog_drives_the_same_copy_on_the_command_line() {
+    let s = Scratch::new("catalog");
+    let applied = s.0.join("applied.json");
+    // `fixtures/gui5/library.json` is the file the workspace exports: the
+    // catalog wrapper, not the library object. The command takes it as it is.
+    let stderr = run_ok(
+        cam()
+            .args(["collection", "apply-profile"])
+            .arg(fixture("fixtures/gui4/lettering.job.json"))
+            .arg("--library")
+            .arg(fixture("fixtures/gui5/library.json"))
+            .arg("--library-id")
+            .arg("gui5-lettering-library")
+            .arg("--operation")
+            .arg("carving")
+            .arg("--role")
+            .arg("endmill")
+            .arg("--tool")
+            .arg("endmill")
+            .arg("--preset")
+            .arg("rough")
+            .arg("--output")
+            .arg(&applied),
+    );
+    assert!(
+        stderr.contains("applied to operation 'carving'"),
+        "{stderr}"
+    );
+    let job = json(&applied);
+    assert_eq!(job["schema_version"], json!(5));
+    let assignment = &job["operations"][0]["settings"]["settings"]["endmill"];
+    assert_eq!(
+        assignment["applied_profile"]["library_id"],
+        json!("gui5-lettering-library")
+    );
+    assert_eq!(assignment["applied_profile"]["preset_id"], json!("rough"));
+    // The copied values are the preset's, and the document is now a receipt:
+    // the library file is not needed again.
+    assert_eq!(assignment["spindle_rpm"], json!(12000.0));
+    assert_eq!(assignment["cutting_feed_mm_min"], json!(1200.0));
+    assert_eq!(assignment["max_stepdown_mm"], json!(0.5));
 }

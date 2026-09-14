@@ -1,6 +1,6 @@
 use cam_core::{
     geometry::{BoundaryQuery, Grid, Point, Region},
-    job::{Job, ToolGeometry},
+    job::ToolGeometry,
     motion::MotionKind,
     vcarve::{PathFamily, plan_combined},
     verification::{VerificationOptions, VerificationStatus, verify_plan},
@@ -57,7 +57,9 @@ fn polyline_clipping_splits_at_holes_without_connecting_cleared_intervals() {
 
 #[test]
 fn island_floor_cleanup_stays_near_residual_boundaries_and_preserves_finish() {
-    let job = Job::from_json(include_str!("../../../fixtures/m4/island.json")).unwrap();
+    let job =
+        cam_core::job::input_from_fixture_json(include_str!("../../../fixtures/m4/island.json"))
+            .unwrap();
     let plan = plan_combined(&job).unwrap();
     let query = BoundaryQuery::new(&job.inspect().unwrap().geometry.selected);
     let floor: Vec<_> = plan
@@ -131,7 +133,10 @@ fn island_floor_cleanup_stays_near_residual_boundaries_and_preserves_finish() {
 
 #[test]
 fn acute_floor_with_no_endmill_access_still_gets_complete_vbit_clearing() {
-    let mut job = Job::from_json(include_str!("../../../fixtures/m4/narrow-channel.json")).unwrap();
+    let mut job = cam_core::job::input_from_fixture_json(include_str!(
+        "../../../fixtures/m4/narrow-channel.json"
+    ))
+    .unwrap();
     job.source.svg = job
         .source
         .svg

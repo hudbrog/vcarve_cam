@@ -1,5 +1,4 @@
 use cam_core::{
-    job::Job,
     pocket::plan_endmill,
     vcarve::{CombinedPlan, plan_combined},
 };
@@ -36,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
-    let job = Job::from_json(&fs::read_to_string(&args[1])?)?;
+    let job = cam_core::job::input_from_fixture_json(&fs::read_to_string(&args[1])?)?;
     eprintln!("Job loaded: {:.3} s", timer.elapsed().as_secs_f64());
     let timer = Instant::now();
     let endmill = plan_endmill(&job)?;

@@ -311,7 +311,6 @@ pub(crate) fn to_legacy_job_v5(
         max_motions: rough.max_motions,
     };
     let legacy = LegacyJob {
-        schema_version: crate::job::JOB_SCHEMA_VERSION,
         name: job.name.clone(),
         source: LegacySourceSnapshot {
             filename: "collection".into(),
@@ -409,7 +408,6 @@ pub fn to_legacy_job(
     };
     let machine_profile: Option<LegacyMachineProfile> = job.legacy_machine_profile.clone();
     let legacy = LegacyJob {
-        schema_version: crate::job::JOB_SCHEMA_VERSION,
         name: job.name.clone(),
         source: job.source.clone().ok_or_else(|| {
             error(

@@ -1,4 +1,4 @@
-//! ui-9 collection commands (H4/H5): open/migrate schema-5 documents,
+//! ui-9 collection commands (H4/H5): open schema-5 documents,
 //! resource commands, the applied machine configuration, scope-aware
 //! planning — and retained export: one generation, one preparation, the
 //! ordered output files written with their manifest and report — all
@@ -15,7 +15,7 @@ use std::{
 
 type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-pub const HELP: &str = "Collection (schema-5) operations\n\nUsage:\n  cam collection open <job.json> --output <schema5-job.json>\n      Open any supported job (schema 1-5); older schemas migrate once into the collection model.\n  cam collection inspect <job.json> --output <inspection.json>\n      Read-only inspection: artwork tree, used-by index, assignments, machine readout.\n  cam collection plan <job.json> --output <summary.json> [--through <operation-id>]\n      Plan all enabled collection operations, or the enabled prefix ending at --through.\n  cam collection apply-profile <job.json> --library <library.json> --library-id <id> --operation <operation-id> --role <endmill|vbit|milling|knife> --tool <library-tool-id> --preset <preset-id> --output <schema5-job.json>\n      Copy one named cutting profile into exactly one assignment; unset preset fields copy as unset.\n  cam collection reset <job.json> --operation <operation-id> --role <role> --output <schema5-job.json>\n      Restore one assignment's copied baseline without any library file.\n  cam collection reapply <job.json> --library <library.json> --library-id <id> --operation <operation-id> --role <role> --output <schema5-job.json>\n      Reapply the stored provenance from the supplied current library revision.\n  cam collection apply-tool <job.json> --library <library.json> --library-id <id> --operation <operation-id> --role <role> --tool <library-tool-id> --output <schema5-job.json>\n      Bind a library tool's geometry to one assignment with copied provenance.\n  cam collection apply-machine <job.json> --profile <profile.json> --name <configuration-name> --output <schema5-job.json>\n      Copy a reusable configuration into the job's one applied machine snapshot.\n  cam collection set-mapping <job.json> --tool <job-tool-id> [--number <T>] [--length <H>] --output <schema5-job.json>\n      Set one job tool's mapping exactly; giving neither number removes the row.\n  cam collection resolve-profile <job.json> --output <profile.json> [--through <operation-id>]\n      Resolve the applied snapshot into the validated schema-2 profile for a scope.\n  cam collection knife-evidence <job.json> --output <new-directory> [--samples <n>] [--through <operation-id>]\n      Export through the applied machine configuration and publish the bounded independent knife-trace report.\n  cam collection export <job.json> --output <new-directory> [--through <operation-id>] [--layout one|sequential]\n      Retained export: plan once, prepare the ordered output and write every checked file with its manifest and report (default layout: sequential files; --layout one writes the single sequence.ngc).\n";
+pub const HELP: &str = "Collection (schema-5) operations\n\nUsage:\n  cam collection open <job.json> --output <schema5-job.json>\n      Read a schema-5 job; an older document is refused by name, never converted (plan §0).\n  cam collection inspect <job.json> --output <inspection.json>\n      Read-only inspection: artwork tree, used-by index, assignments, machine readout.\n  cam collection plan <job.json> --output <summary.json> [--through <operation-id>]\n      Plan all enabled collection operations, or the enabled prefix ending at --through.\n  cam collection apply-profile <job.json> --library <library.json> --library-id <id> --operation <operation-id> --role <endmill|vbit|milling|knife> --tool <library-tool-id> --preset <preset-id> --output <schema5-job.json>\n      Copy one named cutting profile into exactly one assignment; unset preset fields copy as unset.\n  cam collection reset <job.json> --operation <operation-id> --role <role> --output <schema5-job.json>\n      Restore one assignment's copied baseline without any library file.\n  cam collection reapply <job.json> --library <library.json> --library-id <id> --operation <operation-id> --role <role> --output <schema5-job.json>\n      Reapply the stored provenance from the supplied current library revision.\n  cam collection apply-tool <job.json> --library <library.json> --library-id <id> --operation <operation-id> --role <role> --tool <library-tool-id> --output <schema5-job.json>\n      Bind a library tool's geometry to one assignment with copied provenance.\n  cam collection apply-machine <job.json> --profile <profile.json> --name <configuration-name> --output <schema5-job.json>\n      Copy a reusable configuration into the job's one applied machine snapshot.\n  cam collection set-mapping <job.json> --tool <job-tool-id> [--number <T>] [--length <H>] --output <schema5-job.json>\n      Set one job tool's mapping exactly; giving neither number removes the row.\n  cam collection resolve-profile <job.json> --output <profile.json> [--through <operation-id>]\n      Resolve the applied snapshot into the validated schema-2 profile for a scope.\n  cam collection knife-evidence <job.json> --output <new-directory> [--samples <n>] [--through <operation-id>]\n      Export through the applied machine configuration and publish the bounded independent knife-trace report.\n  cam collection export <job.json> --output <new-directory> [--through <operation-id>] [--layout one|sequential]\n      Retained export: plan once, prepare the ordered output and write every checked file with its manifest and report (default layout: sequential files; --layout one writes the single sequence.ngc).\n";
 
 fn read(path: &Path, limit: usize) -> AppResult<String> {
     let file = fs::File::open(path)?;
@@ -36,10 +36,7 @@ fn write(path: &Path, contents: &str) -> AppResult<()> {
 }
 
 fn load_job_value(path: &Path) -> AppResult<serde_json::Value> {
-    Ok(serde_json::from_str(&read(
-        path,
-        cam_service::document::JOB_BYTES,
-    )?)?)
+    Ok(serde_json::from_str(&read(path, cam_service::JOB_BYTES)?)?)
 }
 
 fn parse_role(value: &str) -> AppResult<AssignmentRole> {
@@ -207,17 +204,16 @@ pub fn run(args: Vec<String>) -> AppResult<bool> {
         "open" => {
             let output = output.ok_or("'collection open' requires --output")?;
             let result = cam_service::collection::execute(CollectionCommand::Open {
-                json: read(&input, cam_service::document::JOB_BYTES)?,
+                json: read(&input, cam_service::JOB_BYTES)?,
             })?;
             let job = serde_json::to_string_pretty(&result["job"])?;
             write(&output, &(job + "\n"))?;
             eprintln!(
-                "operations: {} (migrated: {})",
+                "operations: {}",
                 result["inspection"]["machiningOrder"]
                     .as_array()
                     .map(Vec::len)
-                    .unwrap_or(0),
-                result["migrated"].as_bool().unwrap_or(false)
+                    .unwrap_or(0)
             );
             Ok(true)
         }
@@ -349,7 +345,7 @@ pub fn run(args: Vec<String>) -> AppResult<bool> {
             write(&output, &(updated + "\n"))?;
             eprintln!(
                 "machine configuration applied ({} mapping rows); the file is not needed again",
-                result["inspection"]["machine"]["rows"]
+                result["job"]["machine_configuration"]["tools"]
                     .as_array()
                     .map(Vec::len)
                     .unwrap_or(0),

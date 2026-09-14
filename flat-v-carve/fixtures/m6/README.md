@@ -22,6 +22,12 @@ The profile requires no G52/G92 compensation, no work-frame rotation, and no XY 
 ./scripts/check-m6.ps1
 ```
 
+`check-m6.ps1` still drives the pre-diet `cam plan`/`cam export`/`cam verify-gcode`
+commands, which the schema diet deleted; porting it to `cam collection` is
+outstanding (see [schema-diet-progress.md](../../../docs/flat-v-carve/schema-diet-progress.md)).
+The expectations below stay the record, and the post-processor tests cover the
+same contracts.
+
 The script regenerates plans with the current engine, exports new bundles, rereads every successful saved program, compares byte hashes, and checks that rejected cases publish no `.ngc`. Use `-OutputDirectory artifacts/m6-another-run` to preserve earlier output. The report and G-code are generated artifacts and stay ignored by Git.
 
 The strict zero-ridge contact case fails at the original-plan gate with a point witness (earlier engine builds left its floor bound inconclusive within the resource/arithmetic limits). The coarse-rounding case passes by exercising the automatic output-precision increase from zero decimal places. M5's separate rounded-coordinate check can also prove a failure for the strict-contact fixture, but M6 already withholds output at the original gate. Use `-CaseId strict-contact,coarse-rounding,cell-limit` to rerun only those expectations in a new output directory.

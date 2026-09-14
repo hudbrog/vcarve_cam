@@ -24,7 +24,6 @@ const EDITED_CUTS: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40m
 
 fn job(svg: &str, placement: Placement) -> CamJob {
     CamJob {
-        schema_version: 4,
         name: "knife-import".into(),
         source: Some(SourceSnapshot {
             filename: "art.svg".into(),

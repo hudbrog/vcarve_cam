@@ -10,16 +10,10 @@ name = "cam-web"
 path = "src/main.rs"
 
 [dependencies]
-cam-core = { path = "../cam-core" }
-cam-service = { path = "../cam-service" }
-cam-storage = { path = "../cam-storage" }
-serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
-axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
-tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
-futures-util = { version = "=0.3.34", default-features = false, features = ["std"] }
-getrandom = "=0.4.3"
+# Static hosting only: the workspace plans in the browser's own WebAssembly
+# worker or in the native GUI, so this crate has no engine dependency.
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "net", "signal", "fs"] }
 
 [dev-dependencies]
 tower = { version = "=0.5.3", features = ["util"] }

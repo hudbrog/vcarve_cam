@@ -17,7 +17,6 @@ const EDITED: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" hei
 
 fn job(svg: &str, placement: Placement) -> CamJob {
     CamJob {
-        schema_version: 4,
         name: "catalogue".into(),
         source: Some(SourceSnapshot {
             filename: "art.svg".into(),

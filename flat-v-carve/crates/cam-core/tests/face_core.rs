@@ -75,7 +75,6 @@ fn face_job(
     stock: Option<RectXY>,
 ) -> CamJob {
     CamJob {
-        schema_version: 4,
         name: "Face only".into(),
         source: None,
         import: Default::default(),

@@ -1,5 +1,4 @@
 {
-  "schema_version": 3,
   "name": "Synthetic M4 ramp-roughing",
   "source": {
     "filename": "synthetic.svg",

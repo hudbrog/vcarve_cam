@@ -1,5 +1,3 @@
-#[path = "support/sim_setup.rs"]
-mod sim_setup;
 use cam_gui_runtime::{
     app::{Document, set_value},
     compute,
@@ -32,50 +30,12 @@ fn canonical_flower_retains_exact_execution_and_prepares_without_replanning() {
     assert!(scene.sim.is_some());
     let handle = scene.report["gui2"]["handle"].as_str().unwrap().to_owned();
     let plan = service.generated_plan(&handle).unwrap();
-    // The schema-3 revision of the real job: `real_data/` now holds the same
-    // job as a schema-5 document, which the legacy planner cannot read.
-    let original = cam_core::job::Job::from_json(include_str!(
-        "../../../fixtures/m4/flower-combined-legacy.json"
-    ))
-    .unwrap();
-    let legacy = cam_core::vcarve::plan_combined_with_receipt(&original)
-        .unwrap()
-        .0;
-    let old = legacy.endmill.motions.iter().chain(&legacy.vbit_motions);
-    for (old, new) in old.zip(&plan.trusted.plan().motions) {
-        assert_eq!(old.start, new.start);
-        assert_eq!(old.end, new.end);
-        assert_eq!(old.feed_mm_min, new.feed_mm_min);
-        assert_eq!(old.tool_id, new.tool_id);
-        assert_eq!(old.kind.cutting(), new.is_cutting());
-    }
     // The scene consumes this very execution, including both cumulative stages.
     let scene = compute::Scene {
         meta: scene,
         payload: std::sync::Arc::new(payload),
     };
     let sim = scene.sim_input().unwrap().unwrap();
-    let slices = cam_service::inspection::Inspection::combined(&legacy)
-        .slices
-        .into_iter()
-        .map(|s| s.info)
-        .collect::<Vec<_>>();
-    let mut reference = sim_setup::build(&original, &legacy, &slices).unwrap();
-    // Match physical bounds and cell policy; the old automatic box and the
-    // canonical artwork-derived automatic box differ slightly.
-    reference.stock = sim.stock;
-    reference.resolution = sim.resolution;
-    let reference = cam_gui_runtime::stock_preview::build(&reference, 7_048).unwrap();
-    for (index, frame) in reference.meta.frames.iter().enumerate() {
-        assert_eq!(
-            frame.checksum,
-            scene.meta.stock.as_ref().unwrap().frames[index].checksum
-        );
-        assert_eq!(
-            reference.cells[index].as_slice(),
-            scene.stock_cells(index).unwrap()
-        );
-    }
     // Real worker replay, including backward seeks, agrees with cold replay.
     for prefix in [7_048, 22_883, 1_234, 17_111, 0] {
         let (meta, payload) = gui::execute(
@@ -167,12 +127,11 @@ fn real_edits_pending_text_recovery_and_unsupported_documents() {
         gui::settings(&document.job).endmill.cutting_feed_mm_min,
         Some(750.)
     );
+    // Anything that is not a schema-5 document is refused by name; nothing is
+    // converted (compatibility policy, plan §0).
     assert!(
-        gui::open(include_str!(
-            "../../../fixtures/m4/flower-combined-legacy.json"
-        ))
-        .is_err(),
-        "GUI2 is schema-5 only"
+        gui::open(r#"{"schema_version":4,"name":"older","tools":[],"operations":[]}"#).is_err(),
+        "the workspace reads schema-5 documents only"
     );
     let mut collection = original.clone();
     let mut extra = collection.operations[0].clone();

@@ -107,9 +107,6 @@ pub enum Command {
     Open {
         json: String,
     },
-    Migrate {
-        json: String,
-    },
     ApplyProfile {
         job: String,
         json: String,
@@ -809,16 +806,6 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             return outline(&job, json!({"kind":"stale"}));
         }
         Command::Open { json } => (open(&json)?, json!({"kind":"opened"})),
-        Command::Migrate { json } => {
-            if json.len() > 8_000_000 {
-                return Err("Input exceeds 8 MB limit".into());
-            }
-            let job = v5::migrate::migrate_json(&json).map_err(|e| e.to_string())?;
-            (
-                open(&job.to_json().map_err(|e| e.to_string())?)?,
-                json!({"kind":"opened","migrated":true}),
-            )
-        }
         Command::ApplyProfile { job, json } => {
             let mut job = open(&job)?;
             let machine = cam_core::post::sequence::SequenceProfile::from_json(&json)

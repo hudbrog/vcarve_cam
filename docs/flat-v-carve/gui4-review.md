@@ -14,11 +14,11 @@ SVG, its placement, cutting assignments and the applied machine snapshot,
 including explicit T3/T8 mappings. It needs no separate SVG or profile on reopen.
 The fixture starts in Endmill-only mode and retains its finishing values.
 
-For an existing earlier-format job, use **File → Import older job**. This is an
-explicit forward import through the core migration contract. Apply the desired
-machine profile in **Machine**, then **Save job** and reopen that one file.
-The original file is not overwritten by import. Unsupported newer schemas and
-operations are rejected while the current project remains intact.
+There is one job document (schema 5) and **File → Open job** converts nothing:
+an earlier-format or newer file is refused by name and the open project is left
+exactly as it was. To move a project to another machine, apply the profile in
+**Machine**, then **Save job**: the applied snapshot travels in the one file,
+so nothing else needs to be present when it is reopened.
 
 **New from SVG** starts another project. **Add SVG** and **+ Import artwork**
 add to the open project and support selecting several SVG files. A single SVG

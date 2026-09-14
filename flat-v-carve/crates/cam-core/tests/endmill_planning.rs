@@ -3,7 +3,7 @@ use cam_core::{
     pocket::{PlanStatus, plan_endmill},
 };
 fn fixture(name: &str) -> Job {
-    Job::from_json(
+    cam_core::job::input_from_fixture_json(
         &std::fs::read_to_string(format!(
             "{}/../../fixtures/m3/{name}.json",
             env!("CARGO_MANIFEST_DIR")
@@ -518,24 +518,6 @@ fn missing_settings_and_precision_limits_fail_before_any_motion_is_generated() {
     assert_eq!(
         plan_endmill(&job).unwrap_err().code,
         "ENDMILL_CUTTING_LENGTH"
-    );
-}
-
-#[test]
-fn schema_one_jobs_migrate_without_inventing_entry_capability_or_settings() {
-    let mut old = serde_json::to_value(fixture("rectangle")).unwrap();
-    old["schema_version"] = serde_json::json!(1);
-    old.as_object_mut().unwrap().remove("endmill_planning");
-    for tool in old["tools"].as_array_mut().unwrap() {
-        tool.as_object_mut().unwrap().remove("ramp_capable");
-    }
-    let job = Job::from_json(&old.to_string()).unwrap();
-    assert_eq!(job.schema_version, 3);
-    assert!(job.endmill_planning.is_none());
-    assert!(job.tools.iter().all(|t| t.ramp_capable.is_none()));
-    assert_eq!(
-        plan_endmill(&job).unwrap_err().code,
-        "MISSING_PLANNING_SETTINGS"
     );
 }
 

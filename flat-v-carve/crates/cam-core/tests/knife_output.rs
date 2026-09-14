@@ -146,7 +146,6 @@ fn knife_operation(top: HeightReference) -> Operation {
 
 fn base_job(operations: Vec<Operation>) -> CamJob {
     let job = CamJob {
-        schema_version: 4,
         name: "knife-output".into(),
         source: Some(SourceSnapshot {
             filename: "cut.svg".into(),

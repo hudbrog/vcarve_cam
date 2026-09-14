@@ -388,7 +388,8 @@ mod tests {
 
     #[test]
     fn adjacent_grid_points_link_on_either_side_of_binary_roundoff() {
-        let job = Job::from_json(include_str!("../../../../fixtures/m4/wide-floor.json")).unwrap();
+        let job =
+            Job::from_fixture(include_str!("../../../../fixtures/m4/wide-floor.json")).unwrap();
         let ctx = Context::new(&job).unwrap();
         let q = 1. / ctx.target.region().grid().scale();
         let mut below = false;
@@ -415,7 +416,8 @@ mod tests {
 
     #[test]
     fn endpoint_reconciliation_is_bounded_immutable_and_preserves_depth_and_points() {
-        let job = Job::from_json(include_str!("../../../../fixtures/m4/wide-floor.json")).unwrap();
+        let job =
+            Job::from_fixture(include_str!("../../../../fixtures/m4/wide-floor.json")).unwrap();
         let ctx = Context::new(&job).unwrap();
         let q = 1. / ctx.target.region().grid().scale();
         let p = |x, y, z| Position::new(Point::new(x, y), z);
@@ -510,7 +512,7 @@ mod tests {
 
     #[test]
     fn links_check_whole_sweep_stock_stepdown_and_representable_length() {
-        let job = Job::from_json(include_str!("../../../../fixtures/m4/island.json")).unwrap();
+        let job = Job::from_fixture(include_str!("../../../../fixtures/m4/island.json")).unwrap();
         let mut ctx = Context::new(&job).unwrap();
         ctx.stepover = 40.;
         let p = |x, y, d: f64| Position::new(Point::new(x, y), -d);
@@ -544,7 +546,7 @@ mod tests {
             pocket::plan_endmill,
             vcarve::{execute, verify_vbit_motions},
         };
-        let job = Job::from_json(include_str!("../../../../fixtures/m4/island.json")).unwrap();
+        let job = Job::from_fixture(include_str!("../../../../fixtures/m4/island.json")).unwrap();
         let endmill = plan_endmill(&job).unwrap();
         let mut ctx = Context::new(&job).unwrap();
         let mut moves = vec![];
@@ -634,7 +636,7 @@ mod tests {
 
     fn two_component_job() -> (Context, FeatureIndex) {
         let mut job =
-            Job::from_json(include_str!("../../../../fixtures/m4/narrow-channel.json")).unwrap();
+            Job::from_fixture(include_str!("../../../../fixtures/m4/narrow-channel.json")).unwrap();
         job.source.svg = job
             .source
             .svg
@@ -707,7 +709,7 @@ mod tests {
     #[ignore = "real flower planning locality regression"]
     fn flower_vbit_executions_complete_one_leaf_at_a_time() {
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../real_data");
-        let job = Job::from_json(
+        let job = Job::from_fixture(
             &std::fs::read_to_string(data.join("flower_box-svg.job-real.json")).unwrap(),
         )
         .unwrap();

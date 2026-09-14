@@ -1,7 +1,5 @@
 use cam_core::{
     geometry::{BoundaryQuery, Point, PointLocation},
-    job::{Job, ToolGeometry},
-    model::{EndmillSpec, VBitSpec},
     svg::{ImportOptions, NormalizedGeometry, Placement, import_svg},
 };
 
@@ -451,96 +449,6 @@ fn curve_and_input_limits_fail_explicitly() {
             .code,
         "QUANTIZATION_COLLAPSE"
     );
-}
-
-#[test]
-fn jobs_embed_source_and_round_trip_incomplete_settings_and_selection() {
-    let raw = include_str!("../../../fixtures/m2/inkscape-export.svg");
-    let mut job = Job::from_svg("coupon.svg".into(), raw.into(), ImportOptions::default()).unwrap();
-    assert!(
-        job.tools
-            .iter()
-            .all(|t| t.geometry.is_none() && t.spindle_rpm.is_none())
-    );
-    assert!(job.operation.max_depth_mm.is_none());
-    assert!(job.machine_profile.is_none());
-    job.selected_region_ids = vec!["letter-o::0".into()];
-    job.import.placement.scale = 2.;
-    job.name = "My carving".into();
-    let saved = job.to_json().unwrap();
-    let loaded = Job::from_json(&saved).unwrap();
-    assert_eq!(loaded.source.svg, raw);
-    assert_eq!(loaded.to_json().unwrap(), saved);
-    let inspection = loaded.inspect().unwrap();
-    near(inspection.geometry.selected.area_mm2(), 1200., 1e-8);
-    assert!(inspection.planning_available);
-    assert!(
-        inspection
-            .missing_machining_fields
-            .contains(&"operation.max_depth_mm".into())
-    );
-}
-
-#[test]
-fn job_edits_rebuild_geometry_and_reject_stale_selection() {
-    let mut job = Job::from_svg("box.svg".into(), svg(BOX), ImportOptions::default()).unwrap();
-    let before = job.inspect().unwrap();
-    near(before.geometry.selected.area_mm2(), 200., 1e-9);
-    job.source.svg = svg(&BOX.replace("width=\"20\"", "width=\"30\""));
-    near(
-        job.inspect().unwrap().geometry.selected.area_mm2(),
-        300.,
-        1e-9,
-    );
-    job.source.svg = svg(&BOX.replace("id=\"box\"", "id=\"changed\""));
-    assert_eq!(job.inspect().unwrap_err().code, "SVG_SELECTION");
-}
-
-#[test]
-fn jobs_reject_future_schema_unknown_fields_and_invalid_partial_settings() {
-    let job = Job::from_svg("box.svg".into(), svg(BOX), ImportOptions::default()).unwrap();
-    let mut value = serde_json::to_value(&job).unwrap();
-    value["schema_version"] = serde_json::json!(4);
-    assert_eq!(
-        Job::from_json(&value.to_string()).unwrap_err().code,
-        "JOB_SCHEMA_VERSION"
-    );
-    value["schema_version"] = serde_json::json!(1);
-    value["cached_geometry"] = serde_json::json!({});
-    assert_eq!(
-        Job::from_json(&value.to_string()).unwrap_err().code,
-        "JOB_JSON"
-    );
-    let mut invalid = job.clone();
-    invalid.tools[0].cutting_feed_mm_min = Some(-2.);
-    assert_eq!(invalid.to_json().unwrap_err().code, "JOB_PARAMETER");
-    invalid = job.clone();
-    invalid.operation.vbit_id = "missing".into();
-    assert_eq!(invalid.inspect().unwrap_err().code, "JOB_OPERATION");
-    invalid = job;
-    invalid.stock.thickness_mm = Some(2.);
-    invalid.operation.max_depth_mm = Some(3.);
-    assert_eq!(invalid.inspect().unwrap_err().code, "JOB_STOCK_DEPTH");
-}
-
-#[test]
-fn tool_settings_remain_editable_but_completed_dimensions_obey_m1_contracts() {
-    let mut job = Job::from_svg("box.svg".into(), svg(BOX), ImportOptions::default()).unwrap();
-    job.tools[0].geometry = Some(ToolGeometry::Endmill(EndmillSpec {
-        diameter_mm: 4.,
-        cutting_length_mm: 10.,
-        plunge_capable: false,
-    }));
-    job.tools[1].geometry = Some(ToolGeometry::Vbit(VBitSpec {
-        included_angle_deg: 90.,
-        tip_diameter_mm: 1.,
-        max_cutting_diameter_mm: 12.,
-        cutting_height_mm: 4.,
-    }));
-    job.operation.max_depth_mm = Some(2.);
-    assert!(job.inspect().is_ok());
-    job.operation.max_depth_mm = Some(5.);
-    assert_eq!(job.inspect().unwrap_err().code, "VBIT_CUTTING_HEIGHT");
 }
 
 #[test]

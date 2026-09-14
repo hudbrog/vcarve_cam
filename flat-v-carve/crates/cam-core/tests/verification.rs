@@ -40,7 +40,7 @@ fn flower_stock_verification_is_conclusive_under_twenty_seconds() {
 }
 
 fn fixture(name: &str) -> Job {
-    Job::from_json(
+    cam_core::job::input_from_fixture_json(
         &std::fs::read_to_string(format!(
             "{}/../../fixtures/m4/{name}.json",
             env!("CARGO_MANIFEST_DIR")

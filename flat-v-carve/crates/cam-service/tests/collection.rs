@@ -262,42 +262,34 @@ fn machine_profile(tool_rows: Value) -> Value {
 }
 
 #[test]
-fn open_migrates_older_jobs_and_refuses_future_schemas() {
+fn open_reads_schema_five_and_refuses_every_other_schema() {
+    // The one document model: a schema-5 job opens and reports itself.
+    let source = serde_json::to_string(&base_job(vec![])).unwrap();
     let document = execute(CollectionCommand::Open {
-        json: M3_RECTANGLE.into(),
+        json: source.clone(),
     })
     .unwrap();
-    assert_eq!(document["migrated"], json!(true));
     assert_eq!(document["job"]["schema_version"], json!(5));
-    // The migration moved the single source into the artwork collection and
-    // the inspection DTOs describe the migrated document.
     assert_eq!(
         document["artwork"].as_array().unwrap().len(),
         1,
         "{document}"
     );
-    assert_eq!(
-        document["inspection"]["machiningOrder"][0]["kind"],
-        json!("flat_vcarve")
-    );
-    assert_eq!(
-        document["inspection"]["assignments"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    // Reopening the schema-5 result is not a migration.
+    // Reopening is stable.
     let reopened = execute(CollectionCommand::Open {
         json: document["job"].to_string(),
     })
     .unwrap();
-    assert_eq!(reopened["migrated"], json!(false));
     assert_eq!(
         reopened["documentFingerprint"],
         document["documentFingerprint"]
     );
-    // Future schemas are refused, never flattened.
+    // Older and future schemas are refused by name: nothing is converted.
+    let older = execute(CollectionCommand::Open {
+        json: M3_RECTANGLE.into(),
+    })
+    .unwrap_err();
+    assert_eq!(older.code, "COLLECTION_SCHEMA_UNSUPPORTED");
     let mut future = document["job"].clone();
     future["schema_version"] = json!(6);
     let error = execute(CollectionCommand::Open {
@@ -360,6 +352,26 @@ fn cutting_profile_commands_round_trip_through_the_transport() {
     assert_eq!(
         reset["job"]["operations"][0]["settings"]["settings"]["assignment"]["cutting_feed_mm_min"],
         json!(400.0)
+    );
+    // The workspace exports its catalog — `{schema, id, library}` — so the
+    // same command accepts that file as it is: the library object inside is
+    // what the copy commands take.
+    let catalog = json!({"schema": 1, "id": "workshop", "library": library()});
+    let from_catalog = execute(CollectionCommand::ApplyCuttingProfile {
+        job,
+        library: catalog,
+        library_id: "workshop".into(),
+        operation_id: "profile-1".into(),
+        role: v5::resources::AssignmentRole::Milling,
+        library_tool_id: "lib-e".into(),
+        preset_id: "soft".into(),
+    })
+    .unwrap();
+    assert_eq!(
+        from_catalog["job"]["operations"][0]["settings"]["settings"]["assignment"]["applied_profile"]
+            ["library_id"],
+        json!("workshop"),
+        "{from_catalog}"
     );
     // The updated document is a stable receipt of itself.
     let parsed: CamJobV5 = serde_json::from_value(reset["job"].clone()).unwrap();

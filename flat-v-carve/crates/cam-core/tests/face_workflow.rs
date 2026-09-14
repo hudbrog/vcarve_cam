@@ -128,7 +128,6 @@ fn carve_op(id: &str, face_id: Option<&str>, depth: f64) -> Operation {
 
 fn job(operations: Vec<Operation>) -> CamJob {
     CamJob {
-        schema_version: 4,
         name: "Face then carve".into(),
         source: Some(cam_core::job::SourceSnapshot {
             filename: "art.svg".into(),

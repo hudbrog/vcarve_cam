@@ -734,8 +734,9 @@ mod slice_order_tests {
 
     #[test]
     fn cleanup_floor_reuse_matches_fresh_analysis_and_requires_exact_motion_identity() {
-        let job = crate::job::Job::from_json(include_str!("../../../../fixtures/m4/island.json"))
-            .unwrap();
+        let job =
+            crate::job::Job::from_fixture(include_str!("../../../../fixtures/m4/island.json"))
+                .unwrap();
         let plan = super::super::plan_combined(&job).unwrap();
         let ctx = Context::new(&job).unwrap();
         let seed = || {
@@ -782,8 +783,9 @@ mod slice_order_tests {
 
     #[test]
     fn cleanup_samples_are_reused_only_for_unchanged_prefix_and_duplicate_finish() {
-        let job = crate::job::Job::from_json(include_str!("../../../../fixtures/m4/island.json"))
-            .unwrap();
+        let job =
+            crate::job::Job::from_fixture(include_str!("../../../../fixtures/m4/island.json"))
+                .unwrap();
         let plan = super::super::plan_combined(&job).unwrap();
         let ctx = Context::new(&job).unwrap();
         let seed = || {
@@ -838,7 +840,7 @@ mod slice_order_tests {
             include_str!("../../../../fixtures/m4/island.json"),
             include_str!("../../../../fixtures/m4/exact-fit.json"),
         ] {
-            let job = crate::job::Job::from_json(fixture).unwrap();
+            let job = crate::job::Job::from_fixture(fixture).unwrap();
             let endmill = crate::pocket::plan_endmill(&job).unwrap();
             let ctx = Context::new(&job).unwrap();
             let cap = ctx.target.depth_cap().mm();
@@ -865,7 +867,7 @@ mod slice_order_tests {
             include_str!("../../../../fixtures/m4/island.json"),
             include_str!("../../../../fixtures/m4/finite-tip.json"),
         ] {
-            let job = crate::job::Job::from_json(fixture).unwrap();
+            let job = crate::job::Job::from_fixture(fixture).unwrap();
             let plan = super::super::plan_combined(&job).unwrap();
             let ctx = Context::new(&job).unwrap();
             let mut points: Vec<_> = (0..8193)
@@ -894,8 +896,9 @@ mod slice_order_tests {
 
     #[test]
     fn parallel_slices_match_sequential_geometry_and_error_order() {
-        let job = crate::job::Job::from_json(include_str!("../../../../fixtures/m4/island.json"))
-            .unwrap();
+        let job =
+            crate::job::Job::from_fixture(include_str!("../../../../fixtures/m4/island.json"))
+                .unwrap();
         let plan = super::super::plan_combined(&job).unwrap();
         let ctx = Context::new(&job).unwrap();
         let depths = [0.25, 0.5, 1., 1.5, 1.875, 2.];
@@ -917,7 +920,7 @@ mod slice_order_tests {
     fn streamed_dense_slices_match_staged_reconstruction_and_error_priority() {
         use crate::motion::{MotionKind, Position};
         let job =
-            crate::job::Job::from_json(include_str!("../../../../fixtures/m4/finite-tip.json"))
+            crate::job::Job::from_fixture(include_str!("../../../../fixtures/m4/finite-tip.json"))
                 .unwrap();
         let endmill = crate::pocket::plan_endmill(&job).unwrap();
         let ctx = Context::new(&job).unwrap();

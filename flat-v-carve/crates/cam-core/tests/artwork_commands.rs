@@ -6,18 +6,12 @@
 //! source leaves the others fixed; replacement/deletion retains actionable
 //! references until explicitly reassigned or reattached.
 use cam_core::{
-    contours::ContourCatalogue,
     geometry::Point,
-    job::{PlanningTolerances, SourceSnapshot},
-    model::VBitSpec,
+    job::SourceSnapshot,
     project::{
-        CAM_JOB_SCHEMA_VERSION, CamJob, ContourAnchor, ContourSide, CutDirection, DragKnifeSpec,
-        EndmillGeometry, FaceArea, FacePattern, FaceSettings, FlatVcarveMode, FlatVcarveSettings,
-        HeightRef, HeightReference, JobTool, KnifeAlignment, KnifeAssignment, MillingAssignment,
-        Operation, OperationSettings, ProfileContour, ProfileSettings, RectXY, SetupSettings,
-        StockSetup, TabPlacement, TabSettings, ToolCapabilities, ToolGeometry,
+        ContourSide, RectXY,
         v5::{
-            self, ArtworkItemId, GeometryRefKind, MIGRATED_ARTWORK_ITEM_ID, ReadinessScope,
+            self, ArtworkItemId, GeometryRefKind, ReadinessScope,
             artwork::{self, inspect_artwork, parse_wire_id},
             commands::{
                 AddArtworkOutcome, AnchorTarget, ArtworkInput, CommandOutcome, FitStockMargins,
@@ -28,68 +22,20 @@ use cam_core::{
                 set_chain_selection, set_component_selection, set_contour_selection,
                 stock_overlap_issues,
             },
-            migrate::migrate_v4,
             references::planning_readiness,
         },
     },
-    svg::{ImportOptions, Placement},
+    svg::Placement,
 };
 
 /// One filled region plus one stroked centerline (see project_v5.rs).
+/// The single artwork item the collection fixtures carry.
+const FIXTURE_ARTWORK: &str = "artwork-1";
 const ARTWORK: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><rect id="plate" x="2" y="2" width="10" height="6" fill="#fff"/><path id="cut" fill="none" stroke="#000" stroke-width="0.4" d="M20 4 L30 4"/></svg>"##;
 /// The same artwork with a sub-fingerprint-grid edit (0.001 mm).
 const ARTWORK_EDITED: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><rect id="plate" x="2" y="2" width="10" height="6" fill="#fff"/><path id="cut" fill="none" stroke="#000" stroke-width="0.4" d="M20 4 L30 4.001"/></svg>"##;
 /// A second, independent source: one filled word outline.
 const LETTERING: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="10mm" viewBox="0 0 20 10"><rect id="word" x="1" y="1" width="8" height="4" fill="#fff"/></svg>"##;
-
-fn milling(tool_id: &str) -> MillingAssignment {
-    MillingAssignment {
-        tool_id: tool_id.into(),
-        spindle_rpm: Some(10_000.),
-        spindle_direction: None,
-        cutting_feed_mm_min: Some(300.),
-        plunge_feed_mm_min: Some(100.),
-        max_stepdown_mm: Some(1.),
-        stepover_mm: Some(1.5),
-    }
-}
-
-fn tools() -> Vec<JobTool> {
-    vec![
-        JobTool {
-            id: "t1".into(),
-            name: "3mm endmill".into(),
-            geometry: Some(ToolGeometry::Endmill(EndmillGeometry {
-                diameter_mm: 3.,
-                cutting_length_mm: 8.,
-            })),
-            capabilities: ToolCapabilities {
-                plunge_capable: Some(true),
-                ramp_capable: Some(true),
-            },
-        },
-        JobTool {
-            id: "t2".into(),
-            name: "90 degree V-bit".into(),
-            geometry: Some(ToolGeometry::Vbit(VBitSpec {
-                included_angle_deg: 90.,
-                tip_diameter_mm: 0.2,
-                max_cutting_diameter_mm: 12.,
-                cutting_height_mm: 3.,
-            })),
-            capabilities: ToolCapabilities::default(),
-        },
-        JobTool {
-            id: "t3".into(),
-            name: "drag knife".into(),
-            geometry: Some(ToolGeometry::DragKnife(DragKnifeSpec {
-                blade_offset_mm: 1.5,
-                max_cut_depth_mm: 2.,
-            })),
-            capabilities: ToolCapabilities::default(),
-        },
-    ]
-}
 
 fn placement() -> Placement {
     Placement {
@@ -99,170 +45,12 @@ fn placement() -> Placement {
     }
 }
 
-/// The single-source v4 fixture (identical to project_v5.rs's) migrated to
-/// the collection model: face, carve, profile (anchor start + manual tab)
-/// and knife, all selecting migrated artwork-1 with catalogue-derived
-/// anchors exactly like a user's picks.
+/// The collection fixture: face, carve, profile (anchor start + manual tab)
+/// and knife over one artwork item, with catalogue-derived anchors exactly
+/// like a user's picks. Stored as a schema-5 document, generated once from
+/// the fixture the deleted schema-4 migration used to produce.
 fn migrated_job() -> v5::CamJobV5 {
-    let v4 = |operations: Vec<Operation>| CamJob {
-        schema_version: CAM_JOB_SCHEMA_VERSION,
-        name: "collection source".into(),
-        source: Some(SourceSnapshot {
-            filename: "art.svg".into(),
-            svg: ARTWORK.into(),
-        }),
-        import: ImportOptions {
-            geometry_tolerance_mm: 0.001,
-            ticks_per_mm: None,
-            placement: placement(),
-        },
-        setup: SetupSettings {
-            stock: StockSetup {
-                thickness_mm: Some(8.),
-                xy: None,
-            },
-            work_zero: Default::default(),
-            clearance_above_stock_mm: Some(5.),
-            start_xy_mm: Some(Point::new(0., 0.)),
-        },
-        tools: tools(),
-        operations,
-        tolerances: PlanningTolerances::default(),
-        legacy_machine_profile: None,
-    };
-    let bare = v4(vec![]);
-    let catalogue = ContourCatalogue::build(&bare).unwrap();
-    let contour = &catalogue.contours[0];
-    let chain = &catalogue.open_chains[0];
-    let anchor = |fraction: f64| ContourAnchor {
-        contour_id: contour.id.clone(),
-        source_geometry_fingerprint: contour.source_fingerprint.clone(),
-        fraction_along_source_contour: fraction,
-    };
-    let operations = vec![
-        Operation {
-            id: "face-1".into(),
-            name: "Face".into(),
-            enabled: true,
-            settings: OperationSettings::Face(FaceSettings {
-                area: FaceArea::Rectangle {
-                    rect: RectXY {
-                        min_x_mm: 0.,
-                        min_y_mm: 0.,
-                        width_mm: 100.,
-                        length_mm: 60.,
-                    },
-                },
-                margins: Default::default(),
-                entry_overrun_mm: Some(2.),
-                exit_overrun_mm: Some(2.),
-                top: HeightRef {
-                    reference: HeightReference::StockTop,
-                    offset_mm: 0.,
-                },
-                bottom: HeightRef {
-                    reference: HeightReference::StockTop,
-                    offset_mm: -0.5,
-                },
-                stepdown_mm: Some(0.5),
-                stepover_mm: Some(2.),
-                pass_angle_deg: Some(0.),
-                pattern: FacePattern::ZigZag,
-                assignment: milling("t1"),
-            }),
-        },
-        Operation {
-            id: "carve-1".into(),
-            name: "Carve the plate".into(),
-            enabled: true,
-            settings: OperationSettings::FlatVcarve(FlatVcarveSettings {
-                component_ids: vec!["plate::0".into()],
-                mode: FlatVcarveMode::EndmillOnly,
-                endmill: milling("t1"),
-                vbit: milling("t2"),
-                top: Default::default(),
-                max_depth_mm: Some(1.5),
-                wall_allowance_mm: None,
-                max_floor_ridge_mm: None,
-                max_detail_residual_mm: None,
-                rough: None,
-                finish: None,
-            }),
-        },
-        Operation {
-            id: "profile-1".into(),
-            name: "Cut the plate free".into(),
-            enabled: true,
-            settings: OperationSettings::Profile(ProfileSettings {
-                contours: vec![ProfileContour {
-                    contour_id: contour.id.clone(),
-                    side: ContourSide::Outside,
-                    traversal: None,
-                }],
-                assignment: milling("t1"),
-                top: HeightRef {
-                    reference: HeightReference::FaceResult {
-                        operation_id: "face-1".into(),
-                    },
-                    offset_mm: 0.,
-                },
-                bottom: HeightRef {
-                    reference: HeightReference::OperationTop,
-                    offset_mm: -2.,
-                },
-                stepdown_mm: None,
-                through_cut_allowance_mm: None,
-                direction: Some(CutDirection::Climb),
-                order: Default::default(),
-                start: cam_core::project::StartSelection::Anchor(Box::new(anchor(0.25))),
-                finish: Default::default(),
-                entry: Default::default(),
-                lead_in: Default::default(),
-                lead_out: Default::default(),
-                tabs: Some(TabSettings {
-                    height_mm: Some(2.),
-                    width_mm: Some(5.),
-                    shape: Default::default(),
-                    placement: TabPlacement::Manual {
-                        anchors: vec![anchor(0.6)],
-                    },
-                }),
-            }),
-        },
-        Operation {
-            id: "knife-1".into(),
-            name: "Score the cut line".into(),
-            enabled: true,
-            settings: OperationSettings::DragKnife(cam_core::project::DragKnifeSettings {
-                chains: vec![chain.id.clone()],
-                assignment: KnifeAssignment {
-                    tool_id: "t3".into(),
-                    cutting_feed_mm_min: Some(150.),
-                    plunge_feed_mm_min: Some(50.),
-                    swivel_feed_mm_min: Some(75.),
-                    max_stepdown_mm: Some(1.),
-                },
-                top: HeightRef {
-                    reference: HeightReference::StockTop,
-                    offset_mm: 0.,
-                },
-                bottom: HeightRef {
-                    reference: HeightReference::StockTop,
-                    offset_mm: -1.,
-                },
-                stepdown_mm: Some(1.),
-                swivel_depth_mm: Some(0.5),
-                corner_threshold_deg: Some(90.),
-                through_cut_allowance_mm: None,
-                start: Default::default(),
-                closure_overlap_mm: None,
-                alignment: KnifeAlignment {
-                    initial_heading_deg: Some(90.),
-                },
-            }),
-        },
-    ];
-    migrate_v4(&v4(operations)).unwrap()
+    serde_json::from_str(include_str!("../../../fixtures/v5/full-job.json")).unwrap()
 }
 
 fn import_settings() -> v5::SvgInterpretation {
@@ -299,7 +87,7 @@ fn two_source_job() -> v5::CamJobV5 {
     .outcome
     .job;
     let catalogue = inspect_artwork(&added).unwrap();
-    let picks: Vec<_> = [MIGRATED_ARTWORK_ITEM_ID, "lettering"]
+    let picks: Vec<_> = [FIXTURE_ARTWORK, "lettering"]
         .into_iter()
         .map(|item| {
             let entry = catalogue
@@ -471,7 +259,7 @@ fn batch_import_commits_accepted_additions_and_reports_per_file_rejection() {
             assert_eq!(settings.contours.len(), selections_before);
             assert_eq!(
                 settings.contours[0].geometry.artwork_item_id.0,
-                MIGRATED_ARTWORK_ITEM_ID
+                FIXTURE_ARTWORK
             );
         }
         _ => panic!("profile"),
@@ -498,11 +286,7 @@ fn same_name_identical_byte_sources_stay_distinct() {
             .iter()
             .map(|item| item.id.0.clone())
             .collect::<Vec<_>>(),
-        vec![
-            MIGRATED_ARTWORK_ITEM_ID.to_string(),
-            "art".into(),
-            "art-2".into()
-        ],
+        vec![FIXTURE_ARTWORK.to_string(), "art".into(), "art-2".into()],
         "identical filenames and bytes get distinct IDs"
     );
 
@@ -574,7 +358,7 @@ fn same_name_identical_byte_sources_stay_distinct() {
         &[
             ArtworkItemId("art-2".into()),
             ArtworkItemId("art-copy".into()),
-            ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()),
+            ArtworkItemId(FIXTURE_ARTWORK.into()),
             ArtworkItemId("art".into()),
         ],
     )
@@ -585,7 +369,7 @@ fn same_name_identical_byte_sources_stay_distinct() {
             .iter()
             .map(|i| i.id.0.clone())
             .collect::<Vec<_>>(),
-        vec!["art-2", "art-copy", MIGRATED_ARTWORK_ITEM_ID, "art"],
+        vec!["art-2", "art-copy", FIXTURE_ARTWORK, "art"],
         "the rows reordered"
     );
     assert_eq!(
@@ -614,7 +398,7 @@ fn moving_one_source_leaves_the_other_fixed() {
     let job = two_source_job();
     let before = inspect_artwork(&job).unwrap();
     let fixed_bounds = before
-        .item(&ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()))
+        .item(&ArtworkItemId(FIXTURE_ARTWORK.into()))
         .unwrap()
         .entries[0]
         .bounds;
@@ -633,7 +417,7 @@ fn moving_one_source_leaves_the_other_fixed() {
     let after = inspect_artwork(&outcome.job).unwrap();
     assert_eq!(
         after
-            .item(&ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()))
+            .item(&ArtworkItemId(FIXTURE_ARTWORK.into()))
             .unwrap()
             .entries[0]
             .bounds,
@@ -688,7 +472,7 @@ fn replacement_with_changed_content_keeps_typed_dangling_references() {
     let base = migrated_job();
     let outcome = replace_artwork(
         &base,
-        &ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()),
+        &ArtworkItemId(FIXTURE_ARTWORK.into()),
         SourceSnapshot {
             filename: "art.svg".into(),
             svg: ARTWORK_EDITED.into(),
@@ -738,7 +522,7 @@ fn identical_replacement_retains_references() {
     let base = migrated_job();
     let outcome = replace_artwork(
         &base,
-        &ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()),
+        &ArtworkItemId(FIXTURE_ARTWORK.into()),
         SourceSnapshot {
             filename: "art.svg".into(),
             svg: ARTWORK.into(),
@@ -756,7 +540,7 @@ fn failed_replacement_changes_nothing() {
     let before = base.to_json().unwrap();
     let error = replace_artwork(
         &base,
-        &ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()),
+        &ArtworkItemId(FIXTURE_ARTWORK.into()),
         SourceSnapshot {
             filename: "art.svg".into(),
             svg: "not xml at all".into(),
@@ -776,7 +560,7 @@ fn failed_replacement_changes_nothing() {
 #[test]
 fn removal_retains_references_and_reassignment_repairs() {
     let base = migrated_job();
-    let outcome = remove_artwork(&base, &ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into())).unwrap();
+    let outcome = remove_artwork(&base, &ArtworkItemId(FIXTURE_ARTWORK.into())).unwrap();
     let codes = issue_codes(&outcome);
     for owner in ["carve-1", "profile-1", "knife-1"] {
         assert!(
@@ -841,7 +625,7 @@ fn assignment_commands_validate_picks() {
     );
 
     let unknown_local = artwork::GeometryPick {
-        artwork_item_id: ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()),
+        artwork_item_id: ArtworkItemId(FIXTURE_ARTWORK.into()),
         kind: GeometryRefKind::ClosedContour,
         local_geometry_id: "ghost-contour".into(),
     };
@@ -866,11 +650,7 @@ fn assignment_commands_validate_picks() {
             &job,
             "profile-1",
             &[ProfileContourPick {
-                geometry: pick_of(
-                    &job,
-                    MIGRATED_ARTWORK_ITEM_ID,
-                    GeometryRefKind::FilledComponent
-                ),
+                geometry: pick_of(&job, FIXTURE_ARTWORK, GeometryRefKind::FilledComponent),
                 side: ContourSide::Outside,
                 traversal: None,
             }]
@@ -886,11 +666,7 @@ fn assignment_commands_validate_picks() {
             &job,
             "profile-1",
             &[ProfileContourPick {
-                geometry: pick_of(
-                    &job,
-                    MIGRATED_ARTWORK_ITEM_ID,
-                    GeometryRefKind::ClosedContour
-                ),
+                geometry: pick_of(&job, FIXTURE_ARTWORK, GeometryRefKind::ClosedContour),
                 side: ContourSide::On,
                 traversal: None,
             }]
@@ -924,7 +700,7 @@ fn reattach_anchor_repairs_after_replacement() {
     let base = migrated_job();
     let replaced = replace_artwork(
         &base,
-        &ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()),
+        &ArtworkItemId(FIXTURE_ARTWORK.into()),
         SourceSnapshot {
             filename: "art.svg".into(),
             svg: ARTWORK_EDITED.into(),
@@ -941,11 +717,7 @@ fn reattach_anchor_repairs_after_replacement() {
         &replaced,
         "profile-1",
         AnchorTarget::Start,
-        &pick_of(
-            &replaced,
-            MIGRATED_ARTWORK_ITEM_ID,
-            GeometryRefKind::ClosedContour,
-        ),
+        &pick_of(&replaced, FIXTURE_ARTWORK, GeometryRefKind::ClosedContour),
         None,
     )
     .unwrap()
@@ -954,18 +726,14 @@ fn reattach_anchor_repairs_after_replacement() {
         &job,
         "profile-1",
         AnchorTarget::Tab(0),
-        &pick_of(
-            &job,
-            MIGRATED_ARTWORK_ITEM_ID,
-            GeometryRefKind::ClosedContour,
-        ),
+        &pick_of(&job, FIXTURE_ARTWORK, GeometryRefKind::ClosedContour),
         None,
     )
     .unwrap()
     .job;
     let catalogue = inspect_artwork(&job).unwrap();
     let contour = catalogue
-        .item(&ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()))
+        .item(&ArtworkItemId(FIXTURE_ARTWORK.into()))
         .unwrap()
         .entries
         .iter()
@@ -1004,11 +772,7 @@ fn reattach_anchor_repairs_after_replacement() {
             &job,
             "profile-1",
             AnchorTarget::Tab(9),
-            &pick_of(
-                &job,
-                MIGRATED_ARTWORK_ITEM_ID,
-                GeometryRefKind::ClosedContour
-            ),
+            &pick_of(&job, FIXTURE_ARTWORK, GeometryRefKind::ClosedContour),
             None
         )
         .unwrap_err()
@@ -1020,11 +784,7 @@ fn reattach_anchor_repairs_after_replacement() {
             &job,
             "profile-1",
             AnchorTarget::Start,
-            &pick_of(
-                &job,
-                MIGRATED_ARTWORK_ITEM_ID,
-                GeometryRefKind::ClosedContour
-            ),
+            &pick_of(&job, FIXTURE_ARTWORK, GeometryRefKind::ClosedContour),
             Some(1.5)
         )
         .unwrap_err()
@@ -1036,11 +796,7 @@ fn reattach_anchor_repairs_after_replacement() {
             &job,
             "face-1",
             AnchorTarget::Start,
-            &pick_of(
-                &job,
-                MIGRATED_ARTWORK_ITEM_ID,
-                GeometryRefKind::ClosedContour
-            ),
+            &pick_of(&job, FIXTURE_ARTWORK, GeometryRefKind::ClosedContour),
             None
         )
         .unwrap_err()
@@ -1065,12 +821,12 @@ fn fit_stock_proposes_bounds_and_applies_explicitly() {
         }
         bounds.unwrap()
     };
-    let outline = union_bounds(MIGRATED_ARTWORK_ITEM_ID);
+    let outline = union_bounds(FIXTURE_ARTWORK);
     let lettering = union_bounds("lettering");
 
     let request = FitStockRequest {
         item_ids: vec![
-            ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()),
+            ArtworkItemId(FIXTURE_ARTWORK.into()),
             ArtworkItemId("lettering".into()),
         ],
         margins: FitStockMargins {
@@ -1146,7 +902,7 @@ fn fit_stock_proposes_bounds_and_applies_explicitly() {
         propose_fit_stock(
             &job,
             &FitStockRequest {
-                item_ids: vec![ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into())],
+                item_ids: vec![ArtworkItemId(FIXTURE_ARTWORK.into())],
                 margins: FitStockMargins {
                     min_x_mm: -1.,
                     ..Default::default()
@@ -1181,8 +937,7 @@ fn aggregate_document_limit_preserves_the_prior_document() {
 
     // A command that would grow the aggregate fails with the prior document
     // preserved (commands never mutate their input).
-    let error =
-        duplicate_artwork(&job, &ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()), None).unwrap_err();
+    let error = duplicate_artwork(&job, &ArtworkItemId(FIXTURE_ARTWORK.into()), None).unwrap_err();
     assert_eq!(error.code, "PROJECT_RESOURCE_LIMIT");
     assert_eq!(
         job.artwork.len(),
@@ -1192,7 +947,7 @@ fn aggregate_document_limit_preserves_the_prior_document() {
     let mut restored = job.clone();
     restored.artwork.clear();
     restored.artwork.push(v5::ArtworkItem {
-        id: ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()),
+        id: ArtworkItemId(FIXTURE_ARTWORK.into()),
         name: "art.svg".into(),
         content: v5::ArtworkContent::Svg(SourceSnapshot {
             filename: "art.svg".into(),
@@ -1214,7 +969,7 @@ fn rename_and_duplicate_do_not_disturb_machining_references() {
 
     let renamed = rename_artwork(
         &base,
-        &ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()),
+        &ArtworkItemId(FIXTURE_ARTWORK.into()),
         "Renamed artwork",
     )
     .unwrap();
@@ -1227,7 +982,7 @@ fn rename_and_duplicate_do_not_disturb_machining_references() {
 
     let duplicated = duplicate_artwork(
         &renamed.job,
-        &ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()),
+        &ArtworkItemId(FIXTURE_ARTWORK.into()),
         Some("Backup"),
     )
     .unwrap();
@@ -1242,10 +997,7 @@ fn rename_and_duplicate_do_not_disturb_machining_references() {
     // original item.
     match &duplicated.job.operations[1].settings {
         v5::OperationSettingsV5::FlatVcarve(settings) => {
-            assert_eq!(
-                settings.components[0].artwork_item_id.0,
-                MIGRATED_ARTWORK_ITEM_ID
-            );
+            assert_eq!(settings.components[0].artwork_item_id.0, FIXTURE_ARTWORK);
         }
         _ => panic!("carve"),
     }
@@ -1283,11 +1035,8 @@ fn unknown_targets_and_broken_reorders_are_located_errors() {
     let error = reorder_artwork(&base, &[]).unwrap_err();
     assert_eq!(error.code, "ARTWORK_COMMAND");
     assert!(error.message.contains("missing item"), "{error}");
-    let error = reorder_artwork(
-        &base,
-        &[ArtworkItemId(MIGRATED_ARTWORK_ITEM_ID.into()), ghost],
-    )
-    .unwrap_err();
+    let error =
+        reorder_artwork(&base, &[ArtworkItemId(FIXTURE_ARTWORK.into()), ghost]).unwrap_err();
     assert!(error.message.contains("exactly once"), "{error}");
     assert_eq!(base.artwork.len(), 1);
 }
@@ -1390,7 +1139,7 @@ fn artwork_outside_the_stock_is_named_in_an_issue_that_offers_the_fix() {
     let extents = artwork_extents(&job).unwrap();
     let first = extents
         .iter()
-        .find(|e| e.id.0 == MIGRATED_ARTWORK_ITEM_ID)
+        .find(|e| e.id.0 == FIXTURE_ARTWORK)
         .unwrap()
         .bounds
         .unwrap();

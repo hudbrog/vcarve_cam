@@ -1,6 +1,6 @@
 //! Plan summaries projected from engine analysis; identical bytes for every
 //! service adapter because the UI parses one schema.
-use crate::document::{ENGINE_VERSION, UiDiagnostic};
+use crate::{ENGINE_VERSION, UiDiagnostic};
 use cam_core::{motion::Motion, pocket::EndmillPlan, vcarve::CombinedPlan};
 use serde_json::{Value, json};
 

@@ -89,7 +89,6 @@ fn job(svg: &str, settings: ProfileSettings) -> CamJob {
 
 fn job_with(svg: &str, settings: ProfileSettings, tool: JobTool) -> CamJob {
     CamJob {
-        schema_version: 4,
         name: "entries".into(),
         source: Some(SourceSnapshot {
             filename: "art.svg".into(),

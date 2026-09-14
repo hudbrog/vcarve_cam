@@ -70,7 +70,7 @@ mod tests {
     use crate::job::Job;
     fn context() -> Context {
         Context::new(
-            &Job::from_json(include_str!("../../../../fixtures/m3/rectangle.json")).unwrap(),
+            &Job::from_fixture(include_str!("../../../../fixtures/m3/rectangle.json")).unwrap(),
         )
         .unwrap()
     }

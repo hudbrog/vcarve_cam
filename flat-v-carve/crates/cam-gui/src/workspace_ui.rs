@@ -156,10 +156,6 @@ impl App {
                         self.open(IoKind::Open, ctx);
                         ui.close();
                     }
-                    if button(ui, "Import older job", idle).clicked() {
-                        self.open(IoKind::Migrate, ctx);
-                        ui.close();
-                    }
                     ui.separator();
                     if button(ui, "Flower fixture", idle).clicked() {
                         self.submit(

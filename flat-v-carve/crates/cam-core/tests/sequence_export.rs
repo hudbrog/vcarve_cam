@@ -3,20 +3,16 @@
 //! altered motion order, coordinates, feeds, tools or spindle state.
 use cam_core::{
     checks::{CheckStatus, check_plan},
-    job::Job as LegacyJob,
     post::{
         LinuxCncProfile,
         sequence::{PreparedExecution, SequenceProfile, apply_legacy_profile, verify_program},
     },
-    project::{
-        CamJob, FlatVcarveMode, FlatVcarveSettings, OperationSettings, SpindleDirection,
-        migrate::{migrate_job, migrate_legacy_json},
-    },
+    project::{CamJob, FlatVcarveMode, FlatVcarveSettings, OperationSettings, SpindleDirection},
     sequence::{OperationPlan, PlanLimits, TrustedPlan},
 };
 
-const M3_RECTANGLE: &str = include_str!("../../../fixtures/m3/rectangle.json");
-const M4_CONTACT_LINE: &str = include_str!("../../../fixtures/m4/contact-line.json");
+const M3_RECTANGLE: &str = include_str!("../../../fixtures/v4/rectangle.json");
+const M4_CONTACT_LINE: &str = include_str!("../../../fixtures/v4/contact-line.json");
 const LEGACY_PROFILE: &str = include_str!("../../../../real_data/machine-profile.json");
 
 /// Build a schema-2 sequence profile from a legacy schema-1 profile.
@@ -46,13 +42,13 @@ fn sequence_profile(job_tools: &[(&str, u32)]) -> SequenceProfile {
 
 fn applied_job(json: &str) -> CamJob {
     let profile = LinuxCncProfile::from_json(LEGACY_PROFILE).unwrap();
-    let job = migrate_legacy_json(json).unwrap();
+    let job: CamJob = serde_json::from_str(json).unwrap();
     apply_legacy_profile(&profile, &job).unwrap()
 }
 
 #[test]
 fn applied_legacy_profile_moves_datum_and_directions_into_the_job() {
-    let job = migrate_legacy_json(M3_RECTANGLE).unwrap();
+    let job: CamJob = serde_json::from_str(M3_RECTANGLE).unwrap();
     let profile = LinuxCncProfile::from_json(LEGACY_PROFILE).unwrap();
     let applied = apply_legacy_profile(&profile, &job).unwrap();
     assert!(matches!(
@@ -237,7 +233,7 @@ fn altered_motion_order_or_coordinates_are_rejected_by_readback() {
 
 #[test]
 fn unresolved_spindle_direction_blocks_preparation_not_generation() {
-    let job = migrate_legacy_json(M3_RECTANGLE).unwrap();
+    let job: CamJob = serde_json::from_str(M3_RECTANGLE).unwrap();
     let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
     // Generation and basic checks pass without the direction...
     assert_eq!(check_plan(&plan).unwrap().status, CheckStatus::Passed);
@@ -331,27 +327,6 @@ fn schema_two_profile_rejects_z_datum_and_tool_direction_fields() {
             .code,
         "POST_PROFILE"
     );
-}
-
-#[test]
-fn legacy_quality_analysis_remains_callable_alongside_sequence_export() {
-    // The legacy M5 path is untouched: the legacy planner still verifies
-    // motions for the legacy job while the sequence pipeline runs separately.
-    let legacy = LegacyJob::from_json(M3_RECTANGLE).unwrap();
-    let legacy_plan = cam_core::pocket::plan_endmill(&legacy).unwrap();
-    assert!(legacy_plan.analysis.status != cam_core::pocket::PlanStatus::Inconclusive);
-    let cam = migrate_job(&legacy).unwrap();
-    let applied =
-        apply_legacy_profile(&LinuxCncProfile::from_json(LEGACY_PROFILE).unwrap(), &cam).unwrap();
-    let plan = OperationPlan::plan_job(&applied, &PlanLimits::default()).unwrap();
-    let profile = sequence_profile(&[("endmill", 1), ("vbit", 2)]);
-    let prepared =
-        PreparedExecution::prepare(&TrustedPlan::from_plan(&plan).unwrap(), &profile).unwrap();
-    let export = prepared
-        .export(&TrustedPlan::from_plan(&plan).unwrap(), &profile)
-        .unwrap();
-    assert_eq!(export.report.motion_count, legacy_plan.motions.len());
-    assert_eq!(export.report.basic_checks.status, CheckStatus::Passed);
 }
 
 #[test]

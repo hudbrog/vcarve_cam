@@ -1,4 +1,11 @@
-//! Portable editable jobs. Derived geometry is always rebuilt from the embedded SVG.
+//! The V-carve engine's planning input.
+//!
+//! This is **not** a document and carries no schema version. The only job
+//! document is schema 5 ([`crate::project::v5`]); the engine input is built
+//! from it — or from the schema-4 planning substrate — through
+//! [`crate::operations::flat_vcarve::to_legacy_job`]-style adapters, never
+//! parsed from a file a user opens. Its serde representation exists for the
+//! engine's own regression fixtures under `fixtures/`.
 use crate::{
     geometry::{Diagnostic, Result},
     model::{Endmill, EndmillSpec, VBit, VBitSpec},
@@ -6,8 +13,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-
-pub const JOB_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,20 +82,6 @@ impl ToolSettings {
         }
         Ok(())
     }
-
-    fn empty(id: &str) -> Self {
-        Self {
-            id: id.into(),
-            geometry: None,
-            spindle_rpm: None,
-            cutting_feed_mm_min: None,
-            plunge_feed_mm_min: None,
-            max_stepdown_mm: None,
-            stepover_mm: None,
-            ramp_capable: None,
-            plunge_capable: None,
-        }
-    }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -130,7 +121,6 @@ pub struct MachineProfile {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
-    pub schema_version: u32,
     pub name: String,
     pub source: SourceSnapshot,
     pub import: ImportOptions,
@@ -148,7 +138,6 @@ pub struct Job {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct JobInspection {
-    pub schema_version: u32,
     pub engine_version: String,
     pub name: String,
     pub geometry: NormalizedGeometry,
@@ -159,6 +148,25 @@ pub struct JobInspection {
 
 fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("job")
+}
+
+/// The engine's planning input for one stored fixture job.
+///
+/// The engine's input is not a document: it has no reader and no schema
+/// version. This parses the engine's own fixture form (`fixtures/m3`,
+/// `fixtures/m4`), which is test data, so the regression suites and benchmark
+/// examples share one loader. No command reads this shape.
+#[doc(hidden)]
+pub fn input_from_fixture_json(json: &str) -> Result<Job> {
+    if json.len() > 64_000_000 {
+        return Err(error(
+            "JOB_RESOURCE_LIMIT",
+            "job exceeds the 64 MB input limit",
+        ));
+    }
+    let job: Job = serde_json::from_str(json).map_err(|e| error("JOB_JSON", e.to_string()))?;
+    job.validate_settings()?;
+    Ok(job)
 }
 fn number(value: Option<f64>, name: &str, zero: bool) -> Result<()> {
     if value.is_some_and(|v| !v.is_finite() || if zero { v < 0. } else { v <= 0. }) {
@@ -173,75 +181,23 @@ fn number(value: Option<f64>, name: &str, zero: bool) -> Result<()> {
     Ok(())
 }
 impl Job {
-    pub fn from_svg(filename: String, svg: String, options: ImportOptions) -> Result<Self> {
-        let geometry = import_svg(&svg, &options, None)?;
-        Ok(Self {
-            schema_version: JOB_SCHEMA_VERSION,
-            name: filename.clone(),
-            source: SourceSnapshot { filename, svg },
-            import: options,
-            selected_region_ids: geometry.selected_region_ids,
-            stock: StockSettings::default(),
-            operation: OperationSettings {
-                id: "flat-v-carve".into(),
-                endmill_id: "endmill".into(),
-                vbit_id: "vbit".into(),
-                max_depth_mm: None,
-                wall_allowance_mm: Some(0.),
-                max_floor_ridge_mm: None,
-                max_detail_residual_mm: None,
-            },
-            tools: vec![ToolSettings::empty("endmill"), ToolSettings::empty("vbit")],
-            tolerances: PlanningTolerances::default(),
-            machine_profile: None,
-            endmill_planning: None,
-            vbit_planning: None,
-        })
+    /// Parse one engine-input fixture.
+    ///
+    /// Test data only: [`Job`] is not a document, these fixtures carry no
+    /// schema version, and no command reads this shape from a file. The
+    /// helpers live behind `cfg(test)` so the parse cannot leak into a
+    /// product path by accident.
+    #[cfg(test)]
+    pub(crate) fn from_fixture(json: &str) -> Result<Self> {
+        input_from_fixture_json(json)
     }
-    pub fn from_json(json: &str) -> Result<Self> {
-        if json.len() > 64_000_000 {
-            return Err(error(
-                "JOB_RESOURCE_LIMIT",
-                "job exceeds the 64 MB input limit",
-            ));
-        }
-        let mut value: serde_json::Value =
-            serde_json::from_str(json).map_err(|e| error("JOB_JSON", e.to_string()))?;
-        if matches!(
-            value.get("schema_version").and_then(|v| v.as_u64()),
-            Some(1 | 2)
-        ) {
-            value["schema_version"] = serde_json::json!(JOB_SCHEMA_VERSION);
-        }
-        if value.get("schema_version").and_then(|v| v.as_u64()) != Some(JOB_SCHEMA_VERSION as u64) {
-            return Err(error(
-                "JOB_SCHEMA_VERSION",
-                "unsupported or missing job schema version",
-            ));
-        }
-        let job: Self =
-            serde_json::from_value(value).map_err(|e| error("JOB_JSON", e.to_string()))?;
-        job.validate_settings()?;
-        Ok(job)
-    }
-    pub fn to_json(&self) -> Result<String> {
-        self.validate_settings()?;
-        serde_json::to_string_pretty(self)
-            .map(|s| s + "\n")
-            .map_err(|e| error("JOB_JSON", e.to_string()))
-    }
+
     pub fn validate_settings(&self) -> Result<()> {
         if let Some(settings) = &self.vbit_planning {
             settings.validate()?;
         }
         if let Some(settings) = &self.endmill_planning {
             settings.validate()?;
-        }
-        if self.schema_version != JOB_SCHEMA_VERSION {
-            return Err(error(
-                "JOB_SCHEMA_VERSION",
-                "unsupported job schema version",
-            ));
         }
         if self.name.trim().is_empty()
             || self.name.len() > 1000
@@ -420,7 +376,6 @@ impl Job {
             }
         }
         Ok(JobInspection {
-            schema_version: JOB_SCHEMA_VERSION,
             engine_version: env!("CARGO_PKG_VERSION").into(),
             name: self.name.clone(),
             geometry,

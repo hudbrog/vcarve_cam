@@ -12,7 +12,7 @@ use cam_core::{
 };
 use std::sync::OnceLock;
 fn fixture(name: &str) -> Job {
-    Job::from_json(
+    cam_core::job::input_from_fixture_json(
         &std::fs::read_to_string(format!(
             "{}/../../fixtures/m4/{name}.json",
             env!("CARGO_MANIFEST_DIR")
@@ -630,21 +630,6 @@ fn unsupported_entries_and_resource_budgets_never_claim_completion() {
             .any(|d| d.code == "QUALITY_SAMPLE_LIMIT")
     );
 }
-#[test]
-fn vbit_entry_and_quality_fields_remain_explicit_during_job_migration() {
-    let mut v = serde_json::to_value(fixture("wide-floor")).unwrap();
-    v["schema_version"] = serde_json::json!(2);
-    v.as_object_mut().unwrap().remove("vbit_planning");
-    for t in v["tools"].as_array_mut().unwrap() {
-        t.as_object_mut().unwrap().remove("plunge_capable");
-    }
-    let j = Job::from_json(&v.to_string()).unwrap();
-    assert_eq!(j.schema_version, 3);
-    assert!(j.vbit_planning.is_none());
-    assert!(j.tools[1].plunge_capable.is_none());
-    assert_eq!(plan_combined(&j).unwrap_err().code, "MISSING_VBIT_SETTINGS");
-}
-
 #[test]
 fn exact_cap_center_lines_and_isolated_points_are_retained_with_guarded_depth() {
     for name in ["contact-line", "contact-point"] {

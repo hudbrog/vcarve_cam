@@ -44,17 +44,17 @@ Build the portable command-line executable:
 
 Copy `artifacts/portable/cam.exe` to another directory or supported Windows x64
 machine. It needs no Node.js, Rust, or separately installed Visual C++ runtime. It
-contains the CLI, the local HTTP service, and compute-worker mode. It no longer
+contains the CLI and the static file server for the browser build. It no longer
 embeds a UI, so `cam serve` needs `--ui-dir <directory>`; the native GUI ships
-separately as `cam-gui.exe` from `./scripts/build-gui.ps1`. CLI
-commands retain their existing arguments and exit codes. The EXE still uses
+separately as `cam-gui.exe` from `./scripts/build-gui.ps1`. The EXE still uses
 Windows system DLLs.
 
 `cam serve` binds to `127.0.0.1:4848`; `--port 0` chooses an available port and
 prints the URL, and `--port <number>` requires that port to be free. `--open`
-opens the browser. Ctrl+C cancels compute workers and stops the service. Job
-files, downloads, and tool-library data remain separate writable user data;
-`--library-dir <directory>` selects a portable library location.
+opens the browser. It publishes the UI directory read-only and answers GET/HEAD
+only: the browser build plans in its own WebAssembly worker, so there is no
+server-side planning, verification, export or library API and no writable
+server state.
 
 For development, `cam serve --ui-dir <directory>` and the `cam-web` alias serve a
 prebuilt UI directory; point it at `artifacts/gui/browser` after
@@ -71,55 +71,90 @@ From this directory:
 cargo run --release --locked -p cam-app -- import fixtures/m2/inkscape-export.svg \
   --output artifacts/m2/job.json
 cargo run --release --locked -p cam-app -- inspect artifacts/m2/job.json \
-  --output artifacts/m2/preview.svg --report artifacts/m2/report.json
-cargo run --locked -p cam-app -- validate-job artifacts/m2/job.json
+  --output artifacts/m2/inspection.json
 ```
 
-`import` embeds the SVG in schema-versioned JSON, selects all visible supported regions, and defaults the configurable endmill wall allowance to **0 mm**. Other machining settings remain unset. The original SVG file is no longer needed. Edit job settings in JSON; `inspect` rebuilds geometry from the snapshot, and `validate-job` writes a JSON inspection to stdout. Missing machining settings are allowed while editing; supplied invalid values are rejected. No geometry cache in the job is trusted. Opening existing jobs preserves their saved allowance, including an explicitly unset value.
+There is exactly one job document: **schema 5**. `import` writes the same
+document an SVG import produces in the GUI — one artwork item holding the
+embedded bytes, a page-sized stock, the planning tolerances and **no
+operations** — and prints the path it wrote. It never invents a machining
+step: add Face, Flat V-carve, Profile or drag knife explicitly. The original
+SVG file is no longer needed. `inspect` is the read-only view of a stored
+document (artwork tree, geometry bounds, assignments, machine readout); it is
+the same implementation as `cam collection inspect`.
 
-Select a component using an ID listed in the inspection report or preview:
+An older document is refused by name, never converted: opening one exits 2
+with `COLLECTION_SCHEMA_UNSUPPORTED` (or `CAM_JOB_SCHEMA_VERSION` in the
+workspace) and writes nothing. See the
+[schema-diet plan](../docs/flat-v-carve/schema-diet-plan.md).
 
-```sh
-cargo run --locked -p cam-app -- select artifacts/m2/job.json \
-  --select letter-b::0 --output artifacts/m2/selected.json
-cargo run --locked -p cam-app -- inspect artifacts/m2/selected.json \
-  --output artifacts/m2/selected.svg
-```
-
-Repeat `--select` for multiple regions. `select` with no IDs saves an empty selection. `import` also accepts `--select` and `--tolerance <mm>` (default 0.001 mm). Component IDs use `source-id::index`, assigned before workpiece placement. The job's `import.placement` contains `origin_mm`, `scale`, and `rotation_deg`: workpiece XY is `scale * rotate(page_XY - origin_mm)`. Page XY has its origin at the lower left, with Y upward.
+Selection binds to an operation rather than to the document, so it is made
+where the operation is edited (the workspace pickers, or `cam collection` on
+the document). `import` accepts `--tolerance <mm>` (default 0.001 mm). Geometry
+IDs are owner-qualified (`item::index`), and an artwork item's `placement`
+contains `origin_mm`, `scale`, and `rotation_deg`: workpiece XY is
+`scale * rotate(page_XY - origin_mm)`. Page XY has its origin at the lower
+left, with Y upward.
 
 Supported SVG input includes explicit page dimensions, mm/cm/in/pt/pc/px and unitless CSS pixels, `viewBox`, affine transforms, all path commands including elliptical arcs, rectangles/rounded rectangles, circles, ellipses, polygons, compound fills, and inherited solid styles/visibility. Text and strokes must be converted to paths in Inkscape. CSS stylesheets, references/clones, gradients, clipping/masking/filter effects, animation, nested viewports, relative lengths, and artwork outside the page are rejected with diagnostics.
 
-Exit codes are `0` for successful import/inspection, valid editable jobs, or a complete/empty endmill stage; `1` for invalid inputs or an incomplete/inconclusive stage; and `2` for argument/I/O errors. An invalid inspected job or stale plan replaces the previous SVG/report with an error result. Import failures leave existing job files untouched, so callers must check the exit status.
+Exit codes are `0` for a successful command, `1` for a completed
+check/verification that failed or stayed inconclusive, and `2` for
+argument/I/O errors and for a document or SVG the one model cannot read. Import
+failures write nothing, so callers must check the exit status.
 
-## Local tool library
+## Cutting profiles and the tool library
 
-The backend stores reusable named tools and explicit cutting presets. Use
-`cam tool-library --help` for initialization, record management, capture from a
-configured job, import/export, and application to a new job file. Library edits
-use revision checks and atomic file replacement. Applying a tool copies its
-settings into the existing job schema; later library edits never change saved
-jobs. The GUI exposes the same operations under
-**Carve & tools → Manage tool library**, and `cam serve`/`cam-web` publish them
-over the local API. Pass `--library-dir <directory>` to use an existing library;
-otherwise the platform's local application-data directory is used, and an empty
-library is created explicitly on first use.
+The library is a portable JSON file the GUI owns: **Carve & tools → Manage tool
+library** imports, edits, exports and captures records, and there is no
+server-side or command-line library backend any more (the `cam tool-library`
+command and the HTTP library endpoints were deleted with the schema diet).
+Library edits use revision checks; applying a tool or a cutting preset copies
+its settings *into* the document, so later library edits never change a saved
+job.
 
-See the [tool library guide](../docs/flat-v-carve/tool-library.md) for the Rust API,
-CLI examples, validation, persistence, and snapshot behavior.
+On the command line the same copy semantics are explicit inputs to
+`cam collection`:
+
+```sh
+cargo run --locked -p cam-app -- collection apply-machine fixtures/gui2/flower.job.json \
+  --profile fixtures/gui2/machine.json --name Workbench --output configured.json
+cargo run --locked -p cam-app -- collection apply-profile fixtures/gui4/lettering.job.json \
+  --library fixtures/gui5/library.json --library-id gui5-lettering-library \
+  --operation carving --role endmill --tool endmill --preset rough \
+  --output detailed.json
+```
+
+`apply-machine` copies a reusable configuration into the document's one applied
+machine snapshot, and `resolve-profile` turns that snapshot back into the
+validated profile export needs; the profile file itself is never needed again.
+`--library` takes the library object, and also the catalog file the workspace
+exports (`{schema, id, library}`), so the exported file works as it is.
+
+See the [tool library guide](../docs/flat-v-carve/tool-library.md) for the data
+model, validation and snapshot behavior.
 
 ## M3 endmill planning and stock
 
 ```sh
-cargo run --release --locked -p cam-app -- plan fixtures/m3/island.json \
-  --output artifacts/m3/island/plan.json
-cargo run --release --locked -p cam-app -- inspect artifacts/m3/island/plan.json \
-  --output artifacts/m3/island/preview.svg --report artifacts/m3/island/report.json
-cargo run --release --locked -p cam-app -- verify artifacts/m3/island/plan.json \
-  --output artifacts/m3/island/verification.json
+cargo run --release --locked -p cam-app -- collection plan \
+  fixtures/gui2/flower.job.json --output artifacts/m3/summary.json
+cargo run --release --locked -p cam-app -- collection export \
+  fixtures/gui2/flower.job.json --output artifacts/m3/export
 ```
 
-The [M3 fixtures](fixtures/m3/README.md) supply **synthetic test settings**, including feeds and spindle speed. Imported jobs default only the endmill wall allowance to zero; tools and cutting settings must still be supplied. Planning requires stock thickness, depth, horizontal wall allowance, endmill dimensions/capability/feeds/spindle/stepdown/stepover, V-bit geometry to define the target angle, planning tolerances, and `endmill_planning` settings for the clearance plane, start XY, entry, strategy, and resource limits. V-bit cutting settings and finish-quality limits remain editable for M4.
+Planning and export are the `cam collection` surface: `plan` writes the
+per-operation summary (motions, stages, checks), and `export` plans once and
+writes the checked output with its manifest and report. The
+[M3 fixtures](fixtures/m3/README.md) still supply **synthetic test settings**,
+including feeds and spindle speed, but they are engine-level inputs for the
+planner tests rather than documents. In a document an import supplies only the
+page-sized stock and the tolerances, so tools and cutting values must still be
+supplied: planning requires stock thickness, depth, horizontal wall allowance,
+endmill dimensions/capability/feeds/spindle/stepdown/stepover, V-bit geometry
+to define the target angle, planning tolerances, and the roughing resource
+limits. V-bit cutting settings and finish-quality limits are M4 fields on the
+same operation.
 
 `depth_dependent` clearing generates offset loops inside each layer's admissible center region; `deepest_region` uses the deepest region at every stepdown. Direct plunges require a plunge-capable endmill and explicit plunge feed. Ramps require `ramp_capable: true` and an explicit angle/feed. Nearby plunge-entry contours use continuously checked cutting links, with contour retracing or entry between vertices when needed. Deeper links also require swept-stock clearance above the allowed fresh stepdown; unproved and disconnected connections retract to the configured clearance Z. Stepover remains limited to half the tool diameter. The planner does not calculate machine-specific cutting parameters.
 
@@ -133,7 +168,13 @@ sweeps on sufficiently fine grids. The current real flower job completes combine
 CLI planning in **2.71–2.73 seconds**, with all original job tolerances retained.
 Regenerate saved plans from earlier engine versions.
 
-Each saved plan embeds the job and records actual XYZ moves, identity fingerprints, and generation issues. Plans use compact JSON and omit derived stock/quality caches; `inspect --report` writes the rebuilt analysis separately. `inspect` and `verify` rebuild clearance and stock from the motions and ignore any supplied cached analysis. Saving rejects artifacts above the 128 MB reload limit. Editing the job or motions invalidates the fingerprint and requires replanning. Job schema 1 migrates to schema 2 without inventing new settings; plan schema 1 is a separate artifact format tied to the generating engine version.
+Planning recomputes from the submitted document on every call and records
+actual XYZ moves, identity fingerprints, and generation issues; no cached
+analysis is ever trusted. Editing the machining intent changes the machining
+identity and requires replanning, while the retained runtime reuses a plan
+whose identity still matches (display, provenance and output-only edits do
+not). A plan is not a second stored document format: `cam collection export`
+is the retained path from document to checked bytes.
 
 The preview shows layer paths, removed stock, and remaining target. Missing accessible floor is pink; possible overcut is purple. No-access stages are empty. Exact-fit contacts and insufficient numerical margin are inconclusive; unsupported entries and missed floors are reported explicitly. Partial plans remain inspectable and exit with status 1.
 
@@ -144,23 +185,31 @@ M3 checks whole-segment center clearance and compares actual endmill sweeps at p
 ```sh
 cargo run --release --locked -p cam-app -- plan fixtures/m4/curved-medial.json \
   --output artifacts/m4/curved-medial/plan.json
-cargo run --release --locked -p cam-app -- inspect artifacts/m4/curved-medial/plan.json \
-  --output artifacts/m4/curved-medial/preview.svg --report artifacts/m4/curved-medial/report.json
-cargo run --release --locked -p cam-app -- verify artifacts/m4/curved-medial/plan.json \
-  --output artifacts/m4/curved-medial/verification.json
 ```
 
-`plan` generates both stages when `vbit_planning` is configured; otherwise it retains endmill-only behavior. `--stage combined` explicitly requests both stages, and `--stage endmill` generates only M3 roughing, including from an M4 job. Both artifact kinds support `inspect` and `verify`.
+`collection plan` generates both stages when the Flat V-carve operation's mode
+is combined, and only the M3 roughing stage when it is endmill-only.
+`--through <operation-id>` plans (and exports) the enabled prefix ending at
+that operation, so a job can be worked one operation at a time.
 
 M4 combines full-depth boundary contours, variable-depth medial-axis branches, and floor cleanup contours. Finite tip geometry is used throughout. Branches split at positive-cut and depth-cap transitions; curved branches are subdivided with XYZ error and continuous clearance checks. Exact-fit lines and points remain represented, using a small guarded depth reserve where necessary. All endmill work precedes the V-bit; the complete achievable boundary/rising-detail family runs last, after bounded cleanup.
 
 Floor cleanup uses inward contours restricted to stock left by recorded endmill sweeps. The clipping region includes the permitted-ridge cutter footprint and a numerical guard so cuts centered beside residual stock can still finish its edge. Disconnected fragments get separate clearance links; a small local raster covers any final thin core. Each depth pass also retains the conservative whole-sweep air proof, including the cutter flank. Final finishing is always retained. M4 uses direct plunge entries with explicit V-bit `plunge_capable: true` and plunge feed; it does not infer that capability from the cutter dimensions or use V-bit ramps.
 
-Set the V-bit cutting/plunge feeds, spindle speed, stepdown, stepover, `max_floor_ridge_mm`, `max_detail_residual_mm`, and `vbit_planning` limits explicitly. Job schema 3 adds these planning controls and per-tool plunge capability; schemas 1 and 2 migrate without inventing values. The [M4 fixtures](fixtures/m4/README.md) provide **synthetic test settings**, not machining recommendations.
+Set the V-bit cutting/plunge feeds, spindle speed, stepdown, stepover,
+`max_floor_ridge_mm`, `max_detail_residual_mm`, and the finish limits
+explicitly on the operation. The [M4 fixtures](fixtures/m4/README.md) provide
+**synthetic test settings**, not machining recommendations, and are engine
+inputs for the planner tests.
 
 Floor contour spacing is at most 90% of the cutter radius at the permitted ridge height, capped by the configured stepover. This reserves coverage at converging corners, where the parallel-lane half-spacing formula is insufficient. A pointed V-bit with zero allowed ridge is rejected when residual floor area needs clearing; finite flat tips can support zero-ridge clearing with overlapping passes. Cutter-limited detail uses independent reachability bounds and is reported separately from missed reachable material. M5 independently verifies the resulting stock.
 
-Saved combined plans bind both stages, tool-transition markers, path execution records, generation issues, and the engine/job identity. Reopening recomputes the actual sweeps and quality report. Changing cached analysis cannot create a successful result. The verifier also rejects omitted depth passes without stock evidence and an absent or incomplete final finish.
+A combined plan binds both stages, tool-transition markers, path execution
+records, generation issues, and the engine/document identity. Nothing cached
+can create a successful result: `cam collection export` prepares the ordered
+output from the retained plan, re-checks the original and decoded motions, and
+rejects omitted depth passes without stock evidence and an absent or
+incomplete final finish.
 
 M4 `complete` means candidate-family completion, continuous segment clearance, accessible-floor slice coverage, and quality at the reported sample lattice/motion witnesses. Floor coverage is checked at `D - allowed_ridge - numerical_depth_budget`, where the explicitly reported numerical depth budget is half the verification tolerance. The report also retains XY coverage tolerance. Sampled residual maxima are **not global error bounds**; use M5 verification below for bounded continuous checks.
 
@@ -169,27 +218,62 @@ M4 `complete` means candidate-family completion, continuous segment clearance, a
 From this workspace, using PowerShell or one-line shell commands:
 
 ```powershell
-cargo run --release --locked -p cam-app -- plan fixtures/m4/curved-medial.json --output artifacts/m5/curved-medial/plan.json
-cargo run --release --locked -p cam-app -- verify artifacts/m5/curved-medial/plan.json --output artifacts/m5/curved-medial/verification.json --decimal-places 6 --preview artifacts/m5/curved-medial/verification.svg
+cargo run --release --locked -p cam-app -- collection export fixtures/v5/full-job.json --output artifacts/m5/export
+cargo run --release --locked -p cam-app -- collection knife-evidence fixtures/gui6/flower-knife.job.json --output artifacts/m5/knife
 ```
 
-`verify` authenticates the combined plan and checks the entire normalized target and cutting-sweep domain, including islands and exterior material. Adaptive cells bound overcut, floor ridges, unreachable nominal detail, and other reachable residue. Depth bands and integrated volumes carry separate area/volume bounds. `inspect` continues to show M4 planning evidence; the M5 finding preview uses red for failures and amber for unresolved bounds.
+M5 verification is part of the retained export: preparing the output
+authenticates the plan, checks the entire normalized target and cutting-sweep
+domain — including islands and exterior material — and then re-runs the same
+checks on the *decoded* G-code coordinates. Adaptive cells bound overcut, floor
+ridges, unreachable nominal detail, and other reachable residue; depth bands
+and integrated volumes carry separate area/volume bounds. The `cam verify`
+command and its resource flags were deleted with the schema diet: the
+capability is reachable only through `cam collection export` (and
+`cam collection knife-evidence` for the knife-trace report), so no caller can
+check a plan the service did not generate.
 
-Check `verification.status`: `passed`, `failed`, or `inconclusive`. Only `passed` exits 0; failed or inconclusive verification exits 1, and argument/I/O errors exit 2. The outer `valid` field means the artifact was readable/authenticated and is not a finish-quality result. Cached analysis is never trusted.
+A failed or inconclusive check exits with a diagnostic instead of publishing
+files: the report names the finding, and nothing cached can create a
+successful result.
 
-`--decimal-places 0..9` checks the actual formatted XYZ coordinates independently. Omitting it verifies original coordinates only. The report retains both results, their fingerprints, coordinate changes, located findings, maximum-error intervals, and uncertainty. This command does not generate G-code; M6 export below requires an explicit machine profile and checks formatting after machine-datum translation.
+Coordinate precision is checked from the profile's `decimal_places`, which is
+the **minimum** output precision: export raises it up to nine decimals when
+needed to preserve every motion's direction and required travel, and the report
+names the precision used. M6 export below applies the document's applied
+machine configuration first.
 
-Resource controls are `--max-cells` (default 1,000,000; total across refinement passes per coordinate set), `--max-depth` (24), `--reachability-cells` (4,096 per point query), and `--max-depth-bands` (512). Exhausted bounds remain inconclusive. Lowering limits cannot produce a coarse-grid pass. The geometric model is the rebuilt normalized polygon; source flattening/snap error is reported separately.
+The refinement limits (cells, depth, reachability, depth bands) are defaults on
+the retained export path; exhausted bounds remain inconclusive, and lowering a
+limit can never produce a coarse-grid pass. The geometric model is the rebuilt
+normalized polygon; source flattening/snap error is reported separately.
 
-M5 enforces the explicit ridge and detail limits without adding M4's numerical allowance. Consequently, the M4 zero-ridge `contact-line` and `contact-point` examples do not pass M5: their guarded cap motions leave about 0.01 mm. The [M5 fixtures](fixtures/m5/README.md) record these expected failures alongside successful and resource-limited cases. Endmill-only `verify` retains its M3 stage contract; the new M5 options require a combined plan.
+M5 enforces the explicit ridge and detail limits without adding M4's numerical
+allowance. Consequently, the M4 zero-ridge `contact-line` and `contact-point`
+examples do not pass M5: their guarded cap motions leave about 0.01 mm. The
+[M5 fixtures](fixtures/m5/README.md) record these expected failures alongside
+successful and resource-limited cases. Endmill-only output keeps the M3 stage
+contract.
 
-Engine **0.7.3** invalidates plans created by older engines. Regenerate plans from saved jobs; job schema 3 still accepts schemas 1 and 2. Run `scripts/benchmark-m5.ps1` from PowerShell 7 after a release build to reproduce the ten release cases and their JSON/SVG artifacts.
+Engine **0.7.3** invalidates plans created by older engines. The ten release
+cases are recorded in [the M5 fixtures](fixtures/m5/README.md); their
+reproduction script still drives the removed `cam plan`/`cam verify` commands
+and has not been ported to `cam collection` (see
+[schema-diet-progress.md](../docs/flat-v-carve/schema-diet-progress.md)).
 
 ## Real artwork and scalability
 
-Successive engine releases reduced flower planning from an incomplete run stopped after ~15 minutes (0.7.2) through 52–54 s (0.7.3), 29 s (0.7.5), and 4.2 s (0.7.6) to **2.71–2.73 seconds** on the unchanged real job (`../real_data/flower_box-svg.job-real.json`) in engine **0.7.7**, using spatial indexes, checked stay-down routing, contour-following V-bit cuts, bounded contour simplification, and grouped/parallel stock construction. Run `scripts/benchmark-flower.ps1` from PowerShell 7 after a release build, or set `CAM_TIMINGS=1` for stage timings on stderr. Replan artifacts from older engines; saved jobs remain compatible.
+Successive engine releases reduced flower planning from an incomplete run
+stopped after ~15 minutes (0.7.2) through 52–54 s (0.7.3), 29 s (0.7.5), and
+4.2 s (0.7.6) to **2.71–2.73 seconds** on the unchanged real job
+(`../real_data/flower_box-svg.job-real.json`) in engine **0.7.7**, using
+spatial indexes, checked stay-down routing, contour-following V-bit cuts,
+bounded contour simplification, and grouped/parallel stock construction. Run
+`scripts/benchmark-flower.ps1` from PowerShell 7 after a release build, or set
+`CAM_TIMINGS=1` for stage timings on stderr. Saved artifacts are not carried
+across engines: regenerate them from the schema-5 document.
 
-Two saved preset jobs tune the same artwork for an approximately 0.1 mm wood finish: `../real_data/flower_box-wood-balanced.job.json` (geometry tolerance 0.005 mm, motion tolerance 0.05 mm; planned in ~8.5 s on the measured machine) and `../real_data/flower_box-wood-finish.job.json` (the same tolerances plus a 0.05 mm floor ridge for extra finish margin; ~10.4 s). Raising the import geometry tolerance is the largest computation saving, but the planner requires the verification tolerance to cover at least eight geometry tolerances, so the presets retain 0.05 mm verification.
+An approximately 0.1 mm wood finish is the same job with a geometry tolerance of 0.005 mm and a motion tolerance of 0.05 mm — planned in ~8.5 s on the measured machine — plus a 0.05 mm floor ridge when extra finish margin matters (~10.4 s). Raising the import geometry tolerance is the largest computation saving, but the planner requires the verification tolerance to cover at least eight geometry tolerances, so keep 0.05 mm verification. The preset *documents* were deleted with the schema diet: a schema-3 job is no longer readable, and the settings are a few fields rather than a second document to keep in step.
 
 Engine 0.7.2 imports `../real_data/flower_box.svg` at 0.005 mm tolerance without editing the source. Spatial indexes replace repeated all-edge topology, containment, distance, and stock-query scans; selected regions use a batch union and recorded cutter sweeps use bounded batches with balanced merges. Consecutive vertices may coalesce on the precision grid only after local topology checks; erased rings, new nonlocal contacts, and changed crossings still fail. Import scales roughly linearly with input size (measured 0.063 s / 6.5 MB at 9,943 vertices through 5.994 s / 307 MB at 994,300 vertices on Windows x64); the 100× case is import-only and does not establish full-CAM scaling. Reproduce the 1×/10×/100× import cases with:
 
@@ -198,24 +282,52 @@ cargo build --release --locked --workspace --examples --bins
 ./scripts/benchmark-import.ps1 -OutputDirectory artifacts/import-scalability-new
 ```
 
-The benchmark repeats the real path at unchanged physical size and tolerance. It records component/vertex counts, area, time, peak process working set, and source hash. It does not establish 100× full CAM or deeply connected artwork performance. Current bounds are 32 MB SVG, 200,000 XML nodes, two million flattened vertices, 64 MB job JSON, and 128 MB for legacy CLI/string-based saved-plan loading. Dense intersection arrangements and excessive spatial candidate pairs have separate guards. V-bit budgets remain explicit per job, up to 65,536 paths and one million motions/curve segments/quality samples; hitting a budget never means complete. The local service keeps full plans in temporary files without a separate plan byte cap, streams downloads, and reopens files for verification/export; its bounded previews and worker messages are independent of plan file size.
+The benchmark repeats the real path at unchanged physical size and tolerance. It
+records component/vertex counts, area, time, peak process working set, and
+source hash. It does not establish 100× full CAM or deeply connected artwork
+performance. Current bounds are 32 MB SVG, 200,000 XML nodes, two million
+flattened vertices and 64 MB per job document, and 8 MB per exported program.
+Dense intersection arrangements and excessive spatial candidate pairs have
+separate guards. V-bit budgets remain explicit per job, up to 65,536 paths and
+one million motions/curve segments/quality samples; hitting a budget never
+means complete. Retained plans and prepared bundles live in memory in the
+planning process and are pruned oldest-terminal-first, so an output can always
+be re-read byte-identically while its bundle is retained.
 
 ## M6 LinuxCNC export
 
 ```powershell
-cargo run --release --locked -p cam-app -- plan fixtures/m4/island.json --output artifacts/m6-example/plan.json
-cargo run --release --locked -p cam-app -- export artifacts/m6-example/plan.json --profile fixtures/m6/macro-stock-bottom.json --output artifacts/m6-example/combined
-cargo run --release --locked -p cam-app -- export artifacts/m6-example/plan.json --profile fixtures/m6/macro-stock-bottom.json --layout per-tool --output artifacts/m6-example/per-tool
-cargo run --release --locked -p cam-app -- verify-gcode artifacts/m6-example/plan.json --profile fixtures/m6/macro-stock-bottom.json --program artifacts/m6-example/combined/combined.ngc --output artifacts/m6-example/readback.json
+cargo run --release --locked -p cam-app -- collection apply-machine fixtures/v5/full-job.json --profile fixtures/gui2/machine.json --name Workbench --output artifacts/m6-example/configured.json
+cargo run --release --locked -p cam-app -- collection export artifacts/m6-example/configured.json --output artifacts/m6-example/sequential
+cargo run --release --locked -p cam-app -- collection export artifacts/m6-example/configured.json --layout one --output artifacts/m6-example/one
 ```
 
-Export requires a new output directory and publishes `export-report.json` with `combined.ngc`, or independent `endmill.ngc`/`vbit.ngc` files for nonempty stages. For per-tool readback, pass `--layout per-tool --program <endmill.ngc> --program <vbit.ngc>` in cutting order. V-bit rest machining requires the matching endmill program to have run on the same stock, even though each file establishes its own modal state.
+Export requires a new output directory and publishes the ordered files with
+`manifest.json` and `report.json`. The default `--layout sequential` writes one
+numbered file per contiguous tool stage (`01-…ngc`), and `--layout one` writes
+the single `sequence.ngc`. Every written file is the bundle's exact checked
+byte content: a save that fails can be retried and reproduces the same bytes.
+V-bit rest machining requires the matching endmill program to have run on the
+same stock, even though each file establishes its own modal state.
 
 The supplied [macro profile](fixtures/m6/macro-stock-bottom.json) follows the user-described Z-only M6 TLO with stock-bottom/worktable zero, T1/T2, and `G0 Z150` then X0 Y0 after M6. G54, six decimals, clockwise spindle, coolant off, and zero added spin-up dwell are editable initial choices. With 8 mm stock, the 2 mm depth cap outputs Z6 and a 5 mm planning clearance outputs Z13. Z150 is in the selected work frame. See the [profile contract](fixtures/m6/README.md) for setup and clearance assumptions.
 
-Macro-managed output preserves TLO; tool-table output applies the configured G43 H mapping. Original and decoded output motions must pass M5. Every modal/tool/feed/coordinate block is checked by a strict numeric subset reader. Failed or inconclusive output produces a report-only bundle and exits 1; argument/profile/stale-plan/I/O errors exit 2. Existing outputs are never overwritten. Verification resource flags match `verify`; the profile's `decimal_places` sets the **minimum** output precision — export raises precision up to nine decimals when needed to preserve every motion's direction and required travel, and reports the precision used.
+Macro-managed output preserves TLO; tool-table output applies the configured
+G43 H mapping. Original and decoded output motions must pass M5. Every
+modal/tool/feed/coordinate block is checked by a strict numeric subset reader,
+and a failed or inconclusive check publishes nothing. The applied machine
+configuration's profile supplies `decimal_places` as the **minimum** output
+precision; export raises it up to nine decimals when needed to preserve every
+motion's direction and required travel and reports the precision used.
 
-Run `scripts/check-m6.ps1` after a release build to reproduce eight fixture expectations and saved-byte readbacks. The [M6 capability report](../docs/flat-v-carve/m6-capability-report.md) records contracts and limits. LinuxCNC preview/simulation with the actual macro/configuration remains pending; the bundled cutting settings are synthetic fixtures.
+The eight release expectations and saved-byte readbacks in
+[fixtures/m6/cases.json](fixtures/m6/cases.json) are reproduced by the core
+post-processor tests; `scripts/check-m6.ps1` still drives the removed
+`cam plan`/`cam export`/`cam verify-gcode` CLI and has not been ported. The
+[M6 capability report](../docs/flat-v-carve/m6-capability-report.md) records
+contracts and limits. LinuxCNC preview/simulation with the actual
+macro/configuration remains pending; the bundled cutting settings are synthetic
+fixtures.
 
 ## M1 target and cutter previews
 

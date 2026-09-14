@@ -9,18 +9,17 @@ use cam_core::{
     },
     project::{
         AnchorFraction, CamJob, OperationSettings, RectXY, StockSetup, WorkZeroXY, WorkZeroZ,
-        migrate::migrate_legacy_json,
     },
     sequence::{OperationPlan, PlanLimits, TrustedPlan},
     setup::resolve_work_zero,
 };
 
-const M3_RECTANGLE: &str = include_str!("../../../fixtures/m3/rectangle.json");
+const M3_RECTANGLE: &str = include_str!("../../../fixtures/v4/rectangle.json");
 const LEGACY_PROFILE: &str = include_str!("../../../../real_data/machine-profile.json");
 
 fn applied() -> CamJob {
     let profile = LinuxCncProfile::from_json(LEGACY_PROFILE).unwrap();
-    let job = migrate_legacy_json(M3_RECTANGLE).unwrap();
+    let job: CamJob = serde_json::from_str(M3_RECTANGLE).unwrap();
     cam_core::post::sequence::apply_legacy_profile(&profile, &job).unwrap()
 }
 

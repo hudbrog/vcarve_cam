@@ -1,10 +1,10 @@
 //! Schema-4 canonical model: structural validation and serialized-shape tests.
 use cam_core::project::{
-    AnchorFraction, CAM_JOB_SCHEMA_VERSION, CamJob, ContourSide, DragKnifeSettings, FaceArea,
-    FaceMargins, FacePattern, FaceSettings, FlatVcarveMode, FlatVcarveRoughSettings,
-    FlatVcarveSettings, HeightRef, HeightReference, JobTool, KnifeAlignment, KnifeAssignment,
-    MillingAssignment, Operation, OperationSettings, ProfileContour, ProfileSettings, RectXY,
-    SetupSettings, StockSetup, ToolCapabilities, ToolGeometry, WorkZero, WorkZeroXY, WorkZeroZ,
+    AnchorFraction, CamJob, ContourSide, DragKnifeSettings, FaceArea, FaceMargins, FacePattern,
+    FaceSettings, FlatVcarveMode, FlatVcarveRoughSettings, FlatVcarveSettings, HeightRef,
+    HeightReference, JobTool, KnifeAlignment, KnifeAssignment, MillingAssignment, Operation,
+    OperationSettings, ProfileContour, ProfileSettings, RectXY, SetupSettings, StockSetup,
+    ToolCapabilities, ToolGeometry, WorkZero, WorkZeroXY, WorkZeroZ,
 };
 use cam_core::{geometry::Point, job::PlanningTolerances, svg::ImportOptions};
 
@@ -71,7 +71,6 @@ fn face_operation(id: &str, complete: bool) -> Operation {
 
 fn face_job(complete: bool) -> CamJob {
     CamJob {
-        schema_version: CAM_JOB_SCHEMA_VERSION,
         name: "Face only".into(),
         source: None,
         import: ImportOptions::default(),
@@ -106,8 +105,8 @@ fn face_job(complete: bool) -> CamJob {
 fn face_job_without_source_validates_and_round_trips() {
     let job = face_job(true);
     job.validate().unwrap();
-    let json = job.to_json().unwrap();
-    let reloaded = CamJob::from_json(&json).unwrap();
+    let json = serde_json::to_string_pretty(&job).unwrap();
+    let reloaded: CamJob = serde_json::from_str(&json).unwrap();
     assert_eq!(reloaded, job);
     // No source field is serialized at all for source-free jobs.
     assert!(!json.contains("\"source\""));
@@ -117,7 +116,7 @@ fn face_job_without_source_validates_and_round_trips() {
 fn incomplete_face_job_still_saves() {
     let job = face_job(false);
     job.validate().unwrap();
-    let reloaded = CamJob::from_json(&job.to_json().unwrap()).unwrap();
+    let reloaded: CamJob = serde_json::from_str(&serde_json::to_string(&job).unwrap()).unwrap();
     let OperationSettings::Face(settings) = &reloaded.operations[0].settings else {
         panic!("face settings expected");
     };
@@ -318,33 +317,18 @@ fn knife_assignment_requires_knife_geometry() {
 }
 
 #[test]
-fn unknown_schema_versions_are_rejected() {
-    let json = face_job(true).to_json().unwrap();
-    for version in [3u64, 5] {
-        let stale = json.replace(
-            &format!("\"schema_version\": {CAM_JOB_SCHEMA_VERSION}"),
-            &format!("\"schema_version\": {version}"),
-        );
-        let err = CamJob::from_json(&stale).unwrap_err();
-        assert_eq!(err.code, "CAM_JOB_SCHEMA_VERSION", "version {version}");
-    }
-}
-
-#[test]
 fn unknown_operation_kind_and_fields_are_rejected() {
-    let json = face_job(true).to_json().unwrap();
-    let unknown_kind = json.replace("\"kind\": \"face\"", "\"kind\": \"pocket\"");
-    assert_eq!(
-        CamJob::from_json(&unknown_kind).unwrap_err().code,
-        "PROJECT_JSON"
+    let mut unknown_kind: serde_json::Value = serde_json::to_value(face_job(true)).unwrap();
+    unknown_kind["operations"][0]["settings"]["kind"] = serde_json::json!("pocket");
+    assert!(
+        serde_json::from_value::<CamJob>(unknown_kind).is_err(),
+        "an unknown operation kind is refused"
     );
-    let unknown_field = json.replace(
-        "\"name\": \"Face only\"",
-        "\"name\": \"Face only\", \"future_field\": 1}",
-    );
-    assert_eq!(
-        CamJob::from_json(&unknown_field).unwrap_err().code,
-        "PROJECT_JSON"
+    let mut value: serde_json::Value = serde_json::to_value(face_job(true)).unwrap();
+    value["future_field"] = serde_json::json!(1);
+    assert!(
+        serde_json::from_value::<CamJob>(value).is_err(),
+        "an unknown field is refused: the substrate denies unknown fields"
     );
 }
 
@@ -358,17 +342,16 @@ fn work_zero_and_anchors_serialize_strictly() {
         },
         z: WorkZeroZ::StockBottom,
     };
-    let json = job.to_json().unwrap();
+    let json = serde_json::to_string_pretty(&job).unwrap();
     assert!(json.contains("\"x_fraction\": 0.5"), "{json}");
     assert!(json.contains("\"y_fraction\": 1.0"), "{json}");
     assert!(json.contains("\"kind\": \"stock_anchor\""), "{json}");
-    assert_eq!(CamJob::from_json(&json).unwrap(), job);
+    assert_eq!(serde_json::from_str::<CamJob>(&json).unwrap(), job);
     let bad_anchor = json.replace("\"y_fraction\": 1.0", "\"y_fraction\": 0.7");
-    let err = CamJob::from_json(&bad_anchor).unwrap_err();
+    let err = serde_json::from_str::<CamJob>(&bad_anchor).unwrap_err();
     // Nested Serde conversion failures surface as parse errors carrying the
     // underlying anchor-fraction diagnostic text.
-    assert_eq!(err.code, "PROJECT_JSON");
-    assert!(err.message.contains("anchor fractions"), "{}", err.message);
+    assert!(err.to_string().contains("anchor fractions"), "{err}");
 }
 
 fn vbit_finish_settings() -> cam_core::vcarve::VBitPlanningSettings {
@@ -451,7 +434,7 @@ fn zero_supplied_values_are_preserved_exactly() {
     };
     settings.margins.min_x_mm = Some(0.);
     settings.bottom.offset_mm = -0.;
-    let reloaded = CamJob::from_json(&job.to_json().unwrap()).unwrap();
+    let reloaded: CamJob = serde_json::from_str(&serde_json::to_string(&job).unwrap()).unwrap();
     let OperationSettings::Face(settings) = &reloaded.operations[0].settings else {
         panic!("face settings expected");
     };

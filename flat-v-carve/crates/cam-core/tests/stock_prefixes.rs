@@ -3,13 +3,13 @@
 use cam_core::{
     geometry::Point,
     motion::Position,
-    project::{HeightRef, OperationSettings, RectXY, migrate::migrate_legacy_json},
+    project::{CamJob, HeightRef, OperationSettings, RectXY},
     sequence::{OperationPlan, PlanLimits},
     setup::{ResolvedHeights, resolve_heights},
     stock::history::{StockHistory, SweepBatch, SweepCutter, SweepMotion},
 };
 
-const M3_RECTANGLE: &str = include_str!("../../../fixtures/m3/rectangle.json");
+const M3_RECTANGLE: &str = include_str!("../../../fixtures/v4/rectangle.json");
 
 fn cut(start: (f64, f64, f64), end: (f64, f64, f64)) -> SweepMotion {
     SweepMotion {
@@ -160,7 +160,7 @@ fn near(actual: f64, expected: f64, what: &str) {
 }
 
 fn two_operation_job() -> cam_core::project::CamJob {
-    let mut job = migrate_legacy_json(M3_RECTANGLE).unwrap();
+    let mut job: CamJob = serde_json::from_str(M3_RECTANGLE).unwrap();
     let mut second = job.operations[0].clone();
     second.id = "carve-2".into();
     second.name = "Second carve".into();
@@ -236,7 +236,7 @@ fn plan_history_accumulates_the_executed_prefix() {
 
 #[test]
 fn height_references_resolve_with_explicit_failures() {
-    let job = migrate_legacy_json(M3_RECTANGLE).unwrap();
+    let job: CamJob = serde_json::from_str(M3_RECTANGLE).unwrap();
     let empty = std::collections::BTreeMap::new();
     // Simple references: face-like top/bottom over 8 mm stock.
     let resolved = resolve_heights(

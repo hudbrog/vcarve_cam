@@ -80,7 +80,6 @@ fn job(svg_body: &str, settings: DragKnifeSettings) -> CamJob {
 /// the holder standoff at the entry was not scaled by the tool at all.
 fn job_with_offset(svg_body: &str, settings: DragKnifeSettings, blade_offset_mm: f64) -> CamJob {
     let job = CamJob {
-        schema_version: 4,
         name: "knife-geometry".into(),
         source: Some(SourceSnapshot {
             filename: "art.svg".into(),

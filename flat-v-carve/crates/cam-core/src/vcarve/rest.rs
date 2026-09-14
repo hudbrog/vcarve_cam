@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn prefetched_offsets_preserve_contours_and_resource_errors() {
         let job =
-            crate::job::Job::from_json(include_str!("../../../../fixtures/m4/finite-tip.json"))
+            crate::job::Job::from_fixture(include_str!("../../../../fixtures/m4/finite-tip.json"))
                 .unwrap();
         let mut ctx = Context::new(&job).unwrap();
         let p = Point::new;

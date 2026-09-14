@@ -857,7 +857,7 @@ mod slice_reuse_tests {
             include_str!("../../../../fixtures/m4/finite-tip.json"),
             include_str!("../../../../fixtures/m4/exact-fit.json"),
         ] {
-            let job = Job::from_json(input).unwrap();
+            let job = Job::from_fixture(input).unwrap();
             let (endmill, target) = crate::pocket::plan_with_target(&job, None).unwrap();
             let ctx = Context::new(&job).unwrap();
             assert_eq!(
@@ -896,7 +896,7 @@ mod slice_reuse_tests {
             include_str!("../../../../fixtures/m4/contact-point.json"),
             include_str!("../../../../fixtures/m4/resource-limit.json"),
         ] {
-            let job = Job::from_json(input).unwrap();
+            let job = Job::from_fixture(input).unwrap();
             let endmill = plan_endmill(&job).unwrap();
             // Separate contexts also exercise concurrent initialization of the
             // shared target's lazy geometric data, without a warm serial cache.
@@ -920,7 +920,7 @@ mod slice_reuse_tests {
     fn reused_stock_matches_fresh_sweeps_for_plunges_ramps_and_multiple_layers() {
         for ramp in [false, true] {
             let mut job =
-                Job::from_json(include_str!("../../../../fixtures/m4/island.json")).unwrap();
+                Job::from_fixture(include_str!("../../../../fixtures/m4/island.json")).unwrap();
             if ramp {
                 job.tools[0].ramp_capable = Some(true);
                 job.endmill_planning.as_mut().unwrap().entry = EntryStrategy::Ramp {

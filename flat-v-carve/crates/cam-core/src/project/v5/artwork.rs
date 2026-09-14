@@ -30,7 +30,6 @@ pub fn item_catalogue(item: &ArtworkItem) -> Result<ContourCatalogue> {
         super::ArtworkContent::Svg(snapshot) => snapshot.clone(),
     };
     let job = crate::project::CamJob {
-        schema_version: crate::project::CAM_JOB_SCHEMA_VERSION,
         name: String::new(),
         source: Some(snapshot),
         import: item.import_options(),
