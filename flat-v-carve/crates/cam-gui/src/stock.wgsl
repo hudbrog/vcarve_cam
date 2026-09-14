@@ -101,19 +101,44 @@ fn output_alpha() -> f32 {
         let col = index%cols;
         let row = index/cols;
         let corners = array<vec2<f32>,6>(vec2(0.,0.),vec2(1.,0.),vec2(0.,1.),vec2(0.,1.),vec2(1.,0.),vec2(1.,1.));
-        let xy = (vec2(f32(col),f32(row))+corners[id%6u])*grid.cell;
+        let corner = corners[id%6u];
+        let xy = (vec2(f32(col),f32(row))+corner)*grid.cell;
         let packed = packed_at(col,row);
         let depth = depth_of(packed);
-        p = vec3(grid.origin+min(xy,vec2(grid.width,grid.height)), -depth*grid.thickness);
         // Surface normal from the field gradient, in stock millimetres, so a
         // V-bit slope reads as a slope and a step reads as an edge. The border
         // repeats its own cell instead of reading out of bounds.
-        let border = min(grid.cell*0.5,1e-4);
-        let step = max(2.*grid.cell,border);
-        let dx = (neighbour_depth(col,row,1,0)-neighbour_depth(col,row,-1,0))*grid.thickness/step;
-        let dy = (neighbour_depth(col,row,0,1)-neighbour_depth(col,row,0,-1))*grid.thickness/step;
+        let step = max(2.*grid.cell,1e-6);
+        let left = neighbour_depth(col,row,-1,0);
+        let right = neighbour_depth(col,row,1,0);
+        let down = neighbour_depth(col,row,0,-1);
+        let up = neighbour_depth(col,row,0,1);
+        let dx = (right-left)*grid.thickness/step;
+        let dy = (up-down)*grid.thickness/step;
+        // A gentle neighbour hood draws as an interpolated surface - corner
+        // heights averaged from the cells that meet there - so a V-bit flank is
+        // a slope and a depth ramp is a gradient. Where the field steps, the
+        // cell keeps its own flat depth: a wall stays sharp, and the wall quad
+        // the display built stands on it.
+        let tall = max(max(abs(left-depth),abs(right-depth)),max(abs(down-depth),abs(up-depth)))*grid.thickness;
+        let gentle = tall <= style.wall_threshold;
+        var corner_depth = depth;
+        if (gentle) {
+            // The four cells that meet at this corner.
+            let ox0 = i32(corner.x)-1;
+            let oy0 = i32(corner.y)-1;
+            let ox1 = i32(corner.x);
+            let oy1 = i32(corner.y);
+            corner_depth = 0.25*(
+                neighbour_depth(col,row,ox0,oy0)
+                +neighbour_depth(col,row,ox1,oy0)
+                +neighbour_depth(col,row,ox0,oy1)
+                +neighbour_depth(col,row,ox1,oy1)
+            );
+        }
+        p = vec3(grid.origin+min(xy,vec2(grid.width,grid.height)), -corner_depth*grid.thickness);
         normal = vec3(dx,dy,1.);
-        color = surface_color(stage_of(packed),tool_of(packed),depth);
+        color = surface_color(stage_of(packed),tool_of(packed),select(depth,corner_depth,style.mode == 3u && gentle));
     } else if (id < cell_vertices+wall_vertices) {
         let wall = (id-cell_vertices)/6u;
         let corners = array<vec2<f32>,6>(vec2(0.,0.),vec2(1.,0.),vec2(0.,1.),vec2(0.,1.),vec2(1.,0.),vec2(1.,1.));

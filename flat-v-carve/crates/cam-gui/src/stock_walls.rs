@@ -31,6 +31,13 @@ pub const NO_CUTTER: u32 = u32::MAX;
 /// is a wall.
 pub const MIN_WALL_SLOPE: f64 = 1.5;
 
+/// Step height at which a step counts as a wall, from the style's minimum and
+/// the slope rule. `stock.wgsl` uses the same number to decide whether a cell
+/// draws as a smooth slope or as a sharp step, so the two must agree.
+pub fn effective_threshold(cell_mm: f64, style_mm: f64) -> f64 {
+    style_mm.max(cell_mm * MIN_WALL_SLOPE).max(1e-6)
+}
+
 /// One wall quad, in grid-cell units so the shader multiplies by its own cell
 /// size. Axis 0 stands at a fixed x and runs along y; axis 1 at a fixed y and
 /// runs along x. `top` and `bottom` are fractions of the stock thickness below
@@ -106,7 +113,7 @@ impl Grid<'_> {
 pub fn build(grid: &Grid, threshold_mm: f64, budget: usize) -> WallSet {
     // The style's threshold is a minimum: a slope that is merely steep is not a
     // wall, however deep the material beside it is.
-    let mut threshold = threshold_mm.max(grid.cell_mm * MIN_WALL_SLOPE).max(1e-6);
+    let mut threshold = effective_threshold(grid.cell_mm, threshold_mm);
     for _ in 0..4 {
         let mut walls = Vec::new();
         detect(grid, threshold, &mut walls);

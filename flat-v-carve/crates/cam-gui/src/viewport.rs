@@ -1598,6 +1598,15 @@ impl Viewport {
             [to_camera[0], to_camera[1], to_camera[2], 0.],
             flags,
         );
+        // The shader needs the same step threshold the wall builder uses, to
+        // tell a slope (interpolate) from a step (keep sharp).
+        let mut uniform = uniform;
+        if let Some(stock) = self.stock.as_ref() {
+            uniform.wall_threshold = stock_walls::effective_threshold(
+                stock.meta.cell_mm,
+                self.stock_style.wall_threshold(stock.meta.cell_mm) as f64,
+            ) as f32;
+        }
         (uniform, palette, self.palette_revision)
     }
 
