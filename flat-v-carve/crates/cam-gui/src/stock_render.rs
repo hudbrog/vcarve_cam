@@ -205,9 +205,25 @@ fn build_gpu(
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("CAM GUI stock layout"),
         entries: &[
-            entry(0, wgpu::BufferBindingType::Uniform),
-            entry(1, wgpu::BufferBindingType::Uniform),
-            entry(2, wgpu::BufferBindingType::Storage { read_only: true }),
+            // Every binding is visible to both stages: the whole stock pass
+            // resolves colours per vertex, so a stage-gated binding that the
+            // shader happens to read is refused at pipeline creation, which a
+            // release build reports as nothing at all.
+            entry_with(
+                0,
+                wgpu::BufferBindingType::Uniform,
+                wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ),
+            entry_with(
+                1,
+                wgpu::BufferBindingType::Uniform,
+                wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ),
+            entry_with(
+                2,
+                wgpu::BufferBindingType::Storage { read_only: true },
+                wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ),
             entry_with(
                 3,
                 wgpu::BufferBindingType::Uniform,
@@ -216,12 +232,15 @@ fn build_gpu(
             entry_with(
                 4,
                 wgpu::BufferBindingType::Storage { read_only: true },
-                wgpu::ShaderStages::FRAGMENT,
+                // The whole stock pass resolves its colour per vertex, so the
+                // vertex stage reads the palette too: a fragment-only binding
+                // makes `create_render_pipeline` refuse the layout.
+                wgpu::ShaderStages::VERTEX_FRAGMENT,
             ),
             entry_with(
                 5,
                 wgpu::BufferBindingType::Storage { read_only: true },
-                wgpu::ShaderStages::VERTEX,
+                wgpu::ShaderStages::VERTEX_FRAGMENT,
             ),
         ],
     });
@@ -300,10 +319,6 @@ fn build_gpu(
         })
     };
     (pipeline(false), pipeline(true), layout, bind)
-}
-
-fn entry(binding: u32, ty: wgpu::BufferBindingType) -> wgpu::BindGroupLayoutEntry {
-    entry_with(binding, ty, wgpu::ShaderStages::VERTEX)
 }
 
 fn entry_with(
