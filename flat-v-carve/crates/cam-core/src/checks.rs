@@ -643,6 +643,42 @@ fn check_assembly(
     // capability that authorizes the descent. A rapid is never authorized, so
     // no G0 can be emitted into material. This keeps a cutter that cannot
     // plunge out of the stock whatever planner produced the motions.
+    //
+    // A stage whose chain skips a position would defeat this: the post emits
+    // one block per motion endpoint, so the machine travels from where it
+    // really is to the next endpoint, and a descent can hide behind a claimed
+    // start. Continuity is checked first, and every descent is measured from
+    // the position the machine is actually at.
+    for stage in stages {
+        let stage_motions = &motions[stage.motion_range.0..stage.motion_range.1];
+        for (index, motion) in stage_motions.iter().enumerate() {
+            if index == 0 {
+                continue;
+            }
+            let previous = stage_motions[index - 1].end;
+            let gap = (motion.start.x - previous.x)
+                .abs()
+                .max((motion.start.y - previous.y).abs())
+                .max((motion.start.z - previous.z).abs());
+            // A micrometre is the smallest gap the rounded output could even
+            // express; anything above it is a move the machine would make and
+            // the plan would not describe.
+            if gap > 1e-6 {
+                let mut f = finding(
+                    "PLAN_MOTION_DISCONTINUITY",
+                    format!(
+                        "motion {} starts {gap:.3} mm from where motion {} ends, so the emitted program would travel there without the plan describing it",
+                        motion.id,
+                        stage_motions[index - 1].id
+                    ),
+                );
+                f.operation_id = Some(motion.operation_id.clone());
+                f.stage_id = Some(motion.stage_id.clone());
+                findings.push(f);
+                failed = true;
+            }
+        }
+    }
     for stage in stages {
         // A passive knife is pressed into its material by design.
         if stage.role == StageRole::Knife {
@@ -655,17 +691,22 @@ fn check_assembly(
         // Cutting motions of this stage that already ran, for the cleared
         // space test below.
         let mut cleared: Vec<&PlannedMotion> = vec![];
+        // Where the machine really is before this motion: its start, unless the
+        // plan left a gap, in which case the previous motion's end is the
+        // truth the control will interpolate from.
+        let mut real_previous: Option<crate::motion::Position> = None;
         for motion in &motions[stage.motion_range.0..stage.motion_range.1] {
-            if motion.start.z > motion.end.z {
+            let from = real_previous.unwrap_or(motion.start);
+            if from.z > motion.end.z {
                 let depth = surface - motion.end.z;
                 if depth > 0. {
                     let cutter = safety.cutter(&motion.tool_id);
                     let radius = cutter.and_then(|cutter| cutter.radius_at(depth));
                     let in_air = radius.is_some_and(|radius| {
-                        safety.descent_clear(motion.start, motion.end, radius)
+                        safety.descent_clear(from, motion.end, radius)
                     });
-                    let axial = (motion.end.x - motion.start.x).abs() <= 1e-9
-                        && (motion.end.y - motion.start.y).abs() <= 1e-9;
+                    let axial = (motion.end.x - from.x).abs() <= 1e-9
+                        && (motion.end.y - from.y).abs() <= 1e-9;
                     // A rapid is never a licensed entry. A feed descent needs a
                     // tool that may make it: declared plunge capability, or
                     // ramp capability for a non-axial entry. An undeclared
@@ -707,6 +748,7 @@ fn check_assembly(
             if motion.effect == MotionEffect::MillingSweep {
                 cleared.push(motion);
             }
+            real_previous = Some(motion.end);
         }
     }
 

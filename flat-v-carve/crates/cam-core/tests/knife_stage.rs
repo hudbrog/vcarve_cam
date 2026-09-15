@@ -36,6 +36,7 @@ fn face(id: &str) -> Operation {
         settings: OperationSettings::Face(FaceSettings {
             area: FaceArea::EntireStock,
             margins: Default::default(),
+            entry: Default::default(),
             entry_overrun_mm: Some(1.),
             exit_overrun_mm: Some(1.),
             top: HeightRef {

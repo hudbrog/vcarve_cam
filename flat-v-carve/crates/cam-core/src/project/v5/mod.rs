@@ -710,6 +710,10 @@ pub struct FaceSettingsV5 {
     pub area: crate::project::FaceArea,
     #[serde(default)]
     pub margins: crate::project::FaceMargins,
+    /// Where every pass starts: an end of the pass axis, an explicit position
+    /// on it, or the pre-2026-09-15 per-layer flip.
+    #[serde(default)]
+    pub entry: crate::project::FaceEntry,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_overrun_mm: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -915,6 +919,16 @@ fn validate_flat_vcarve(settings: &FlatVcarveSettingsV5, id: &str) -> Result<()>
 fn validate_face(settings: &FaceSettingsV5) -> Result<()> {
     if let crate::project::FaceArea::Rectangle { rect } = &settings.area {
         rect.validate()?;
+    }
+    // An explicit entry position is a coordinate, not a distance: negative
+    // values are ordinary. It only has to be a real number.
+    if let crate::project::FaceEntry::At { coordinate_mm } = settings.entry
+        && !coordinate_mm.is_finite()
+    {
+        return Err(error(
+            "PROJECT_PARAMETER",
+            "face.entry.coordinate_mm must be finite",
+        ));
     }
     number(settings.entry_overrun_mm, "face.entry_overrun_mm", false)?;
     number(settings.exit_overrun_mm, "face.exit_overrun_mm", false)?;

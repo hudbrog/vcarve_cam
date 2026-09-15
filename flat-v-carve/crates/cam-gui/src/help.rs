@@ -187,7 +187,7 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
     })
 }
 
-const FIELD_HELP: [&str; 109] = [
+const FIELD_HELP: [&str; 110] = [
     "Total carving depth below the operation top, in millimeters. Stepdown controls how much is removed in each pass.",
     "Material left on walls by roughing, in millimeters, for a later finishing pass. Zero requests no extra allowance.",
     "Endmill cutting speed along the path, in mm/min. Choose for your cutter, material and machine; it is not spindle RPM.",
@@ -264,12 +264,12 @@ const FIELD_HELP: [&str; 109] = [
     "Signed height offset in millimeters from the selected knife top reference. Positive is upward, negative is downward.",
     "Signed height offset in millimeters from the selected knife bottom reference. A negative stock-top offset sets a cut below stock top.",
     "Facing pass angle in degrees. Only 0 (rows along X) and 90 (rows along Y) ship in this milestone; another angle is rejected with a located reason.",
-    "Travel beyond the requested face coverage at each pass entry, in millimeters. This is allowed overhang, not a claim that material outside the request is faced.",
-    "Travel beyond the requested face coverage at each pass exit, in millimeters. This is allowed overhang, not a claim that material outside the request is faced.",
-    "Coverage expansion past the requested area's minimum X edge, in millimeters. Positive values extend outward and must be nonnegative.",
-    "Coverage expansion past the requested area's maximum X edge, in millimeters. Positive values extend outward and must be nonnegative.",
-    "Coverage expansion past the requested area's minimum Y edge, in millimeters. Positive values extend outward and must be nonnegative.",
-    "Coverage expansion past the requested area's maximum Y edge, in millimeters. Positive values extend outward and must be nonnegative.",
+    "How far past the coverage edge the pass starts, in millimeters, measured to the cutter CENTRE along the pass direction. It is travel, not a coverage request: the coverage itself comes from the requested area plus the margins. On the end every pass enters from this is the clearance a tool that cannot plunge needs, so the more of it, the safer the entry; a tool that cannot plunge is refused when the descent would still reach the stock.",
+    "How far past the coverage edge the pass leaves, in millimeters, measured to the cutter centre along the pass direction. It trails the end a pass exits from: a little of it lets the cutter clear the edge at feed instead of stopping on it, and a pass that continues the layer starts where the previous pass ended.",
+    "Coverage expansion past the requested area's minimum X edge, in millimeters. The coverage is what has to end up flat: the requested area plus these four margins. Margins change where the tool must cover, not where it starts or stops.",
+    "Coverage expansion past the requested area's maximum X edge, in millimeters. Coverage is the requested area plus the margins; travel beyond it is the entry and exit travel.",
+    "Coverage expansion past the requested area's minimum Y edge, in millimeters. Coverage is the requested area plus the margins; travel beyond it is the entry and exit travel.",
+    "Coverage expansion past the requested area's maximum Y edge, in millimeters. Coverage is the requested area plus the margins; travel beyond it is the entry and exit travel.",
     "Left edge of the requested face rectangle in setup millimeters. The rectangle must have positive width and length.",
     "Bottom edge of the requested face rectangle in setup millimeters. The rectangle must have positive width and length.",
     "Requested face rectangle extent along setup X in millimeters. Coverage beyond this comes only from the margins.",
@@ -297,6 +297,7 @@ const FIELD_HELP: [&str; 109] = [
     "Radius of a tangent arc lead-out in millimeters. The arc bulges into the scrap side.",
     "Sweep of the tangent arc lead-out in degrees, between 0 and 360.",
     "Position of the cut start as a fraction from 0 up to 1 along the selected contour's canonical start. It is the numeric equivalent of dragging the start.",
+    "The exact position the pass starts at, along the pass direction, in setup coordinates. Used by the 'Start at…' entry choice: it replaces the entry travel, so the panel shows the travel this position implies. It must be at or beyond the pass's own span, or the strip behind it would go unswept. Negative values are ordinary.",
 ];
 
 #[cfg(test)]

@@ -387,6 +387,7 @@ fn mixed_profile_and_knife_selections_span_sources() {
             settings: OperationSettingsV5::Face(v5::FaceSettingsV5 {
                 area: FaceArea::EntireStock,
                 margins: Default::default(),
+                entry: Default::default(),
                 entry_overrun_mm: Some(2.),
                 exit_overrun_mm: Some(2.),
                 top: HeightRef {
@@ -747,6 +748,7 @@ fn stale_revision_blocks_only_the_referencing_operations() {
                     },
                 },
                 margins: Default::default(),
+                entry: Default::default(),
                 entry_overrun_mm: None,
                 exit_overrun_mm: None,
                 top: HeightRef {
@@ -895,6 +897,7 @@ fn face_referenced_cross_source_carve_admits_the_union_bounds() {
                     },
                 },
                 margins: Default::default(),
+                entry: Default::default(),
                 entry_overrun_mm: Some(2.),
                 exit_overrun_mm: Some(2.),
                 top: HeightRef {

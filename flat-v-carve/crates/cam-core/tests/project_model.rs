@@ -50,6 +50,7 @@ fn face_operation(id: &str, complete: bool) -> Operation {
                 },
             },
             margins: FaceMargins::default(),
+            entry: Default::default(),
             entry_overrun_mm: Some(2.),
             exit_overrun_mm: Some(2.),
             top: HeightRef {

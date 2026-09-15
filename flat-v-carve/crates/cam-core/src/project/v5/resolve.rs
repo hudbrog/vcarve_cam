@@ -372,6 +372,7 @@ pub(crate) fn to_face_settings(settings: &FaceSettingsV5) -> project::FaceSettin
     project::FaceSettings {
         area: settings.area.clone(),
         margins: settings.margins,
+        entry: settings.entry,
         entry_overrun_mm: settings.entry_overrun_mm,
         exit_overrun_mm: settings.exit_overrun_mm,
         top: settings.top.clone(),

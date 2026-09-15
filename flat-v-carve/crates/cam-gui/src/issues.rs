@@ -34,6 +34,9 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
             "stepdown_mm" => Some((2, "Stepdown".into())),
             "stepover_mm" => Some((2, "Stepover".into())),
             "pass_angle_deg" => Some((2, "Face pass angle".into())),
+            // The entry choice and its explicit position live in the pass
+            // entry group, beside the travel it replaces.
+            "entry" | "entry.coordinate_mm" => Some((2, "Face entry at".into())),
             "entry_overrun_mm" => Some((2, "Face entry overrun".into())),
             "exit_overrun_mm" => Some((2, "Face exit overrun".into())),
             "margins.min_x_mm" => Some((2, "Face margin min X".into())),

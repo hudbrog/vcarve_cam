@@ -501,6 +501,29 @@ pub enum FacePattern {
     OneWay,
 }
 
+/// Where a face pass starts along the pass direction (plan section 11.1).
+///
+/// `Min` and `Max` are the two ends of the pass axis: for a 0-degree pass the
+/// X minimum and X maximum edges of the *coverage*, for a 90-degree pass the Y
+/// minimum and maximum. `At` names the start position itself, in setup
+/// coordinates on that axis. `Alternate` is the pre-2026-09-15 behaviour: the
+/// start end flips with the depth layer, which needs clearance at both ends.
+///
+/// The travel beyond the coverage at the end a pass starts from is
+/// [`FaceSettings::entry_overrun_mm`]; it is ignored by `At`, whose coordinate
+/// is authoritative and implies its own travel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FaceEntry {
+    #[default]
+    Min,
+    Max,
+    At {
+        coordinate_mm: f64,
+    },
+    Alternate,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FaceArea {
@@ -528,6 +551,9 @@ pub struct FaceSettings {
     pub area: FaceArea,
     #[serde(default)]
     pub margins: FaceMargins,
+    /// Where every pass starts. Defaults to the minimum end of the pass axis.
+    #[serde(default)]
+    pub entry: FaceEntry,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_overrun_mm: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -948,6 +974,16 @@ impl<'a> OperationContext<'a> {
 fn validate_face(settings: &FaceSettings, ctx: &OperationContext, id: &str) -> Result<()> {
     if let FaceArea::Rectangle { rect } = &settings.area {
         rect.validate()?;
+    }
+    // An explicit entry position is a coordinate, not a distance: negative
+    // values are ordinary. It only has to be a real number.
+    if let FaceEntry::At { coordinate_mm } = settings.entry
+        && !coordinate_mm.is_finite()
+    {
+        return Err(error(
+            "PROJECT_PARAMETER",
+            "face.entry.coordinate_mm must be finite",
+        ));
     }
     number(settings.entry_overrun_mm, "face.entry_overrun_mm", false)?;
     number(settings.exit_overrun_mm, "face.exit_overrun_mm", false)?;

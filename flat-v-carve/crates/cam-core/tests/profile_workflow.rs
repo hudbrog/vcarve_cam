@@ -78,6 +78,7 @@ fn face_op(id: &str, rect: RectXY, depth: f64) -> Operation {
         settings: OperationSettings::Face(FaceSettings {
             area: FaceArea::Rectangle { rect },
             margins: FaceMargins::default(),
+            entry: Default::default(),
             entry_overrun_mm: Some(1.),
             exit_overrun_mm: Some(1.),
             top: HeightRef {

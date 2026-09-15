@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const FIELDS: [&str; 109] = [
+pub const FIELDS: [&str; 110] = [
     "Maximum depth",
     "Wall allowance",
     "Roughing feed",
@@ -111,6 +111,8 @@ pub const FIELDS: [&str; 109] = [
     "Lead-out radius",
     "Lead-out sweep",
     "Start fraction",
+    // 109: the explicit face entry position, used by the `At` entry mode.
+    "Face entry at",
 ];
 
 /// Fields whose raw text belongs to one qualified geometry reference rather

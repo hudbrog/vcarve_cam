@@ -7,7 +7,10 @@
 //! 90 degrees made it stop reproducing.
 use cam_core::{
     job::SourceSnapshot,
-    project::v5::{ArtworkContent, CamJobV5, OperationSettingsV5},
+    project::{
+        FaceEntry, FacePattern,
+        v5::{ArtworkContent, CamJobV5, FaceSettingsV5, OperationSettingsV5},
+    },
 };
 use cam_gui_runtime::{
     compute, pages,
@@ -178,6 +181,119 @@ fn the_artwork_keeps_its_size_whatever_frame_the_toolpath_needs() {
             "pass angle {angle}: the artwork is {} × {} mm",
             max_x - min_x,
             max_y - min_y
+        );
+    }
+}
+
+/// The viewport draws the facing request, the coverage and the entry from the
+/// same resolution the panel shows, published with the scene before a plan
+/// exists (plan section 11.1 and the W3 preview half).
+#[test]
+fn the_scene_publishes_the_facing_request_coverage_and_entry() {
+    let scene = generate(&facing_job(0.));
+    let plans = scene.meta.report["gui2"]["facePlans"]
+        .as_array()
+        .expect("the scene publishes the facing overlays")
+        .clone();
+    assert_eq!(plans.len(), 1, "{plans:?}");
+    let plan = &plans[0];
+    assert_eq!(plan["operationId"], "face-1");
+    assert_eq!(plan["axis"], "X");
+    // The reported job faces the whole 200 x 100 stock with no margins, so the
+    // coverage is the stock rectangle and the request is the same rectangle.
+    let coverage = plan["coverage"].as_array().unwrap();
+    let values: Vec<f64> = coverage.iter().map(|v| v.as_f64().unwrap()).collect();
+    assert_eq!(values, vec![0., 0., 200., 100.]);
+    // The allowed envelope is the coverage, the travel and the cutter radius:
+    // with no overrun it is one 25.1 mm radius wider on every side.
+    let envelope = plan["envelope"].as_array().unwrap();
+    let values: Vec<f64> = envelope.iter().map(|v| v.as_f64().unwrap()).collect();
+    assert!(
+        // The envelope also carries the planner's numerical reserve.
+        (values[0] + 25.1).abs() < 1e-4
+            && (values[1] + 25.1).abs() < 1e-4
+            && (values[2] - (200. + 50.2)).abs() < 1e-4
+            && (values[3] - (100. + 50.2)).abs() < 1e-4,
+        "{values:?}"
+    );
+    // Every pass enters at the coverage's X minimum end, inside the cutter
+    // radius of the stock edge: the tangent entry the report's job relies on.
+    let entries = plan["entries"].as_array().unwrap();
+    assert!(!entries.is_empty());
+    for entry in entries {
+        assert!((entry.as_f64().unwrap() - -25.1).abs() < 1e-6, "{entry}");
+    }
+    for clearance in plan["clearances"].as_array().unwrap() {
+        assert!(
+            clearance.as_f64().unwrap() >= -1e-9,
+            "a tangent entry clears the stock: {clearance}"
+        );
+    }
+    // The viewport draws its travel arrows from these numbers, so they have to
+    // be the pass's own span and the two travel values — nothing reconstructed.
+    assert!((plan["passLow"].as_f64().unwrap() - -25.1).abs() < 1e-6);
+    assert!((plan["passHigh"].as_f64().unwrap() - 225.1).abs() < 1e-6);
+    assert_eq!(plan["entryTravel"].as_f64().unwrap(), 0.);
+    assert_eq!(plan["exitTravel"].as_f64().unwrap(), 0.);
+}
+
+/// W3 acceptance: changing any facing parameter may change the travel and the
+/// frame it needs, but never the stock rectangle or the artwork inside it.
+#[test]
+fn facing_parameters_never_move_the_stock_or_the_artwork() {
+    fn settings(job: &mut CamJobV5) -> &mut FaceSettingsV5 {
+        let OperationSettingsV5::Face(settings) = &mut job.operations[0].settings else {
+            panic!("the fixture carries one face operation")
+        };
+        settings
+    }
+    fn extent_of(stock: Option<&cam_gui_runtime::sim::Stock>) -> (f64, f64, f64, f64) {
+        let stock = stock.expect("a generated scene has a simulated stock");
+        (stock.x0, stock.y0, stock.x1, stock.y1)
+    }
+
+    let reference = generate(&facing_job(0.));
+    let want_artwork = contour_extent(&reference);
+    let want_stock = extent_of(reference.meta.sim.as_ref().map(|sim| &sim.stock));
+    /// One facing parameter change, named for the failure message.
+    type Variation = (&'static str, fn(&mut FaceSettingsV5));
+    let variations: [Variation; 10] = [
+        ("coverage margin min X", |s| s.margins.min_x_mm = Some(5.)),
+        ("coverage margin max X", |s| s.margins.max_x_mm = Some(5.)),
+        ("coverage margin min Y", |s| s.margins.min_y_mm = Some(5.)),
+        ("coverage margin max Y", |s| s.margins.max_y_mm = Some(5.)),
+        ("entry travel", |s| s.entry_overrun_mm = Some(20.)),
+        ("exit travel", |s| s.exit_overrun_mm = Some(20.)),
+        ("pass angle", |s| s.pass_angle_deg = Some(90.)),
+        ("pattern", |s| s.pattern = FacePattern::OneWay),
+        ("entry at the high end", |s| s.entry = FaceEntry::Max),
+        ("explicit entry", |s| {
+            s.entry = FaceEntry::At {
+                coordinate_mm: -60.,
+            }
+        }),
+    ];
+    for (name, edit) in variations {
+        let mut job = facing_job(0.);
+        edit(settings(&mut job));
+        let scene = generate(&job);
+        // The payload holds normalized `f32` vertices, so the same setup point
+        // rounds a little differently under a different frame; the geometry
+        // itself must not move beyond display precision.
+        let got = contour_extent(&scene);
+        for (index, (got, want)) in [(got.0, want_artwork.0), (got.1, want_artwork.1), (got.2, want_artwork.2), (got.3, want_artwork.3)]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(
+                (got - want).abs() < 1e-3,
+                "{name} moved the artwork: {got} vs {want} at {index} ({got:?} vs {want_artwork:?})"
+            );
+        }
+        assert_eq!(
+            extent_of(scene.meta.sim.as_ref().map(|sim| &sim.stock)),
+            want_stock,
+            "{name} moved the stock"
         );
     }
 }

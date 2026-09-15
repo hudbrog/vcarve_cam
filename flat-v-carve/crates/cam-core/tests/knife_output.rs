@@ -103,6 +103,7 @@ fn face_operation(id: &str, area: FaceArea, bottom_offset: f64) -> Operation {
         settings: OperationSettings::Face(FaceSettings {
             area,
             margins: FaceMargins::default(),
+            entry: Default::default(),
             entry_overrun_mm: Some(1.),
             exit_overrun_mm: Some(1.),
             top: HeightRef {

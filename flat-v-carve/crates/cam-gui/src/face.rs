@@ -4,14 +4,14 @@
 //! editor's typed fields to the canonical [`FaceSettingsV5`] values and back.
 //! Empty text stays unset, so a half-configured face never looks ready.
 use cam_core::project::v5::CamJobV5;
-use cam_core::project::{FaceArea, v5};
+use cam_core::project::{FaceArea, FaceEntry, v5};
 
 /// Fields this editor binds for a Face operation. IDs 2/8/9/10/11 are the
 /// operation's own assignment values, exactly as they are for a Flat V-carve.
 pub fn active(field: usize) -> bool {
     matches!(
         field,
-        2 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 23 | 25 | 26..=36 | 40..=45 | 75..=88
+        2 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 23 | 25 | 26..=36 | 40..=45 | 75..=88 | 109
     )
 }
 
@@ -50,6 +50,12 @@ pub fn value(job: &CamJobV5, operation_id: &str, field: usize) -> Option<f64> {
         86 => Some(s?.top.offset_mm),
         87 => Some(s?.bottom.offset_mm),
         88 => s?.assignment.max_stepdown_mm,
+        // The explicit entry position exists only in the `At` mode, exactly as
+        // the rectangle corners exist only for a rectangle area.
+        109 => match s?.entry {
+            FaceEntry::At { coordinate_mm } => Some(coordinate_mm),
+            _ => None,
+        },
         _ => crate::authoring::value_in(job, operation_id, field),
     }
 }
@@ -64,7 +70,7 @@ pub fn set(
         job.setup.stock.thickness_mm = v;
         return Ok(());
     }
-    if !matches!(field, 2 | 8 | 9 | 10 | 11 | 75..=88) {
+    if !matches!(field, 2 | 8 | 9 | 10 | 11 | 75..=88 | 109) {
         return crate::authoring::set_in(job, operation_id, field, v);
     }
     let s = crate::session::face_mut(job, operation_id).ok_or("Expected a Face operation")?;
@@ -95,7 +101,15 @@ pub fn set(
         }
         86 => s.top.offset_mm = v.ok_or("Top offset cannot be unset")?,
         87 => s.bottom.offset_mm = v.ok_or("Bottom offset cannot be unset")?,
-        _ => s.assignment.max_stepdown_mm = v,
+        88 => s.assignment.max_stepdown_mm = v,
+        109 => {
+            let position = v.ok_or("An explicit face entry cannot be unset")?;
+            match &mut s.entry {
+                FaceEntry::At { coordinate_mm } => *coordinate_mm = position,
+                _ => return Err("Choose 'Start at…' before setting the entry position".into()),
+            }
+        }
+        _ => return Err("Unknown face field".into()),
     }
     Ok(())
 }
@@ -122,6 +136,40 @@ pub fn set_area(job: &mut CamJobV5, operation_id: &str, area: FaceArea) -> Resul
 
 pub fn area(job: &CamJobV5, operation_id: &str) -> Option<FaceArea> {
     Some(crate::session::face(job, operation_id)?.area.clone())
+}
+
+/// Where every pass enters, as the document states it.
+pub fn entry(job: &CamJobV5, operation_id: &str) -> Option<FaceEntry> {
+    Some(crate::session::face(job, operation_id)?.entry)
+}
+
+/// Set the entry mode. Switching to an explicit position keeps the position the
+/// passes enter at now, so the choice reads as a refinement rather than a jump.
+pub fn set_entry(
+    job: &mut CamJobV5,
+    operation_id: &str,
+    entry: FaceEntry,
+) -> Result<(), String> {
+    let current = crate::session::face(job, operation_id)
+        .ok_or("Expected a Face operation")?
+        .entry;
+    let resolved = cam_core::project::v5::inspection::face_entry_preview(job, operation_id)
+        .ok()
+        .flatten()
+        .and_then(|preview| preview.entries.first().copied());
+    let settings = crate::session::face_mut(job, operation_id).ok_or("Expected a Face operation")?;
+    settings.entry = match entry {
+        FaceEntry::At { .. } => FaceEntry::At {
+            coordinate_mm: match current {
+                FaceEntry::At { coordinate_mm } => Some(coordinate_mm),
+                _ => None,
+            }
+            .or(resolved)
+            .unwrap_or(0.),
+        },
+        other => other,
+    };
+    Ok(())
 }
 
 pub fn pattern(job: &CamJobV5, operation_id: &str) -> Option<cam_core::project::FacePattern> {

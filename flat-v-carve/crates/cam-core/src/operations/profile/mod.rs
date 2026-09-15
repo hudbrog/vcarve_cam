@@ -610,6 +610,34 @@ fn emit_loop_layers(
             .as_ref()
             .map(|lead| lead.points[0])
             .unwrap_or(vertices[0]);
+        // Travel to this entry is a motion of its own. The post emits one block
+        // per motion endpoint, so a transition the plan leaves out becomes a
+        // straight move from wherever the tool really is — which, at the start
+        // of a second contour or after a lead-out, is not this entry (field
+        // finding 2026-09-15, `PLAN_MOTION_DISCONTINUITY`). A stage boundary
+        // is the post's bridge to describe, so only same-stage travel is added.
+        let previous = motions.last().map(|m| (m.stage_id.clone(), m.end));
+        if let Some((previous_stage, end)) = previous
+            && previous_stage == stage
+            && (end.z - clearance).abs() <= 1e-9
+            && ((end.x - entry_xy.x).abs() > 1e-9 || (end.y - entry_xy.y).abs() > 1e-9)
+        {
+            motion(
+                motions,
+                MotionPurpose::Clearance,
+                Interpolation::Rapid,
+                MotionEffect::None,
+                end,
+                Position {
+                    x: entry_xy.x,
+                    y: entry_xy.y,
+                    z: clearance,
+                },
+                None,
+                contour.clone(),
+                layer_index,
+            );
+        }
         if clearance > plunge_from_z {
             motion(
                 motions,

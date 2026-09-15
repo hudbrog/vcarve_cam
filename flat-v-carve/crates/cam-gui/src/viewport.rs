@@ -13,6 +13,8 @@ use egui::Color32;
 use std::sync::Arc;
 #[path = "viewport_artwork.rs"]
 mod artwork;
+#[path = "viewport_face.rs"]
+mod face;
 #[path = "viewport_inspection.rs"]
 mod inspection;
 #[path = "viewport_knife.rs"]
@@ -1807,6 +1809,7 @@ impl Viewport {
         let mut built = overlay::build(selection, half, marker.as_slice());
         self.knife_overlay(&mut built);
         self.profile_overlay(&mut built);
+        self.face_overlay(&mut built);
         self.overlay_lines = Arc::new(built.lines);
         self.overlay_triangles = Arc::new(built.triangles);
     }

@@ -224,6 +224,30 @@ material is never authorized. The Face panel now carries the cutter's plunge
 capability next to the tool geometry, and its field path routes back there from
 the issue list.
 
+**Re-opened and closed 2026-09-15.** Measuring the entry rule showed that the
+plan it reads was not whole: the motion chain skipped a position at every
+depth-layer boundary, and because the post emits one block per motion endpoint
+the machine executed that gap as a straight `G0` from the clearance plane down
+to the next layer's cut depth — below stock top over the stock by the full
+1.997 mm depth of a plain whole-stock face at zero overrun with 10 rows per
+layer, while 11 rows per layer transited at the tangent plane and cut nothing,
+so the safety of the program depended on a row-count parity. The plunge side
+also alternated with the layer, so a tool that could not plunge needed
+clearance at both ends of the coverage.
+
+Landed: every transition is an explicit motion (retract → travel at the
+clearance plane → descend), `PLAN_MOTION_DISCONTINUITY` is a basic check, and
+the descent rule is measured from the position the machine is actually at. A
+new `entry` field (`min` / `max` / `at` / `alternate`) makes the entry the
+user's choice, `at` taking an explicit position on the pass axis, and
+`FACE_ENTRY_UNSAFE` now names the end, the position the cutter clears the stock
+from and the travel that reaches it. The new check immediately found the same
+defect between contours in the **profile** planner (a retract, then a motion
+claiming a start 15 mm away), which is fixed the same way. Evidence and tests:
+[facing-behaviour-plan.md](facing-behaviour-plan.md),
+`flat-v-carve/artifacts/facing-entry/`, `crates/cam-core/tests/face_core.rs`,
+`crates/cam-core/tests/face_workflow.rs`.
+
 **Follow-up (unblocked by the compatibility policy, §0).** Profile and pocket
 entries may still plunge with an *undeclared* capability: the plan's own
 planners do not yet require the declaration there. This used to be a
@@ -358,6 +382,30 @@ one shared frame for the renderer, the picker and every overlay; and the
 simulated stock's four walls now follow the material left in each boundary cell
 instead of standing at the original stock height, so a faced plate reads as a
 plate rather than a tray with the original envelope around it.
+
+**Landed 2026-09-15, with W1.** The parameter vocabulary is written into
+`2.5d-cam-plan.md` §11.1 and §11.2; every facing `(?)` entry now defines its
+number (coverage = area + margins; travel = cutter-centre travel past the
+coverage, applied where a pass enters and where it leaves; the envelope is
+coverage + travel + radius; the stock rectangle is the material), with the
+field labels deliberately left as they were. The panel states the coverage, the
+sweep envelope, the entry and the clearance at it before Generate, offers the
+one-click travel or position that would clear the stock, and carries the entry
+choice (both ends, an explicit position, or the per-layer flip). The viewport
+draws the coverage and nothing else: the requested area, the pass span, the
+travel and the entry are stated with numbers in the panel, because the tester
+found the additional outlines and lines in the viewport read as areas and had
+to be decoded rather than read (2026-09-15; `viewport_face.rs`,
+`gui2.facePlans`). A scene test asserts that changing any
+facing parameter moves neither the stock rectangle nor the artwork.
+
+Still open, deliberately: the camera still fits `stock ∪ artwork ∪ toolpath`
+rather than the plan's "fit to stock ∪ artwork with the travel as an overlay".
+The rescaling defect is fixed (the frame is settled before the first vertex),
+and the travel is now drawn as its own overlay, so this is a display-range
+trade-off — showing the travel or keeping the stock's scale — that the tester
+should settle rather than one this batch took silently. An explicit-position
+drag in the viewport (the entry line as a handle) is a natural follow-up.
 
 ### W4 — Inkscape/SVG import compatibility (P1, 3.1)
 

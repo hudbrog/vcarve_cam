@@ -177,6 +177,28 @@ pub fn inspect_face_fields(
     ))
 }
 
+/// The face editor's pre-generation readout: the axis the passes run along,
+/// every position the cutter descends at, how far its sweep clears the stock
+/// there, and the travel that would clear it. The same resolution the planner
+/// performs, so the panel cannot promise something the plan contradicts.
+pub fn face_entry_preview(
+    job: &CamJobV5,
+    operation_id: &str,
+) -> Result<Option<crate::operations::face::FaceEntryPreview>> {
+    let operation = job
+        .operations
+        .iter()
+        .find(|op| op.id == operation_id)
+        .ok_or_else(|| super::error("OPERATION_NOT_FOUND", "Unknown operation"))?;
+    let OperationSettingsV5::Face(settings) = &operation.settings else {
+        return Err(super::error("OPERATION_KIND", "Expected Face"));
+    };
+    crate::operations::face::entry_preview(
+        &crate::operations::PlanContext::from_v5(job),
+        &super::resolve::to_face_settings(settings),
+    )
+}
+
 /// Profile editor diagnostics: the profile planner's required-but-unset fields
 /// for one operation (contour selection with explicit sides, stepdown,
 /// direction, the milling assignment, and whichever tab/entry/lead values the

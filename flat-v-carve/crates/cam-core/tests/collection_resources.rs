@@ -919,6 +919,7 @@ fn inspection_reports_used_by_heights_and_stock() {
         settings: OperationSettingsV5::Face(v5::FaceSettingsV5 {
             area: FaceArea::EntireStock,
             margins: FaceMargins::default(),
+            entry: Default::default(),
             entry_overrun_mm: Some(2.),
             exit_overrun_mm: Some(2.),
             top: HeightRef {

@@ -476,6 +476,51 @@ pub fn build_with_preset(
             job.setup.stock.thickness_mm.unwrap_or(0.)
         ]);
     }
+    // Facing overlays, published before a plan exists: the requested area, the
+    // coverage every pass must sweep, the allowed travel envelope and the
+    // positions the cutter descends at. Display-only, and the same resolution
+    // the planner performs, so the viewport and the plan cannot disagree.
+    let mut face_plans = vec![];
+    for operation in &job.operations {
+        if !matches!(
+            operation.settings,
+            v5::OperationSettingsV5::Face(_)
+        ) {
+            continue;
+        }
+        let Ok(Some(preview)) = v5::inspection::face_entry_preview(job, &operation.id) else {
+            continue;
+        };
+        face_plans.push(json!({
+            "operationId": operation.id,
+            "axis": preview.axis.to_string(),
+            "area": preview.area.map(|area| [
+                area.min_x_mm,
+                area.min_y_mm,
+                area.width_mm,
+                area.length_mm,
+            ]),
+            "coverage": [
+                preview.coverage.min_x_mm,
+                preview.coverage.min_y_mm,
+                preview.coverage.width_mm,
+                preview.coverage.length_mm,
+            ],
+            "envelope": [
+                preview.envelope.min_x_mm,
+                preview.envelope.min_y_mm,
+                preview.envelope.width_mm,
+                preview.envelope.length_mm,
+            ],
+            "entries": preview.entries,
+            "clearances": preview.clearances,
+            "passLow": preview.pass_low_mm,
+            "passHigh": preview.pass_high_mm,
+            "entryTravel": preview.entry_travel_mm,
+            "exitTravel": preview.exit_travel_mm,
+        }));
+    }
+    report["facePlans"] = json!(face_plans);
     if report["issues"].is_null() {
         report["issues"] = json!(
             v5::references::inspect_references(job)

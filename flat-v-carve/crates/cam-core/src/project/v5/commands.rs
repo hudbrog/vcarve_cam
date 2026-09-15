@@ -1091,6 +1091,7 @@ pub fn add_operation(
             OperationSettingsV5::Face(super::FaceSettingsV5 {
                 area: crate::project::FaceArea::EntireStock,
                 margins: Default::default(),
+                entry: Default::default(),
                 entry_overrun_mm: None,
                 exit_overrun_mm: None,
                 top: zero_top.clone(),

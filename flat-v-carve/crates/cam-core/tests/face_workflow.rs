@@ -9,10 +9,10 @@ use cam_core::{
         sequence::{PreparedExecution, SequenceProfile},
     },
     project::{
-        AnchorFraction, CamJob, FaceArea, FaceMargins, FacePattern, FaceSettings, FlatVcarveMode,
-        FlatVcarveRoughSettings, FlatVcarveSettings, HeightRef, HeightReference, JobTool,
-        MillingAssignment, Operation, OperationSettings, RectXY, SetupSettings, StockSetup,
-        ToolCapabilities, ToolGeometry, WorkZero, WorkZeroXY, WorkZeroZ,
+        AnchorFraction, CamJob, FaceArea, FaceEntry, FaceMargins, FacePattern, FaceSettings,
+        FlatVcarveMode, FlatVcarveRoughSettings, FlatVcarveSettings, HeightRef, HeightReference,
+        JobTool, MillingAssignment, Operation, OperationSettings, RectXY, SetupSettings,
+        StockSetup, ToolCapabilities, ToolGeometry, WorkZero, WorkZeroXY, WorkZeroZ,
     },
     sequence::{GenerationStatus, OperationPlan, PlanLimits, TrustedPlan},
     toolpath::MotionEffect,
@@ -72,6 +72,7 @@ fn face_op(id: &str, rect: RectXY, depth: f64) -> Operation {
         settings: OperationSettings::Face(FaceSettings {
             area: FaceArea::Rectangle { rect },
             margins: FaceMargins::default(),
+            entry: Default::default(),
             entry_overrun_mm: Some(1.),
             exit_overrun_mm: Some(1.),
             top: HeightRef {
@@ -368,4 +369,157 @@ fn stock_top_carve_keeps_legacy_coordinates() {
         .iter()
         .any(|m| m.effect == MotionEffect::MillingSweep);
     assert!(cutting);
+}
+
+/// Report requirement (finding 1.1): "the generated G-code must also match the
+/// toolpath shown in the preview". One block per planned motion, in order, the
+/// readback reproducing every one of them, and a tool that cannot plunge
+/// entering from the one side its settings say.
+#[test]
+fn the_face_program_reproduces_every_planned_motion_in_order() {
+    use cam_core::toolpath::Interpolation;
+
+    // A 40 x 30 stock with a 30 x 20 face rectangle inside it: every descent
+    // stands on material unless the entry travel carries it clear.
+    let rect = RectXY {
+        min_x_mm: 5.,
+        min_y_mm: 5.,
+        width_mm: 30.,
+        length_mm: 20.,
+    };
+    let mut job = job(vec![face_op("face-1", rect, 1.)]);
+    job.tools[0].capabilities.plunge_capable = Some(false);
+    // Setup-origin work zero, so the emitted program is in the same
+    // coordinates the plan carries.
+    job.setup.work_zero = WorkZero {
+        xy: WorkZeroXY::SetupOrigin,
+        z: WorkZeroZ::StockTop,
+    };
+    let OperationSettings::Face(settings) = &mut job.operations[0].settings else {
+        panic!("face settings expected")
+    };
+    settings.bottom.offset_mm = -2.;
+    settings.stepdown_mm = Some(1.);
+    settings.entry = FaceEntry::Min;
+    settings.entry_overrun_mm = Some(20.);
+    settings.exit_overrun_mm = Some(2.);
+    let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    assert_eq!(
+        plan.operation_results[0].generation_status,
+        GenerationStatus::Complete,
+        "{:?}",
+        plan.generation_diagnostics
+    );
+    assert!(cam_core::checks::check_plan(&plan).unwrap().export_ready);
+
+    let profile = sequence_profile();
+    let trusted = TrustedPlan::from_generated(plan);
+    let prepared = PreparedExecution::prepare(&trusted, &profile).unwrap();
+    assert_eq!(prepared.machine_offset_mm, [0., 0., 0.]);
+    let export = prepared.export(&trusted, &profile).unwrap();
+    assert_eq!(export.report.basic_checks.status, CheckStatus::Passed);
+    let text = &export.program.gcode;
+    let blocks: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("G0 ") || line.starts_with("G1 "))
+        .collect();
+    assert_eq!(
+        blocks.len(),
+        trusted.plan().motions.len(),
+        "one block per planned motion:\n{text}"
+    );
+    for (block, motion) in blocks.iter().zip(&trusted.plan().motions) {
+        let axis = |name: char| -> f64 {
+            block
+                .split(' ')
+                .find_map(|word| word.strip_prefix(name))
+                .and_then(|value| value.parse::<f64>().ok())
+                .unwrap_or_else(|| panic!("block '{block}' has no {name} axis"))
+        };
+        let program = if motion.interpolation == Interpolation::Rapid {
+            "G0"
+        } else {
+            "G1"
+        };
+        assert!(
+            block.starts_with(program),
+            "motion {} is a {program} block, got '{block}'",
+            motion.id
+        );
+        for (got, want, name) in [
+            (axis('X'), motion.end.x, 'X'),
+            (axis('Y'), motion.end.y, 'Y'),
+            (axis('Z'), motion.end.z, 'Z'),
+        ] {
+            assert!(
+                (got - want).abs() < 5e-4,
+                "motion {} emits {name}{got} instead of {want}",
+                motion.id
+            );
+        }
+    }
+    // Exporting already ran the numeric readback against the plan: the report
+    // failing would have been the error above.
+    assert!(text.contains("M2"), "the program ends: {text}");
+    // The same evidence the review package quotes, written on request so the
+    // numbers can be re-measured rather than remembered:
+    // `CAM_FACE_ENTRY_OUTPUT=artifacts/facing-entry cargo test -p cam-core
+    //  --test face_workflow the_face_program_reproduces_every_planned_motion_in_order`.
+    if let Some(dir) = std::env::var_os("CAM_FACE_ENTRY_OUTPUT") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("face-two-layer.gcode"), &export.program.gcode).unwrap();
+        let descents: Vec<serde_json::Value> = trusted
+            .plan()
+            .motions
+            .iter()
+            .enumerate()
+            .filter(|(index, motion)| {
+                let previous = if *index == 0 {
+                    motion.start.z
+                } else {
+                    trusted.plan().motions[index - 1].end.z
+                };
+                motion.end.z < previous - 1e-9
+            })
+            .map(|(_, motion)| {
+                serde_json::json!({
+                    "x": motion.end.x,
+                    "y": motion.end.y,
+                    "z": motion.end.z,
+                    "interpolation": format!("{:?}", motion.interpolation),
+                })
+            })
+            .collect();
+        let report = serde_json::json!({
+            "job": serde_json::to_value(&job).unwrap(),
+            "settings": {
+                "entry": format!("{:?}", settings_entry(&job)),
+                "entryOverrunMm": face_settings(&job).entry_overrun_mm,
+                "exitOverrunMm": face_settings(&job).exit_overrun_mm,
+                "plungeCapable": job.tools[0].capabilities.plunge_capable,
+            },
+            "planMotions": trusted.plan().motions.len(),
+            "emittedBlocks": blocks.len(),
+            "descents": descents,
+            "checkStatus": format!("{:?}", cam_core::checks::check_plan(&trusted.plan().clone()).unwrap().status),
+        });
+        std::fs::write(
+            dir.join("face-plan.json"),
+            serde_json::to_string_pretty(&report).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+/// The face settings of the fixture job's single operation.
+fn face_settings(job: &CamJob) -> &FaceSettings {
+    match &job.operations[0].settings {
+        OperationSettings::Face(settings) => settings,
+        _ => panic!("the fixture carries one face operation"),
+    }
+}
+
+fn settings_entry(job: &CamJob) -> FaceEntry {
+    face_settings(job).entry
 }

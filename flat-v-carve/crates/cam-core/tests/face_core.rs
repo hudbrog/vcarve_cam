@@ -4,9 +4,9 @@ use cam_core::{
     checks::{CheckStatus, check_plan},
     geometry::Point,
     project::{
-        CamJob, FaceArea, FaceMargins, FacePattern, FaceSettings, HeightRef, HeightReference,
-        JobTool, MillingAssignment, Operation, OperationSettings, RectXY, SetupSettings,
-        StockSetup, ToolCapabilities, ToolGeometry, WorkZero, WorkZeroXY, WorkZeroZ,
+        CamJob, FaceArea, FaceEntry, FaceMargins, FacePattern, FaceSettings, HeightRef,
+        HeightReference, JobTool, MillingAssignment, Operation, OperationSettings, RectXY,
+        SetupSettings, StockSetup, ToolCapabilities, ToolGeometry, WorkZero, WorkZeroXY, WorkZeroZ,
     },
     sequence::{GenerationStatus, OperationPlan, PlanLimits, StageRole},
     toolpath::{Interpolation, MotionEffect, MotionPurpose, PlannedMotion},
@@ -50,6 +50,7 @@ fn face_settings(
             None => FaceArea::EntireStock,
         },
         margins: FaceMargins::default(),
+        entry: Default::default(),
         entry_overrun_mm: Some(2.),
         exit_overrun_mm: Some(2.),
         top: HeightRef {
@@ -106,6 +107,14 @@ fn face_job(
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.05),
         },
+    }
+}
+
+/// The face settings of the fixture job, for edits between plans.
+fn face_settings_mut(job: &mut CamJob) -> &mut FaceSettings {
+    match &mut job.operations[0].settings {
+        OperationSettings::Face(settings) => settings,
+        _ => panic!("face settings expected"),
     }
 }
 
@@ -461,12 +470,27 @@ fn margins_and_overruns_extend_coverage_and_travel_separately() {
     assert!(row.end.x >= 8. + 32. + 5. + 2. - 1e-9);
 }
 
+/// The rows of one face plan, in execution order: motions that run along the
+/// pass axis at a constant scan coordinate.
+fn raster_rows_of(plan: &cam_core::sequence::OperationPlan) -> Vec<&PlannedMotion> {
+    plan.motions
+        .iter()
+        .filter(|m| {
+            m.purpose == MotionPurpose::Rough
+                && (m.start.y - m.end.y).abs() < 1e-12
+                && (m.start.x - m.end.x).abs() > 1e-12
+        })
+        .collect()
+}
+
 #[test]
-fn an_overrun_belongs_to_the_side_its_pass_starts_from() {
-    // Two passes of one zig-zag layer, the second running the other way. The
-    // entry overrun must precede whichever end a pass starts from; applying
-    // it to a fixed side of the rectangle is what used to leave every second
-    // pass entering from the side that had only the exit overrun.
+fn the_entry_travel_belongs_to_the_pass_that_descends() {
+    // Two passes of one zig-zag layer, the second running the other way. Only
+    // the pass that descends enters at the chosen end with the entry travel;
+    // the pass that continues the layer begins where the previous one ended,
+    // which is the far end with the exit travel. Applying the entry overrun to
+    // whatever end a pass happens to start from is what used to leave every
+    // second pass entering from a side nobody had cleared.
     let rect = RectXY {
         min_x_mm: 10.,
         min_y_mm: 10.,
@@ -486,37 +510,80 @@ fn an_overrun_belongs_to_the_side_its_pass_starts_from() {
         GenerationStatus::Complete
     );
     // Rows run along X at a constant Y; links between them run along Y.
-    let rows: Vec<&PlannedMotion> = plan
-        .motions
-        .iter()
-        .filter(|m| {
-            m.purpose == MotionPurpose::Rough
-                && (m.start.y - m.end.y).abs() < 1e-12
-                && (m.start.x - m.end.x).abs() > 1e-12
-        })
-        .collect();
+    let rows = raster_rows_of(&plan);
     assert!(rows.len() >= 2, "the fixture has several rows: {rows:?}");
     let radius = 5.;
     let low = rect.min_x_mm - radius;
     let high = rect.min_x_mm + rect.width_mm + radius;
     for (index, row) in rows.iter().enumerate() {
-        // A forward pass enters at the low side, a reversed one at the high
-        // side; the entry overrun precedes whichever side that is, and the
-        // exit overrun (zero here) trails the other.
-        let (start, end) = if index % 2 == 0 {
+        let (start, end) = if index == 0 {
             (low - 30., high)
+        } else if index % 2 == 1 {
+            (high, low)
         } else {
-            (high + 30., low)
+            (low, high)
         };
         assert!(
             (row.start.x - start).abs() < 1e-9,
-            "row {index} starts at {} — the entry overrun must precede the pass start ({start})",
+            "row {index} starts at {} instead of {start}",
             row.start.x
         );
         assert!(
             (row.end.x - end).abs() < 1e-9,
             "row {index} ends at {} instead of {end}",
             row.end.x
+        );
+    }
+    assert!(check_plan(&plan).unwrap().export_ready);
+}
+
+#[test]
+fn every_layer_enters_at_the_chosen_end() {
+    // Two depth layers, one entry: both layers' first pass starts at the same
+    // end with the entry travel, and the travel between them is a real motion.
+    let rect = RectXY {
+        min_x_mm: 10.,
+        min_y_mm: 10.,
+        width_mm: 30.,
+        length_mm: 20.,
+    };
+    let mut job = face_job(Some(rect), None, Some(6.), None);
+    let OperationSettings::Face(settings) = &mut job.operations[0].settings else {
+        panic!("face settings expected");
+    };
+    settings.entry_overrun_mm = Some(30.);
+    settings.exit_overrun_mm = Some(0.);
+    settings.pattern = FacePattern::ZigZag;
+    settings.bottom.offset_mm = -2.;
+    settings.stepdown_mm = Some(1.);
+    settings.entry = FaceEntry::Min;
+    let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    assert_eq!(
+        plan.operation_results[0].generation_status,
+        GenerationStatus::Complete,
+        "{:?}",
+        plan.generation_diagnostics
+    );
+    let rows = raster_rows_of(&plan);
+    let radius = 5.;
+    let low = rect.min_x_mm - radius;
+    // The first pass of each layer enters at the chosen end; `Min` keeps the
+    // anchor across layers instead of flipping it. Rows arrive in execution
+    // order, so a new cut depth starts a new layer.
+    let mut layers: Vec<(f64, f64)> = vec![];
+    for row in &rows {
+        match layers.last() {
+            Some((z, _)) if (*z - row.end.z).abs() < 1e-9 => {}
+            _ => layers.push((row.end.z, row.start.x)),
+        }
+    }
+    let first_of_layer: Vec<f64> = layers.iter().map(|(_, start)| *start).collect();
+    assert!(first_of_layer.len() >= 2, "{first_of_layer:?}");
+    for (layer, start) in first_of_layer.iter().enumerate() {
+        assert!(
+            (start - (low - 30.)).abs() < 1e-9,
+            "layer {layer} enters at {start} instead of the chosen end {}",
+            low - 30.
         );
     }
     assert!(check_plan(&plan).unwrap().export_ready);
@@ -544,18 +611,28 @@ fn a_cutter_that_cannot_plunge_is_never_sent_into_the_material() {
         .iter()
         .find(|d| d.code == "FACE_ENTRY_UNSAFE")
         .unwrap_or_else(|| panic!("{:?}", plan.generation_diagnostics));
+    // The refusal names the end, the position the cutter clears the stock
+    // from, and the travel that reaches it. Twenty millimetres is the exact
+    // distance from the coverage edge (X = 15) to the clearing position
+    // (X = -5): the cutter's centre has to leave the stock by its radius.
     assert!(
-        issue.message.contains("entry overrun"),
-        "the refusal must say how to clear the stock: {}",
+        issue.message.contains("X minimum edge")
+            && issue.message.contains("X = -5.000")
+            && issue.message.contains("20.000 mm of entry travel"),
+        "the refusal must name the end and the travel that clears the stock: {}",
         issue.message
     );
 
-    // Real entry clearance moves every descent into the air, and the same
-    // tool plans completely.
-    let OperationSettings::Face(settings) = &mut job.operations[0].settings else {
-        panic!("face settings expected");
-    };
-    settings.entry_overrun_mm = Some(60.);
+    // One reserve below the reported minimum still refuses; the reported
+    // minimum itself puts every descent in the air, and the same tool plans
+    // completely.
+    face_settings_mut(&mut job).entry_overrun_mm = Some(19.9);
+    let below = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    assert_eq!(
+        below.operation_results[0].generation_status,
+        GenerationStatus::Incomplete
+    );
+    face_settings_mut(&mut job).entry_overrun_mm = Some(20.);
     let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
     assert_eq!(
         plan.operation_results[0].generation_status,
@@ -588,6 +665,50 @@ fn an_undeclared_plunge_capability_is_reported_before_the_plunge() {
         "{:?}",
         plan.generation_diagnostics
     );
+}
+
+#[test]
+fn a_whole_stock_face_at_zero_overrun_still_plans_for_a_tool_that_cannot_plunge() {
+    // The W1 acceptance line: with no entry travel the pass starts with the
+    // cutter tangent to the stock edge, which has zero overlap with the
+    // material, so the descent there is a side entry and needs no capability.
+    let mut job = face_job(None, None, Some(6.), None);
+    job.tools[0].capabilities.plunge_capable = Some(false);
+    let settings = face_settings_mut(&mut job);
+    settings.entry = FaceEntry::Min;
+    settings.entry_overrun_mm = Some(0.);
+    settings.exit_overrun_mm = Some(0.);
+    settings.bottom.offset_mm = -2.;
+    settings.stepdown_mm = Some(1.);
+    let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    assert_eq!(
+        plan.operation_results[0].generation_status,
+        GenerationStatus::Complete,
+        "{:?}",
+        plan.generation_diagnostics
+    );
+    assert!(check_plan(&plan).unwrap().export_ready);
+    // Every descent is at the tangent entry: the coverage's X minimum minus
+    // the cutter radius, once per depth layer, all on the same end.
+    let mut descents = 0;
+    for index in 0..plan.motions.len() {
+        let motion = &plan.motions[index];
+        let previous = if index == 0 {
+            motion.start.z
+        } else {
+            plan.motions[index - 1].end.z
+        };
+        if motion.end.z >= previous - 1e-9 {
+            continue;
+        }
+        descents += 1;
+        assert!(
+            (motion.end.x - -5.).abs() < 1e-9,
+            "a descent at X = {} instead of the tangent entry",
+            motion.end.x
+        );
+    }
+    assert_eq!(descents, 2, "one entry per depth layer");
 }
 
 #[test]
@@ -637,5 +758,251 @@ fn the_basic_checks_refuse_an_entry_into_material_no_tool_may_make() {
             .any(|f| f.code == "PLAN_ENTRY_UNVERIFIED"),
         "{:?}",
         report.findings
+    );
+}
+
+/// Every motion of a plan must start where the previous one ended. The post
+/// emits one block per motion endpoint, so a transition the plan leaves out is
+/// executed as a straight move from wherever the tool really is — the
+/// 2026-09-13 field report's facing crash (finding 1.1).
+#[test]
+fn every_motion_starts_where_the_previous_one_ended() {
+    for angle in [0., 90.] {
+        for pattern in [FacePattern::ZigZag, FacePattern::OneWay] {
+            for entry in [
+                FaceEntry::Min,
+                FaceEntry::Max,
+                FaceEntry::Alternate,
+                FaceEntry::At {
+                    coordinate_mm: -20.,
+                },
+            ] {
+                let mut job = face_job(None, None, Some(6.), None);
+                let settings = face_settings_mut(&mut job);
+                settings.pass_angle_deg = Some(angle);
+                settings.pattern = pattern;
+                settings.entry = entry;
+                settings.entry_overrun_mm = Some(4.);
+                settings.exit_overrun_mm = Some(2.);
+                settings.bottom.offset_mm = -2.;
+                settings.stepdown_mm = Some(1.);
+                let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+                assert_eq!(
+                    plan.operation_results[0].generation_status,
+                    GenerationStatus::Complete,
+                    "{pattern:?} at {angle} degrees with {entry:?}: {:?}",
+                    plan.generation_diagnostics
+                );
+                assert!(plan.motions.len() > 8, "the fixture has a raster");
+                for index in 1..plan.motions.len() {
+                    let previous = plan.motions[index - 1].end;
+                    let start = plan.motions[index].start;
+                    let gap = (start.x - previous.x)
+                        .abs()
+                        .max((start.y - previous.y).abs())
+                        .max((start.z - previous.z).abs());
+                    assert!(
+                        gap < 1e-9,
+                        "{pattern:?} at {angle} degrees with {entry:?}: motion {} starts {gap:.3} mm from where motion {} ends",
+                        plan.motions[index].id,
+                        plan.motions[index - 1].id
+                    );
+                }
+                assert!(check_plan(&plan).unwrap().export_ready);
+            }
+        }
+    }
+}
+
+#[test]
+fn the_basic_checks_refuse_a_chain_that_skips_a_position() {
+    let mut job = face_job(None, None, Some(6.), None);
+    let settings = face_settings_mut(&mut job);
+    settings.bottom.offset_mm = -2.;
+    settings.stepdown_mm = Some(1.);
+    let mut plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    assert!(check_plan(&plan).unwrap().export_ready);
+    // The pre-fix shape: the retract ends at the clearance plane and the next
+    // motion claims to start somewhere else, exactly as the planner used to
+    // hand the next depth layer its own entry point.
+    // The second depth layer's entry: the first motion of a stage is bridged by
+    // the post, so only a later transition can hide a gap.
+    let entry = plan
+        .motions
+        .iter()
+        .position(|m| m.purpose == MotionPurpose::Entry && m.id > 0)
+        .expect("the two-layer face plan has a second entry");
+    let moved = plan.motions[entry].start;
+    plan.motions[entry].start = cam_core::motion::Position {
+        x: moved.x + 12.,
+        ..moved
+    };
+    let report = check_plan(&plan).unwrap();
+    assert!(!report.export_ready);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.code == "PLAN_MOTION_DISCONTINUITY" && f.message.contains("12.000")),
+        "{:?}",
+        report.findings
+    );
+}
+
+#[test]
+fn every_descent_happens_at_the_chosen_entry() {
+    // Whole stock (100 x 60) with a 10 mm cutter: the pass spans X -5 … 105.
+    for (entry, expected) in [
+        (FaceEntry::Min, -5. - 4.),
+        (FaceEntry::Max, 105. + 4.),
+        (
+            FaceEntry::At {
+                coordinate_mm: -25.,
+            },
+            -25.,
+        ),
+    ] {
+        for pattern in [FacePattern::ZigZag, FacePattern::OneWay] {
+            let mut job = face_job(None, None, Some(6.), None);
+            let settings = face_settings_mut(&mut job);
+            settings.pattern = pattern;
+            settings.entry = entry;
+            settings.entry_overrun_mm = Some(4.);
+            settings.exit_overrun_mm = Some(2.);
+            settings.bottom.offset_mm = -2.;
+            settings.stepdown_mm = Some(1.);
+            let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+            assert_eq!(
+                plan.operation_results[0].generation_status,
+                GenerationStatus::Complete,
+                "{entry:?}: {:?}",
+                plan.generation_diagnostics
+            );
+            let mut descents = 0;
+            for index in 0..plan.motions.len() {
+                let motion = &plan.motions[index];
+                // The stage's first motion descends from the bridge position.
+                let previous = if index == 0 {
+                    motion.start.z
+                } else {
+                    plan.motions[index - 1].end.z
+                };
+                if motion.end.z >= previous - 1e-9 {
+                    continue;
+                }
+                descents += 1;
+                assert!(
+                    (motion.end.x - expected).abs() < 1e-9,
+                    "{pattern:?} with {entry:?}: a descent at X = {} instead of {expected}",
+                    motion.end.x
+                );
+            }
+            // One entry per depth layer when the passes link at depth; every
+            // pass is its own plunge when they do not.
+            let layers = 2;
+            if pattern == FacePattern::ZigZag {
+                assert_eq!(descents, layers, "{entry:?}: one entry per layer");
+            } else {
+                assert!(descents > layers, "{entry:?}: every pass descends");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_explicit_entry_position_states_the_travel_it_implies() {
+    // The coordinate and the travel are the same fact: `X = -25` on a pass
+    // that spans X -5 … 105 is 20 mm of entry travel.
+    let mut travelled = face_job(None, None, Some(6.), None);
+    let mut positioned = face_job(None, None, Some(6.), None);
+    for (job, entry, travel) in [
+        (&mut travelled, FaceEntry::Min, 20.),
+        (
+            &mut positioned,
+            FaceEntry::At {
+                coordinate_mm: -25.,
+            },
+            0.,
+        ),
+    ] {
+        let settings = face_settings_mut(job);
+        settings.entry = entry;
+        settings.entry_overrun_mm = Some(travel);
+        settings.exit_overrun_mm = Some(2.);
+        settings.bottom.offset_mm = -2.;
+        settings.stepdown_mm = Some(1.);
+    }
+    let travelled = OperationPlan::plan_job(&travelled, &PlanLimits::default()).unwrap();
+    let positioned = OperationPlan::plan_job(&positioned, &PlanLimits::default()).unwrap();
+    assert_eq!(
+        travelled.operation_results[0].generation_status,
+        GenerationStatus::Complete
+    );
+    assert_eq!(
+        positioned.operation_results[0].generation_status,
+        GenerationStatus::Complete
+    );
+    let ends = |plan: &cam_core::sequence::OperationPlan| -> Vec<[f64; 4]> {
+        plan.motions
+            .iter()
+            .map(|m| [m.start.x, m.start.y, m.end.x, m.end.y])
+            .collect()
+    };
+    assert_eq!(ends(&travelled), ends(&positioned));
+}
+
+#[test]
+fn an_entry_inside_the_pass_span_is_refused_with_the_allowed_positions() {
+    let mut job = face_job(None, None, Some(6.), None);
+    face_settings_mut(&mut job).entry = FaceEntry::At {
+        coordinate_mm: 25.,
+    };
+    let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    assert_eq!(
+        plan.operation_results[0].generation_status,
+        GenerationStatus::Incomplete
+    );
+    let issue = plan
+        .generation_diagnostics
+        .iter()
+        .find(|d| d.code == "FACE_ENTRY_INSIDE_COVERAGE")
+        .unwrap_or_else(|| panic!("{:?}", plan.generation_diagnostics));
+    assert!(
+        issue.message.contains("X = 25.000")
+            && issue.message.contains("X = -5.000")
+            && issue.message.contains("X = 105.000"),
+        "the refusal names the position and both allowed ones: {}",
+        issue.message
+    );
+}
+
+#[test]
+fn one_entry_leaves_the_other_end_to_the_exit_travel() {
+    // The allowed envelope follows the entry: with one entry the end it names
+    // reserves the entry travel and the other end reserves only the exit
+    // travel, which is what keeps the generated raster inside its own bounds.
+    let rect = RectXY {
+        min_x_mm: 10.,
+        min_y_mm: 10.,
+        width_mm: 30.,
+        length_mm: 20.,
+    };
+    let mut job = face_job(Some(rect), None, Some(6.), None);
+    let settings = face_settings_mut(&mut job);
+    settings.entry = FaceEntry::Min;
+    settings.entry_overrun_mm = Some(30.);
+    settings.exit_overrun_mm = Some(0.);
+    let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
+    let rows = raster_rows_of(&plan);
+    assert!(rows.len() >= 2, "{rows:?}");
+    // The pass spans X 5 … 45 with no exit travel; the entry end is 30 mm out.
+    assert!(
+        rows.iter().any(|row| (row.start.x - -25.).abs() < 1e-9),
+        "the chosen end carries the entry travel: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.end.x <= 45. + 1e-9 && row.start.x >= -25. - 1e-9),
+        "nothing travels past the travel the settings authorize: {rows:?}"
     );
 }

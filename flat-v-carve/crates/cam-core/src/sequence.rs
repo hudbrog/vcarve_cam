@@ -1033,6 +1033,7 @@ fn semantic_settings(settings: &OperationSettingsV5) -> OperationSettingsV5 {
         OperationSettingsV5::Face(s) => OperationSettingsV5::Face(v5::FaceSettingsV5 {
             area: s.area.clone(),
             margins: s.margins,
+            entry: s.entry,
             entry_overrun_mm: s.entry_overrun_mm,
             exit_overrun_mm: s.exit_overrun_mm,
             top: s.top.clone(),
