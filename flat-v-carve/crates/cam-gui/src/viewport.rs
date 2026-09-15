@@ -26,6 +26,10 @@ pub use profile::{ProfileAnchor, ProfileAnchorEvent};
 
 /// Pages fingerprinted per frame while a new scene settles.
 const HASH_PAGES_PER_FRAME: usize = 4;
+/// Wall-clock seconds one pass over the program takes at 1x. The transport
+/// scales this, so the animation rate is independent of the display frame rate
+/// and of how many motions the job has.
+const PLAYBACK_SECONDS: f64 = 20.;
 /// Everything the overlay geometry depends on; a change rebuilds it.
 type OverlaySignature = (
     u64,
@@ -259,6 +263,12 @@ pub struct Viewport {
     wall_report: Option<(usize, f64)>,
     playhead: usize,
     playing: bool,
+    /// Playback rate multiplier: 1x animates the whole program in
+    /// [`PLAYBACK_SECONDS`], the transport scales it.
+    playback_speed: f64,
+    /// Sub-motion progress, so a rate slower than one motion per frame still
+    /// advances instead of stalling.
+    playback_progress: f64,
     stage: usize,
     /// First stage index the playback bar lays out, and how many rows it laid
     /// out last frame. The count is published as measurement evidence.
@@ -336,6 +346,8 @@ impl Default for Viewport {
             wall_report: None,
             playhead: 0,
             playing: false,
+            playback_speed: 1.,
+            playback_progress: 0.,
             stage: 0,
             stage_window: 0,
             timeline_rows: 0,
@@ -1006,6 +1018,24 @@ impl Viewport {
             ui.horizontal_wrapped(|ui| {
                 let play=ui.button(if self.playing {"Pause"} else {"Play"});crate::app::observe_control(if self.playing {"Pause"} else {"Play"},play.rect);if play.clicked() { self.playing = !self.playing; if self.playing && self.stock_prefix==self.motion_count(){self.stock_seek(0);} }
                 let start=ui.button("Start");crate::app::observe_control("Start",start.rect);if start.clicked() {self.playing=false;self.stock_seek(0);}
+                // Playback rate. The animation is time-based, so the rate holds
+                // whatever the display frame rate is doing.
+                ui.label("Speed");
+                for (label, speed) in [
+                    ("0.5x", 0.5),
+                    ("1x", 1.),
+                    ("2x", 2.),
+                    ("4x", 4.),
+                    ("10x", 10.),
+                    ("15x", 15.),
+                ] {
+                    let selected = (self.playback_speed - speed).abs() < 1e-9;
+                    let response = ui.selectable_label(selected, label);
+                    crate::app::observe_control(&format!("Playback {label}"), response.rect);
+                    if response.clicked() {
+                        self.playback_speed = speed;
+                    }
+                }
                 let groups = self.groups.clone();
                 let (first, last) = self.timeline_window(groups.len());
                 self.timeline_rows = 0;
@@ -1128,8 +1158,19 @@ impl Viewport {
         }
         let now = ctx.input(|i| i.time);
         if self.playing && !self.stock_loading && self.requested_stock.is_none() {
-            let step = (self.motion_count() / 120).max(1);
-            self.stock_seek((self.stock_prefix + step).min(self.motion_count()));
+            // Time-based advance, so the animation runs at the selected rate
+            // whatever the frame rate is. A stalled frame is clamped rather
+            // than jumping the program forward.
+            let dt = (ctx.input(|i| i.stable_dt) as f64).clamp(0., 0.1);
+            self.playback_progress +=
+                (self.motion_count() as f64 / PLAYBACK_SECONDS).max(1.) * self.playback_speed * dt;
+            let step = self.playback_progress.floor();
+            if step >= 1. {
+                self.playback_progress -= step;
+                self.stock_seek(
+                    (self.stock_prefix + step as usize).min(self.motion_count()),
+                );
+            }
             if self.stock_prefix == self.motion_count() {
                 self.playing = false;
             }
