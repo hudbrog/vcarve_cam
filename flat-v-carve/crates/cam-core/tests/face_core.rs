@@ -954,9 +954,7 @@ fn an_explicit_entry_position_states_the_travel_it_implies() {
 #[test]
 fn an_entry_inside_the_pass_span_is_refused_with_the_allowed_positions() {
     let mut job = face_job(None, None, Some(6.), None);
-    face_settings_mut(&mut job).entry = FaceEntry::At {
-        coordinate_mm: 25.,
-    };
+    face_settings_mut(&mut job).entry = FaceEntry::At { coordinate_mm: 25. };
     let plan = OperationPlan::plan_job(&job, &PlanLimits::default()).unwrap();
     assert_eq!(
         plan.operation_results[0].generation_status,

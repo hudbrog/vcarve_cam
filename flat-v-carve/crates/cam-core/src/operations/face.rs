@@ -585,12 +585,7 @@ pub(crate) fn entry_preview(
     };
     let layers = depth_layers(
         &heights,
-        stepdown.min(
-            settings
-                .assignment
-                .max_stepdown_mm
-                .unwrap_or(stepdown),
-        ),
+        stepdown.min(settings.assignment.max_stepdown_mm.unwrap_or(stepdown)),
     );
     let along_y = angle == 90.;
     let geometry = FaceGeometry {

@@ -145,11 +145,7 @@ pub fn entry(job: &CamJobV5, operation_id: &str) -> Option<FaceEntry> {
 
 /// Set the entry mode. Switching to an explicit position keeps the position the
 /// passes enter at now, so the choice reads as a refinement rather than a jump.
-pub fn set_entry(
-    job: &mut CamJobV5,
-    operation_id: &str,
-    entry: FaceEntry,
-) -> Result<(), String> {
+pub fn set_entry(job: &mut CamJobV5, operation_id: &str, entry: FaceEntry) -> Result<(), String> {
     let current = crate::session::face(job, operation_id)
         .ok_or("Expected a Face operation")?
         .entry;
@@ -157,7 +153,8 @@ pub fn set_entry(
         .ok()
         .flatten()
         .and_then(|preview| preview.entries.first().copied());
-    let settings = crate::session::face_mut(job, operation_id).ok_or("Expected a Face operation")?;
+    let settings =
+        crate::session::face_mut(job, operation_id).ok_or("Expected a Face operation")?;
     settings.entry = match entry {
         FaceEntry::At { .. } => FaceEntry::At {
             coordinate_mm: match current {

@@ -154,18 +154,19 @@ impl App {
         let axis = preview
             .as_ref()
             .map(|preview| preview.axis.to_string())
-            .unwrap_or_else(|| if angle == Some(90.) { "Y".into() } else { "X".into() });
+            .unwrap_or_else(|| {
+                if angle == Some(90.) {
+                    "Y".into()
+                } else {
+                    "X".into()
+                }
+            });
         help::label(ui, "Pass entry");
         ui.horizontal_wrapped(|ui| {
             for (label, value) in [
                 (format!("Start at {axis}−"), FaceEntry::Min),
                 (format!("Start at {axis}+"), FaceEntry::Max),
-                (
-                    "Start at…".to_string(),
-                    FaceEntry::At {
-                        coordinate_mm: 0.,
-                    },
-                ),
+                ("Start at…".to_string(), FaceEntry::At { coordinate_mm: 0. }),
                 ("Alternate per depth".to_string(), FaceEntry::Alternate),
             ] {
                 let selected = matches!(
@@ -220,7 +221,9 @@ impl App {
                 let where_ = if (hi - lo).abs() < 1e-9 {
                     format!("Every pass enters at {axis} = {lo:.3}")
                 } else {
-                    format!("Passes enter at {axis} = {lo:.3} on even layers and {axis} = {hi:.3} on odd")
+                    format!(
+                        "Passes enter at {axis} = {lo:.3} on even layers and {axis} = {hi:.3} on odd"
+                    )
                 };
                 let clearance = preview
                     .clearances
@@ -238,23 +241,32 @@ impl App {
                     )
                 };
                 ui.small(format!("{where_} · {verdict}"));
-                if clearance < 0. && let Some((required, travel)) = preview.clearing {
+                if clearance < 0.
+                    && let Some((required, travel)) = preview.clearing
+                {
                     ui.small(format!(
                         "Starting at {axis} = {required:.3} clears the stock: that is {travel:.3} mm of entry travel."
                     ));
-                    if matches!(entry, FaceEntry::Min | FaceEntry::Max | FaceEntry::Alternate) {
+                    if matches!(
+                        entry,
+                        FaceEntry::Min | FaceEntry::Max | FaceEntry::Alternate
+                    ) {
                         let response = ui.button(format!("Use {travel:.3} mm of entry travel"));
                         observe_control("Use entry travel", response.rect);
                         if response.clicked() {
                             let id = self.operation_id();
-                            self.edit_job(ctx, &[], move |job| face::set(job, &id, 76, Some(travel)));
+                            self.edit_job(ctx, &[], move |job| {
+                                face::set(job, &id, 76, Some(travel))
+                            });
                         }
                     } else {
                         let response = ui.button(format!("Start at {axis} = {required:.3}"));
                         observe_control("Use entry position", response.rect);
                         if response.clicked() {
                             let id = self.operation_id();
-                            self.edit_job(ctx, &[], move |job| face::set(job, &id, 109, Some(required)));
+                            self.edit_job(ctx, &[], move |job| {
+                                face::set(job, &id, 109, Some(required))
+                            });
                         }
                     }
                 }
@@ -622,13 +634,15 @@ mod tests {
             let job = app.document.as_mut().unwrap().job.clone();
             let mut job = job;
             face::set_entry(&mut job, &id, entry).unwrap();
-            let preview =
-                cam_core::project::v5::inspection::face_entry_preview(&job, &id)
-                    .unwrap()
-                    .expect("the fixture resolves");
-            let plan =
-                OperationPlanV5::plan_job_v5(&job, &ReadinessScope::AllEnabled, &PlanLimits::default())
-                    .unwrap();
+            let preview = cam_core::project::v5::inspection::face_entry_preview(&job, &id)
+                .unwrap()
+                .expect("the fixture resolves");
+            let plan = OperationPlanV5::plan_job_v5(
+                &job,
+                &ReadinessScope::AllEnabled,
+                &PlanLimits::default(),
+            )
+            .unwrap();
             assert_eq!(
                 plan.operation_results[0].generation_status,
                 GenerationStatus::Complete,
@@ -715,6 +729,11 @@ mod tests {
         face::set_entry(job, &id, FaceEntry::Min).unwrap();
         face::set_entry(job, &id, FaceEntry::At { coordinate_mm: 0. }).unwrap();
         assert_eq!(face::value(job, &id, 109), Some(-25.));
-        app.document.as_mut().unwrap().job.validate_structure().unwrap();
+        app.document
+            .as_mut()
+            .unwrap()
+            .job
+            .validate_structure()
+            .unwrap();
     }
 }

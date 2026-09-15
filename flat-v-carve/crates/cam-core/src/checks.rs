@@ -702,9 +702,8 @@ fn check_assembly(
                 if depth > 0. {
                     let cutter = safety.cutter(&motion.tool_id);
                     let radius = cutter.and_then(|cutter| cutter.radius_at(depth));
-                    let in_air = radius.is_some_and(|radius| {
-                        safety.descent_clear(from, motion.end, radius)
-                    });
+                    let in_air =
+                        radius.is_some_and(|radius| safety.descent_clear(from, motion.end, radius));
                     let axial = (motion.end.x - from.x).abs() <= 1e-9
                         && (motion.end.y - from.y).abs() <= 1e-9;
                     // A rapid is never a licensed entry. A feed descent needs a
