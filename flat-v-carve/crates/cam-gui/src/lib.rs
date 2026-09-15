@@ -23,6 +23,8 @@ pub mod resources;
 pub mod scene;
 pub mod session;
 pub mod sim;
+pub mod sim_checks;
+pub mod sim_clock;
 pub mod state;
 pub mod stock_preview;
 pub mod stock_render;

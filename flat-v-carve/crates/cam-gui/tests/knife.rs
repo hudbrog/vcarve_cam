@@ -250,6 +250,43 @@ fn knife_execution_preserves_stock_and_replays_exact_checked_bytes() {
         scene.sim_input().unwrap().unwrap().tools[0],
         cam_gui_runtime::sim::ToolSpec::Knife { .. }
     ));
+    // A knife stage still has machine time: its cutting, plunge and swivel
+    // feeds all reach the simulator stream, so the transport can play it at
+    // the speed the holder will actually move instead of stepping motions.
+    let input = scene.sim_input().unwrap().unwrap();
+    let knife_feeds: Vec<f64> = input
+        .motions
+        .iter()
+        .filter_map(|motion| motion.feed_mm_min)
+        .collect();
+    for expected in [150., 50., 75.] {
+        assert!(
+            knife_feeds
+                .iter()
+                .any(|feed| (*feed - expected).abs() < 1e-6),
+            "the {expected} mm/min feed reaches the stream: {:?}",
+            {
+                let mut feeds = knife_feeds.clone();
+                feeds.sort_by(f64::total_cmp);
+                feeds.dedup();
+                feeds
+            }
+        );
+    }
+    let table = cam_gui_runtime::sim::TimeTable::build(&input.motions, None).unwrap();
+    assert!(
+        table.total_seconds() > 0.,
+        "a knife program has modeled motion time"
+    );
+    assert_eq!(table.motions(), input.motions.len());
+    // The machine checks run for a knife stage too: its cuts are feeds and its
+    // lifted moves are rapids, so a holder driven into the sheet beside the blade
+    // would be reported here. This fixture states no assembly, and a knife that
+    // removes no material cannot be inside any, so the report is empty.
+    let warnings = scene.meta.report["gui2"]["warnings"]
+        .as_array()
+        .expect("the knife scene publishes its machine warnings");
+    assert!(warnings.is_empty(), "{warnings:?}");
     for prefix in [scene.motion_count() / 2, 0, scene.motion_count()] {
         let (seek, _) = session::execute(
             &mut service,

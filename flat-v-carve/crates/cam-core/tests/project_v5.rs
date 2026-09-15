@@ -271,6 +271,8 @@ fn provenance_and_machine_configuration_round_trip() {
         length_compensation: None,
         path_control: None,
         spindle_spinup_seconds: None,
+        holder: None,
+        rapid_rate_mm_min: None,
         coolant: None,
         m6: None,
         tools: vec![AppliedToolMapping {
@@ -315,6 +317,8 @@ fn machine_mapping_dangling_rows_are_inspection_issues() {
         length_compensation: None,
         path_control: None,
         spindle_spinup_seconds: None,
+        holder: None,
+        rapid_rate_mm_min: None,
         coolant: None,
         m6: None,
         tools: vec![AppliedToolMapping {

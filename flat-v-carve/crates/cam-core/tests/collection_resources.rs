@@ -100,6 +100,7 @@ fn tools() -> Vec<v5::JobToolV5> {
         id: id.into(),
         name: name.into(),
         geometry: Some(geometry),
+        assembly: Default::default(),
         capabilities: ToolCapabilities::default(),
         library_origin: None,
     };
@@ -294,6 +295,7 @@ fn library() -> ToolLibrary {
             cutting_length_mm: 8.,
             plunge_capable: true,
         }),
+        assembly: Default::default(),
         ramp_capable: Some(true),
         plunge_capable: Some(true),
         cutting_presets: vec![
@@ -330,6 +332,7 @@ fn library() -> ToolLibrary {
             blade_offset_mm: 1.,
             max_cut_depth_mm: 2.,
         }),
+        assembly: Default::default(),
         ramp_capable: None,
         plunge_capable: None,
         cutting_presets: vec![],
@@ -373,6 +376,7 @@ fn a_job_tool_without_geometry_binds_to_any_assignment_but_a_mismatch_does_not()
         id: "empty".into(),
         name: "Not described yet".into(),
         geometry: None,
+        assembly: Default::default(),
         capabilities: Default::default(),
         library_origin: None,
     });
@@ -402,6 +406,7 @@ fn a_job_tool_without_geometry_binds_to_any_assignment_but_a_mismatch_does_not()
             max_cutting_diameter_mm: 12.,
             cutting_height_mm: 5.,
         })),
+        assembly: Default::default(),
         capabilities: Default::default(),
         library_origin: None,
     });
@@ -650,6 +655,7 @@ fn tool_application_clears_only_on_tool_change_and_copies_provenance() {
             cutting_length_mm: 10.,
             plunge_capable: false,
         }),
+        assembly: Default::default(),
         ramp_capable: None,
         plunge_capable: None,
         cutting_presets: vec![],
@@ -739,6 +745,8 @@ fn sequence_profile(job_tools: &[(&str, u32)]) -> SequenceProfile {
             })
             .collect(),
         spindle_spinup_seconds: 0.5,
+        holder: None,
+        rapid_rate_mm_min: None,
         coolant: Coolant::Off,
         m6: m6(),
     }
@@ -772,6 +780,8 @@ fn scenario8_incomplete_snapshot_saves_and_mappings_follow_the_scope() {
         length_compensation: None,
         path_control: None,
         spindle_spinup_seconds: None,
+        holder: None,
+        rapid_rate_mm_min: None,
         coolant: None,
         m6: None,
         tools: vec![v5::AppliedToolMapping {

@@ -195,6 +195,11 @@ pub struct LibraryTool {
     pub id: String,
     pub name: String,
     pub geometry: LibraryGeometry,
+    /// How the tool is held: shaft diameter and stickout. Optional, and copied
+    /// into the job with the rest of the tool's record — it is display/check
+    /// input for the simulation and never a machining value.
+    #[serde(default)]
+    pub assembly: crate::project::ToolAssembly,
     pub ramp_capable: Option<bool>,
     pub plunge_capable: Option<bool>,
     pub cutting_presets: Vec<CuttingPreset>,
@@ -235,6 +240,7 @@ impl LibraryTool {
                         "a saved tool requires complete geometry",
                     )
                 })?,
+            assembly: Default::default(),
             ramp_capable: settings.ramp_capable,
             plunge_capable: settings.plunge_capable,
             cutting_presets: vec![],

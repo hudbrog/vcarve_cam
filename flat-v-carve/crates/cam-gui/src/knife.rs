@@ -249,6 +249,7 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
             id: "knife-tool".into(),
             name: "Drag knife".into(),
             geometry: None,
+            assembly: Default::default(),
             capabilities: Default::default(),
             library_origin: None,
         }],
@@ -520,27 +521,38 @@ pub fn scene(
         };
         let tools = vec![crate::sim::ToolSpec::Knife {
             offset: tool.blade_offset_mm,
+            max_cut_depth: tool.max_cut_depth_mm,
         }];
         let resolution =
             crate::sim::choose_resolution(xy.width_mm, xy.length_mm, 0.4, 8192., 64_000_000.)?;
         let motions = plan
             .motions
             .iter()
-            .map(|m| crate::sim::Motion {
-                kind: "rapid_xy".into(),
-                tool: 0,
-                // A knife removes no material, so no cell ever records this
-                // stage; the index only has to exist for the wire format.
-                stage: 0,
-                x0: m.start.x,
-                y0: m.start.y,
-                z0: m.start.z,
-                x1: m.end.x,
-                y1: m.end.y,
-                z1: m.end.z,
-            })
+            // A knife removes no material, so no cell ever records this stage
+            // and the index only has to exist for the wire format. The machine
+            // execution still comes from the plan, so a knife move is timed by
+            // its own cutting, plunge or swivel feed.
+            .map(|m| crate::scene::sim_motion(m, 0, 0, "rapid_xy"))
             .collect::<Vec<_>>();
         report["inspection"] = json!(inspection::inspect_plan(plan).map_err(|e| e.to_string())?);
+        // The same two machine checks a milling job gets. A knife cuts no
+        // material in this model, so the assembly check is what can fire here —
+        // a holder driven into the sheet beside the blade cannot cut its way out.
+        let assembly = crate::scene::sim_assembly(job, &settings.assignment.tool_id);
+        let holder_body = job
+            .machine_configuration
+            .as_ref()
+            .and_then(|configuration| configuration.holder.as_ref())
+            .and_then(|holder| holder.body())
+            .unwrap_or_default();
+        report["warnings"] = json!(crate::sim_checks::run(crate::sim_checks::CheckInput {
+            motions: &motions,
+            tools: &tools,
+            assemblies: std::slice::from_ref(&assembly),
+            holder: &holder_body,
+            stock,
+        }));
+        report["warningCellMm"] = json!(crate::sim_checks::check_cell_mm(stock));
         report["knifeMotions"] = json!(plan.motions.iter().map(|m| json!({
             "heading":m.blade_heading_deg,"purpose":m.purpose,"pass":m.pass_id,"layer":m.layer,
             "start":[m.start.x,m.start.y,m.start.z],"end":[m.end.x,m.end.y,m.end.z],
@@ -571,8 +583,22 @@ pub fn scene(
         sim = Some(SimPackage {
             stock,
             tools,
+            // The knife tool's own record carries how it is held; the job's
+            // machine configuration carries the holder, exactly as for a mill.
+            assemblies: vec![crate::scene::sim_assembly(
+                job,
+                &settings.assignment.tool_id,
+            )],
             resolution,
             motions,
+            rapid_rate_mm_min: job
+                .machine_configuration
+                .as_ref()
+                .and_then(|configuration| configuration.rapid_rate_mm_min),
+            holder: job
+                .machine_configuration
+                .as_ref()
+                .and_then(|configuration| configuration.holder.clone()),
         });
     }
     // Bounded detail is separate from the paged pivot geometry. Refuse an

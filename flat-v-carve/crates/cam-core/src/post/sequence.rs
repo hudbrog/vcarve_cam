@@ -57,6 +57,17 @@ pub struct SequenceProfile {
     pub path_control: PathControl,
     pub tools: Vec<SequenceToolMapping>,
     pub spindle_spinup_seconds: f64,
+    /// How fast this machine traverses in rapid (G0) moves, in mm/min. Optional
+    /// because it is not needed to emit a program — G0 carries no feed — and it
+    /// never times anything on the controller. The simulation uses it to play a
+    /// program at machine speed, and says so when the machine does not state it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rapid_rate_mm_min: Option<f64>,
+    /// What holds the tool. Optional, display/check input only: the simulation
+    /// draws the assembly and warns when it would hit the job, and no toolpath
+    /// or emitted program depends on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<super::HolderSelection>,
     pub coolant: Coolant,
     pub m6: M6Contract,
 }
@@ -262,11 +273,19 @@ impl SequenceProfile {
             || self.clearance_z_mm <= 0.
             || !self.spindle_spinup_seconds.is_finite()
             || !(0. ..=3600.).contains(&self.spindle_spinup_seconds)
+            || self
+                .rapid_rate_mm_min
+                .is_some_and(|rate| !rate.is_finite() || rate <= 0.)
         {
             return Err(error(
                 "POST_PROFILE",
-                "invalid profile version, ID, work offset, clearance, precision, or dwell",
+                "invalid profile version, ID, work offset, clearance, precision, dwell or rapid rate",
             ));
+        }
+        if let Some(holder) = &self.holder
+            && let Err(message) = holder.validate()
+        {
+            return Err(error("POST_PROFILE", message));
         }
         if !self.m6.reviewed
             || self.m6.reference.trim().is_empty()

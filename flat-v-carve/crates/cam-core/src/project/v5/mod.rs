@@ -339,6 +339,10 @@ pub struct JobToolV5 {
     pub name: String,
     #[serde(default)]
     pub geometry: Option<crate::project::ToolGeometry>,
+    /// How the tool is held: shaft diameter and stickout. Optional, and copied
+    /// from the tool library with the rest of the tool's record.
+    #[serde(default)]
+    pub assembly: crate::project::ToolAssembly,
     #[serde(default)]
     pub capabilities: crate::project::ToolCapabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -357,6 +361,7 @@ impl JobToolV5 {
         if let Some(geometry) = &self.geometry {
             geometry.validate()?;
         }
+        self.assembly.validate()?;
         if let Some(origin) = &self.library_origin {
             short_label(&origin.library_id, "library_origin.library_id")?;
             short_label(&origin.tool_id, "library_origin.tool_id")?;
@@ -596,6 +601,16 @@ pub struct AppliedMachineConfiguration {
     pub path_control: Option<PathControl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spindle_spinup_seconds: Option<f64>,
+    /// Machine rapid rate in mm/min. It times the simulation's G0 moves and is
+    /// not required to emit a program, so it is optional and never invented.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rapid_rate_mm_min: Option<f64>,
+    /// What the machine holds the tool with. Optional and display/check input
+    /// only: the simulation draws the assembly and warns when it would hit the
+    /// job. The geometry resolves from the catalogue, so its numbers are not
+    /// copied into every job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<crate::post::HolderSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coolant: Option<Coolant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -632,6 +647,16 @@ impl AppliedMachineConfiguration {
             "machine_configuration.spindle_spinup_seconds",
             false,
         )?;
+        number(
+            self.rapid_rate_mm_min,
+            "machine_configuration.rapid_rate_mm_min",
+            true,
+        )?;
+        if let Some(holder) = &self.holder {
+            holder
+                .validate()
+                .map_err(|message| error("PROJECT_MACHINE", message))?;
+        }
         if let Some(PathControl::Blend {
             tolerance_mm,
             naive_cam_tolerance_mm,

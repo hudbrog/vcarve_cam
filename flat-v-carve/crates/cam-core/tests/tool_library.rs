@@ -445,6 +445,7 @@ fn knife_tool() -> LibraryTool {
             blade_offset_mm: 1.2,
             max_cut_depth_mm: 3.,
         }),
+        assembly: Default::default(),
         ramp_capable: None,
         plunge_capable: None,
         cutting_presets: vec![],

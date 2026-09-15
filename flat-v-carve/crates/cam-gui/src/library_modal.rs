@@ -738,6 +738,7 @@ impl App {
             id: id.clone(),
             name: label.into(),
             geometry,
+            assembly: Default::default(),
             ramp_capable: None,
             plunge_capable: None,
             cutting_presets: vec![],

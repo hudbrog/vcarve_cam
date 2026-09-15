@@ -17,9 +17,10 @@ pub const PROFILE: &str = include_str!("../../../fixtures/gui2/machine.json");
 ///
 /// The whole execution travels to the display process as one payload: the
 /// motion section (two 28-byte vertices per motion) plus the replayable motion
-/// stream (56 bytes per motion) is 112 bytes per motion, and the bounded stock
+/// stream (64 bytes per motion: kind, stage, interpolation, tool, feed and the
+/// six coordinates) is 120 bytes per motion, and the bounded stock
 /// checkpoints add at most `MAX_PREVIEW_BYTES`. The native worker refuses a
-/// response above 128 MB, so the derived ceiling is about a million motions;
+/// response above 128 MB, so the derived ceiling is about 1.06 million motions;
 /// 250,000 is the measured display bound (the M workload plus headroom) rather
 /// than the transfer ceiling. Above it the job is refused by name instead of
 /// being truncated.

@@ -66,6 +66,8 @@ pub fn new_machine(id: String) -> SequenceProfile {
         path_control: PathControl::ExactPath,
         tools: vec![],
         spindle_spinup_seconds: 1.,
+        rapid_rate_mm_min: None,
+        holder: None,
         coolant: Coolant::Off,
         m6: M6Contract {
             reference: String::new(),
@@ -516,6 +518,9 @@ pub fn capture_tool(tool: &v5::JobToolV5, id: String, name: String) -> Result<Li
         id,
         name,
         geometry,
+        // The assembly travels with the tool: it is how this cutter is held,
+        // not part of the cutter's own geometry.
+        assembly: tool.assembly,
         ramp_capable: tool.capabilities.ramp_capable,
         plunge_capable: tool.capabilities.plunge_capable,
         cutting_presets: vec![],

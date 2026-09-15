@@ -513,6 +513,8 @@ fn profile() -> SequenceProfile {
             },
         ],
         spindle_spinup_seconds: 0.5,
+        holder: None,
+        rapid_rate_mm_min: None,
         coolant: Coolant::Flood,
         m6: LinuxCncProfile::from_json(include_str!("../../../../real_data/machine-profile.json"))
             .unwrap()

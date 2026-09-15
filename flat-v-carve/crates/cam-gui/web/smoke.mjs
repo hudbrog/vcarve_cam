@@ -219,6 +219,9 @@ try {
   } else if(process.argv.includes('--gui9')) {
     const {gui9Scenario}=await import('./gui9-scenario.mjs');
     await gui9Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,click,path,out});
+  } else if(process.argv.includes('--gui10')) {
+    const {gui10Scenario}=await import('./gui10-scenario.mjs');
+    await gui10Scenario({control,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,out,path});
   } else if(process.argv.includes('--gui5')) {
     const {gui5Scenario}=await import('./gui5-scenario.mjs');
     await gui5Scenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,click,pressKey,path,out,chooseFile});

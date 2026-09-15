@@ -240,6 +240,8 @@ fn automatic_tabs_hold_the_bridge_in_every_deep_pass() {
             length_offset_number: None,
         }],
         spindle_spinup_seconds: 0.5,
+        holder: None,
+        rapid_rate_mm_min: None,
         coolant: cam_core::post::Coolant::Off,
         m6: legacy.m6,
     };

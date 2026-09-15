@@ -79,6 +79,8 @@ pub fn apply_machine_configuration(
         length_compensation: Some(profile.length_compensation),
         path_control: Some(profile.path_control),
         spindle_spinup_seconds: Some(profile.spindle_spinup_seconds),
+        rapid_rate_mm_min: profile.rapid_rate_mm_min,
+        holder: profile.holder.clone(),
         coolant: Some(profile.coolant),
         m6: Some(profile.m6.clone()),
         tools,
@@ -275,6 +277,8 @@ pub fn resolve_sequence_profile(job: &CamJobV5, scope: &ReadinessScope) -> Resul
             })
             .collect(),
         spindle_spinup_seconds: configuration.spindle_spinup_seconds.expect("checked above"),
+        rapid_rate_mm_min: configuration.rapid_rate_mm_min,
+        holder: configuration.holder.clone(),
         coolant: configuration.coolant.expect("checked above"),
         m6: configuration.m6.clone().expect("checked above"),
     };

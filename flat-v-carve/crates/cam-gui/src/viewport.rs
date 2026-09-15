@@ -26,15 +26,22 @@ pub use profile::{ProfileAnchor, ProfileAnchorEvent};
 
 /// Pages fingerprinted per frame while a new scene settles.
 const HASH_PAGES_PER_FRAME: usize = 4;
-/// Wall-clock seconds one pass over the program takes at 1x. The transport
-/// scales this, so the animation rate is independent of the display frame rate
-/// and of how many motions the job has.
-const PLAYBACK_SECONDS: f64 = 20.;
+/// Wall-clock seconds the whole program takes when the transport is set to
+/// **Fit**. The speed buttons scale real machine time instead: 1x plays a
+/// program at the feeds it will actually run at.
+const FIT_SECONDS: f64 = 20.;
+/// Motions one displayed frame may apply locally. Beyond this — a stall, a very
+/// high time scale, a job far larger than the frame — the display asks the
+/// compute process for one exact seek instead of replaying them itself.
+const LOCAL_ADVANCE_LIMIT: usize = 4096;
+/// Machine-warning rows the transport lists at once. The count above the list
+/// always reports the whole set, so a long list never hides behind the window.
+const WARNING_ROWS: usize = 6;
 /// Everything the overlay geometry depends on; a change rebuilds it.
 type OverlaySignature = (
     u64,
     Option<u32>,
-    usize,
+    (usize, u64),
     usize,
     i32,
     i32,
@@ -73,12 +80,17 @@ struct StockView {
     meta: PreviewMeta,
     identity: u64,
     /// Current displayed cells: either a transported checkpoint range in the
-    /// payload or a locally re-integrated field for a seek between checkpoints.
+    /// payload or the display's own raster once the animation advances locally.
     range: std::ops::Range<usize>,
     local: Option<Arc<Vec<u8>>>,
     cell_versions: Arc<Vec<u32>>,
     stats: sim::Stats,
     prefix: usize,
+    /// The display's own playback clock: the field between seeks, the program
+    /// time table, and the position inside the current move. `None` when the
+    /// scene carries no timed motion stream, in which case playback falls back
+    /// to stepping whole motions exactly as before.
+    clock: Option<crate::sim_clock::LocalClock>,
     /// Bytes the last stock response carried and the replay work it caused.
     /// Quoted by the playback bar so the display accounts for its own transfer
     /// instead of leaving the reviewer to guess.
@@ -233,6 +245,10 @@ pub struct Viewport {
     /// `requested_stock`, which the application consumes when it submits the
     /// command) so the display can say which position it is still showing.
     requested_prefix: Option<usize>,
+    /// Fraction of that prefix's in-flight move to apply once the response
+    /// lands: a scrub to a program time inside one long move needs the exact
+    /// prefix from the compute process first, then the partial window locally.
+    requested_fraction: f64,
     /// Display resolution the user asked for, waiting for the current command
     /// to finish before the application submits it.
     requested_preset: Option<crate::stock_preview::DisplayPreset>,
@@ -250,6 +266,20 @@ pub struct Viewport {
     stages: Arc<Vec<StageIdentity>>,
     /// Tool ids by simulation tool index, for `ByTool` colours.
     tool_ids: Arc<Vec<String>>,
+    /// Modeled blade headings per motion — `(start, end)` in degrees — so the
+    /// knife on screen turns the way the plan says it turns. Empty for a job
+    /// with no knife stage, which publishes none.
+    knife_headings: Arc<Vec<Option<(f64, f64)>>>,
+    /// The machine's holder body, resolved from the catalogue once per scene.
+    /// Empty when the machine states no holder, or names one that is not in the
+    /// catalogue — in which case nothing is drawn rather than something invented.
+    holder_body: Arc<Vec<cam_core::post::HolderSegment>>,
+    /// Machine warnings the worker published with this execution: display
+    /// estimates over its own raster, never a machining verdict.
+    warnings: Arc<Vec<crate::sim_checks::Warning>>,
+    /// The cell size those warnings were computed on, named in the panel so a
+    /// coarse estimate never reads as an exact one (D10).
+    warning_cell_mm: f64,
     /// Palette cache, rebuilt when the style or the stage identities change.
     palette: Option<Arc<Vec<[f32; 4]>>>,
     /// Revision the renderer keys its palette upload on.
@@ -263,11 +293,15 @@ pub struct Viewport {
     wall_report: Option<(usize, f64)>,
     playhead: usize,
     playing: bool,
-    /// Playback rate multiplier: 1x animates the whole program in
-    /// [`PLAYBACK_SECONDS`], the transport scales it.
+    /// Playback time scale. 1x is real machine time: the animation advances the
+    /// program by its own feeds, so a pass and a plunge take the time the
+    /// machine will take, in the ratio the plan commands.
     playback_speed: f64,
-    /// Sub-motion progress, so a rate slower than one motion per frame still
-    /// advances instead of stalling.
+    /// Play the whole program in [`FIT_SECONDS`] instead of at `playback_speed`.
+    playback_fit: bool,
+    /// Sub-motion progress of the fallback clock, used when a plan's timing
+    /// cannot be derived (a linear feed with no rate): playback then steps whole
+    /// motions exactly as it did before the clock existed.
     playback_progress: f64,
     stage: usize,
     /// First stage index the playback bar lays out, and how many rows it laid
@@ -332,6 +366,7 @@ impl Default for Viewport {
             inspection: Default::default(),
             requested_stock: None,
             requested_prefix: None,
+            requested_fraction: 0.,
             requested_preset: None,
             status: "Open a job to begin.".into(),
             scene: None,
@@ -339,6 +374,10 @@ impl Default for Viewport {
             stock_style: StockStyle::default(),
             stages: Arc::new(Vec::new()),
             tool_ids: Arc::new(Vec::new()),
+            knife_headings: Arc::new(Vec::new()),
+            holder_body: Arc::new(Vec::new()),
+            warnings: Arc::new(Vec::new()),
+            warning_cell_mm: 0.,
             palette: None,
             palette_revision: 0,
             wall_cache: None,
@@ -347,6 +386,7 @@ impl Default for Viewport {
             playhead: 0,
             playing: false,
             playback_speed: 1.,
+            playback_fit: false,
             playback_progress: 0.,
             stage: 0,
             stage_window: 0,
@@ -503,6 +543,55 @@ impl Viewport {
         }
         self.stages = Arc::new(stages);
         self.tool_ids = Arc::new(tool_ids);
+        // Blade headings the plan modeled, per motion: the drawn knife turns
+        // with them, and a milling job publishes none.
+        self.knife_headings = Arc::new({
+            let mut headings = vec![None; scene.motion_count()];
+            if let Some(entries) = scene.meta.report["gui2"]["knifeMotions"].as_array() {
+                for (position, entry) in entries.iter().enumerate() {
+                    let index = entry["index"].as_u64().map_or(position, |i| i as usize);
+                    let Some(ends) = entry["heading"].as_array() else {
+                        continue;
+                    };
+                    let (Some(start), Some(end)) =
+                        (ends[0].as_f64(), ends.get(1).and_then(|v| v.as_f64()))
+                    else {
+                        continue;
+                    };
+                    if let Some(slot) = headings.get_mut(index) {
+                        *slot = Some((start, end));
+                    }
+                }
+            }
+            headings
+        });
+        // The machine's holder, resolved once: the catalogue lives in core, so
+        // its segment numbers are not duplicated here and not copied per job.
+        self.holder_body = Arc::new(
+            scene
+                .meta
+                .sim
+                .as_ref()
+                .and_then(|sim| sim.holder.as_ref())
+                .and_then(|holder| holder.body())
+                .unwrap_or_default(),
+        );
+        // Machine warnings travel with the execution: computed once, over the
+        // raster the plan names, and never recomputed per frame.
+        self.warnings = Arc::new(
+            scene.meta.report["gui2"]["warnings"]
+                .as_array()
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
+        self.warning_cell_mm = scene.meta.report["gui2"]["warningCellMm"]
+            .as_f64()
+            .unwrap_or(0.);
         self.palette = None;
         if self.stage > self.groups.len() {
             self.stage = 0;
@@ -553,6 +642,7 @@ impl Viewport {
         let cells = ranges.last()?.clone();
         let stats = meta.frames.last()?.stats.clone();
         let prefix = meta.frames.last()?.prefix;
+        let clock = self.seed_clock(scene, &meta);
         Some(StockView {
             cell_versions: versions[versions.len() - 1].clone(),
             meta,
@@ -561,9 +651,62 @@ impl Viewport {
             local: None,
             stats,
             prefix,
+            clock,
             last_transfer_bytes: 0,
             last_replayed: 0,
         })
+    }
+
+    /// Seed the display's playback clock from the frames that travelled with the
+    /// scene. Two states are enough to run and rewind a program — the pristine
+    /// stock at prefix 0 and the state the display opens on — because the whole
+    /// ladder is already resident as payload bytes and a seek that needs another
+    /// checkpoint asks the compute process for it.
+    fn seed_clock(
+        &self,
+        scene: &Scene,
+        meta: &crate::stock_preview::PreviewMeta,
+    ) -> Option<crate::sim_clock::LocalClock> {
+        let input = scene.sim_input().ok().flatten()?;
+        let field_at = |index: usize| {
+            let frame = meta.frames.get(index)?;
+            let cells = scene.stock_cells(index)?;
+            sim::Field::from_packed(
+                meta.stock,
+                &input.tools,
+                meta.cell_mm,
+                cells,
+                &frame.versions,
+                &frame.allocated,
+                frame.stats.clone(),
+            )
+            .ok()
+        };
+        let pristine = field_at(0)?;
+        let last = meta.frames.len().checked_sub(1)?;
+        let field = field_at(last)?;
+        let prefix = meta.frames.get(last)?.prefix;
+        // The program's own numbers time the moves. A machine that states no
+        // rapid rate is still played; the transport says the total rests on a
+        // stated assumption. A plan that cannot be timed at all (a linear feed
+        // with no rate) leaves the fallback clock in place.
+        let time = sim::TimeTable::build(
+            &input.motions,
+            scene
+                .meta
+                .sim
+                .as_ref()
+                .and_then(|sim| sim.rapid_rate_mm_min),
+        )
+        .ok()?;
+        Some(crate::sim_clock::LocalClock::seed(
+            field.clone(),
+            pristine.clone(),
+            vec![(prefix, field)],
+            input.motions,
+            time,
+            meta.retained_bytes,
+        ))
     }
 
     pub fn new_viewer(cc: &eframe::CreationContext<'_>) -> Self {
@@ -1018,8 +1161,10 @@ impl Viewport {
             ui.horizontal_wrapped(|ui| {
                 let play=ui.button(if self.playing {"Pause"} else {"Play"});crate::app::observe_control(if self.playing {"Pause"} else {"Play"},play.rect);if play.clicked() { self.playing = !self.playing; if self.playing && self.stock_prefix==self.motion_count(){self.stock_seek(0);} }
                 let start=ui.button("Start");crate::app::observe_control("Start",start.rect);if start.clicked() {self.playing=false;self.stock_seek(0);}
-                // Playback rate. The animation is time-based, so the rate holds
-                // whatever the display frame rate is doing.
+                // Playback rate. 1x is the machine's own time: the animation
+                // runs the program's feeds, so a pass and a plunge differ by the
+                // time the machine will take. Fit maps the whole program into a
+                // fixed wall-clock window for jobs far too long to watch.
                 ui.label("Speed");
                 for (label, speed) in [
                     ("0.5x", 0.5),
@@ -1028,13 +1173,23 @@ impl Viewport {
                     ("4x", 4.),
                     ("10x", 10.),
                     ("15x", 15.),
+                    ("60x", 60.),
+                    ("300x", 300.),
+                    ("1000x", 1000.),
                 ] {
-                    let selected = (self.playback_speed - speed).abs() < 1e-9;
+                    let selected =
+                        !self.playback_fit && (self.playback_speed - speed).abs() < 1e-9;
                     let response = ui.selectable_label(selected, label);
                     crate::app::observe_control(&format!("Playback {label}"), response.rect);
                     if response.clicked() {
                         self.playback_speed = speed;
+                        self.playback_fit = false;
                     }
+                }
+                let fit = ui.selectable_label(self.playback_fit, "Fit");
+                crate::app::observe_control("Playback Fit", fit.rect);
+                if fit.clicked() {
+                    self.playback_fit = !self.playback_fit;
                 }
                 let groups = self.groups.clone();
                 let (first, last) = self.timeline_window(groups.len());
@@ -1105,8 +1260,76 @@ impl Viewport {
                 let mut prefix=self.stock_prefix;
                 let slider=ui.add(egui::Slider::new(&mut prefix,0..=self.motion_count()).text("Stock motion"));crate::app::observe_control("Stock motion",slider.rect);if slider.changed(){self.playing=false;self.stock_seek(prefix);}
             });
+            // Program time. Motions are the exact state the display keeps, but
+            // time is what a machine view is reasoned about: the same slider
+            // moves the clock inside a single long pass.
+            if let Some((seconds, total)) = self.program_time() {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().slider_width = (ui.available_width() - 160.).max(80.);
+                    let mut target = seconds;
+                    let slider = ui.add(
+                        egui::Slider::new(&mut target, 0.0..=total.max(1e-9))
+                            .text("Program time")
+                            .custom_formatter(|value, _| format_program_time(value)),
+                    );
+                    crate::app::observe_control("Program time", slider.rect);
+                    if slider.changed() {
+                        self.playing = false;
+                        self.seek_seconds(target);
+                    }
+                });
+            }
             if let Some(stock)=&self.stock {
                 ui.label(format!("Display simulation · {:.4} mm cells (reference {:.4}) · {} / {} motions · {:.2} mm³ removed",stock.meta.cell_mm,stock.meta.reference_cell_mm,stock.prefix,self.motion_count(),stock.stats.removed_volume_mm3));
+                // Machine time of the displayed position. The ratio between a
+                // long pass and a short plunge is the plan's own ratio of length
+                // to feed; a machine that states no rapid rate says so instead
+                // of presenting the display's fallback as machine truth.
+                if let Some(clock) = stock.clock.as_ref() {
+                    let (prefix, fraction) = clock.position();
+                    let in_move = if fraction > 0. {
+                        format!(" · {:.0}% into motion {prefix}", fraction * 100.)
+                    } else {
+                        String::new()
+                    };
+                    let feed = clock
+                        .tip()
+                        .and_then(|(_, motion)| motion.feed_mm_min)
+                        .map(|feed| format!(" · feed {feed:.0} mm/min"))
+                        .unwrap_or_default();
+                    let assumed = if clock.time().assumes_rapid_rate() {
+                        format!(
+                            " · rapids timed at {:.0} mm/min (the machine states no rapid rate)",
+                            clock.time().rapid_rate_mm_min()
+                        )
+                    } else {
+                        String::new()
+                    };
+                    // Which tool and stage the clock is in, so the animation is
+                    // read against the operation it belongs to rather than the
+                    // job as a whole.
+                    let current = clock
+                        .motion()
+                        .and_then(|motion| self.stages.get(motion.stage as usize))
+                        .map(|stage| {
+                            let role = if stage.role.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" {}", stage.role)
+                            };
+                            format!(" · tool {}{role}", stage.tool_id)
+                        })
+                        .unwrap_or_default();
+                    ui.label(format!(
+                        "Program time · {} / {} modeled motion{in_move}{feed}{current}{assumed}",
+                        format_program_time(clock.seconds()),
+                        format_program_time(clock.total_seconds())
+                    ));
+                } else if self.motion_count() > 0 {
+                    ui.label(
+                        "Program time · unavailable (a feed motion carries no feed rate); playback steps whole motions.",
+                    );
+                }
                 if let Some(transport)=self.scene.as_ref().map(|scene|&scene.meta.transport) {
                     let (bytes,replayed)=self.last_stock_transfer();
                     let checkpoints=stock.meta.ladder_frames.max(transport.stock_checkpoints);
@@ -1134,6 +1357,52 @@ impl Viewport {
                     crate::app::observe_control("Dropped stage boundaries", response.rect);
                 }
             }
+            // Machine warnings: display estimates over the check raster, each
+            // one seekable. The header names the raster so a coarse estimate is
+            // never read as an exact one, and nothing here refuses a job.
+            if !self.warnings.is_empty() {
+                let cell = self.warning_cell_mm;
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!(
+                        "Machine checks · {} warning(s) on a {cell:.2} mm raster · display estimates, not a machining verdict",
+                        self.warnings.len()
+                    ));
+                });
+                let warnings = self.warnings.clone();
+                for warning in warnings.iter().take(WARNING_ROWS) {
+                    ui.horizontal_wrapped(|ui| {
+                        let where_ = match self.stock.as_ref().and_then(|stock| stock.clock.as_ref())
+                        {
+                            Some(clock) => format!(
+                                "at {}",
+                                format_program_time(clock.time().seconds_at_prefix(warning.motion))
+                            ),
+                            None => format!("at motion {}", warning.motion),
+                        };
+                        let text = format!(
+                            "{} · from motion {} {where_} · {:.2} mm here, up to {:.2} mm",
+                            warning.kind.label(),
+                            warning.motion,
+                            warning.depth_mm,
+                            warning.max_depth_mm
+                        );
+                        let response = ui.colored_label(Color32::from_rgb(164, 83, 12), text);
+                        crate::app::observe_control("Machine warning", response.rect);
+                        let go = ui.small_button("Show");
+                        crate::app::observe_control("Show warning", go.rect);
+                        if go.clicked() {
+                            self.playing = false;
+                            self.seek_motion(warning.motion);
+                        }
+                    });
+                }
+                if self.warnings.len() > WARNING_ROWS {
+                    ui.label(format!(
+                        "… and {} more",
+                        self.warnings.len() - WARNING_ROWS
+                    ));
+                }
+            }
         });
         } else {
             self.playing = false;
@@ -1158,22 +1427,18 @@ impl Viewport {
         }
         let now = ctx.input(|i| i.time);
         if self.playing && !self.stock_loading && self.requested_stock.is_none() {
-            // Time-based advance, so the animation runs at the selected rate
-            // whatever the frame rate is. A stalled frame is clamped rather
-            // than jumping the program forward.
+            // Time-based advance: the clock advances the program by the seconds
+            // the transport asks for, so the animation is independent of the
+            // frame rate. A stalled frame is clamped rather than jumping the
+            // program forward, and a step the display cannot replay locally
+            // becomes one exact seek instead of a long frame.
             let dt = (ctx.input(|i| i.stable_dt) as f64).clamp(0., 0.1);
-            self.playback_progress +=
-                (self.motion_count() as f64 / PLAYBACK_SECONDS).max(1.) * self.playback_speed * dt;
-            let step = self.playback_progress.floor();
-            if step >= 1. {
-                self.playback_progress -= step;
-                self.stock_seek(
-                    (self.stock_prefix + step as usize).min(self.motion_count()),
-                );
-            }
-            if self.stock_prefix == self.motion_count() {
-                self.playing = false;
-            }
+            let scale = if self.playback_fit {
+                self.fit_scale()
+            } else {
+                self.playback_speed
+            };
+            self.play(dt * scale);
             ctx.request_repaint();
         }
         // Frame instrumentation: sample the interval since the previous frame,
@@ -1252,6 +1517,43 @@ impl Viewport {
         let cell_versions = Arc::new(frame.versions.clone());
         let stats = frame.stats.clone();
         let prefix = frame.prefix;
+        // The clock runs on a raster, so a new resolution means a new field: the
+        // response's frame reseeds it exactly, while the motion stream and the
+        // program-time table stay as they are.
+        let mut clock = self.stock.as_mut().and_then(|stock| stock.clock.take());
+        if clock.is_some() {
+            // A preset response carries cells, not a motion stream, so the tool
+            // geometry comes from the scene that is already displayed.
+            let tools = self
+                .scene
+                .as_ref()
+                .and_then(|scene| scene.meta.sim.as_ref())
+                .map(|sim| sim.tools.clone())
+                .unwrap_or_default();
+            let seeded = (!tools.is_empty())
+                .then(|| {
+                    sim::Field::from_packed(
+                        preview.stock,
+                        &tools,
+                        preview.cell_mm,
+                        cells,
+                        &frame.versions,
+                        &frame.allocated,
+                        frame.stats.clone(),
+                    )
+                    .ok()
+                })
+                .flatten();
+            match seeded {
+                Some(field) => {
+                    if let Some(active) = clock.as_mut() {
+                        active.reseed(field.clone(), vec![(prefix, field)], preview.retained_bytes);
+                    }
+                }
+                // A frame that cannot be rebuilt is not a field to animate from.
+                None => clock = None,
+            }
+        }
         self.stock = Some(StockView {
             meta: preview,
             identity,
@@ -1260,6 +1562,7 @@ impl Viewport {
             cell_versions,
             stats,
             prefix,
+            clock,
             last_transfer_bytes: payload.len(),
             last_replayed: 0,
         });
@@ -1285,7 +1588,6 @@ impl Viewport {
     }
     pub fn accept_stock(&mut self, meta: SceneMeta, payload: Vec<u8>) -> Result<(), String> {
         self.adopt_display_memory(&meta.report["gui2"]["displayMemory"]);
-        let stock = self.stock.as_mut().ok_or("No displayed stock")?;
         let preview = meta.stock.ok_or("Missing stock response")?;
         let frame = preview.frames.first().ok_or("Missing stock frame")?;
         let section = meta
@@ -1297,20 +1599,71 @@ impl Viewport {
             .get(section.offset..section.offset + section.len)
             .ok_or("Invalid stock payload")?
             .to_vec();
+        // Rebuild the exact field the response describes, so the display's clock
+        // can keep running from the state the compute process just restored. The
+        // response carries cells, not a motion stream, so the tool geometry comes
+        // from the scene that is already displayed.
+        let tools = self
+            .scene
+            .as_ref()
+            .and_then(|scene| scene.meta.sim.as_ref())
+            .map(|sim| sim.tools.clone())
+            .unwrap_or_default();
+        let seed = (!tools.is_empty())
+            .then(|| {
+                sim::Field::from_packed(
+                    preview.stock,
+                    &tools,
+                    preview.cell_mm,
+                    &cells,
+                    &frame.versions,
+                    &frame.allocated,
+                    frame.stats.clone(),
+                )
+                .ok()
+            })
+            .flatten();
+        let prefix = frame.prefix;
+        let versions = frame.versions.clone();
+        let stats = frame.stats.clone();
+        let key = preview.identity();
+        let retained_bytes = preview.retained_bytes;
+        let fraction = self.requested_fraction;
+        let stock = self.stock.as_mut().ok_or("No displayed stock")?;
         stock.local = Some(Arc::new(cells));
-        stock.cell_versions = Arc::new(frame.versions.clone());
-        stock.stats = frame.stats.clone();
-        stock.prefix = frame.prefix;
+        stock.cell_versions = Arc::new(versions);
+        stock.stats = stats;
+        stock.prefix = prefix;
         // The response names its own simulation key. If it differs (a rebuild
         // landed between requests) the renderer must re-upload every tile
         // instead of mixing cells from two resolutions.
-        stock.identity = preview.identity();
+        stock.identity = key;
         stock.last_transfer_bytes = payload.len();
         stock.last_replayed = meta.report["gui2"]["replayed"].as_u64().unwrap_or(0) as usize;
-        self.stock_prefix = frame.prefix;
-        self.playhead = frame.prefix;
+        if let (Some(clock), Some(field)) = (stock.clock.as_mut(), seed) {
+            clock.reseed(field.clone(), vec![(prefix, field)], retained_bytes);
+        } else if stock.clock.is_some() {
+            // The response could not be rebuilt as a field (a different
+            // resolution, say): the display keeps drawing the transported cells
+            // and drops the clock rather than animating from a wrong state.
+            stock.clock = None;
+        }
+        self.stock_prefix = prefix;
+        self.playhead = prefix;
         self.requested_prefix = None;
+        self.requested_fraction = 0.;
         self.stock_loading = false;
+        // A scrub to a time inside a move: the exact prefix is here now, so the
+        // partial window is applied locally instead of asking again.
+        if fraction > 0. {
+            let advance = match self.stock.as_mut().and_then(|stock| stock.clock.as_mut()) {
+                Some(clock) => clock.move_to_position(prefix, fraction, LOCAL_ADVANCE_LIMIT),
+                None => return Ok(()),
+            };
+            if let Some((dirty, _)) = self.resolve_advance(advance) {
+                self.apply_local_advance(&dirty);
+            }
+        }
         Ok(())
     }
     /// A stock request finished, successfully or not. The application calls this
@@ -1319,6 +1672,9 @@ impl Viewport {
     /// is no longer going to reach.
     pub fn finish_stock_request(&mut self) {
         self.requested_prefix = None;
+        // A seek that failed or was refused must not leave a fraction behind for
+        // the next response to apply to a position nobody asked for.
+        self.requested_fraction = 0.;
     }
     /// Bytes carried by the last stock response, for the display's own
     /// transfer accounting.
@@ -1353,7 +1709,74 @@ impl Viewport {
             "key": stock.meta.key,
             "sectionSamples": self.section_sample_count(),
             "style": self.style_probe(),
+            "simulation": self.simulation_probe(),
+            // Machine warnings, as the panel shows them: a count, the raster
+            // they rest on, and the first few entries for the review harness.
+            "warnings": {
+                "count": self.warnings.len(),
+                "cellMm": self.warning_cell_mm,
+                "entries": self
+                    .warnings
+                    .iter()
+                    .take(WARNING_ROWS)
+                    .map(|warning| serde_json::json!({
+                        "kind": match warning.kind {
+                            crate::sim_checks::WarningKind::AssemblyBelowSurface => "assemblyBelowSurface",
+                            crate::sim_checks::WarningKind::RapidThroughMaterial => "rapidThroughMaterial",
+                        },
+                        "motion": warning.motion,
+                        "depthMm": warning.depth_mm,
+                        "maxDepthMm": warning.max_depth_mm,
+                        "tool": warning.tool,
+                    }))
+                    .collect::<Vec<_>>(),
+            },
         })
+    }
+
+    /// What the playback clock is showing: the position inside a move, the
+    /// program time, and whether the machine's own rapid rate was available.
+    /// The browser harness reads this instead of guessing from the status line.
+    fn simulation_probe(&self) -> serde_json::Value {
+        let Some(clock) = self.stock.as_ref().and_then(|stock| stock.clock.as_ref()) else {
+            return serde_json::json!({
+                "timed": false,
+                "fastForward": self.playback_speed,
+                "fit": self.playback_fit,
+            });
+        };
+        let (prefix, fraction) = clock.position();
+        let (tip, feed) = clock
+            .tip()
+            .map(|(tip, motion)| (Some(tip), motion.feed_mm_min))
+            .unwrap_or((None, None));
+        serde_json::json!({
+            "timed": true,
+            "prefix": prefix,
+            "fraction": fraction,
+            "elapsedSeconds": clock.seconds(),
+            "totalSeconds": clock.total_seconds(),
+            "tip": tip,
+            "feedMmMin": feed,
+            "rapidRateMmMin": clock.time().rapid_rate_mm_min(),
+            "rapidRateAssumed": clock.time().assumes_rapid_rate(),
+            "fastForward": if self.playback_fit { self.fit_scale() } else { self.playback_speed },
+            "fit": self.playback_fit,
+            // What the display is drawing above the cutter, so a review can see
+            // that the assembly it warns about is the one it models.
+            "assembly": self.current_assembly().map(|assembly| serde_json::json!({
+                "shaftDiameterMm": assembly.shaft_diameter_mm,
+                "stickoutMm": assembly.stickout_mm,
+            })),
+            "holderSegments": self.holder_body.len(),
+        })
+    }
+
+    /// How the tool the clock is in is held, when the scene states it.
+    fn current_assembly(&self) -> Option<cam_core::project::ToolAssembly> {
+        let sim = self.scene.as_ref()?.meta.sim.as_ref()?;
+        let tool = self.stock.as_ref()?.clock.as_ref()?.tool()?;
+        sim.assemblies.get(tool).copied()
     }
     /// Display-only stock appearance, as the review harness sees it.
     fn style_probe(&self) -> serde_json::Value {
@@ -1551,8 +1974,157 @@ impl Viewport {
         if target != self.stock_prefix {
             self.requested_stock = Some(target);
             self.requested_prefix = Some(target);
+            self.requested_fraction = 0.;
         }
     }
+
+    /// Program time of the displayed position and the program's total, when the
+    /// scene carries a clock. `None` means playback has to step whole motions.
+    pub fn program_time(&self) -> Option<(f64, f64)> {
+        let clock = self.stock.as_ref()?.clock.as_ref()?;
+        Some((clock.seconds(), clock.total_seconds()))
+    }
+
+    /// Blade heading at a position inside a motion, in degrees, or `None` for a
+    /// cutter that is not a knife. The blade turns the short way round between
+    /// the headings the plan modeled for the move's two ends, so a corner
+    /// swivel reads as the turn the machine will make.
+    fn knife_heading(&self, index: usize, fraction: f32) -> Option<f32> {
+        let (start, end) = (*self.knife_headings.get(index)?)?;
+        let turn = (end - start + 180.).rem_euclid(360.) - 180.;
+        let heading = start + turn * fraction.clamp(0., 1.) as f64;
+        // Canonical degrees, so a swivel across the 0/360 seam reads as 0°
+        // rather than 360°.
+        Some(heading.rem_euclid(360.) as f32)
+    }
+
+    /// Time scale that plays the whole program in [`FIT_SECONDS`] of wall clock.
+    fn fit_scale(&self) -> f64 {
+        self.stock
+            .as_ref()
+            .and_then(|stock| stock.clock.as_ref())
+            .map_or(1., |clock| (clock.total_seconds() / FIT_SECONDS).max(1e-6))
+    }
+
+    /// One playback frame: advance the display's clock by machine seconds.
+    fn play(&mut self, program_seconds: f64) {
+        let advance = match self.stock.as_mut().and_then(|stock| stock.clock.as_mut()) {
+            Some(clock) => clock.advance(program_seconds, LOCAL_ADVANCE_LIMIT),
+            None => {
+                self.play_by_steps(program_seconds);
+                return;
+            }
+        };
+        let (dirty, finished) = match self.resolve_advance(advance) {
+            Some(resolved) => resolved,
+            None => return,
+        };
+        self.apply_local_advance(&dirty);
+        if finished {
+            self.playing = false;
+        }
+    }
+
+    /// Fallback playback for a scene whose motion stream cannot be timed (a
+    /// linear feed with no rate): step whole motions, as the display did before
+    /// it had a clock. The plan's own checks already refuse such a plan; the
+    /// display keeps showing it rather than refusing the whole scene.
+    fn play_by_steps(&mut self, program_seconds: f64) {
+        self.playback_progress +=
+            (self.motion_count() as f64 / FIT_SECONDS).max(1.) * program_seconds.max(0.);
+        let step = self.playback_progress.floor();
+        if step >= 1. {
+            self.playback_progress -= step;
+            self.stock_seek((self.stock_prefix + step as usize).min(self.motion_count()));
+        }
+        if self.stock_prefix == self.motion_count() {
+            self.playing = false;
+        }
+    }
+
+    /// A local advance either moved the field or has to become one exact seek
+    /// against the retained execution (the target is behind the display, or
+    /// further than one frame may replay).
+    fn resolve_advance(&mut self, advance: crate::sim_clock::Advance) -> Option<(Vec<u32>, bool)> {
+        use crate::sim_clock::Advance;
+        match advance {
+            Advance::Moved { dirty, .. } => Some((dirty, false)),
+            Advance::Finished { dirty, .. } => Some((dirty, true)),
+            Advance::NeedsRestore { prefix, fraction } => {
+                self.requested_prefix = Some(prefix);
+                self.requested_stock = Some(prefix);
+                self.requested_fraction = fraction;
+                None
+            }
+        }
+    }
+
+    /// Publish what the local clock reached: patch the tiles the advance
+    /// changed, and report the position the display is now showing.
+    fn apply_local_advance(&mut self, dirty: &[u32]) {
+        let Some(stock) = self.stock.as_mut() else {
+            return;
+        };
+        let Some(clock) = stock.clock.as_mut() else {
+            return;
+        };
+        if !dirty.is_empty() {
+            match stock.local.as_mut() {
+                Some(bytes) => {
+                    let target = Arc::make_mut(bytes);
+                    let _ = clock.patch(target, dirty);
+                }
+                // The first local frame builds the display's own raster once;
+                // after that only changed tiles are copied.
+                None => stock.local = Some(Arc::new(clock.field().packed_tile_bytes())),
+            }
+        }
+        stock.cell_versions = Arc::new(clock.versions());
+        stock.stats = clock.stats().clone();
+        stock.prefix = clock.position().0;
+        self.stock_prefix = stock.prefix;
+        self.playhead = stock.prefix;
+        self.overlay_signature = None;
+    }
+
+    /// Scrub the display to a program time. Forward motion is local; a target
+    /// behind the display — where material would have to be restored — becomes
+    /// one exact seek whose response reseeds the clock.
+    fn seek_seconds(&mut self, seconds: f64) {
+        let Some((prefix, fraction)) = self
+            .stock
+            .as_ref()
+            .and_then(|stock| stock.clock.as_ref())
+            .map(|clock| clock.time().position_at(seconds))
+        else {
+            return;
+        };
+        let advance = match self.stock.as_mut().and_then(|stock| stock.clock.as_mut()) {
+            Some(clock) => clock.move_to_position(prefix, fraction, LOCAL_ADVANCE_LIMIT),
+            None => return,
+        };
+        if let Some((dirty, _)) = self.resolve_advance(advance) {
+            self.apply_local_advance(&dirty);
+        }
+    }
+
+    /// Put the display at a motion. The warnings list uses this, and it takes
+    /// the same path as any other jump: local when the clock can reach it, one
+    /// exact seek when it cannot.
+    fn seek_motion(&mut self, motion: usize) {
+        let seconds = self
+            .stock
+            .as_ref()
+            .and_then(|stock| stock.clock.as_ref())
+            .map(|clock| clock.time().seconds_at_prefix(motion));
+        match seconds {
+            Some(seconds) => self.seek_seconds(seconds),
+            // No clock (a plan whose timing cannot be derived): fall back to the
+            // motion-index seek the rest of the transport uses.
+            None => self.stock_seek(motion),
+        }
+    }
+
     /// Display picking entry point. Exposed so the interaction harness can
     /// drive a pick at a chosen scale factor without pointer simulation.
     pub fn pick_at(&mut self, cursor: egui::Pos2, rect: egui::Rect, pixels_per_point: f32) {
@@ -1767,10 +2339,19 @@ impl Viewport {
     /// Selection fill and blade marker in the same normalized scene space as
     /// the motion vertices. Nothing here is CAM geometry.
     fn build_overlay(&mut self, rect: egui::Rect, ppp: f32) {
+        // The marker and the trail read the same paged motion stream the picker
+        // indexes, so the picker is built on first use — by a pick, or by the
+        // first animated frame.
+        self.ensure_picker();
+        let (playhead, fraction) = self
+            .stock
+            .as_ref()
+            .and_then(|stock| stock.clock.as_ref())
+            .map_or((self.playhead, 0.), |clock| clock.position());
         let signature = (
             self.scene_revision,
             self.selection.map(|pick| pick.motion),
-            self.playhead,
+            (playhead, fraction.to_bits()),
             self.stage,
             (self.camera.zoom * 100.) as i32,
             rect.width() as i32,
@@ -1804,55 +2385,78 @@ impl Viewport {
                         .map(|points| (points[0], points[1]))
                 })
             });
-        let marker = scene
-            .meta
-            .sim
-            .as_ref()
-            .filter(|_| self.playhead > 0)
-            .and_then(|sim| {
-                let picker = self.picker.as_ref()?;
-                let index = (self.playhead - 1).min(picker.motion_count().saturating_sub(1));
+        // Where the cutter is now, and the part of its move it has already
+        // made. Inside a move the tip interpolates along it, so the drawn path
+        // and the removal agree frame by frame instead of jumping at motion
+        // boundaries. Nothing here is CAM geometry.
+        let picker = self.picker.as_ref();
+        let (marker, trail) = match scene.meta.sim.as_ref().and_then(|sim| {
+            let picker = picker?;
+            if playhead == 0 && fraction <= 0. {
+                return None;
+            }
+            let (tip, trail, index) = if fraction > 0. {
+                let points = picker.endpoints(playhead as u32)?;
+                let (start, end) = (points[0], points[1]);
+                let lerp = |a: f32, b: f32| a + (b - a) * fraction as f32;
+                let tip = [
+                    lerp(start[0], end[0]),
+                    lerp(start[1], end[1]),
+                    lerp(start[2], end[2]),
+                ];
+                (tip, Some((start, tip)), playhead)
+            } else {
+                // On a motion boundary the tip is the end of the last move.
+                let index = playhead.checked_sub(1)?;
                 let points = picker.endpoints(index as u32)?;
-                // The cutter glyph follows the stage that owns this motion.
-                let motion_tool = self
-                    .groups
-                    .iter()
-                    .find(|group| index >= group.start && index < group.end)
-                    .map_or(0, |group| group.tool);
-                let tool = sim.tools.get(motion_tool).copied()?;
-                let tip = [points[1][0], points[1][1], points[1][2]];
-                Some(match tool {
-                    sim::ToolSpec::Knife { .. } => return None,
-                    sim::ToolSpec::Endmill { diameter } => overlay::Marker {
-                        glyph: overlay::Glyph::Endmill {
-                            radius: (diameter / 2.) as f32 * scale as f32,
-                        },
-                        tip,
-                        top: 0.,
-                    },
-                    sim::ToolSpec::Vbit {
-                        angle,
-                        tip: tip_diameter,
-                        diameter,
-                        ..
-                    } => overlay::Marker {
-                        glyph: overlay::Glyph::Vbit {
-                            radius: (diameter.max(tip_diameter) / 2.) as f32 * scale as f32,
-                            tip_radius: (tip_diameter / 2.) as f32 * scale as f32,
-                            slope: ((angle / 2.) as f32 * std::f32::consts::PI / 180.).tan(),
-                        },
-                        tip,
-                        top: 0.,
-                    },
-                })
-            });
+                (points[1], None, index)
+            };
+            // The cutter body follows the stage that owns this motion, and a
+            // knife turns with the blade heading the plan modeled for it.
+            let motion_tool = self
+                .groups
+                .iter()
+                .find(|group| index >= group.start && index < group.end)
+                .map_or(0, |group| group.tool);
+            let tool = sim.tools.get(motion_tool).copied()?;
+            let heading_deg = self.knife_heading(index, fraction as f32);
+            let assembly = sim.assemblies.get(motion_tool).copied().unwrap_or_default();
+            Some((
+                overlay::Marker {
+                    tool,
+                    scale: scale as f32,
+                    tip,
+                    top: 0.,
+                    heading_deg,
+                    assembly,
+                    holder: (!self.holder_body.is_empty()).then(|| self.holder_body.as_slice()),
+                },
+                trail,
+            ))
+        }) {
+            Some((marker, trail)) => (Some(marker), trail),
+            None => (None, None),
+        };
         let half = self.pick_tolerance_px * 0.5 / ppp.max(1e-3) / per_unit.max(1e-6);
-        let mut built = overlay::build(selection, half, marker.as_slice());
+        let mut built = overlay::build(selection, trail, half, marker.as_slice());
         self.knife_overlay(&mut built);
         self.profile_overlay(&mut built);
         self.face_overlay(&mut built);
         self.overlay_lines = Arc::new(built.lines);
         self.overlay_triangles = Arc::new(built.triangles);
+    }
+
+    /// Build the motion endpoint index if it is not there yet. Picking, the
+    /// cutter marker and the in-flight trail all read the same paged stream, so
+    /// one index serves all three and is built at most once per scene.
+    fn ensure_picker(&mut self) {
+        if self.picker.is_some() {
+            return;
+        }
+        let Some(scene) = self.scene.as_ref() else {
+            return;
+        };
+        self.picker = Picker::from_vertex_bytes(scene.motion_bytes()).ok();
     }
 
     fn fingerprint_pages(&mut self) {
@@ -1874,6 +2478,18 @@ impl Viewport {
             self.hash_cursor += 1;
         }
         self.hash_ms += timer.elapsed_ms();
+    }
+}
+
+/// A program time as a clock: `1:05:03` past an hour, `5:03` below it. The
+/// transport reports machine time, so it reads like one.
+fn format_program_time(seconds: f64) -> String {
+    let total = seconds.max(0.).round() as u64;
+    let (hours, minutes, secs) = (total / 3600, (total % 3600) / 60, total % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{secs:02}")
+    } else {
+        format!("{minutes}:{secs:02}")
     }
 }
 
@@ -2280,6 +2896,25 @@ mod tests {
         assert_eq!(probe["style"]["surface"], "by_operation");
     }
 
+    /// S2: the knife turns the way the plan says it turns, including across the
+    /// 0/360 seam, so a corner swivel reads as a turn rather than a spin.
+    #[test]
+    fn the_knife_heading_turns_the_short_way_round() {
+        let view = Viewport {
+            knife_headings: Arc::new(vec![Some((350., 10.)), Some((0., 180.))]),
+            ..Default::default()
+        };
+        // Across the seam the short way is 20 degrees, through 0.
+        assert!((view.knife_heading(0, 0.).unwrap() - 350.).abs() < 1e-3);
+        assert!(view.knife_heading(0, 0.5).unwrap().abs() < 1e-3);
+        assert!((view.knife_heading(0, 1.).unwrap() - 10.).abs() < 1e-3);
+        // A half turn has no short way; the signed remainder picks the negative
+        // one, and the canonical form reports it as 270 degrees.
+        assert!((view.knife_heading(1, 0.5).unwrap() - 270.).abs() < 1e-3);
+        // A motion the plan modeled no heading for draws no rotation.
+        assert!(view.knife_heading(2, 0.5).is_none());
+    }
+
     /// A stock view over a small faced field, for the section test.
     fn faced_stock(cols: usize, rows: usize, cell_mm: f64) -> StockView {
         let stock = sim::Stock {
@@ -2317,6 +2952,7 @@ mod tests {
             cell_versions: Arc::new(vec![0]),
             stats: Default::default(),
             prefix: 0,
+            clock: None,
             last_transfer_bytes: 0,
             last_replayed: 0,
         }

@@ -198,6 +198,38 @@ impl SetupSettings {
     }
 }
 
+/// Optional tool-assembly geometry: what holds the cutter.
+///
+/// Both values are optional and are display/check inputs only — nothing here
+/// changes a toolpath, and a tool that states neither is complete.
+/// `stickout_mm` is the distance from the cutting tip to the holder's bottom
+/// face (Fusion's *assembly gauge length*, which an independent converter also
+/// calls "stickout"); it is the value that decides whether the holder can reach
+/// a cut at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ToolAssembly {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shaft_diameter_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stickout_mm: Option<f64>,
+}
+impl ToolAssembly {
+    /// True when the tool states nothing about how it is held.
+    pub fn is_empty(&self) -> bool {
+        self.shaft_diameter_mm.is_none() && self.stickout_mm.is_none()
+    }
+    pub fn validate(&self) -> Result<()> {
+        number(
+            self.shaft_diameter_mm,
+            "tool.assembly.shaft_diameter_mm",
+            true,
+        )?;
+        number(self.stickout_mm, "tool.assembly.stickout_mm", true)?;
+        Ok(())
+    }
+}
+
 /// Pure cutter geometry; entry capabilities live in [`ToolCapabilities`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

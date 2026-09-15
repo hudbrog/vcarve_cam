@@ -611,6 +611,7 @@ pub fn add_library_tool(
             .is_some_and(|o| o.library_id == library_id && o.tool_id == library_tool_id)
             && t.geometry == geometry
             && t.capabilities == capabilities
+            && t.assembly == tool.assembly
     }) {
         return Ok((
             super::commands::CommandOutcome::commit(job.clone(), vec![])?,
@@ -635,6 +636,7 @@ pub fn add_library_tool(
         id: id.clone(),
         name: tool.name.clone(),
         geometry,
+        assembly: tool.assembly,
         capabilities,
         library_origin: Some(LibraryOrigin {
             library_id: library_id.into(),

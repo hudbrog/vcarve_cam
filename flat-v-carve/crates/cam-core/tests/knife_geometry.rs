@@ -843,6 +843,8 @@ fn planner_output_exports_through_the_independent_readback() {
             length_offset_number: None,
         }],
         spindle_spinup_seconds: 0.5,
+        holder: None,
+        rapid_rate_mm_min: None,
         coolant: Coolant::Flood,
         m6: cam_core::post::LinuxCncProfile::from_json(include_str!(
             "../../../../real_data/machine-profile.json"

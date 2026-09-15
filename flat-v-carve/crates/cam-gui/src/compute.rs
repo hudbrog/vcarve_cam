@@ -59,10 +59,23 @@ pub struct SceneMeta {
 pub struct SimMeta {
     pub stock: Stock,
     pub tools: Vec<ToolSpec>,
+    /// How each tool is held, in the same order as `tools`. A default entry
+    /// means the tool states neither a shaft diameter nor a stickout.
+    #[serde(default)]
+    pub assemblies: Vec<cam_core::project::ToolAssembly>,
+    /// What the machine holds the tool with. The display resolves the catalogue
+    /// name into a body, so the segment numbers are not copied into every job.
+    #[serde(default)]
+    pub holder: Option<cam_core::post::HolderSelection>,
     pub resolution: Resolution,
     pub motions: usize,
     pub offset: usize,
     pub len: usize,
+    /// The machine's stated rapid rate, when the applied machine configuration
+    /// has one. The display times G0 moves with it and says so when it has to
+    /// fall back to a stated assumption instead.
+    #[serde(default)]
+    pub rapid_rate_mm_min: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -209,8 +222,11 @@ pub(crate) struct Package {
 pub(crate) struct SimPackage {
     pub stock: Stock,
     pub tools: Vec<ToolSpec>,
+    pub assemblies: Vec<cam_core::project::ToolAssembly>,
+    pub holder: Option<cam_core::post::HolderSelection>,
     pub resolution: Resolution,
     pub motions: Vec<Motion>,
+    pub rapid_rate_mm_min: Option<f64>,
 }
 
 /// Assemble metadata plus the sectioned payload. `vertices` holds the contour
@@ -281,10 +297,13 @@ pub(crate) fn package(package: Package) -> Result<(SceneMeta, Vec<u8>), String> 
         sim: package.sim.map(|s| SimMeta {
             stock: s.stock,
             tools: s.tools,
+            assemblies: s.assemblies,
+            holder: s.holder,
             resolution: s.resolution,
             motions: s.motions.len(),
             offset: sim_offset,
             len: sim_len,
+            rapid_rate_mm_min: s.rapid_rate_mm_min,
         }),
         transport,
     };

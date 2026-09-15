@@ -1039,6 +1039,7 @@ fn push_job_tool(job: &mut CamJobV5, prefix: &str, name: &str) -> String {
         id: id.clone(),
         name: name.into(),
         geometry: None,
+        assembly: Default::default(),
         capabilities: Default::default(),
         library_origin: None,
     });

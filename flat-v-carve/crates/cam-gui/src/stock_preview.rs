@@ -333,13 +333,21 @@ pub fn simulation_key(
     }
     for tool in tools {
         match *tool {
-            crate::sim::ToolSpec::Knife { offset } => {
+            crate::sim::ToolSpec::Knife {
+                offset,
+                max_cut_depth,
+            } => {
                 mix(1);
                 mix(offset.to_bits());
+                mix(max_cut_depth.to_bits());
             }
-            crate::sim::ToolSpec::Endmill { diameter } => {
+            crate::sim::ToolSpec::Endmill {
+                diameter,
+                cutting_length,
+            } => {
                 mix(2);
                 mix(diameter.to_bits());
+                mix(cutting_length.to_bits());
             }
             crate::sim::ToolSpec::Vbit {
                 angle,
@@ -404,13 +412,18 @@ mod tests {
                 y1: 5.,
                 thickness_mm: 6.,
             },
-            tools: vec![ToolSpec::Endmill { diameter: 2. }],
+            tools: vec![ToolSpec::Endmill {
+                diameter: 2.,
+                cutting_length: 12.,
+            }],
             resolution: choose_resolution(10., 10., 0.02, 8192., 64_000_000.).unwrap(),
             motions: (0..motions)
                 .map(|i| Motion {
                     kind: "cut".into(),
                     tool: 0,
                     stage: 0,
+                    interpolation: crate::sim::Interpolation::Feed,
+                    feed_mm_min: Some(100.),
                     x0: -4. + (i % 80) as f64 * 0.1,
                     y0: -4. + (i / 80) as f64 * 0.1,
                     z0: -0.5,

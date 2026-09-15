@@ -8,6 +8,9 @@ use std::sync::Arc;
 pub const TILE: usize = 256;
 pub const MAX_CELLS: usize = 64_000_000;
 const PLUNGE_AREA_EPS: f64 = 1e-16;
+/// Rapid rate a machine that states none is simulated with. The timings say
+/// when this fallback is in use instead of presenting it as machine truth.
+pub const DEFAULT_RAPID_RATE_MM_MIN: f64 = 5000.;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,16 +21,25 @@ pub struct Stock {
     pub y1: f64,
     pub thickness_mm: f64,
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ToolSpec {
     Knife {
         #[serde(rename = "bladeOffsetMm")]
         offset: f64,
+        /// How deep the blade may cut. The display stands the blade up by this
+        /// much above the tip; nothing else about the blade is modelled.
+        #[serde(rename = "maxCutDepthMm")]
+        max_cut_depth: f64,
     },
     Endmill {
         #[serde(rename = "diameterMm")]
         diameter: f64,
+        /// Length of the cutting portion. The removal model does not need it —
+        /// a cylinder cuts the same at every depth within its length — but the
+        /// displayed cutter body is only as long as the flutes.
+        #[serde(rename = "cuttingLengthMm")]
+        cutting_length: f64,
     },
     Vbit {
         #[serde(rename = "includedAngleDeg")]
@@ -52,8 +64,14 @@ fn positive(v: f64) -> bool {
 impl ToolSpec {
     pub fn normalize(self) -> Result<Tool, String> {
         match self {
-            Self::Knife { offset } if positive(offset) => Ok(Tool::Knife),
-            Self::Endmill { diameter } if positive(diameter) => Ok(Tool::Endmill {
+            Self::Knife {
+                offset,
+                max_cut_depth,
+            } if positive(offset) && positive(max_cut_depth) => Ok(Tool::Knife),
+            Self::Endmill {
+                diameter,
+                cutting_length,
+            } if positive(diameter) && positive(cutting_length) => Ok(Tool::Endmill {
                 radius: diameter / 2.,
             }),
             Self::Vbit {
@@ -81,6 +99,65 @@ impl ToolSpec {
             _ => Err("Invalid simulator tool geometry".into()),
         }
     }
+
+    /// The cutting radius at `depth` below the tip: what the field removes at
+    /// that depth, and therefore what a displayed cutter body has to reach at
+    /// the same height. Derived from [`ToolSpec::normalize`], so the display and
+    /// the cut cannot disagree (`a_cutter_body_reaches_exactly_as_far_as_the_removal`).
+    pub fn radius_at_depth(self, depth: f64) -> Option<f64> {
+        match self.normalize().ok()? {
+            Tool::Knife => None,
+            Tool::Endmill { radius } => Some(radius),
+            Tool::Vbit { tip, slope, radius } => Some((tip + depth.max(0.) * slope).min(radius)),
+        }
+    }
+
+    /// The cutter's body as a revolved profile from the tip upward:
+    /// `(height above the tip, radius)`, strictly increasing in height. `None`
+    /// for a drag knife, which is a blade rather than a surface of revolution.
+    ///
+    /// The radii come from the normalized cutting envelope; the heights come
+    /// from the tool's own cutting length or height. Nothing above the cutting
+    /// portion is drawn until a tool states a shaft and a stickout.
+    pub fn profile(self) -> Option<Vec<(f64, f64)>> {
+        match self.normalize().ok()? {
+            Tool::Knife => None,
+            Tool::Endmill { radius } => {
+                let Self::Endmill { cutting_length, .. } = self else {
+                    return None;
+                };
+                Some(vec![(0., radius), (cutting_length, radius)])
+            }
+            Tool::Vbit { tip, slope, radius } => {
+                let Self::Vbit { height, .. } = self else {
+                    return None;
+                };
+                let mut profile = vec![(0., tip)];
+                let flank = if slope > 0. {
+                    (radius - tip) / slope
+                } else {
+                    0.
+                };
+                if flank > 0. {
+                    profile.push((flank, radius));
+                }
+                if height > flank {
+                    profile.push((height, radius));
+                }
+                Some(profile)
+            }
+        }
+    }
+}
+/// How the machine executes a motion. The plan already carries this
+/// (`cam_core::toolpath::Interpolation`) and its checks require a positive feed
+/// on every linear feed and forbid one on a rapid, so the clock can time each
+/// motion from the plan's own numbers instead of guessing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Interpolation {
+    Rapid,
+    Feed,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Motion {
@@ -91,12 +168,57 @@ pub struct Motion {
     /// the motion rather than being re-derived from the tool.
     #[serde(default)]
     pub stage: u16,
+    /// Machine execution of this move; see [`Interpolation`].
+    pub interpolation: Interpolation,
+    /// Required on a linear feed, absent on a rapid. The clock needs it; the
+    /// removal model does not.
+    pub feed_mm_min: Option<f64>,
     pub x0: f64,
     pub y0: f64,
     pub z0: f64,
     pub x1: f64,
     pub y1: f64,
     pub z1: f64,
+}
+impl Motion {
+    /// Path length of the move, which is what a feed rate is measured against:
+    /// a plunge or a ramp is timed by its real path, not by its XY projection.
+    pub fn length_mm(&self) -> f64 {
+        let dx = self.x1 - self.x0;
+        let dy = self.y1 - self.y0;
+        let dz = self.z1 - self.z0;
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+    /// Program time this move takes on a machine with `rapid_rate_mm_min`.
+    /// A zero-length move takes no time: no state changes across it, and a
+    /// floor would invent minutes on a job made of micro-segments.
+    pub fn duration_seconds(&self, rapid_rate_mm_min: f64) -> Result<f64, String> {
+        let length = self.length_mm();
+        match self.interpolation {
+            Interpolation::Rapid => {
+                if !rapid_rate_mm_min.is_finite() || rapid_rate_mm_min <= 0. {
+                    return Err("Simulator needs a positive rapid rate".into());
+                }
+                Ok(length / rapid_rate_mm_min * 60.)
+            }
+            Interpolation::Feed => {
+                let feed = self
+                    .feed_mm_min
+                    .filter(|feed| feed.is_finite() && *feed > 0.)
+                    .ok_or("Simulator motion stream has a linear feed without a feed rate")?;
+                Ok(length / feed * 60.)
+            }
+        }
+    }
+    /// The cutter tip while the animation is inside this move.
+    pub fn point_at(&self, fraction: f64) -> [f64; 3] {
+        let t = fraction.clamp(0., 1.);
+        [
+            self.x0 + (self.x1 - self.x0) * t,
+            self.y0 + (self.y1 - self.y0) * t,
+            self.z0 + (self.z1 - self.z0) * t,
+        ]
+    }
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -245,20 +367,32 @@ impl Field {
     /// One `u32` per cell: `depth | stage << 16 | tool << 24`.
     pub fn packed_tile_bytes(&self) -> Vec<u8> {
         let mut bytes = vec![0u8; self.tiles.len() * TILE * TILE * 4];
-        for (tile, data) in self.tiles.iter().enumerate() {
-            let Some(data) = data else {
-                continue;
-            };
+        for tile in 0..self.tiles.len() {
             let base = Self::tile_byte_offset(tile);
-            for local in 0..TILE * TILE {
-                let packed = data.depth[local] as u32
-                    | ((data.stage[local] as u32) << 16)
-                    | ((data.tool[local] as u32) << 24);
-                bytes[base + local * 4..base + local * 4 + 4]
-                    .copy_from_slice(&packed.to_le_bytes());
-            }
+            // An unallocated tile keeps the zeroes the buffer was filled with.
+            let _ = self.pack_tile(tile, &mut bytes[base..base + TILE * TILE * 4]);
         }
         bytes
+    }
+    /// Pack one tile into `out`, which must be exactly
+    /// [`TILE`] × [`TILE`] × 4 bytes. The animation keeps the raster bytes the
+    /// renderer draws and patches only the tiles an advance actually changed,
+    /// so a frame that removes material copies kilobytes instead of the raster.
+    pub fn pack_tile(&self, tile: usize, out: &mut [u8]) -> Result<(), String> {
+        if out.len() != TILE * TILE * 4 {
+            return Err("Simulator tile buffer has the wrong size".into());
+        }
+        let Some(data) = self.tiles.get(tile).and_then(|tile| tile.as_ref()) else {
+            out.fill(0);
+            return Ok(());
+        };
+        for local in 0..TILE * TILE {
+            let packed = data.depth[local] as u32
+                | ((data.stage[local] as u32) << 16)
+                | ((data.tool[local] as u32) << 24);
+            out[local * 4..local * 4 + 4].copy_from_slice(&packed.to_le_bytes());
+        }
+        Ok(())
     }
     /// Byte offset of a tile inside [`Field::packed_tile_bytes`].
     pub fn tile_byte_offset(tile: usize) -> usize {
@@ -391,6 +525,14 @@ impl Field {
         }
         cells
     }
+    /// Apply the part of `motion` between two fractions of its length.
+    ///
+    /// A fractional window is how the animation advances inside one move, and
+    /// the window is exact: any partition of a motion removes the same material
+    /// as applying it in one piece
+    /// (`a_partitioned_motion_removes_the_same_material_as_one_shot`). The
+    /// motion counters therefore increment when a window starts at the
+    /// beginning of a move, so progressive frames of one motion count once.
     pub fn apply(&mut self, motion: &Motion, start: f64, end: f64) -> Result<(), String> {
         let cutting = matches!(motion.kind.as_str(), "cut" | "plunge" | "ramp");
         if cutting
@@ -403,26 +545,22 @@ impl Field {
         {
             return Err("Simulator needs finite motion coordinates and a known tool".into());
         }
-        self.stats.applied_motions += 1;
+        let start = start.clamp(0., 1.);
+        let end = end.clamp(0., 1.);
+        if start <= 0. {
+            self.stats.applied_motions += 1;
+        }
         if !cutting || matches!(self.tools.get(motion.tool), Some(Tool::Knife)) {
             return Ok(());
         }
-        self.stats.cutting_motions += 1;
-        let start = start.clamp(0., 1.);
-        let end = end.clamp(0., 1.);
+        if start <= 0. {
+            self.stats.cutting_motions += 1;
+        }
         if end <= start {
             return Ok(());
         }
-        let a = [
-            motion.x0 + (motion.x1 - motion.x0) * start,
-            motion.y0 + (motion.y1 - motion.y0) * start,
-            motion.z0 + (motion.z1 - motion.z0) * start,
-        ];
-        let b = [
-            motion.x0 + (motion.x1 - motion.x0) * end,
-            motion.y0 + (motion.y1 - motion.y0) * end,
-            motion.z0 + (motion.z1 - motion.z0) * end,
-        ];
+        let a = motion.point_at(start);
+        let b = motion.point_at(end);
         if -a[2] <= 0. && -b[2] <= 0. {
             return Ok(());
         }
@@ -452,9 +590,16 @@ impl Field {
         ) else {
             return Ok(());
         };
-        let dx = b[0] - a[0];
-        let dy = b[1] - a[1];
-        let dz = b[2] - a[2];
+        // The geometry frame is the **whole motion's**, not the window's: every
+        // cell then gets the same covered interval however the move is split,
+        // so the animation's frames cannot disagree with a replay of the same
+        // move in one piece (see `a_partitioned_motion_removes_the_same_material_as_one_shot`).
+        // For a whole motion (`start` 0, `end` 1) these values are exactly the
+        // ones the reference simulator computes, so parity is unchanged.
+        let origin = [motion.x0, motion.y0, motion.z0];
+        let dx = motion.x1 - motion.x0;
+        let dy = motion.y1 - motion.y0;
+        let dz = motion.z1 - motion.z0;
         let a2 = dx * dx + dy * dy;
         let inv2a = if a2 > PLUNGE_AREA_EPS {
             1. / (2. * a2)
@@ -465,20 +610,27 @@ impl Field {
             for tc in (c0 >> 8)..=(c1 >> 8) {
                 let tile = tr * self.tiles_x + tc;
                 for row in r0.max(tr << 8)..=r1.min((tr << 8) | 255) {
-                    let py = self.stock.y0 + (row as f64 + 0.5) * self.cell - a[1];
+                    let py = self.stock.y0 + (row as f64 + 0.5) * self.cell - origin[1];
                     for col in c0.max(tc << 8)..=c1.min((tc << 8) | 255) {
-                        let px = self.stock.x0 + (col as f64 + 0.5) * self.cell - a[0];
+                        let px = self.stock.x0 + (col as f64 + 0.5) * self.cell - origin[0];
                         let qq = px * px + py * py;
                         let b_raw = -2. * (px * dx + py * dy);
                         let Some((t0, t1)) = coverage(qq - radius * radius, a2, b_raw, inv2a)
                         else {
                             continue;
                         };
+                        // The window restricts the motion's own covered
+                        // interval instead of re-deriving one from its endpoints.
+                        let t0 = t0.max(start);
+                        let t1 = t1.min(end);
+                        if t0 > t1 {
+                            continue;
+                        }
                         let depth = match tool {
                             Tool::Knife => unreachable!("knife never removes stock"),
                             Tool::Endmill { .. } => {
-                                let d0 = -a[2] - dz * t0;
-                                let d1 = -a[2] - dz * t1;
+                                let d0 = -origin[2] - dz * t0;
+                                let d1 = -origin[2] - dz * t1;
                                 if d0 > d1 { d0 } else { d1 }
                             }
                             Tool::Vbit { tip, slope, .. } => {
@@ -530,7 +682,7 @@ impl Field {
                                     } else {
                                         (dist - tip) * inv_slope
                                     };
-                                    let z = a[2] + dz * t + height;
+                                    let z = origin[2] + dz * t + height;
                                     // An explicit comparison preserves JS NaN handling.
                                     if z < surface {
                                         surface = z;
@@ -603,7 +755,12 @@ fn range(origin: f64, cell: f64, count: usize, min: f64, max: f64) -> Option<(us
 pub struct Playback {
     pub field: Field,
     pristine: Field,
+    /// Motions fully applied to `field`. `field` is the exact state at this
+    /// prefix plus `motions[position]` applied over `[0, fraction]`.
     pub position: usize,
+    /// Fraction of the in-flight motion already applied. Zero means `field` is
+    /// exactly the prefix state.
+    fraction: f64,
     /// `(prefix, field, pinned)`. Transported seed frames are pinned so a
     /// bounded replay window survives interactive seeking instead of being
     /// churned away by the user's own positions.
@@ -629,6 +786,7 @@ impl Playback {
             pristine: field.clone(),
             field,
             position: 0,
+            fraction: 0.,
             checkpoints: Vec::new(),
             budget: checkpoint_budget,
             limit: 4,
@@ -649,6 +807,7 @@ impl Playback {
             pristine,
             field,
             position,
+            fraction: 0.,
             checkpoints: points
                 .into_iter()
                 .map(|(prefix, field)| (prefix, field, true))
@@ -656,6 +815,10 @@ impl Playback {
             budget: checkpoint_budget,
             limit,
         }
+    }
+    /// Fraction of the in-flight motion the field already holds.
+    pub fn fraction(&self) -> f64 {
+        self.fraction
     }
     /// Prefixes that bound the current replay window.
     pub fn checkpoint_prefixes(&self) -> Vec<usize> {
@@ -685,11 +848,16 @@ impl Playback {
             .filter(|(p, _, _)| *p <= target)
             .max_by_key(|(p, _, _)| *p);
         let saved_prefix = saved.map_or(0, |(p, _, _)| *p);
-        if target < self.position || saved_prefix > self.position {
+        // A field holding an unfinished motion is not an exact prefix state, and
+        // a raster cannot be subtracted: restore an exact state and replay
+        // instead of pretending the prefix is already there.
+        let mid_motion = self.fraction > 0.;
+        if mid_motion || target < self.position || saved_prefix > self.position {
             let (p, f) = saved.map_or((0, &self.pristine), |(p, f, _)| (*p, f));
             self.field = f.clone();
             self.position = p;
         }
+        self.fraction = 0.;
         let from = self.position;
         for motion in &motions[self.position..target] {
             self.field.apply(motion, 0., 1.)?;
@@ -721,13 +889,103 @@ impl Playback {
             replayed: target - from,
         })
     }
+
+    /// Move to `(prefix, fraction)` by applying only the windows in between.
+    ///
+    /// Returns `false` when the target sits behind the current state, or when
+    /// it is further than `limit` motions ahead: the caller restores an exact
+    /// state through [`Playback::seek`] — or asks the compute process for one —
+    /// and advances again. A fraction of 1.0 means the move is finished and is
+    /// normalised to the next prefix, so a position never carries a fraction
+    /// of exactly one.
+    pub fn advance_to(
+        &mut self,
+        motions: &[Motion],
+        prefix: usize,
+        fraction: f64,
+        limit: usize,
+    ) -> Result<bool, String> {
+        if prefix > motions.len() {
+            return Err("Simulator playhead exceeds retained motions".into());
+        }
+        let mut target = prefix;
+        let mut target_fraction = fraction.clamp(0., 1.);
+        if target_fraction >= 1. && target < motions.len() {
+            target += 1;
+            target_fraction = 0.;
+        }
+        if target == motions.len() {
+            target_fraction = 0.;
+        }
+        if target < self.position || (target == self.position && target_fraction < self.fraction) {
+            return Ok(false);
+        }
+        if target - self.position > limit {
+            return Ok(false);
+        }
+        if target == self.position {
+            if target_fraction > self.fraction && target < motions.len() {
+                self.field
+                    .apply(&motions[target], self.fraction, target_fraction)?;
+            }
+            self.fraction = target_fraction;
+            return Ok(true);
+        }
+        // Finish the move the animation is inside, then consume whole motions.
+        let first = if self.fraction > 0. {
+            self.field
+                .apply(&motions[self.position], self.fraction, 1.)?;
+            self.position + 1
+        } else {
+            self.position
+        };
+        for motion in &motions[first..target] {
+            self.field.apply(motion, 0., 1.)?;
+        }
+        self.position = target;
+        self.fraction = 0.;
+        if target_fraction > 0. && target < motions.len() {
+            self.field.apply(&motions[target], 0., target_fraction)?;
+            self.fraction = target_fraction;
+        }
+        Ok(true)
+    }
+
+    /// Restore an exact state at `(prefix, fraction)`: seek to the prefix, then
+    /// apply the unfinished move. This is what a scrub to a time uses, and it
+    /// is bit-identical to a cold replay of the same position.
+    pub fn seek_position(
+        &mut self,
+        motions: &[Motion],
+        prefix: usize,
+        fraction: f64,
+    ) -> Result<SeekReport, String> {
+        let report = self.seek(motions, prefix)?;
+        self.advance_to(motions, prefix, fraction, 0)?;
+        Ok(report)
+    }
 }
 
 /// Binary motion stream. `Motion` is field tuples and a tool index, so the
 /// display process can rebuild the exact replay input without parsing a JSON
 /// array of positions.
-/// kind u8 | stage u16 | pad 1 | tool u32 | six f64 coordinates.
-pub const MOTION_BYTES: usize = 56;
+/// kind u8 | stage u16 | interpolation u8 | tool u32 | feed f64 |
+/// six f64 coordinates.
+pub const MOTION_BYTES: usize = 64;
+
+pub fn interpolation_code(interpolation: Interpolation) -> u8 {
+    match interpolation {
+        Interpolation::Rapid => 0,
+        Interpolation::Feed => 1,
+    }
+}
+
+pub fn code_interpolation(code: u8) -> Interpolation {
+    match code {
+        1 => Interpolation::Feed,
+        _ => Interpolation::Rapid,
+    }
+}
 
 pub fn kind_code(kind: &str) -> u8 {
     match kind {
@@ -752,8 +1010,9 @@ pub fn encode_motions(motions: &[Motion]) -> Vec<u8> {
     for motion in motions {
         out.push(kind_code(&motion.kind));
         out.extend_from_slice(&motion.stage.to_le_bytes());
-        out.push(0);
+        out.push(interpolation_code(motion.interpolation));
         out.extend_from_slice(&(motion.tool as u32).to_le_bytes());
+        out.extend_from_slice(&motion.feed_mm_min.unwrap_or(f64::NAN).to_le_bytes());
         for value in [
             motion.x0, motion.y0, motion.z0, motion.x1, motion.y1, motion.z1,
         ] {
@@ -771,10 +1030,12 @@ pub fn decode_motions(bytes: &[u8], tools: usize) -> Result<Vec<Motion>, String>
     for record in bytes.chunks_exact(MOTION_BYTES) {
         let kind = code_kind(record[0]).to_string();
         let stage = u16::from_le_bytes(record[1..3].try_into().unwrap());
+        let interpolation = code_interpolation(record[3]);
         let tool = u32::from_le_bytes(record[4..8].try_into().unwrap()) as usize;
+        let feed = f64::from_le_bytes(record[8..16].try_into().unwrap());
         let mut values = [0_f64; 6];
         for (i, value) in values.iter_mut().enumerate() {
-            let at = 8 + i * 8;
+            let at = 16 + i * 8;
             *value = f64::from_le_bytes(record[at..at + 8].try_into().unwrap());
         }
         if tool >= tools.max(1) {
@@ -787,6 +1048,11 @@ pub fn decode_motions(bytes: &[u8], tools: usize) -> Result<Vec<Motion>, String>
             kind,
             tool,
             stage,
+            interpolation,
+            // A rapid carries no feed, and the stream writes NaN for it. A feed
+            // motion without one is kept as it is: the clock refuses to time it
+            // rather than the display refusing to show the plan at all.
+            feed_mm_min: feed.is_finite().then_some(feed),
             x0: values[0],
             y0: values[1],
             z0: values[2],
@@ -796,6 +1062,94 @@ pub fn decode_motions(bytes: &[u8], tools: usize) -> Result<Vec<Motion>, String>
         });
     }
     Ok(motions)
+}
+
+/// Program time of every motion boundary, so the transport can move between
+/// time and `(prefix, fraction)` without integrating the stream again.
+///
+/// The table is derived from the plan's own numbers: a linear feed costs its
+/// length at its `feed_mm_min`, a rapid costs its length at the machine's rapid
+/// rate. A zero-length move costs nothing, which keeps a job made of
+/// micro-segments honest instead of inventing a floor per segment.
+pub struct TimeTable {
+    /// `cumulative[i]` is the program time before motion `i`; one longer than
+    /// the motion stream, so the final entry is the total.
+    cumulative: Vec<f64>,
+    rapid_rate_mm_min: f64,
+    assumed_rapid_rate: bool,
+}
+
+impl TimeTable {
+    pub fn build(motions: &[Motion], rapid_rate_mm_min: Option<f64>) -> Result<Self, String> {
+        let (rate, assumed) = match rapid_rate_mm_min {
+            Some(rate) if rate.is_finite() && rate > 0. => (rate, false),
+            _ => (DEFAULT_RAPID_RATE_MM_MIN, true),
+        };
+        let mut cumulative = Vec::with_capacity(motions.len() + 1);
+        let mut seconds = 0.;
+        cumulative.push(0.);
+        for motion in motions {
+            seconds += motion.duration_seconds(rate)?;
+            cumulative.push(seconds);
+        }
+        Ok(Self {
+            cumulative,
+            rapid_rate_mm_min: rate,
+            assumed_rapid_rate: assumed,
+        })
+    }
+    pub fn motions(&self) -> usize {
+        self.cumulative.len() - 1
+    }
+    pub fn total_seconds(&self) -> f64 {
+        self.cumulative.last().copied().unwrap_or(0.)
+    }
+    pub fn rapid_rate_mm_min(&self) -> f64 {
+        self.rapid_rate_mm_min
+    }
+    /// True when the machine stated no rapid rate and the display fallback is
+    /// what times the G0 moves. The transport says so rather than presenting
+    /// the fallback as machine truth.
+    pub fn assumes_rapid_rate(&self) -> bool {
+        self.assumed_rapid_rate
+    }
+    /// Program time one motion takes.
+    pub fn duration_of(&self, index: usize) -> f64 {
+        if index + 1 >= self.cumulative.len() {
+            return 0.;
+        }
+        self.cumulative[index + 1] - self.cumulative[index]
+    }
+    /// Program time of an exact prefix.
+    pub fn seconds_at_prefix(&self, prefix: usize) -> f64 {
+        self.cumulative[prefix.min(self.motions())]
+    }
+    /// Program time of `(prefix, fraction)`.
+    pub fn seconds_at(&self, prefix: usize, fraction: f64) -> f64 {
+        if prefix >= self.motions() {
+            return self.total_seconds();
+        }
+        self.cumulative[prefix] + self.duration_of(prefix) * fraction.clamp(0., 1.)
+    }
+    /// The position at a program time: the motion it falls inside and how much
+    /// of it is done. Zero-length moves are skipped — no state changes across
+    /// them and no time passes — so the result never carries a fraction of
+    /// exactly one.
+    pub fn position_at(&self, seconds: f64) -> (usize, f64) {
+        let seconds = seconds.clamp(0., self.total_seconds());
+        let index = self.cumulative.partition_point(|t| *t <= seconds);
+        if index >= self.cumulative.len() {
+            return (self.motions(), 0.);
+        }
+        let prefix = index.saturating_sub(1);
+        let duration = self.duration_of(prefix);
+        let fraction = if duration > 0. {
+            ((seconds - self.cumulative[prefix]) / duration).clamp(0., 1.)
+        } else {
+            0.
+        };
+        (prefix, fraction)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -813,10 +1167,17 @@ mod tests {
     use super::*;
 
     fn motion(kind: &str, tool: usize, x: f64) -> Motion {
+        let rapid = kind == "rapid_x_y";
         Motion {
             kind: kind.into(),
             tool,
             stage: 0,
+            interpolation: if rapid {
+                Interpolation::Rapid
+            } else {
+                Interpolation::Feed
+            },
+            feed_mm_min: if rapid { None } else { Some(120.) },
             x0: x,
             y0: x + 1.,
             z0: -x,
@@ -841,6 +1202,8 @@ mod tests {
         for (decoded, original) in decoded.iter().zip(&motions) {
             assert_eq!(decoded.tool, original.tool);
             assert_eq!(decoded.stage, original.stage);
+            assert_eq!(decoded.interpolation, original.interpolation);
+            assert_eq!(decoded.feed_mm_min, original.feed_mm_min);
             // Non-cutting kinds collapse to "rapid"; the simulator treats every
             // other kind identically.
             assert_eq!(
@@ -862,6 +1225,307 @@ mod tests {
         assert!(decode_motions(&bytes, 1).is_err());
     }
 
+    /// The clock is the plan's own arithmetic: a feed move costs its length at
+    /// its programmed feed, a rapid costs its length at the machine's rate, and
+    /// the facing job's pass/plunge ratio comes out of the numbers rather than
+    /// out of a per-motion step.
+    #[test]
+    fn a_feed_move_is_timed_by_its_feed_and_a_rapid_by_the_machine_rate() {
+        let pass = Motion {
+            kind: "cut".into(),
+            tool: 0,
+            stage: 0,
+            interpolation: Interpolation::Feed,
+            feed_mm_min: Some(2400.),
+            x0: 0.,
+            y0: 0.,
+            z0: -1.,
+            x1: 300.,
+            y1: 0.,
+            z1: -1.,
+        };
+        let plunge = Motion {
+            kind: "cut".into(),
+            tool: 0,
+            stage: 0,
+            interpolation: Interpolation::Feed,
+            feed_mm_min: Some(600.),
+            x0: 0.,
+            y0: 0.,
+            z0: 0.,
+            x1: 0.,
+            y1: 0.,
+            z1: -14.,
+        };
+        let rapid = Motion {
+            kind: "rapid_xy".into(),
+            tool: 0,
+            stage: 0,
+            interpolation: Interpolation::Rapid,
+            feed_mm_min: None,
+            x0: 0.,
+            y0: 0.,
+            z0: 5.,
+            x1: 300.,
+            y1: 0.,
+            z1: 5.,
+        };
+        // 300 mm at 2400 mm/min is 7.5 s; 14 mm at 600 mm/min is 1.4 s.
+        assert!((pass.duration_seconds(5000.).unwrap() - 7.5).abs() < 1e-9);
+        assert!((plunge.duration_seconds(5000.).unwrap() - 1.4).abs() < 1e-9);
+        // The rapid ignores the feeds and uses the machine rate: 300 mm at
+        // 5000 mm/min is 3.6 s, and the rate does not affect the feed moves.
+        assert!((rapid.duration_seconds(5000.).unwrap() - 3.6).abs() < 1e-9);
+        assert!((rapid.duration_seconds(10000.).unwrap() - 1.8).abs() < 1e-9);
+        assert!((pass.duration_seconds(10000.).unwrap() - 7.5).abs() < 1e-9);
+        // A zero-length move takes no time: no state changes across it.
+        let stalled = Motion {
+            x1: 0.,
+            ..rapid.clone()
+        };
+        assert_eq!(stalled.duration_seconds(5000.).unwrap(), 0.);
+    }
+
+    #[test]
+    fn a_feed_without_a_rate_is_refused_by_the_clock_not_by_the_display() {
+        let motions = vec![
+            Motion {
+                kind: "cut".into(),
+                tool: 0,
+                stage: 0,
+                interpolation: Interpolation::Feed,
+                feed_mm_min: None,
+                x0: 0.,
+                y0: 0.,
+                z0: -1.,
+                x1: 1.,
+                y1: 0.,
+                z1: -1.,
+            },
+            motion("rapid_x_y", 0, 4.),
+        ];
+        // The stream itself still decodes, so a plan with an unfinished feed is
+        // still visible; only the timing refuses to invent one.
+        let bytes = encode_motions(&motions);
+        let decoded = decode_motions(&bytes, 1).unwrap();
+        assert_eq!(decoded[0].feed_mm_min, None);
+        assert!(TimeTable::build(&decoded, Some(5000.)).is_err());
+        // A rapid without a machine rate is timed by the stated fallback
+        // instead of being refused, and the table says which it used.
+        let assumed = TimeTable::build(&[motion("rapid_x_y", 0, 4.)], None).unwrap();
+        assert!(assumed.assumes_rapid_rate());
+        assert_eq!(assumed.rapid_rate_mm_min(), DEFAULT_RAPID_RATE_MM_MIN);
+        let rapid = motion("rapid_x_y", 0, 4.);
+        let stated = TimeTable::build(std::slice::from_ref(&rapid), Some(8000.)).unwrap();
+        assert!(!stated.assumes_rapid_rate());
+        assert!((stated.total_seconds() * 8000. / 60. - rapid.length_mm()).abs() < 1e-9);
+    }
+
+    /// Time and position are two views of one table: every position maps to a
+    /// time and back to the same position, and a zero-length move is skipped
+    /// rather than given invented minutes.
+    #[test]
+    fn the_time_table_moves_between_time_and_position() {
+        let cut = |x: f64, feed: f64| Motion {
+            kind: "cut".into(),
+            tool: 0,
+            stage: 0,
+            interpolation: Interpolation::Feed,
+            feed_mm_min: Some(feed),
+            x0: x,
+            y0: 0.,
+            z0: -1.,
+            x1: x + 10.,
+            y1: 0.,
+            z1: -1.,
+        };
+        let stalled = Motion {
+            kind: "cut".into(),
+            tool: 0,
+            stage: 0,
+            interpolation: Interpolation::Feed,
+            feed_mm_min: Some(100.),
+            x0: 5.,
+            y0: 0.,
+            z0: -1.,
+            x1: 5.,
+            y1: 0.,
+            z1: -1.,
+        };
+        let table =
+            TimeTable::build(&[cut(0., 600.), stalled.clone(), cut(50., 1200.)], None).unwrap();
+        assert_eq!(table.motions(), 3);
+        assert_eq!(table.duration_of(0), 1.);
+        assert_eq!(table.duration_of(1), 0.);
+        assert_eq!(table.duration_of(2), 0.5);
+        assert!((table.total_seconds() - 1.5).abs() < 1e-9);
+        for (prefix, fraction) in [(0, 0.), (0, 0.25), (2, 0.5), (3, 0.)] {
+            let seconds = table.seconds_at(prefix, fraction);
+            assert_eq!(
+                table.position_at(seconds),
+                (prefix, fraction),
+                "position -> time -> position at ({prefix}, {fraction})"
+            );
+        }
+        // A position never carries a fraction of exactly one: the end of a move
+        // is the start of the next, and with no motion left it is the end.
+        assert_eq!(table.position_at(table.seconds_at(0, 1.)), (2, 0.));
+        // The stalled move occupies no time, so the time reached at the end of
+        // the first move is the start of the third.
+        assert_eq!(table.position_at(1.), (2, 0.));
+        assert_eq!(table.seconds_at_prefix(2), 1.);
+        assert_eq!(table.position_at(-5.), (0, 0.));
+        assert_eq!(table.position_at(99.), (3, 0.));
+    }
+
+    /// The fractional window is the whole basis of the animation, so the
+    /// material state has to be partition-independent: any split of one move
+    /// removes the same cells, records the same stage and tool per cell,
+    /// reports the same volume, and counts the motion once.
+    ///
+    /// Tile *versions* are deliberately not compared: they count deepening
+    /// events per tile so the renderer knows what to re-upload, and a move
+    /// drawn over several frames touches a tile more times than the same move
+    /// applied in one piece. Material and identity are the state.
+    #[test]
+    fn a_partitioned_motion_removes_the_same_material_as_one_shot() {
+        let stock = Stock {
+            x0: -6.,
+            y0: -6.,
+            x1: 6.,
+            y1: 6.,
+            thickness_mm: 5.,
+        };
+        let tools = [
+            ToolSpec::Endmill {
+                diameter: 2.,
+                cutting_length: 12.,
+            },
+            ToolSpec::Vbit {
+                angle: 90.,
+                tip: 0.4,
+                diameter: 6.,
+                height: 3.,
+            },
+        ];
+        // A flat pass, a dive and a diagonal ramp: the sloped moves are where
+        // the cutter envelope's stationary-point search could disagree with a
+        // partition, so they are the cases worth pinning.
+        let motion = |tool: usize, z0: f64, z1: f64| Motion {
+            kind: "cut".into(),
+            tool,
+            stage: 1,
+            interpolation: Interpolation::Feed,
+            feed_mm_min: Some(240.),
+            x0: -3.,
+            y0: -1.,
+            z0,
+            x1: 3.,
+            y1: 1.,
+            z1,
+        };
+        for (tool, z0, z1) in [
+            (0, -1., -1.),
+            (0, 0.5, -2.),
+            (1, -2.5, -2.5),
+            (1, -0.5, -3.),
+        ] {
+            let mut one_shot = Field::new(stock, &tools, 0.05).unwrap();
+            one_shot.apply(&motion(tool, z0, z1), 0., 1.).unwrap();
+            let mut partitioned = Field::new(stock, &tools, 0.05).unwrap();
+            let mut from = 0.;
+            for step in 1..=10 {
+                let to = step as f64 / 10.;
+                partitioned.apply(&motion(tool, z0, z1), from, to).unwrap();
+                from = to;
+            }
+            assert_eq!(
+                partitioned.cell_bytes(),
+                one_shot.cell_bytes(),
+                "tool {tool}, z {z0} -> {z1}: ten pieces must equal one shot"
+            );
+            assert_eq!(
+                partitioned.stats.cutting_motions, one_shot.stats.cutting_motions,
+                "a motion is counted once however many frames it takes"
+            );
+            assert!(
+                (partitioned.stats.removed_volume_mm3 - one_shot.stats.removed_volume_mm3).abs()
+                    < 1e-9
+            );
+        }
+    }
+
+    /// Advancing into a motion is the display's half of the clock: the field it
+    /// ends up holding must equal a cold replay to the same position, and a
+    /// target behind the current state asks for an exact restore instead.
+    #[test]
+    fn advancing_into_a_motion_matches_a_cold_replay() {
+        let stock = Stock {
+            x0: -8.,
+            y0: -8.,
+            x1: 8.,
+            y1: 8.,
+            thickness_mm: 4.,
+        };
+        let tools = [ToolSpec::Endmill {
+            diameter: 1.5,
+            cutting_length: 12.,
+        }];
+        let motions: Vec<Motion> = (0..12)
+            .map(|i| Motion {
+                kind: "cut".into(),
+                tool: 0,
+                stage: 0,
+                interpolation: Interpolation::Feed,
+                feed_mm_min: Some(300.),
+                x0: -6. + i as f64,
+                y0: -6.,
+                z0: -1.,
+                x1: -6. + i as f64,
+                y1: 6.,
+                z1: -1.,
+            })
+            .collect();
+        let pristine = Field::new(stock, &tools, 0.1).unwrap();
+        let mut playback = Playback::new(pristine.clone(), usize::MAX);
+        let steps = [(0, 0.3), (0, 0.9), (1, 0.0), (3, 0.5), (7, 0.25), (12, 0.0)];
+        for (prefix, fraction) in steps {
+            assert!(
+                playback
+                    .advance_to(&motions, prefix, fraction, usize::MAX)
+                    .unwrap()
+            );
+            let mut cold = pristine.clone();
+            for motion in &motions[..prefix] {
+                cold.apply(motion, 0., 1.).unwrap();
+            }
+            if fraction > 0. {
+                cold.apply(&motions[prefix], 0., fraction).unwrap();
+            }
+            assert_eq!(
+                playback.field.cell_bytes(),
+                cold.cell_bytes(),
+                "cold replay at ({prefix}, {fraction})"
+            );
+        }
+        // A target behind the current position is refused: the caller restores
+        // an exact state and then advances.
+        assert!(!playback.advance_to(&motions, 3, 0.5, usize::MAX).unwrap());
+        let report = playback.seek_position(&motions, 3, 0.5).unwrap();
+        assert_eq!(playback.position, 3);
+        assert!((playback.fraction() - 0.5).abs() < 1e-9);
+        let mut cold = pristine.clone();
+        for motion in &motions[..3] {
+            cold.apply(motion, 0., 1.).unwrap();
+        }
+        cold.apply(&motions[3], 0., 0.5).unwrap();
+        assert_eq!(playback.field.cell_bytes(), cold.cell_bytes());
+        assert!(report.replayed <= 3);
+        // And a forward jump further than the caller allows asks for a restore
+        // rather than replaying the whole stream inside one frame.
+        assert!(!playback.advance_to(&motions, 12, 0., 2).unwrap());
+    }
+
     #[test]
     fn packed_tile_round_trip_preserves_tiles_and_versions() {
         let stock = Stock {
@@ -871,7 +1535,10 @@ mod tests {
             y1: 3.,
             thickness_mm: 4.,
         };
-        let tools = [ToolSpec::Endmill { diameter: 1.5 }];
+        let tools = [ToolSpec::Endmill {
+            diameter: 1.5,
+            cutting_length: 12.,
+        }];
         let mut field = Field::new(stock, &tools, 0.05).unwrap();
         for i in 0..40 {
             let x = -2.5 + i as f64 * 0.12;
@@ -881,6 +1548,8 @@ mod tests {
                         kind: "cut".into(),
                         tool: 0,
                         stage: 0,
+                        interpolation: Interpolation::Feed,
+                        feed_mm_min: Some(100.),
                         x0: x,
                         y0: -2.5,
                         z0: -0.5,
@@ -925,7 +1594,10 @@ mod tests {
             thickness_mm: 6.,
         };
         let tools = [
-            ToolSpec::Endmill { diameter: 2. },
+            ToolSpec::Endmill {
+                diameter: 2.,
+                cutting_length: 12.,
+            },
             ToolSpec::Vbit {
                 angle: 90.,
                 tip: 0.,
@@ -938,6 +1610,8 @@ mod tests {
             kind: "cut".into(),
             tool,
             stage,
+            interpolation: Interpolation::Feed,
+            feed_mm_min: Some(100.),
             x0: -1.5,
             y0: -1.5,
             z0: z,
@@ -992,12 +1666,17 @@ mod tests {
             y1: 10.,
             thickness_mm: 4.,
         };
-        let tools = [ToolSpec::Endmill { diameter: 1. }];
+        let tools = [ToolSpec::Endmill {
+            diameter: 1.,
+            cutting_length: 12.,
+        }];
         let motions: Vec<Motion> = (0..400)
             .map(|i| Motion {
                 kind: "cut".into(),
                 tool: 0,
                 stage: 0,
+                interpolation: Interpolation::Feed,
+                feed_mm_min: Some(100.),
                 x0: -8. + (i % 20) as f64 * 0.8,
                 y0: -8. + (i / 20) as f64 * 0.8,
                 z0: -0.5,

@@ -1059,6 +1059,7 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
             id: "endmill".into(),
             name: "Endmill".into(),
             geometry: None,
+            assembly: Default::default(),
             capabilities: Default::default(),
             library_origin: None,
         }],

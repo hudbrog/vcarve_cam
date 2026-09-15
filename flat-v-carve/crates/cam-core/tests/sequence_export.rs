@@ -35,6 +35,8 @@ fn sequence_profile(job_tools: &[(&str, u32)]) -> SequenceProfile {
             })
             .collect(),
         spindle_spinup_seconds: 0.5,
+        holder: None,
+        rapid_rate_mm_min: None,
         coolant: cam_core::post::Coolant::Off,
         m6: LinuxCncProfile::from_json(LEGACY_PROFILE).unwrap().m6,
     }

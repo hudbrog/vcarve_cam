@@ -281,9 +281,14 @@ fn facing_parameters_never_move_the_stock_or_the_artwork() {
         // rounds a little differently under a different frame; the geometry
         // itself must not move beyond display precision.
         let got = contour_extent(&scene);
-        for (index, (got, want)) in [(got.0, want_artwork.0), (got.1, want_artwork.1), (got.2, want_artwork.2), (got.3, want_artwork.3)]
-            .into_iter()
-            .enumerate()
+        for (index, (got, want)) in [
+            (got.0, want_artwork.0),
+            (got.1, want_artwork.1),
+            (got.2, want_artwork.2),
+            (got.3, want_artwork.3),
+        ]
+        .into_iter()
+        .enumerate()
         {
             assert!(
                 (got - want).abs() < 1e-3,
@@ -296,4 +301,194 @@ fn facing_parameters_never_move_the_stock_or_the_artwork() {
             "{name} moved the stock"
         );
     }
+}
+
+/// S1: playback is a machine clock, not a step counter. The reported job's
+/// passes and plunges are timed from their own feeds — 2400 and 600 mm/min in
+/// `real_data/facing_job.json` — so a long pass costs many times a short plunge
+/// instead of one step each, and the whole program takes the time its own
+/// numbers say rather than [`FIT_SECONDS`](cam_gui_runtime::viewport) of steps.
+#[test]
+fn the_facing_job_is_timed_by_its_own_feeds() {
+    let scene = generate(&facing_job(0.));
+    let sim = scene
+        .meta
+        .sim
+        .as_ref()
+        .expect("the scene carries a motion stream");
+    let input = scene
+        .sim_input()
+        .unwrap()
+        .expect("the transported stream decodes");
+    assert_eq!(input.motions.len(), sim.motions);
+    assert_eq!(input.motions.len(), scene.meta.motions);
+
+    let table =
+        cam_gui_runtime::sim::TimeTable::build(&input.motions, sim.rapid_rate_mm_min).unwrap();
+    assert_eq!(table.motions(), input.motions.len());
+    // The tester's job states no rapid rate, so the clock says it is using the
+    // display's fallback rather than presenting one as machine truth.
+    assert!(table.assumes_rapid_rate());
+    assert!(
+        (table.rapid_rate_mm_min() - cam_gui_runtime::sim::DEFAULT_RAPID_RATE_MM_MIN).abs() < 1e-9
+    );
+
+    // The feed the plan carries reaches the simulator stream, and a rapid
+    // carries none: the clock must tell the two apart to time anything.
+    let mut feeds: Vec<f64> = input
+        .motions
+        .iter()
+        .filter_map(|motion| motion.feed_mm_min)
+        .collect();
+    feeds.sort_by(f64::total_cmp);
+    feeds.dedup();
+    assert_eq!(
+        feeds,
+        vec![2400.],
+        "the job's cutting feed is the only feed in this program"
+    );
+    assert!(
+        input
+            .motions
+            .iter()
+            .filter(|motion| motion.interpolation == cam_gui_runtime::sim::Interpolation::Rapid)
+            .all(|motion| motion.feed_mm_min.is_none()),
+        "a rapid carries no feed"
+    );
+
+    // Per-move time is proportional to length and feed, so the longest feed
+    // move takes several times the shortest: the shape the transport shows.
+    let mut durations: Vec<f64> = input
+        .motions
+        .iter()
+        .enumerate()
+        .filter(|(_, motion)| motion.feed_mm_min.is_some())
+        .map(|(index, _)| table.duration_of(index))
+        .filter(|seconds| *seconds > 0.)
+        .collect();
+    durations.sort_by(f64::total_cmp);
+    let shortest = durations.first().copied().expect("a timed feed move");
+    let longest = durations.last().copied().expect("a timed feed move");
+    assert!(
+        longest / shortest > 3.,
+        "a long pass must not cost the same as a short plunge: {longest:.3} s vs {shortest:.3} s"
+    );
+
+    // The program's own motion time, not a fixed playback window.
+    let total = table.total_seconds();
+    assert!(
+        total > 30.,
+        "the facing job is minutes of motion, not {total:.1} s"
+    );
+    assert!(total < 3600., "the facing job is not an hour: {total:.1} s");
+    // Every motion contributes its own length at its own rate.
+    for (index, motion) in input.motions.iter().enumerate() {
+        let expected = match motion.interpolation {
+            cam_gui_runtime::sim::Interpolation::Rapid => {
+                motion.length_mm() / table.rapid_rate_mm_min() * 60.
+            }
+            cam_gui_runtime::sim::Interpolation::Feed => {
+                motion.length_mm() / motion.feed_mm_min.expect("a linear feed carries one") * 60.
+            }
+        };
+        assert!(
+            (table.duration_of(index) - expected).abs() < 1e-9,
+            "motion {index} is not timed by its own length and rate"
+        );
+    }
+}
+
+/// S3: the machine checks run in the worker with the execution they describe,
+/// over their own coarse raster, and the report names that raster. A holder that
+/// would stand inside the job is reported with the motion it happens at; the
+/// same job with a stickout that clears it is silent.
+#[test]
+fn a_holder_that_would_hit_the_job_is_reported_with_the_execution() {
+    // A 3 mm deep carve with a 2.5 mm cutter that sticks only 2 mm out of its
+    // holder: the 25 mm nut beside the carve is inside the job. The material
+    // around the carve is untouched, which is what a wide holder hits.
+    let mut tight: CamJobV5 =
+        serde_json::from_str(include_str!("../../../fixtures/gui4/lettering.job.json"))
+            .expect("the lettering fixture");
+    if let OperationSettingsV5::FlatVcarve(settings) = &mut tight.operations[0].settings {
+        settings.max_depth_mm = Some(3.);
+    }
+    tight
+        .tools
+        .iter_mut()
+        .find(|tool| tool.id == "endmill")
+        .expect("the fixture's endmill")
+        .assembly = cam_core::project::ToolAssembly {
+        shaft_diameter_mm: Some(2.5),
+        // The carve reaches 1.5 mm deep in this fixture, so a tool that sticks
+        // 0.8 mm out of its holder puts the nut inside the material beside it.
+        stickout_mm: Some(0.8),
+    };
+    let tight = with_holder(tight, "er20");
+    let scene = generate(&tight);
+    let warnings = scene.meta.report["gui2"]["warnings"]
+        .as_array()
+        .expect("the scene publishes its machine warnings")
+        .clone();
+    assert!(
+        !warnings.is_empty(),
+        "a 6 mm stickout cannot clear this job"
+    );
+    let first = warnings
+        .iter()
+        .find(|warning| warning["kind"] == "assemblyBelowSurface")
+        .unwrap_or_else(|| panic!("the holder stands inside the job: {warnings:?}"));
+    assert!(
+        first["motion"]
+            .as_u64()
+            .is_some_and(|motion| motion < scene.meta.motions as u64),
+        "the deepest pass reports it: {first:?}"
+    );
+    // The row names the first motion that shows the problem and how deep it gets:
+    // the deepest layer puts the nut's underside 0.7 mm below the untouched
+    // surface beside the carve.
+    let deepest = first
+        .get("maxDepthMm")
+        .and_then(|depth| depth.as_f64())
+        .unwrap_or(0.);
+    assert!(
+        (deepest - 0.7).abs() < 0.4,
+        "the nut reaches {deepest:.2} mm into the material"
+    );
+    // The raster the estimate rests on travels with it.
+    let cell = scene.meta.report["gui2"]["warningCellMm"]
+        .as_f64()
+        .expect("the warning raster is named");
+    assert!(cell > 0., "{cell}");
+
+    // The same job with a stickout that clears the stock is silent: the nut's
+    // bottom face sits above the top of the material.
+    let mut clear = tight.clone();
+    clear
+        .tools
+        .iter_mut()
+        .find(|tool| tool.id == "endmill")
+        .expect("the fixture's endmill")
+        .assembly
+        .stickout_mm = Some(40.);
+    let scene = generate(&clear);
+    let warnings = scene.meta.report["gui2"]["warnings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        warnings.is_empty(),
+        "a 60 mm stickout clears the 18 mm stock: {warnings:?}"
+    );
+}
+
+/// Bind a holder to a job the way the GUI does: apply a machine configuration
+/// whose profile names the holder.
+fn with_holder(job: CamJobV5, holder: &str) -> CamJobV5 {
+    let mut profile =
+        cam_core::post::sequence::SequenceProfile::from_json(session::PROFILE).unwrap();
+    profile.holder = Some(cam_core::post::HolderSelection::catalogue(holder));
+    cam_core::project::v5::machine::apply_machine_configuration(&job, &profile, "Checks")
+        .unwrap()
+        .job
 }

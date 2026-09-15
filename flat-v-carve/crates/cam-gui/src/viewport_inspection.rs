@@ -642,14 +642,23 @@ mod tests {
             y1: 30.,
             thickness_mm: 10.,
         };
-        let mut field =
-            sim::Field::new(stock, &[sim::ToolSpec::Endmill { diameter: 3. }], 0.1).unwrap();
+        let mut field = sim::Field::new(
+            stock,
+            &[sim::ToolSpec::Endmill {
+                diameter: 3.,
+                cutting_length: 12.,
+            }],
+            0.1,
+        )
+        .unwrap();
         field
             .apply(
                 &sim::Motion {
                     kind: "cut".into(),
                     tool: 0,
                     stage: 0,
+                    interpolation: sim::Interpolation::Feed,
+                    feed_mm_min: Some(100.),
                     x0: 27.,
                     y0: 27.,
                     z0: -2.,
@@ -697,8 +706,15 @@ mod tests {
             y1: 20.,
             thickness_mm: 8.,
         };
-        let mut field =
-            sim::Field::new(stock, &[sim::ToolSpec::Endmill { diameter: 2. }], 0.5).unwrap();
+        let mut field = sim::Field::new(
+            stock,
+            &[sim::ToolSpec::Endmill {
+                diameter: 2.,
+                cutting_length: 12.,
+            }],
+            0.5,
+        )
+        .unwrap();
         // One cut band along Y at x = 10 with a 3 mm depth.
         field
             .apply(
@@ -706,6 +722,8 @@ mod tests {
                     kind: "cut".into(),
                     tool: 0,
                     stage: 0,
+                    interpolation: sim::Interpolation::Feed,
+                    feed_mm_min: Some(100.),
                     x0: 10.,
                     y0: 2.,
                     z0: -3.,
@@ -742,6 +760,7 @@ mod tests {
                 cell_versions: Arc::new(vec![]),
                 stats: sim::Stats::default(),
                 prefix: 0,
+                clock: None,
                 last_transfer_bytes: 0,
                 last_replayed: 0,
             }),

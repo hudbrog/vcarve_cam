@@ -238,6 +238,27 @@ fn tool_form(
             );
         }
     });
+    // How the cutter is held: the shaft above it and how far it sticks out of
+    // the holder. Both optional — the simulation draws what a tool states and
+    // nothing where it states nothing.
+    ui.columns(2, |cols| {
+        number(
+            &mut cols[0],
+            &format!("{prefix} shaft diameter"),
+            &format!("{key}/shaft"),
+            &mut tool.assembly.shaft_diameter_mm,
+            false,
+            e,
+        );
+        number(
+            &mut cols[1],
+            &format!("{prefix} stickout"),
+            &format!("{key}/stickout"),
+            &mut tool.assembly.stickout_mm,
+            false,
+            e,
+        );
+    });
     if !matches!(tool.geometry, LibraryGeometry::DragKnife(_)) {
         ui.columns(2, |cols| {
             e.dirty |= select(
@@ -792,6 +813,45 @@ fn machine_form(
                 e,
             );
         });
+        // Optional: a program does not need it (G0 carries no feed), but the
+        // simulation times rapid moves with it, and says so when a machine
+        // states none. Leaving it empty is a valid machine, not an error.
+        number(
+            ui,
+            "Configuration rapid rate (mm/min)",
+            &format!("{key}/rapid"),
+            &mut m.rapid_rate_mm_min,
+            false,
+            e,
+        );
+        // The holder this machine uses. Optional, display/check input only: the
+        // simulation draws it and warns when it would hit the job. The catalogue
+        // covers the ER collet series; a machine that carries its own `segments`
+        // keeps them (a resource file's job, not this form's, until the segment
+        // editor exists).
+        let holder_options: Vec<(&str, Option<cam_core::post::HolderSelection>)> =
+            std::iter::once(("Not stated", None))
+                .chain(cam_core::post::CATALOGUE.iter().map(|entry| {
+                    (
+                        entry.label,
+                        Some(cam_core::post::HolderSelection::catalogue(entry.id)),
+                    )
+                }))
+                .collect();
+        select(ui, "Configuration holder", &mut m.holder, &holder_options);
+        if let Some(holder) = &m.holder
+            && !holder.segments.is_empty()
+        {
+            ui.label(format!(
+                "Custom holder · {} segment(s) · {} mm at the widest",
+                holder.segments.len(),
+                holder
+                    .segments
+                    .iter()
+                    .map(|segment| segment.lower_diameter_mm.max(segment.upper_diameter_mm))
+                    .fold(0., f64::max)
+            ));
+        }
     });
     section(
         ui,

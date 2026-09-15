@@ -7,7 +7,7 @@
 //! knife pivot/tip detail. Machining meaning still comes only from the core
 //! plan; this module decides colors, bounds and what the timeline may show.
 use crate::compute::{Package, SimPackage, package, vertex};
-use crate::sim::{Motion, Stock, ToolSpec};
+use crate::sim::{Stock, ToolSpec};
 use cam_core::project::{
     ToolGeometry,
     v5::{self, CamJobV5, OperationSettingsV5},
@@ -207,6 +207,16 @@ fn selected_references(job: &CamJobV5) -> Vec<v5::GeometryRef> {
     out
 }
 
+/// How a job tool is held: the shaft above the cutter and its stickout. A tool
+/// that states neither contributes a default (empty) assembly, which is what
+/// every job saved before these fields existed says too.
+pub(crate) fn sim_assembly(job: &CamJobV5, tool_id: &str) -> cam_core::project::ToolAssembly {
+    job.tools
+        .iter()
+        .find(|tool| tool.id == tool_id)
+        .map_or_else(Default::default, |tool| tool.assembly)
+}
+
 fn sim_tool(job: &CamJobV5, tool_id: &str) -> Result<ToolSpec, String> {
     let tool = job
         .tools
@@ -216,6 +226,7 @@ fn sim_tool(job: &CamJobV5, tool_id: &str) -> Result<ToolSpec, String> {
     match &tool.geometry {
         Some(ToolGeometry::Endmill(geometry)) => Ok(ToolSpec::Endmill {
             diameter: geometry.diameter_mm,
+            cutting_length: geometry.cutting_length_mm,
         }),
         Some(ToolGeometry::Vbit(geometry)) => Ok(ToolSpec::Vbit {
             angle: geometry.included_angle_deg,
@@ -225,6 +236,7 @@ fn sim_tool(job: &CamJobV5, tool_id: &str) -> Result<ToolSpec, String> {
         }),
         Some(ToolGeometry::DragKnife(knife)) => Ok(ToolSpec::Knife {
             offset: knife.blade_offset_mm,
+            max_cut_depth: knife.max_cut_depth_mm,
         }),
         None => Err(format!(
             "Generate requires the geometry of every used tool; '{}' has none",
@@ -245,6 +257,8 @@ struct ExecutedFrame {
     bounds: [f64; 4],
     stock: Stock,
     tools: Vec<ToolSpec>,
+    /// How each tool is held, in the same order as `tools`.
+    assemblies: Vec<cam_core::project::ToolAssembly>,
     detail: f64,
 }
 
@@ -255,6 +269,7 @@ fn executed_frame(
     mut bounds: [f64; 4],
 ) -> Result<ExecutedFrame, String> {
     let mut tools = Vec::new();
+    let mut assemblies = Vec::new();
     for span in spans {
         if tools.len() <= span.tool_index {
             let stage = plan
@@ -263,6 +278,7 @@ fn executed_frame(
                 .find(|stage| stage.stage_id == span.stage_id)
                 .ok_or("Missing plan stage")?;
             tools.push(sim_tool(job, &stage.tool_id)?);
+            assemblies.push(sim_assembly(job, &stage.tool_id));
         }
     }
     let mut detail = f64::INFINITY;
@@ -270,9 +286,13 @@ fn executed_frame(
     for tool in &tools {
         match *tool {
             ToolSpec::Knife { .. } => {}
-            ToolSpec::Endmill { diameter } => {
+            ToolSpec::Endmill {
+                diameter,
+                cutting_length,
+            } => {
                 radius = radius.max(diameter / 2.);
                 detail = detail.min(diameter);
+                let _ = cutting_length;
             }
             ToolSpec::Vbit {
                 tip,
@@ -330,8 +350,40 @@ fn executed_frame(
         bounds,
         stock,
         tools,
+        assemblies,
         detail,
     })
+}
+
+/// One planned motion as the simulator's display record.
+///
+/// The material-effect `kind` stays the caller's choice — a knife never removes
+/// stock, so its stream is not a cutting stream — but the **machine execution**
+/// always comes from the plan. The animation clock times a move from its
+/// interpolation and its feed, so those two values have to travel with the
+/// motion rather than being re-derived (or guessed) in the display.
+pub(crate) fn sim_motion(
+    motion: &cam_core::toolpath::PlannedMotion,
+    tool: usize,
+    stage: u16,
+    kind: &str,
+) -> crate::sim::Motion {
+    crate::sim::Motion {
+        kind: kind.into(),
+        tool,
+        stage,
+        interpolation: match motion.interpolation {
+            cam_core::toolpath::Interpolation::Rapid => crate::sim::Interpolation::Rapid,
+            cam_core::toolpath::Interpolation::LinearFeed => crate::sim::Interpolation::Feed,
+        },
+        feed_mm_min: motion.feed_mm_min,
+        x0: motion.start.x,
+        y0: motion.start.y,
+        z0: motion.start.z,
+        x1: motion.end.x,
+        y1: motion.end.y,
+        z1: motion.end.z,
+    }
 }
 
 fn role_color(role: StageRole) -> [f32; 4] {
@@ -482,10 +534,7 @@ pub fn build_with_preset(
     // the planner performs, so the viewport and the plan cannot disagree.
     let mut face_plans = vec![];
     for operation in &job.operations {
-        if !matches!(
-            operation.settings,
-            v5::OperationSettingsV5::Face(_)
-        ) {
+        if !matches!(operation.settings, v5::OperationSettingsV5::Face(_)) {
             continue;
         }
         let Ok(Some(preview)) = v5::inspection::face_entry_preview(job, &operation.id) else {
@@ -613,6 +662,7 @@ pub fn build_with_preset(
     let ExecutedFrame {
         stock,
         tools,
+        assemblies,
         detail,
         ..
     } = frame;
@@ -639,17 +689,12 @@ pub fn build_with_preset(
     for (index, motion) in plan.motions.iter().enumerate() {
         let stage = stage_of(index).ok_or("Plan motion outside every stage")?;
         let cutting = motion.effect == cam_core::toolpath::MotionEffect::MillingSweep;
-        motions.push(Motion {
-            kind: if cutting { "cut" } else { "rapid_xy" }.into(),
-            tool: stage.tool_index,
-            stage: stage_of_motion.get(index).copied().unwrap_or(0) as u16,
-            x0: motion.start.x,
-            y0: motion.start.y,
-            z0: motion.start.z,
-            x1: motion.end.x,
-            y1: motion.end.y,
-            z1: motion.end.z,
-        });
+        motions.push(sim_motion(
+            motion,
+            stage.tool_index,
+            stage_of_motion.get(index).copied().unwrap_or(0) as u16,
+            if cutting { "cut" } else { "rapid_xy" },
+        ));
     }
     for (index, motion) in plan.motions.iter().enumerate() {
         let color = match stage_of(index) {
@@ -679,6 +724,23 @@ pub fn build_with_preset(
         .map(|span| span.end)
         .chain(std::iter::once(0))
         .collect();
+    // The machine checks run here, in the worker, over their own coarse raster:
+    // one pass at generation time, nothing per displayed frame. They are display
+    // estimates and the report says what raster they rest on.
+    let holder_body = job
+        .machine_configuration
+        .as_ref()
+        .and_then(|configuration| configuration.holder.as_ref())
+        .and_then(|holder| holder.body())
+        .unwrap_or_default();
+    let warnings = crate::sim_checks::run(crate::sim_checks::CheckInput {
+        motions: &motions,
+        tools: &tools,
+        assemblies: &assemblies,
+        holder: &holder_body,
+        stock,
+    });
+    let warning_cell_mm = crate::sim_checks::check_cell_mm(stock);
     let preview = crate::stock_preview::build_with_marks(
         &crate::sim::Input {
             stock,
@@ -777,6 +839,8 @@ pub fn build_with_preset(
             .collect::<Vec<_>>()
     );
     report["executionFingerprint"] = json!(plan.execution_fingerprint);
+    report["warnings"] = json!(warnings);
+    report["warningCellMm"] = json!(warning_cell_mm);
     report["scopeOperation"] = json!(
         plan.operation_results
             .last()
@@ -812,8 +876,22 @@ pub fn build_with_preset(
         sim: Some(SimPackage {
             stock,
             tools,
+            assemblies,
             resolution,
             motions,
+            // The machine's own rapid rate, when the job has applied a machine
+            // configuration that states one. The display times G0 moves with
+            // it; it is never invented here.
+            rapid_rate_mm_min: job
+                .machine_configuration
+                .as_ref()
+                .and_then(|configuration| configuration.rapid_rate_mm_min),
+            // What the machine holds the tool with, when it says. The display
+            // resolves the catalogue name; the segment numbers stay in core.
+            holder: job
+                .machine_configuration
+                .as_ref()
+                .and_then(|configuration| configuration.holder.clone()),
         }),
     })
 }

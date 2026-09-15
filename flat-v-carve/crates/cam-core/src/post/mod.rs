@@ -1,10 +1,12 @@
 //! M6 linear LinuxCNC output, with explicit machine contracts and numeric
 //! readback. No filesystem, machine connection, or arbitrary G-code templates.
+pub mod holder;
 mod profile;
 mod reader;
 pub mod sequence;
 #[cfg(test)]
 mod tests;
+pub use holder::{CATALOGUE, CatalogueEntry, HolderSegment, HolderSelection, catalogue_entry};
 pub use profile::*;
 
 use crate::{

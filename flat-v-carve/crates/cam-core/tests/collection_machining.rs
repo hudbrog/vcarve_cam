@@ -38,6 +38,7 @@ fn tools() -> Vec<v5::JobToolV5> {
         id: id.into(),
         name: name.into(),
         geometry: Some(geometry),
+        assembly: Default::default(),
         capabilities: ToolCapabilities {
             plunge_capable: plunge,
             ramp_capable: ramp,
@@ -548,6 +549,7 @@ fn machining_identity_separates_display_from_machining_changes() {
         id: "t9".into(),
         name: "unused".into(),
         geometry: None,
+        assembly: Default::default(),
         capabilities: ToolCapabilities::default(),
         library_origin: None,
     });
