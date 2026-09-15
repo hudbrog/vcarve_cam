@@ -108,6 +108,7 @@ export async function gui10Scenario({control,state,waitFor,send,evaluate,sleep,r
     return value;
   };
   const wallSamples = [];
+  const transferBytes = [];
   await control('Start');
   await waitFor(s => !s.active && s.stockPrefix === 0, 'stock restored again', 300);
   await control('Play');
@@ -120,6 +121,7 @@ export async function gui10Scenario({control,state,waitFor,send,evaluate,sleep,r
       walls: walls(sample).revision,
       instances: walls(sample).instances,
     });
+    transferBytes.push(sample.stockTransferBytes);
   }
   if (await state().then(s => s.controls.Pause)) await control('Pause');
   await waitFor(s => !s.active, 'playback paused again');
@@ -146,6 +148,58 @@ export async function gui10Scenario({control,state,waitFor,send,evaluate,sleep,r
       instances: sample.instances,
     })),
     insideOneMotion,
+  });
+
+  // The display owns the clock between seeks: playing forward must not ask the
+  // compute process for anything, so the last stock transfer stays the one the
+  // seek caused.
+  const transfers = new Set(transferBytes);
+  if (transfers.size !== 1)
+    throw new Error(
+      `playback asked the compute process for stock: ${JSON.stringify(transferBytes)}`,
+    );
+  record('playback stays in the display process', {
+    transferBytes: transferBytes[0],
+    samples: transferBytes.length,
+  });
+
+  // --- scrubbing to a time lands inside a move, forwards and backwards ------
+  const scrub = async (share, label) => {
+    const rect = (await state()).controls['Program time'];
+    if (!rect) throw new Error('the transport has no Program time slider');
+    await click(rect[0] + (rect[2] - rect[0]) * share, (rect[1] + rect[3]) / 2);
+    const settled = await waitFor(s => !s.active, `${label} scrub`, 240);
+    // The widget rect includes the label, so the click lands somewhere on the
+    // track rather than at exactly this share of the program. What the check is
+    // about is the behaviour: a scrub to a time lands *inside* a move, and a
+    // click further along the track lands later in the program.
+    return simulation(settled);
+  };
+  const forward = await scrub(0.7, 'forward');
+  const backward = await scrub(0.2, 'backward');
+  if (!(backward.elapsedSeconds < forward.elapsedSeconds))
+    throw new Error(
+      `the backward scrub did not move back: ${forward.elapsedSeconds} -> ${backward.elapsedSeconds}`,
+    );
+  if (!(backward.fraction > 0))
+    throw new Error(`a scrub to a time did not land inside a move: ${JSON.stringify(backward)}`);
+  if (!(backward.prefix < forward.prefix))
+    throw new Error(
+      `the two scrubs landed on the same motion: ${backward.prefix} and ${forward.prefix}`,
+    );
+  record('scrubbing to a time lands inside a move', {
+    forward: {
+      elapsedSeconds: Number(forward.elapsedSeconds.toFixed(2)),
+      prefix: forward.prefix,
+      fraction: Number(forward.fraction.toFixed(3)),
+      feedMmMin: forward.feedMmMin,
+    },
+    backward: {
+      elapsedSeconds: Number(backward.elapsedSeconds.toFixed(2)),
+      prefix: backward.prefix,
+      fraction: Number(backward.fraction.toFixed(3)),
+      feedMmMin: backward.feedMmMin,
+    },
   });
 
   // --- Fit maps the whole program into one window at the same ratios --------
@@ -226,6 +280,23 @@ export async function gui10Scenario({control,state,waitFor,send,evaluate,sleep,r
     motion: assembly.motion,
     prefix: simulation(shown).prefix,
     seconds: Number(simulation(shown).elapsedSeconds.toFixed(2)),
+  });
+
+  // The warnings belong to the execution, not to the playhead: seeking away and
+  // back must not lose them.
+  await control('Start');
+  const away = await waitFor(s => !s.active && s.stockPrefix === 0, 'away from the warning', 300);
+  const stillThere = warnings(away);
+  if (
+    stillThere.count !== list.count ||
+    JSON.stringify(stillThere.entries) !== JSON.stringify(list.entries)
+  )
+    throw new Error(
+      `seeking dropped or changed the warnings: ${JSON.stringify(stillThere)} vs ${JSON.stringify(list)}`,
+    );
+  record('warnings belong to the execution, not the playhead', {
+    count: stillThere.count,
+    atStart: stillThere.entries[0],
   });
 
   // Every problem is listed — one row per problem, not one per motion — and the

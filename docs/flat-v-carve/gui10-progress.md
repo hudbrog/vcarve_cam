@@ -249,6 +249,9 @@ alongside two screenshots:
 | the holder warning | ER20 nut **0.7 mm** inside the material from motion 83, on a **0.4 mm** raster, one row |
 | a warning seeks | the row's **Show** puts the display at motion 83, 4.27 s into the program |
 | walls move with the floor | six samples inside **one** pass (fraction 0.072 → 0.324) carry six different wall revisions (261 → 368) and 143 → 158 → 156 wall instances |
+| playback stays in the display | the same **524,384-byte** stock transfer across six samples of a playing job: no round trip per frame |
+| scrubbing to a time | clicking the time slider lands *inside* a move both ways — 83.0 s at motion 28 (fraction 0.063, feed 2400 mm/min) and back to 22.5 s at motion 7 (fraction 0.766, a rapid) |
+| the warnings belong to the execution | seeking to the start leaves the same one row, motion 83, 0.2 mm here and 0.7 mm at worst |
 
 ### A report from testing: the walls stood still inside a motion
 
