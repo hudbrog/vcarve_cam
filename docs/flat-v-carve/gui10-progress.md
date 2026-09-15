@@ -248,6 +248,35 @@ alongside two screenshots:
 | an unstated assembly | `{shaftDiameterMm: null, stickoutMm: null}` and no warnings: the display does not guess |
 | the holder warning | ER20 nut **0.7 mm** inside the material from motion 83, on a **0.4 mm** raster, one row |
 | a warning seeks | the row's **Show** puts the display at motion 83, 4.27 s into the program |
+| walls move with the floor | six samples inside **one** pass (fraction 0.072 → 0.324) carry six different wall revisions (261 → 368) and 143 → 158 → 156 wall instances |
+
+### A report from testing: the walls stood still inside a motion
+
+The tester's own words: on the facing job with the 50 mm cutter, "I can see how
+the material is being removed during a single step, but the walls were being
+left in place until the end of the move".
+
+The cause was the wall cache key. Walls are derived display geometry: the stock
+pass draws floors straight from the cell bytes, while `stock_walls` builds the
+vertical faces once and caches them against `(identity, prefix, threshold,
+section)`. `prefix` is the *motion index*, and the animation now advances
+**inside** a motion — so the floor moved every frame while the walls waited for
+the next boundary. It is the one piece of the display that was still keyed on
+the old step clock.
+
+`StockView` now carries a `raster_revision`, bumped wherever the displayed bytes
+change (a local advance with dirty tiles, a transported seek, a preset change),
+and the wall cache keys on that instead of on the prefix. The browser scenario
+pins it: two samples inside the same motion must not share a wall revision, and
+the recorded run shows six revisions across one pass. `display.walls` publishes
+the revision, the instance count, the dropped-step count and the threshold, so a
+review can see the derived geometry keep up with the floor.
+
+Cost, stated plainly: the walls are rebuilt in any frame that removes material,
+because the whole set is derived from the raster. On this job that is a few
+hundred instances; on a fine-raster, hundred-thousand-motion carving it is a
+full-grid sweep per cutting frame. Incremental wall updates (only the cells
+inside dirty tiles) are the follow-up if a measurement shows it matters.
 
 The scenario earned its keep: it found two defects no unit test could.
 
@@ -268,20 +297,20 @@ were all the panel showed. A row is now one **problem**: the first motion that
 shows it, the depth there, and the worst depth the program reaches
 (`depthMm` / `maxDepthMm`).
 
-### State that was already broken before this batch
+### State that was already broken before this batch, and is now closed
 
 * `scene_frame::the_scene_publishes_the_facing_request_coverage_and_entry`
-  fails in the working tree because `real_data/facing_job.json` changed under
-  it: the test expects the coverage to be the stock rectangle, which holds for
-  the committed fixture (`"margins": {}`) and not for the working copy
-  (`min_y_mm: 20`, `max_y_mm: 20`, `entry_overrun_mm: 50`). This batch does not
-  touch `facePlans` or the face planner.
-* `cargo fmt --all -- --check` already fails at `HEAD` on
+  failed in the working tree because `real_data/facing_job.json` had changed
+  under it (margins of 20 mm and a 50 mm entry overrun against a test that
+  expects the coverage to be the stock rectangle). The tester asked for the
+  fixture to be restored to the committed version, and the test passes again.
+* `cargo fmt --all -- --check` failed at `HEAD` on
   `cam-core/src/checks.rs`, `cam-core/src/operations/face.rs`,
   `cam-core/tests/face_core.rs`, `cam-gui/src/face.rs`, `cam-gui/src/face_ui.rs`
-  and one hunk of `cam-gui/src/scene.rs`. Every file this batch edits is
-  rustfmt-clean; the pre-existing ones were left alone rather than folded into
-  this diff.
+  and one hunk of `cam-gui/src/scene.rs`. The tester asked for the formatter to
+  be run across the workspace, and those files landed as their own commit
+  (`Reformat the files rustfmt had drifted from`) so the feature diff stays
+  readable. `cargo fmt --all -- --check` is clean.
 
 ## Not in this batch
 

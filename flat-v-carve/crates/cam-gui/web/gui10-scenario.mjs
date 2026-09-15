@@ -97,6 +97,57 @@ export async function gui10Scenario({control,state,waitFor,send,evaluate,sleep,r
     wallClockSeconds: elapsed,
   });
 
+  // The walls drawn for the material that is left have to move with the floor,
+  // not with the motion index: a facing pass removes material for seconds inside
+  // one motion, and wall geometry keyed on the prefix stands still until the
+  // move ends. Sample the wall revision next to the position: two samples inside
+  // the same motion must not share a wall revision.
+  const walls = snapshot => {
+    const value = snapshot?.display?.walls;
+    if (!value) throw new Error('the probe publishes no wall geometry');
+    return value;
+  };
+  const wallSamples = [];
+  await control('Start');
+  await waitFor(s => !s.active && s.stockPrefix === 0, 'stock restored again', 300);
+  await control('Play');
+  for (let index = 0; index < 6; index++) {
+    await sleep(300);
+    const sample = await state();
+    wallSamples.push({
+      prefix: simulation(sample).prefix,
+      fraction: simulation(sample).fraction,
+      walls: walls(sample).revision,
+      instances: walls(sample).instances,
+    });
+  }
+  if (await state().then(s => s.controls.Pause)) await control('Pause');
+  await waitFor(s => !s.active, 'playback paused again');
+  let insideOneMotion = 0;
+  let stale = 0;
+  for (let index = 1; index < wallSamples.length; index++) {
+    const previous = wallSamples[index - 1];
+    const sample = wallSamples[index];
+    if (sample.prefix !== previous.prefix) continue;
+    insideOneMotion++;
+    if (sample.walls === previous.walls) stale++;
+  }
+  if (!insideOneMotion)
+    throw new Error(`no two wall samples shared a motion: ${JSON.stringify(wallSamples)}`);
+  if (stale)
+    throw new Error(
+      `${stale} wall update(s) stood still inside a motion: ${JSON.stringify(wallSamples)}`,
+    );
+  record('walls move with the floor, inside a motion', {
+    samples: wallSamples.map(sample => ({
+      prefix: sample.prefix,
+      fraction: Number(sample.fraction.toFixed(3)),
+      walls: sample.walls,
+      instances: sample.instances,
+    })),
+    insideOneMotion,
+  });
+
   // --- Fit maps the whole program into one window at the same ratios --------
   await control('Playback Fit');
   const fitted = await waitFor(

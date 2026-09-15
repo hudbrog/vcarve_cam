@@ -492,3 +492,59 @@ fn with_holder(job: CamJobV5, holder: &str) -> CamJobV5 {
         .unwrap()
         .job
 }
+
+/// The other half of S3's holder row: a machine that states its own cylinder
+/// instead of a catalogue series reaches the display and the checks the same way.
+#[test]
+fn a_machine_that_states_its_own_holder_cylinder_is_checked() {
+    let mut job: CamJobV5 =
+        serde_json::from_str(include_str!("../../../fixtures/gui4/lettering.job.json"))
+            .expect("the lettering fixture");
+    if let OperationSettingsV5::FlatVcarve(settings) = &mut job.operations[0].settings {
+        settings.max_depth_mm = Some(3.);
+    }
+    job.tools
+        .iter_mut()
+        .find(|tool| tool.id == "endmill")
+        .expect("the fixture's endmill")
+        .assembly = cam_core::project::ToolAssembly {
+        shaft_diameter_mm: Some(2.5),
+        stickout_mm: Some(0.8),
+    };
+    let mut profile =
+        cam_core::post::sequence::SequenceProfile::from_json(session::PROFILE).unwrap();
+    profile.holder = Some(cam_core::post::HolderSelection {
+        id: "custom".into(),
+        segments: vec![cam_core::post::HolderSegment {
+            height_mm: 30.,
+            lower_diameter_mm: 20.,
+            upper_diameter_mm: 20.,
+        }],
+    });
+    let job = cam_core::project::v5::machine::apply_machine_configuration(&job, &profile, "Custom")
+        .unwrap()
+        .job;
+    let scene = generate(&job);
+    let sim = scene.meta.sim.as_ref().expect("a motion stream");
+    let body = sim
+        .holder
+        .as_ref()
+        .and_then(|holder| holder.body())
+        .expect("the machine's own cylinder");
+    assert_eq!(body.len(), 1);
+    assert_eq!(body[0].lower_diameter_mm, 20.);
+    let warnings = scene.meta.report["gui2"]["warnings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let assembly = warnings
+        .iter()
+        .find(|warning| warning["kind"] == "assemblyBelowSurface")
+        .unwrap_or_else(|| panic!("the 20 mm cylinder stands in the material: {warnings:?}"));
+    assert!(
+        assembly["maxDepthMm"]
+            .as_f64()
+            .is_some_and(|depth| depth > 0.4),
+        "{assembly:?}"
+    );
+}

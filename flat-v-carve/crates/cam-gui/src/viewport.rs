@@ -91,6 +91,10 @@ struct StockView {
     /// scene carries no timed motion stream, in which case playback falls back
     /// to stepping whole motions exactly as before.
     clock: Option<crate::sim_clock::LocalClock>,
+    /// Bumped whenever the displayed cell bytes change, so derived geometry —
+    /// the walls — is rebuilt in the frame the floor moves. The motion prefix
+    /// alone cannot serve that purpose: the animation advances inside a motion.
+    raster_revision: u64,
     /// Bytes the last stock response carried and the replay work it caused.
     /// Quoted by the playback bar so the display accounts for its own transfer
     /// instead of leaving the reviewer to guess.
@@ -207,7 +211,11 @@ impl ViewSettings {
 /// identity, the playhead prefix and the threshold the style asked for.
 struct WallCache {
     identity: u64,
-    prefix: usize,
+    /// The cell-bytes generation the walls were derived from. The motion prefix
+    /// cannot serve: the animation advances *inside* one motion, so the floor
+    /// moves while the prefix stands still, and walls keyed on it would be left
+    /// standing until the move ended.
+    raster: u64,
     threshold: u32,
     /// `None` for the ordinary step walls, `Some(along_x)` for a section.
     section: Option<bool>,
@@ -652,6 +660,7 @@ impl Viewport {
             stats,
             prefix,
             clock,
+            raster_revision: 0,
             last_transfer_bytes: 0,
             last_replayed: 0,
         })
@@ -1563,6 +1572,11 @@ impl Viewport {
             stats,
             prefix,
             clock,
+            // A new raster at a new resolution: no derived geometry survives it.
+            raster_revision: self
+                .stock
+                .as_ref()
+                .map_or(1, |previous| previous.raster_revision.wrapping_add(1)),
             last_transfer_bytes: payload.len(),
             last_replayed: 0,
         });
@@ -1640,6 +1654,9 @@ impl Viewport {
         stock.identity = key;
         stock.last_transfer_bytes = payload.len();
         stock.last_replayed = meta.report["gui2"]["replayed"].as_u64().unwrap_or(0) as usize;
+        // A transported state is new bytes: the walls derived from the previous
+        // state must not survive it.
+        stock.raster_revision = stock.raster_revision.wrapping_add(1);
         if let (Some(clock), Some(field)) = (stock.clock.as_mut(), seed) {
             clock.reseed(field.clone(), vec![(prefix, field)], retained_bytes);
         } else if stock.clock.is_some() {
@@ -1709,6 +1726,16 @@ impl Viewport {
             "key": stock.meta.key,
             "sectionSamples": self.section_sample_count(),
             "style": self.style_probe(),
+            // The walls derived from the displayed cells. Their revision has to
+            // move with the raster, not with the motion index: the animation
+            // advances inside one motion, and wall geometry keyed on the prefix
+            // would stand still until the move ended.
+            "walls": {
+                "revision": self.wall_cache.as_ref().map_or(0, |cache| cache.revision),
+                "instances": self.wall_cache.as_ref().map_or(0, |cache| cache.walls.len()),
+                "dropped": self.wall_report.map_or(0, |(dropped, _)| dropped),
+                "thresholdMm": self.wall_report.map_or(0., |(_, threshold)| threshold),
+            },
             "simulation": self.simulation_probe(),
             // Machine warnings, as the panel shows them: a count, the raster
             // they rest on, and the first few entries for the review harness.
@@ -2082,6 +2109,11 @@ impl Viewport {
         stock.cell_versions = Arc::new(clock.versions());
         stock.stats = clock.stats().clone();
         stock.prefix = clock.position().0;
+        // The bytes moved, so everything derived from them (the walls) has to be
+        // rebuilt in this same frame.
+        if !dirty.is_empty() {
+            stock.raster_revision = stock.raster_revision.wrapping_add(1);
+        }
         self.stock_prefix = stock.prefix;
         self.playhead = stock.prefix;
         self.overlay_signature = None;
@@ -2270,10 +2302,10 @@ impl Viewport {
         };
         let threshold = self.stock_style.wall_threshold(stock.meta.cell_mm);
         let identity = stock.identity;
-        let prefix = stock.prefix;
+        let raster = stock.raster_revision;
         if let Some(cache) = &self.wall_cache
             && cache.identity == identity
-            && cache.prefix == prefix
+            && cache.raster == raster
             && cache.threshold == threshold.to_bits()
             && cache.section == section
         {
@@ -2313,7 +2345,7 @@ impl Viewport {
             .or(Some((0, built.threshold_mm)));
         self.wall_cache = Some(WallCache {
             identity,
-            prefix,
+            raster,
             threshold: threshold.to_bits(),
             section,
             deepest,
@@ -2953,6 +2985,7 @@ mod tests {
             stats: Default::default(),
             prefix: 0,
             clock: None,
+            raster_revision: 0,
             last_transfer_bytes: 0,
             last_replayed: 0,
         }

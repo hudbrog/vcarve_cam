@@ -826,31 +826,91 @@ fn machine_form(
         );
         // The holder this machine uses. Optional, display/check input only: the
         // simulation draws it and warns when it would hit the job. The catalogue
-        // covers the ER collet series; a machine that carries its own `segments`
-        // keeps them (a resource file's job, not this form's, until the segment
-        // editor exists).
-        let holder_options: Vec<(&str, Option<cam_core::post::HolderSelection>)> =
-            std::iter::once(("Not stated", None))
+        // covers the ER collet series, plus one cylinder the machine states
+        // itself for anything else.
+        let holder_choices = || {
+            std::iter::once(("Not stated".to_string(), None))
                 .chain(cam_core::post::CATALOGUE.iter().map(|entry| {
                     (
-                        entry.label,
+                        entry.label.to_string(),
                         Some(cam_core::post::HolderSelection::catalogue(entry.id)),
                     )
                 }))
-                .collect();
-        select(ui, "Configuration holder", &mut m.holder, &holder_options);
-        if let Some(holder) = &m.holder
-            && !holder.segments.is_empty()
+                .chain(std::iter::once((
+                    "Custom cylinder".to_string(),
+                    Some(cam_core::post::HolderSelection {
+                        id: "custom".into(),
+                        segments: Vec::new(),
+                    }),
+                )))
+                .collect::<Vec<_>>()
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.label(field_label("Configuration holder"));
+            help::icon(ui, "Configuration holder");
+            let current = m.holder.as_ref().map(|holder| holder.id.clone());
+            for (label, value) in holder_choices() {
+                let selected = value.as_ref().map(|holder| holder.id.clone()) == current;
+                let response = ui.selectable_label(selected, &label);
+                observe_control(&format!("Configuration holder {label}"), response.rect);
+                if response.clicked() {
+                    // Choosing the custom holder again keeps the numbers it was
+                    // given; choosing a catalogued one replaces the body.
+                    m.holder = match value {
+                        Some(custom)
+                            if custom.id == "custom"
+                                && m.holder
+                                    .as_ref()
+                                    .is_some_and(|holder| holder.id == "custom") =>
+                        {
+                            m.holder.clone()
+                        }
+                        other => other,
+                    };
+                }
+            }
+        });
+        // A holder that is not in the catalogue: one cylinder, in the machine's
+        // own words. Nothing is drawn and nothing is checked until both numbers
+        // are given — an estimate that was never stated is not an estimate.
+        if m.holder
+            .as_ref()
+            .is_some_and(|holder| holder.id == "custom")
         {
-            ui.label(format!(
-                "Custom holder · {} segment(s) · {} mm at the widest",
-                holder.segments.len(),
-                holder
-                    .segments
-                    .iter()
-                    .map(|segment| segment.lower_diameter_mm.max(segment.upper_diameter_mm))
-                    .fold(0., f64::max)
-            ));
+            let holder = m.holder.as_mut().expect("just checked");
+            let mut diameter = holder
+                .segments
+                .first()
+                .map(|segment| segment.lower_diameter_mm);
+            let mut height = holder.segments.first().map(|segment| segment.height_mm);
+            ui.columns(2, |cols| {
+                number(
+                    &mut cols[0],
+                    "Configuration holder diameter",
+                    &format!("{key}/holder-diameter"),
+                    &mut diameter,
+                    false,
+                    e,
+                );
+                number(
+                    &mut cols[1],
+                    "Configuration holder height",
+                    &format!("{key}/holder-height"),
+                    &mut height,
+                    false,
+                    e,
+                );
+            });
+            holder.segments = match (diameter, height) {
+                (Some(diameter), Some(height)) if diameter > 0. && height > 0. => {
+                    vec![cam_core::post::HolderSegment {
+                        height_mm: height,
+                        lower_diameter_mm: diameter,
+                        upper_diameter_mm: diameter,
+                    }]
+                }
+                _ => Vec::new(),
+            };
         }
     });
     section(

@@ -761,6 +761,7 @@ mod tests {
                 stats: sim::Stats::default(),
                 prefix: 0,
                 clock: None,
+                raster_revision: 0,
                 last_transfer_bytes: 0,
                 last_replayed: 0,
             }),

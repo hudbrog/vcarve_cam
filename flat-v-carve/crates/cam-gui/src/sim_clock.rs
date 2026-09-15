@@ -380,4 +380,96 @@ mod tests {
         clock.patch(&mut raster, &dirty).unwrap();
         assert_eq!(raster, clock.field().packed_tile_bytes());
     }
+
+    /// S2: the drawn tip stands on the cell it just cut, at every display preset.
+    ///
+    /// The marker's tip and the removed material come from the same clock and the
+    /// same field, so this pins the interface between them numerically instead of
+    /// asking a reviewer to judge a screenshot: at each preset's cell size, the
+    /// cell under the tip holds exactly the depth the tip is standing in, and
+    /// cells the tool has not reached are still stock.
+    #[test]
+    fn the_drawn_tip_stands_on_the_cell_it_cut_at_every_preset() {
+        use crate::sim::Interpolation;
+        use crate::stock_preview::DisplayPreset;
+
+        let stock = Stock {
+            x0: -20.,
+            y0: -20.,
+            x1: 20.,
+            y1: 20.,
+            thickness_mm: 8.,
+        };
+        let tools = [
+            ToolSpec::Endmill {
+                diameter: 3.,
+                cutting_length: 12.,
+            },
+            ToolSpec::Vbit {
+                angle: 90.,
+                tip: 0.4,
+                diameter: 6.,
+                height: 3.,
+            },
+        ];
+        let cut = |tool: usize, z0: f64, z1: f64| Motion {
+            kind: "cut".into(),
+            tool,
+            stage: 0,
+            interpolation: Interpolation::Feed,
+            feed_mm_min: Some(600.),
+            x0: -10.,
+            y0: 0.,
+            z0,
+            x1: 10.,
+            y1: 0.,
+            z1,
+        };
+        for preset in DisplayPreset::ALL {
+            // The display preset coarsens the raster to its longest side, exactly
+            // as `stock_preview::build_with_limits` does.
+            let cell = 40. / preset.max_side() as f64;
+            for (tool, z0, z1) in [(0, -1.5, -1.5), (1, -0.5, -2.5)] {
+                for fraction in [0.25_f64, 0.5, 0.75] {
+                    let motion = cut(tool, z0, z1);
+                    let motions = vec![motion.clone()];
+                    let field = Field::new(stock, &tools, cell).unwrap();
+                    let time = TimeTable::build(&motions, Some(5000.)).unwrap();
+                    let mut clock = LocalClock::seed(
+                        field.clone(),
+                        field.clone(),
+                        vec![(0, field)],
+                        motions,
+                        time,
+                        8 * 1024 * 1024,
+                    );
+                    clock.move_to_position(0, fraction, usize::MAX);
+                    let (tip, _) = clock.tip().expect("the clock is inside the move");
+                    let field = clock.field();
+                    let col = ((tip[0] - stock.x0) / field.cell).floor();
+                    let row = ((tip[1] - stock.y0) / field.cell).floor();
+                    assert!(
+                        col >= 0. && row >= 0.,
+                        "{preset:?}: the tip is inside the raster"
+                    );
+                    let (level, _, _) = field.cell_at(col as usize, row as usize);
+                    let removed = level as f64 * field.quantum;
+                    assert!(
+                        (removed - -tip[2]).abs() <= field.quantum + 1e-9,
+                        "{preset:?} cell {cell:.4} tool {tool} at {fraction}: the tip is at \
+                         z {:.4} but the cell holds {removed:.4} mm",
+                        tip[2]
+                    );
+                    // And the material ahead of the tool is untouched: the tip is
+                    // the deepest point of the sweep so far, not in a trench it
+                    // has already left.
+                    let ahead = ((tip[0] + 8. - stock.x0) / field.cell).floor();
+                    if ahead < field.cols as f64 {
+                        let (level, _, _) = field.cell_at(ahead as usize, row as usize);
+                        assert_eq!(level, 0, "{preset:?}: material ahead is untouched");
+                    }
+                }
+            }
+        }
+    }
 }
