@@ -19,8 +19,8 @@ use crate::{
 pub use medial::{MedialAxis, MedialBranch};
 pub use quality::{CombinedAnalysis, CombinedSlice, QualitySample};
 use serde::{Deserialize, Serialize};
-pub use settings::{FinishTransit, VBitPlanningSettings};
 use settings::{Context, error};
+pub use settings::{FinishTransit, VBitPlanningSettings};
 pub use verify::verify_vbit_motions;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -657,7 +657,13 @@ const DETOUR_REACH: [(f64, f64); 16] = [
 /// material this stage removes anyway, so it replaces a lift rather than cutting
 /// anything new; every segment is checked with the same continuous sweep bound
 /// the verifier applies to a recorded cut.
-fn detour(ctx: &Context, from: Position, to: Position, cap: f64, budget: f64) -> Option<Vec<Position>> {
+fn detour(
+    ctx: &Context,
+    from: Position,
+    to: Position,
+    cap: f64,
+    budget: f64,
+) -> Option<Vec<Position>> {
     if from.depth() != cap || !to.xy().finite() {
         return None;
     }
@@ -819,8 +825,7 @@ fn execute(
         Some(t) => (None, t.plane),
         None => (None, ctx.clearance),
     };
-    let linked =
-        !pruned && candidate.points.iter().any(|p| p.depth() > 0.) && link_from.is_some();
+    let linked = !pruned && candidate.points.iter().any(|p| p.depth() > 0.) && link_from.is_some();
     let additions = if pruned {
         vec![]
     } else if linked {
@@ -829,7 +834,13 @@ fn execute(
     } else {
         // `previous` keeps the recorded motion's identity but takes the transit's
         // height: the entry rapid, the approach and the plunge all start from it.
-        excursion(ctx, candidate, cap, Position::new(previous.xy(), plane), base)
+        excursion(
+            ctx,
+            candidate,
+            cap,
+            Position::new(previous.xy(), plane),
+            base,
+        )
     };
     if moves.len() + additions.len() - usize::from(linked) > ctx.settings.max_motions {
         return Err(error(
@@ -1173,7 +1184,10 @@ mod slice_reuse_tests {
                 "wide-floor",
                 include_str!("../../../../fixtures/m4/wide-floor.json"),
             ),
-            ("island", include_str!("../../../../fixtures/m4/island.json")),
+            (
+                "island",
+                include_str!("../../../../fixtures/m4/island.json"),
+            ),
         ] {
             let mut job = crate::job::input_from_fixture_json(fixture).unwrap();
             let ctx = Context::new(&job).unwrap();
