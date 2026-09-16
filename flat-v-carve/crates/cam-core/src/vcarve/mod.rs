@@ -8,7 +8,7 @@ mod routing;
 mod settings;
 mod verify;
 use crate::{
-    geometry::{BooleanOp, Point, Region, Result},
+    geometry::{BooleanOp, Point, Region, Result, Segment},
     job::VcarveInput,
     model::Depth,
     motion::{Motion, MotionKind, Position},
@@ -19,7 +19,7 @@ use crate::{
 pub use medial::{MedialAxis, MedialBranch};
 pub use quality::{CombinedAnalysis, CombinedSlice, QualitySample};
 use serde::{Deserialize, Serialize};
-pub use settings::VBitPlanningSettings;
+pub use settings::{FinishTransit, VBitPlanningSettings};
 use settings::{Context, error};
 pub use verify::verify_vbit_motions;
 
@@ -524,9 +524,11 @@ fn excursion(
     if previous.z <= 0. {
         push(MotionKind::Cut, points[0], Some(ctx.feed));
     } else {
+        // `previous` carries the plane the excursion is entered from: the
+        // stage clearance, or the shorter lift the previous transit earned.
         push(
             MotionKind::RapidXY,
-            Position::new(points[0].xy(), ctx.clearance),
+            Position::new(points[0].xy(), previous.z),
             None,
         );
         push(
@@ -587,6 +589,160 @@ fn air(ctx: &Context, candidate: &Candidate, cap: f64, stock: &StockQuery<'_>) -
         stock.vbit_air(&m, &ctx.tool, ctx.guard)
     })
 }
+/// What the tool does between two cutting excursions.
+struct Transit {
+    /// The join happens at cutting depth: the previous excursion's retract is
+    /// dropped and the travel is a cutting move.
+    link: bool,
+    /// The height the travel uses when it is not a join.
+    plane: f64,
+}
+/// The plane a lifted transit travels at. Every point of the V-bit cone is at
+/// or above its tip, so any tip height at or above the stock top is clear by
+/// construction: the clearance an operator configures is a margin against
+/// measurement error, not a geometric requirement. Measuring it from the pass
+/// depth instead of the stock top is therefore the whole of "a smaller lift" —
+/// and it stops there: a pass deeper than the clearance leaves no room above the
+/// stock top, so the released plane stands. Below the stock top the margin stops
+/// protecting anything, and the excursion has to stay down on a proof instead.
+fn lift_plane(ctx: &Context, cap: f64) -> f64 {
+    if cap < ctx.clearance {
+        ctx.clearance - cap
+    } else {
+        ctx.clearance
+    }
+}
+/// Whether a straight join at cutting depth stays inside the target. The join is
+/// a cutting move, so the same continuous sweep bound the verifier applies to
+/// every cut decides it.
+fn against_region(ctx: &Context, from: Position, to: Position) -> bool {
+    let r = |p: Position| ctx.tool.tip_radius().mm() + p.depth() * ctx.tool.angle().slope();
+    ctx.target
+        .boundary()
+        .variable_radius_margin_mm(
+            Segment {
+                start: from.xy(),
+                end: to.xy(),
+            },
+            r(from),
+            r(to),
+        )
+        .is_ok_and(|margin| margin >= 0.)
+}
+/// Waypoints for a detour, as offsets from the straight line's midpoint: a fan
+/// either side of the line plus points along it, all scaled by the budget. One
+/// waypoint is enough whenever the shape bulges between two excursions — which
+/// is what a corner is — and every candidate is checked with the same bound the
+/// verifier applies, so a route is never proposed that the checks would reject.
+const DETOUR_REACH: [(f64, f64); 16] = [
+    (0., 0.35),
+    (0., -0.35),
+    (0.35, 0.),
+    (-0.35, 0.),
+    (0., 0.6),
+    (0., -0.6),
+    (0.6, 0.),
+    (-0.6, 0.),
+    (0.25, 0.35),
+    (-0.25, 0.35),
+    (0.25, -0.35),
+    (-0.25, -0.35),
+    (0., 0.85),
+    (0., -0.85),
+    (0.5, 0.5),
+    (-0.5, -0.5),
+];
+/// A path from `from` to `to` that stays inside the shape the V-bit is meant to
+/// cut at `cap`, shorter than `budget` millimetres. Travelling it removes only
+/// material this stage removes anyway, so it replaces a lift rather than cutting
+/// anything new; every segment is checked with the same continuous sweep bound
+/// the verifier applies to a recorded cut.
+fn detour(ctx: &Context, from: Position, to: Position, cap: f64, budget: f64) -> Option<Vec<Position>> {
+    if from.depth() != cap || !to.xy().finite() {
+        return None;
+    }
+    let grid = ctx.target.region().grid();
+    let (dx, dy) = (to.x - from.x, to.y - from.y);
+    let length = dx.hypot(dy);
+    if length == 0. {
+        return None;
+    }
+    // Perpendicular and along-line directions, in budget fractions.
+    let (px, py) = (-dy / length, dx / length);
+    let (ax, ay) = (dx / length, dy / length);
+    let mut best: Option<(f64, Position)> = None;
+    for (along_share, across_share) in DETOUR_REACH {
+        let point = Point::new(
+            from.x + dx / 2. + budget * (px * across_share + ax * along_share),
+            from.y + dy / 2. + budget * (py * across_share + ay * along_share),
+        );
+        let Ok(cell) = grid.quantize(point) else {
+            continue;
+        };
+        let way = grid.point(cell);
+        let via = Position::new(way, -cap);
+        let total = from.xy().distance(way) + way.distance(to.xy());
+        if total >= budget || best.as_ref().is_some_and(|(b, _)| *b <= total) {
+            continue;
+        }
+        if !against_region(ctx, from, via) || !against_region(ctx, via, to) {
+            continue;
+        }
+        best = Some((total, via));
+    }
+    best.map(|(_, via)| vec![via])
+}
+/// How the V-bit gets from the end of the previous excursion to the first cut
+/// of `target`. Shared with the verifier so a recorded program and its
+/// independent re-derivation agree by construction.
+fn transit(ctx: &Context, from: Position, target: &Candidate, cap: f64) -> Transit {
+    let lift = Transit {
+        link: false,
+        plane: ctx.clearance,
+    };
+    let Some(&first) = profile(target, cap).first() else {
+        return lift;
+    };
+    if !target.points.iter().any(|p| p.depth() > 0.) {
+        return lift;
+    }
+    let joined = Transit {
+        link: true,
+        plane: ctx.clearance,
+    };
+    if routing::can_link(ctx, from, first) {
+        return joined;
+    }
+    if ctx.settings.transit == FinishTransit::Retract {
+        return lift;
+    }
+    let lift = Transit {
+        link: false,
+        plane: lift_plane(ctx, cap),
+    };
+    if ctx.settings.transit == FinishTransit::ShortLift || from.xy() == first.xy() {
+        return lift;
+    }
+    // Below the stock top the cone has to be argued for, and the shape is the
+    // argument: wherever the cone at pass depth fits inside the target, the cut
+    // is one this stage already owes. What is left is whether travelling there
+    // costs less than the lift it replaces — the lift descends at the plunge
+    // feed, the join travels at the cutting feed. Rapid moves are machine-side
+    // and not known here, so this compares the two feeds only and leans towards
+    // lifting on a long join.
+    if against_region(ctx, from, first)
+        && from.xy().distance(first.xy()) <= lift_budget(ctx, lift.plane, first.z)
+    {
+        joined
+    } else {
+        lift
+    }
+}
+/// The distance a join may cover and still be quicker than the lift it replaces:
+/// the lift's descent at the plunge feed, measured at the cutting feed.
+fn lift_budget(ctx: &Context, plane: f64, target_z: f64) -> f64 {
+    (plane - target_z).max(0.) * ctx.feed / ctx.plunge_feed
+}
 fn execute(
     ctx: &Context,
     stock: &EndmillStock<'_>,
@@ -606,27 +762,74 @@ fn execute(
         |m| m.end,
     );
     let pruned = !final_finish && air(ctx, candidate, cap, &stock.query);
-    let linked = !pruned
+    // A detour is worth taking when it beats the lift it replaces: the lift
+    // spends its time descending at the plunge feed, the detour spends cut feed.
+    // Prepending it to the excursion makes one continuous cut out of the two,
+    // so the ordinary transit decision below sees a join rather than a lift.
+    let mut extended: Option<Candidate> = None;
+    if !pruned
+        && ctx.settings.transit == FinishTransit::Route
         && candidate.points.iter().any(|p| p.depth() > 0.)
-        && moves.last().is_some_and(|m| {
-            m.kind == MotionKind::RapidRetract
-                && executions.last().is_some_and(|e| {
-                    e.pass_depth_mm == cap
-                        && e.final_finish == final_finish
-                        && !e.pruned_air
-                        && e.end_motion_id > e.first_motion_id
-                })
-                && profile(candidate, cap)
-                    .first()
-                    .is_some_and(|&p| routing::can_link(ctx, m.start, p))
-        });
+    {
+        if let (Some(retract), Some(previous)) = (moves.last(), executions.last()) {
+            if retract.kind == MotionKind::RapidRetract
+                && previous.pass_depth_mm == cap
+                && previous.final_finish == final_finish
+                && !previous.pruned_air
+                && previous.end_motion_id > previous.first_motion_id
+            {
+                let straight = transit(ctx, retract.start, candidate, cap);
+                if !straight.link {
+                    if let Some(&first) = profile(candidate, cap).first() {
+                        let budget = lift_budget(ctx, straight.plane, first.z);
+                        if let Some(way) = detour(ctx, retract.start, first, cap, budget) {
+                            let mut points =
+                                Vec::with_capacity(way.len() + 1 + candidate.points.len());
+                            points.push(retract.start);
+                            points.extend(way);
+                            points.extend(candidate.points.iter().copied());
+                            extended = Some(Candidate {
+                                family: candidate.family,
+                                points,
+                                source_branch: candidate.source_branch,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let candidate = extended.as_ref().unwrap_or(candidate);
+    // The previous excursion ended with a placeholder retract; the transit this
+    // one needs decides what happens to it — a join at depth, a shorter lift, or
+    // the stage clearance plane it already names.
+    let join = moves
+        .last()
+        .filter(|m| m.kind == MotionKind::RapidRetract)
+        .zip(executions.last())
+        .filter(|(_, previous)| {
+            previous.pass_depth_mm == cap
+                && previous.final_finish == final_finish
+                && !previous.pruned_air
+                && previous.end_motion_id > previous.first_motion_id
+        })
+        .map(|(m, _)| transit(ctx, m.start, candidate, cap));
+    let (link_from, plane) = match join {
+        Some(t) if t.link => (Some(moves.last().unwrap().start), ctx.clearance),
+        Some(t) => (None, t.plane),
+        None => (None, ctx.clearance),
+    };
+    let linked =
+        !pruned && candidate.points.iter().any(|p| p.depth() > 0.) && link_from.is_some();
     let additions = if pruned {
         vec![]
     } else if linked {
         base -= 1;
         excursion(ctx, candidate, cap, moves.last().unwrap().start, base)
     } else {
-        excursion(ctx, candidate, cap, previous, base)
+        // `previous` keeps the recorded motion's identity but takes the transit's
+        // height: the entry rapid, the approach and the plunge all start from it.
+        excursion(ctx, candidate, cap, Position::new(previous.xy(), plane), base)
     };
     if moves.len() + additions.len() - usize::from(linked) > ctx.settings.max_motions {
         return Err(error(
@@ -637,6 +840,10 @@ fn execute(
     if linked {
         moves.pop();
         executions.last_mut().unwrap().end_motion_id -= 1;
+    } else if !pruned && plane < ctx.clearance {
+        // Shorten the placeholder to the plane this transit actually travels
+        // at, rather than climbing past it and back down.
+        moves.last_mut().unwrap().end.z = plane;
     }
     moves.extend(additions);
     executions.push(Execution {
@@ -842,6 +1049,166 @@ pub fn plan_combined(input: &VcarveInput) -> Result<CombinedPlan> {
 mod slice_reuse_tests {
     use super::*;
     use crate::pocket::{EntryStrategy, plan_endmill};
+
+    fn transit_census(fixture: &str, transit: FinishTransit) -> (usize, Vec<f64>) {
+        let mut job = crate::job::input_from_fixture_json(fixture).unwrap();
+        job.vbit_planning.as_mut().unwrap().transit = transit;
+        let plan = plan_combined(&job).unwrap();
+        let retracts: Vec<_> = plan
+            .vbit_motions
+            .iter()
+            .filter(|m| m.kind == MotionKind::RapidRetract)
+            .map(|m| m.end.z)
+            .collect();
+        (retracts.len(), retracts)
+    }
+
+    #[test]
+    fn transit_modes_share_the_join_and_differ_only_in_how_far_they_lift() {
+        for fixture in [
+            include_str!("../../../../fixtures/m4/wide-floor.json"),
+            include_str!("../../../../fixtures/m4/island.json"),
+        ] {
+            let clearance = 5.;
+            let (retracts, released) = transit_census(fixture, FinishTransit::Retract);
+            assert!(retracts > 1);
+            // The released behaviour retracts to the stage clearance plane at
+            // every cycle, whatever the pass depth.
+            assert!(released.iter().all(|&z| z == clearance));
+            let (short, lifted) = transit_census(fixture, FinishTransit::ShortLift);
+            // A short lift keeps every cycle and every path; it only stops the
+            // retract at the configured clearance above the pass depth.
+            assert_eq!(short, retracts);
+            assert!(lifted.iter().all(|&z| z >= 0. && z <= clearance));
+            assert!(lifted.iter().filter(|&&z| z < clearance).count() > 1);
+            let (routed, joined) = transit_census(fixture, FinishTransit::Route);
+            // Routing to the next cut can only ever remove cycles, never add
+            // them, and it never leaves the tool below the stock top.
+            assert!(routed <= short);
+            assert!(joined.iter().all(|&z| z >= 0. && z <= clearance));
+        }
+    }
+
+    #[test]
+    fn routing_keeps_the_bit_down_where_a_detour_beats_the_lift() {
+        let mut routed_any = false;
+        for fixture in [
+            include_str!("../../../../fixtures/m4/island.json"),
+            include_str!("../../../../fixtures/m4/wide-floor.json"),
+        ] {
+            let mut job = crate::job::input_from_fixture_json(fixture).unwrap();
+            let mut census = |transit: FinishTransit| {
+                job.vbit_planning.as_mut().unwrap().transit = transit;
+                let plan = plan_combined(&job).unwrap();
+                let cycles = plan
+                    .vbit_motions
+                    .iter()
+                    .filter(|m| m.kind == MotionKind::RapidRetract)
+                    .count();
+                let cut: f64 = plan
+                    .vbit_motions
+                    .iter()
+                    .filter(|m| m.kind.cutting())
+                    .map(|m| m.start.xy().distance(m.end.xy()))
+                    .sum();
+                (cycles, cut)
+            };
+            let (lifted, lifted_cut) = census(FinishTransit::ShortLift);
+            let (routed, routed_cut) = census(FinishTransit::Route);
+            println!("cycles {lifted} -> {routed}, cut {lifted_cut:.1} -> {routed_cut:.1}");
+            // Routing may only remove lifts, and only by cutting the ground it
+            // travels over — which is ground this stage clears anyway.
+            assert!(
+                routed <= lifted,
+                "routing added {} lift cycles",
+                routed.saturating_sub(lifted)
+            );
+            assert!(
+                routed_cut >= lifted_cut,
+                "routing must not lose cutting length"
+            );
+            routed_any |= routed < lifted;
+        }
+        assert!(routed_any, "routing must remove a lift somewhere");
+    }
+
+    #[test]
+    fn routing_joins_only_inside_the_shape_and_only_when_it_pays() {
+        let mut job = crate::job::input_from_fixture_json(include_str!(
+            "../../../../fixtures/m4/wide-floor.json"
+        ))
+        .unwrap();
+        job.vbit_planning.as_mut().unwrap().transit = FinishTransit::Route;
+        let ctx = Context::new(&job).unwrap();
+        let cap = ctx.target.depth_cap().mm();
+        let target = |p: Point| Candidate {
+            family: PathFamily::Medial,
+            points: vec![Position::new(p, -cap)],
+            source_branch: None,
+        };
+        // The fixture pocket spans x 0..30, y 10..30 in setup coordinates.
+        let from = Position::new(Point::new(5., 20.), -cap);
+        // A join across the middle of the floor keeps the cone inside the shape,
+        // and is quicker than the lift it replaces.
+        let along = transit(&ctx, from, &target(Point::new(14., 20.)), cap);
+        assert!(along.link);
+        // The same join crossing the wall allowance leaves the shape, and falls
+        // back to a lift rather than cutting material the target keeps.
+        let across = transit(&ctx, from, &target(Point::new(5., 29.5)), cap);
+        assert!(!across.link);
+        assert_eq!(across.plane, lift_plane(&ctx, cap));
+        // A join that would spend longer at the cutting feed than the lift
+        // spends descending is a lift: the budget is that descent, measured at
+        // the cutting feed.
+        let budget = lift_budget(&ctx, across.plane, -cap);
+        assert!(budget > 10. && budget < 25., "budget {budget}");
+        let far = transit(&ctx, from, &target(Point::new(5. + budget + 1., 20.)), cap);
+        assert!(!far.link);
+    }
+
+    #[test]
+    fn transit_planes_report_the_lift_each_pass_depth_earns() {
+        for (name, fixture) in [
+            (
+                "wide-floor",
+                include_str!("../../../../fixtures/m4/wide-floor.json"),
+            ),
+            ("island", include_str!("../../../../fixtures/m4/island.json")),
+        ] {
+            let mut job = crate::job::input_from_fixture_json(fixture).unwrap();
+            let ctx = Context::new(&job).unwrap();
+            let mut planes = |t: FinishTransit| {
+                job.vbit_planning.as_mut().unwrap().transit = t;
+                let plan = plan_combined(&job).unwrap();
+                let mut zs: Vec<_> = plan
+                    .vbit_motions
+                    .iter()
+                    .filter(|m| m.kind == MotionKind::RapidRetract)
+                    .map(|m| m.end.z)
+                    .collect();
+                zs.sort_by(f64::total_cmp);
+                zs
+            };
+            let released = planes(FinishTransit::Retract);
+            let short = planes(FinishTransit::ShortLift);
+            assert_eq!(released.len(), short.len(), "{name}");
+            for (a, b) in released.iter().zip(short.iter()) {
+                assert_eq!(*a, ctx.clearance, "{name}");
+                assert!(
+                    *b <= *a && *b >= 0.,
+                    "{name}: a short lift may only stop lower, not higher"
+                );
+            }
+            assert!(
+                short.first().is_some_and(|z| *z < ctx.clearance),
+                "{name}: the short lift must actually shorten the retract"
+            );
+            assert!(
+                short.last().is_some_and(|z| *z == ctx.clearance),
+                "{name}: the stage must still end at the clearance plane"
+            );
+        }
+    }
 
     #[test]
     fn retained_target_matches_independent_geometry_and_access_queries() {

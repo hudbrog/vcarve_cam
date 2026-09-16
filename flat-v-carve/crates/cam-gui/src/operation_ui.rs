@@ -285,6 +285,8 @@ impl App {
                     app.operation_numbers(ui, ctx, if finish { &[20, 46, 5] } else { &[8, 9] });
                     if !finish {
                         app.operation_strategy(ui, ctx);
+                    } else {
+                        app.transit_panel(ui, ctx);
                     }
                 });
                 if !finish && self.flat_vcarve().rough.is_some() {
@@ -630,6 +632,47 @@ impl App {
                 }
             });
         observe_control("Operation clearing strategy", response.response.rect);
+    }
+
+    /// What the V-bit does between two cutting excursions. Every choice is
+    /// checked before it is emitted; the setting only decides how much margin
+    /// the planner is allowed to leave when the stock proof allows a join.
+    fn transit_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        use cam_core::vcarve::FinishTransit;
+        help::label(ui, "Between cuts");
+        let selected = self.flat_vcarve().finish.as_ref().map(|f| f.transit);
+        let response = egui::ComboBox::from_id_salt("finish-transit")
+            .width(ui.available_width())
+            .selected_text(match selected {
+                Some(FinishTransit::Retract) => "Retract to clearance",
+                Some(FinishTransit::ShortLift) => "Lift clear of the cut",
+                Some(FinishTransit::Route) => "Route through the cut",
+                None => "Choose…",
+            })
+            .show_ui(ui, |ui| {
+                for (name, mode) in [
+                    ("Retract to clearance", FinishTransit::Retract),
+                    ("Lift clear of the cut", FinishTransit::ShortLift),
+                    ("Route through the cut", FinishTransit::Route),
+                ] {
+                    let response = ui.selectable_label(selected == Some(mode), name);
+                    observe_control(name, response.rect);
+                    if response.clicked() {
+                        let id = self.operation_id();
+                        self.edit_job(ctx, &[], move |job| {
+                            crate::authoring::settings_mut_in(job, &id)
+                                .ok_or("This operation is not a Flat V-carve")?
+                                .finish
+                                .as_mut()
+                                .ok_or("Combined carving has no finishing stage")?
+                                .transit = mode;
+                            Ok(())
+                        });
+                        ui.close();
+                    }
+                }
+            });
+        observe_control("Between cuts", response.response.rect);
     }
 }
 

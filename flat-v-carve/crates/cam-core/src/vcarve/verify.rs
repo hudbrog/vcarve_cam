@@ -1,9 +1,10 @@
-use super::{Context, Execution, StageTransition, air, error, excursion, profile, routing};
+use super::{Context, Execution, StageTransition, air, error, excursion, routing, transit};
 use crate::{
     geometry::{Result, Segment},
     job::VcarveInput,
     motion::{Motion, MotionKind, Position},
     pocket::EndmillPlan,
+    stock::StockQuery,
 };
 use std::collections::BTreeMap;
 
@@ -62,17 +63,23 @@ fn check(ctx: &Context, base: usize, start: Position, moves: &[Motion]) -> Resul
         if m.feed_mm_min != expected {
             return Err(fail("feed differs from explicit tool setting"));
         }
+        // A lifted transit travels at an operator's clearance measured from a
+        // proven plane instead of from the stock top, so the entry and exit
+        // moves may sit anywhere between the stock top and the clearance plane.
+        // Below the stock top the cone stops being clear by construction and
+        // every step of the argument is the stock proof `transit` re-derives.
+        let lifted = |z: f64| z >= 0. && z <= ctx.clearance;
         let valid = match m.kind {
-            MotionKind::RapidXY => m.start.z == ctx.clearance && m.end.z == ctx.clearance,
+            MotionKind::RapidXY => lifted(m.start.z) && m.start.z == m.end.z,
             MotionKind::RapidRetract => {
                 xy == 0.
                     && drop < 0.
-                    && m.end.z == ctx.clearance
+                    && lifted(m.end.z)
                     && m.start.z <= 0.
                     && i > 0
                     && moves[i - 1].kind.cutting()
             }
-            MotionKind::Approach => xy == 0. && m.start.z == ctx.clearance && m.end.z == 0.,
+            MotionKind::Approach => xy == 0. && lifted(m.start.z) && m.end.z == 0.,
             MotionKind::Plunge => {
                 ctx.plunge_capable
                     && xy == 0.
@@ -176,13 +183,13 @@ pub(super) fn executions<'a>(
             "tool transition must follow all endmill work at the common clearance plane",
         ));
     }
+    let stock = StockQuery::endmill(&endmill.motions, ctx.mill.radius().mm())?;
     let minimum_margin = check(ctx, endmill.motions.len(), start, moves)?;
-    let stock = crate::stock::StockQuery::endmill(&endmill.motions, ctx.mill.radius().mm())?;
     let mut at = 0;
     let mut previous = start;
     let mut final_started = false;
     let mut progress: BTreeMap<String, f64> = BTreeMap::new();
-    for e in executions {
+    for (i, e) in executions.iter().enumerate() {
         if e.candidate
             .points
             .iter()
@@ -241,17 +248,6 @@ pub(super) fn executions<'a>(
             ));
         }
         progress.insert(key, prior.max(reached));
-        if !e.pruned_air
-            && previous.z <= 0.
-            && !profile(&e.candidate, e.pass_depth_mm)
-                .first()
-                .is_some_and(|&p| routing::can_link(ctx, previous, p))
-        {
-            return Err(error(
-                "INVALID_VBIT_LINK",
-                "linked execution cannot establish clearance and stock stepdown",
-            ));
-        }
         let mut expected = if e.pruned_air {
             if e.final_finish || !air(ctx, &e.candidate, e.pass_depth_mm, &stock) {
                 return Err(error(
@@ -270,12 +266,41 @@ pub(super) fn executions<'a>(
             )
         };
         let next = e.end_motion_id - endmill.motions.len();
+        // A lifted transit may stop short of the clearance plane, and how far
+        // short is the planner's policy: any height at or above the stock top
+        // clears the whole cone, which is what `check` enforces. Adopt the
+        // recorded height so the rest of the slice still has to match exactly.
+        let recorded_retract = (next > at)
+            .then(|| &moves[next - 1])
+            .filter(|m| m.kind == MotionKind::RapidRetract);
+        if let (Some(recorded), Some(expected_retract)) = (
+            recorded_retract,
+            expected
+                .last_mut()
+                .filter(|m| m.kind == MotionKind::RapidRetract),
+        ) {
+            expected_retract.end.z = recorded.end.z;
+        }
+        // An entry from below the stock top is a join: the excursion before it
+        // dropped its retract, so the travel is a cutting move and needs the
+        // proof that it removes nothing.
+        if !e.pruned_air
+            && i > 0
+            && previous.z < 0.
+            && !transit(ctx, previous, &e.candidate, e.pass_depth_mm).link
+        {
+            return Err(error(
+                "INVALID_VBIT_LINK",
+                "linked execution cannot establish clearance and stock stepdown",
+            ));
+        }
         // A coincident single-point path may contribute only its retract;
         // linking the following path removes that too, leaving an empty range.
         if expected
             .last()
             .is_some_and(|m| m.kind == MotionKind::RapidRetract)
             && next - at + 1 == expected.len()
+            && (next == at || moves[next - 1].kind != MotionKind::RapidRetract)
         {
             expected.pop();
         }

@@ -434,6 +434,224 @@ Two things are worth doing next, outside this objective:
   rather than emitted moves; loosening it would need the engine's own depth
   verification to show the headroom, which this investigation did not measure.
 
+### Fan travel: ordering (options A and B of the follow-up)
+
+Measured on the flower V-carve after the arc fit:
+
+| measure | finish (V-bit) | rough (endmill) |
+| --- | ---: | ---: |
+| cutting excursions (lift → cut → retract) | 156 | 23 |
+| cut length | 2 526 mm | 1 186 mm |
+| air travel | 3 720 mm | 761 mm |
+| transit between excursions | 1 764 mm (max 67.2) | 485 mm |
+| plunges, summed Z | 279 mm | 46 mm |
+
+**B (ordering) was measured and rejected, and is reverted.** The prototype
+refined the walk the planner already computes — bounded 2-opt stretches,
+single-path reversals, and every closed ring re-entered at the vertex nearest
+where the tool arrives. It did work on the program: finish transit
+**1 764 → 1 696 mm**, longest transition **67.2 → 60.3 mm**, cut length
+unchanged at 2 524 mm. But a 68 mm saving on a 4 900 mm program costs
+**0.4 s of plan time on every run** (7.9 → 8.3 s), for about 0.7 s of machine
+time at the programmed rapid rate. That trade is not worth a permanent
+increase in planning cost, so the ordering code is gone and only the
+measurement stays. The rough stage was never in question: its 23 features are
+about 22 mm apart and already visited once each, so its 485 mm is geography,
+not order.
+
+### Where the finish stage's remaining time actually goes
+
+Modelled from `02-vcarve-finish-T2.ngc` at the programmed feeds (cut 1 600,
+plunge 600 mm/min) with G0 at 5 000 mm/min:
+
+| | released (full retract) | with the short lift below |
+| --- | ---: | ---: |
+| cutting | 2 576 mm / 97 s | 2 576 mm / 97 s |
+| Z at plunge feed (approach + 2 mm plunge, 332 moves) | 1 110 mm / 111 s | 778 mm / 78 s |
+| rapid (retract + transit) | 2 915 mm / 35 s | 2 583 mm / 31 s |
+| total | **5 601 mm / 243 s** | **4 937 mm / 206 s** |
+
+The up-and-down is not the XY transit: 156 cycles cost 1 111 mm of descent at
+plunge feed and 35 s of rapid. Cutting is 101 s of the 247 s. That is why the
+lift height, not the tour, is the first lever.
+
+### D: what the 156 cycles are, and what an order could do
+
+The follow-up asked whether the fan is walked feature by feature. Measured on
+the surviving excursions of the flower finish stage:
+
+| measure | value |
+| --- | ---: |
+| lift cycles | 156 |
+| transit hops between them | 166 |
+| hops inside one artwork component | 139 (1 290 mm) |
+| hops between components | 27 (503 mm) |
+| hop length | median 7.0 mm, p90 23.5 mm, max 67 mm |
+| the same excursion ends, nearest-neighbour tour | 983 mm |
+| the same excursion ends, 2-opt tour | **838 mm** |
+
+The tour figures come from the same helper reading the same program, which
+delimits an excursion slightly differently (170 rather than 156 — it does not
+fold a surface contact point into the excursion it belongs to) and reports the
+programmed transit as 1 793 mm. So the order is roughly **2× the optimal
+tour**: a perfect walk would take the 1 764 mm down to about 840 mm, worth
+~11 s at the programmed rapid rate — not
+the up-and-down itself. The 7 mm median hop is real geography: the medial fan
+of a petal is a tree whose branches meet at junctions but *end* near different
+walls, so leaving a branch at its far end and entering the next one is a real
+7–20 mm move unless the tool walks back along the branch it just cut. Retracing
+that spine costs cut-feed time (1 600 mm/min) against a 0.5–0.9 s lift cycle,
+so the trade only pays on short spines; deciding it per spine needs a walk over
+the medial graph rather than a tour over branch ends.
+
+One related experiment was measured and dropped: ordering only the paths that
+survive air pruning (rather than every candidate, so that omitted paths cannot
+act as waypoints) left the flower's transit unchanged (1 764 → 1 794 mm) and
+removed the recorded proof for each pruned path, which is the audit trail
+`analysis.pruned_air_paths` and `vcarve_planning` report. It is not worth the
+lost evidence.
+
+**A (feature-local emission order) is deferred into the option below.** Its
+premise — that the tour is bad — did not survive measurement.
+`vcarve/verify.rs` enforces `BOUNDARY_FINISH_ORDER`: once the final
+boundary/detail family has run, nothing else may cut, and with one depth cap
+that family *is* the whole detail sweep. So the artwork is swept once per
+family, and that is what the 1 764 mm is: a global nearest-neighbour tour over
+the same 170 excursions costs 983 mm only because it visits each feature
+*once*, which the rule forbids. Sharing one feature sequence across both sweeps
+instead made the total *worse* (1 764 → 1 804 mm), because each sweep is
+already ordered best from its own start. The rule exists for the reason the
+operator gives — a later pass over already-finished geometry can leave a mark —
+so feature-local ordering belongs with the selectable behaviour below, behind a
+separation proof (no floor pass within the V-bit's cone reach of another
+feature's finished wall) rather than becoming the default.
+
+### C: the selectable finish behaviour, as built
+
+`vbit_planning.transit` chooses what the V-bit does between two cutting
+excursions. Every mode keeps every cut; they differ only in how much clearance
+the transit takes.
+
+| mode | between two excursions |
+| --- | --- |
+| `retract` (released behaviour, still the default for a job that has no such field) | lift to the global clearance plane above the stock top |
+| `short_lift` (default for a new combined carve) | lift to the same clearance measured from the pass depth |
+| `route` | keep the bit down and cut across, while that is quicker than lifting |
+
+A join below the stock top has to be argued for, and the argument is the shape
+itself: wherever the V-bit's cone at pass depth still fits inside the target,
+the cut it makes is one this stage already owes, because the target's own depth
+there is at least that deep. The planner decides that with
+`variable_radius_margin_mm` — the same continuous sweep bound the verifier
+applies to every recorded cut — and only keeps the join while it is quicker than
+the lift it replaces. Rapid moves are machine-side and not an input the planner
+owns, so the comparison uses the two feeds it does know: the lift's descent at
+the plunge feed against the join's travel at the cutting feed. That makes the
+test conservative in one direction only — a join is taken only if it wins even
+if the machine's rapids were instantaneous.
+
+Two details the verifier had to learn. A lifted transit enters and leaves at a
+height that is no longer the clearance plane, so `RapidXY`, `RapidRetract` and
+`Approach` are bounded by the stock top below and the clearance plane above
+instead of being pinned to the clearance plane. And an entry below the stock
+top is a join, which is now exactly the case whose shape bound has to hold.
+
+Measured on the flower, same cuts, same 156 cycles:
+
+| | released | `short_lift` |
+| --- | ---: | ---: |
+| finish air travel (`z >= 0`) | 3 720 mm | **3 056 mm** |
+| finish Z at plunge feed | 1 110 mm | **778 mm** |
+| finish rapid | 2 915 mm | **2 583 mm** |
+| finish total (modelled) | 243 s | **206 s** |
+| plan time | 7.9 s | 7.9 s |
+
+So the selectable behaviour is worth **37 s, 15 % of the finish stage**, at no
+planning cost and with no change to a single cutting move. The plane it stops
+at is never below the stock top: a pass deeper than the configured clearance
+leaves no room above it, and the released clearance plane stands.
+
+The first attempt at a join rule asked for something stronger: that the transit
+remove *nothing*, proved by rasterizing the corridor the cone sweeps and
+demonstrating that the rough-stage sweeps had already cleared every cell of it
+(`StockQuery::covered_transit_depth`). On the flower that proof held for **0 of
+166** connections, and it held at the first bisection step, which means the
+straight line between two excursions crosses ground the rough stage never
+touched: the lane ends sit in the leftovers a 3 mm endmill physically cannot
+reach, and the fan's hops are chords across the pocket rather than paths along
+its spine. Because every join that rule accepts is also a join the shape bound
+accepts, and because `route` additionally accepts the joins that *do* cut shape
+material, the stricter rule was redundant: **`route` supersedes it**, and it and
+its corridor rasterizer were removed rather than shipped as a mode that does
+nothing on real jobs.
+
+What that gives up is one guarantee: no mode now promises that a transit cuts
+nothing. `route`'s joins cut material this stage removes anyway, at pass depth,
+on the shape's own terms — but they are cuts, and they engage the cone
+sideways.
+
+### D, answered: the transit does not have to be a straight line
+
+The follow-up question was the right one. A lift costs the Z descent at the
+plunge feed, so on this job a cycle is worth about
+`6 mm / 600 mm·min⁻¹ = 0.6 s`, which is the same time as **16 mm of travel at
+the 1 600 mm·min⁻¹ cutting feed**. A detour is therefore free as long as it is
+under about 16 mm — and a chord that leaves the shape is not the only way to
+get there.
+
+Measured on the flower's own corner cluster (the five floor lanes around
+`x 155…170, y 25…38`, motions ≈1733…1822 of the lagging program):
+
+| | released | `route` |
+| --- | ---: | ---: |
+| lifts inside that one cluster | 15 | **6** |
+| the five corner lanes themselves | 5 separate lifts | **cut as one run** |
+
+Two things make that possible. First, a join straight through the middle is
+allowed whenever the shape itself allows it: the V-bit's cone at pass depth has
+to stay inside the target, which the same `variable_radius_margin_mm` bound the
+verifier applies to every recorded cut decides. Where the cone fits, the cut is
+one this stage already owes — the shape's own envelope there is at least that
+deep — so a join changes the order of removal and nothing else. Second, where
+the straight line cannot be used (a corner, or a chord that would leave the
+shape), the planner tries waypoints either side of the line and along it, keeps
+the shortest route whose every segment passes that same bound, and takes it
+only if it is quicker than the lift it replaces. Otherwise the short lift
+stands. `FinishTransit::Route` is that rule, and it is the only one this stage
+needs for joins: every join the stricter "removes nothing" rule accepted, this
+one accepts too.
+
+Measured on the whole stage, same cuts otherwise:
+
+| finish stage | flower (released → `route`) | flower_lagging (released → `route`) |
+| --- | ---: | ---: |
+| lift cycles (Z-feed moves) | 329 → **211** | 329 → **205** |
+| excursions | 156 → **109** | 167 → **105** |
+| Z at plunge feed | 1 110 → **486 mm** | 1 277 → **578 mm** |
+| rapid | 2 915 → **2 015 mm** | 3 082 → **2 053 mm** |
+| cutting | 2 576 → **2 946 mm** | 2 576 → **3 012 mm** |
+| modelled stage time | 243 → **183 s (−24 %)** | 261 → **195 s (−25 %)** |
+
+The join budget is what keeps the cycle count here at 211 rather than 191: joins
+between 16 mm and ~21 mm are still wins on a real machine, because the lift's own
+XY travel is at the rapid rate, but the planner cannot see that rate and refuses
+to assume it. If the ~20 extra cycles on the flower annoy more than the
+possibility of a join that is a tenth of a second slower, the budget is one
+comparison to drop.
+
+The cutting grows by about 550 mm because the routes are real cuts: they travel
+through material this stage removes anyway, but they do it with the bit engaged
+at pass depth, which is the same kind of cut the floor lanes already make. That
+engagement is the one mechanical cost of the option, and it is why `retract`
+and `short_lift` are still there: the hierarchy is exactly how much cutting on a
+transit the operator is willing to accept.
+
+The verifier needed no new rule. A route is emitted as the *same excursion*,
+with the detour prepended to its own path, so it is one continuous cut: the
+depths, feeds, entry, retract and per-move continuous sweep bound of the
+existing checks all apply unchanged. `VBIT_SWEEP_CLEARANCE` is what makes each
+metre of a route shape-safe, and a route that failed it would fail the plan.
+
 The export dialog's **Technical details** section now draws the move-length
 histogram the report published — one chart per stage and one for the whole
 program, square-root scaled so a dominant bucket cannot hide the tail, with the

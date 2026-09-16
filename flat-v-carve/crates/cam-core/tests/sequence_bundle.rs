@@ -137,6 +137,7 @@ fn carve_op(id: &str, face_id: Option<&str>, depth: f64) -> Operation {
                 max_quality_samples: 20_000,
                 reachability_max_cells: 4096,
                 stock_slices: 4,
+                transit: cam_core::vcarve::FinishTransit::Retract,
             }),
         }),
     }

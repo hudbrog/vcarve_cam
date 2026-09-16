@@ -169,6 +169,11 @@ pub fn set_mode_in(job: &mut CamJobV5, operation_id: &str, mode: FlatVcarveMode)
                 max_quality_samples: 1000000,
                 reachability_max_cells: 100000,
                 stock_slices: 8,
+                // A new combined carve lifts clear of the cut it just made and
+                // re-enters at feed instead of climbing to the clearance plane
+                // and back down. The operator can choose the full retract or a
+                // proved stay-down join on the finish settings.
+                transit: cam_core::vcarve::FinishTransit::ShortLift,
             },
         )),
     };

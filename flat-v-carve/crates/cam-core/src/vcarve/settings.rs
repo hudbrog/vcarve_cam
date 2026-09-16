@@ -5,6 +5,32 @@ use crate::{
     target::Target,
 };
 use serde::{Deserialize, Serialize};
+
+/// What the V-bit stage does between two cutting excursions: retract to the
+/// machine's clearance plane, lift only clear of the local material, or stay at
+/// pass depth and cut its way across.
+///
+/// The default is [`Self::Retract`] — the behaviour every saved job already
+/// has. A document that wants the shorter travel chooses explicitly, because
+/// the choice trades cycle time against how much a re-entered surface may be
+/// marked by an imperfect tool-length measurement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinishTransit {
+    /// Retract to the configured clearance above the stock top.
+    #[default]
+    Retract,
+    /// Lift only to the highest material the transit crosses, plus the
+    /// configured clearance: the same clearance, measured from the local
+    /// surface instead of the stock top.
+    ShortLift,
+    /// Keep the bit down and cut across to the next excursion whenever the shape
+    /// allows it: straight where the V-bit's cone at pass depth still fits
+    /// inside the target, otherwise around through the middle while that detour
+    /// is quicker than lifting. Falls back to a short lift.
+    Route,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VBitPlanningSettings {
@@ -17,6 +43,9 @@ pub struct VBitPlanningSettings {
     pub max_quality_samples: usize,
     pub reachability_max_cells: usize,
     pub stock_slices: usize,
+    /// How the tool travels between cutting excursions.
+    #[serde(default)]
+    pub transit: FinishTransit,
 }
 impl VBitPlanningSettings {
     pub fn validate(&self) -> Result<()> {

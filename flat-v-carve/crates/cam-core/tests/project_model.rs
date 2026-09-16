@@ -367,6 +367,7 @@ fn vbit_finish_settings() -> cam_core::vcarve::VBitPlanningSettings {
         max_quality_samples: 20_000,
         reachability_max_cells: 4_096,
         stock_slices: 4,
+        transit: cam_core::vcarve::FinishTransit::Retract,
     }
 }
 
