@@ -226,19 +226,6 @@ mod indexed_query_tests {
         motion::{MotionKind, Position},
     };
 
-    fn sweep(from: (f64, f64), to: (f64, f64), depth: f64) -> Motion {
-        Motion {
-            id: 0,
-            tool_id: "t".into(),
-            operation_id: "o".into(),
-            layer: 0,
-            kind: MotionKind::Cut,
-            start: Position::new(Point::new(from.0, from.1), -depth),
-            end: Position::new(Point::new(to.0, to.1), -depth),
-            feed_mm_min: Some(100.),
-        }
-    }
-
     #[test]
     fn analytic_index_deduplicates_only_identical_forward_sweeps() {
         let motion = Motion {

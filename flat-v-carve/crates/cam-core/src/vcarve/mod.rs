@@ -749,6 +749,56 @@ fn transit(ctx: &Context, from: Position, target: &Candidate, cap: f64) -> Trans
 fn lift_budget(ctx: &Context, plane: f64, target_z: f64) -> f64 {
     (plane - target_z).max(0.) * ctx.feed / ctx.plunge_feed
 }
+/// `candidate` with a detour prepended to it, when keeping the bit down and
+/// cutting across to it is quicker than lifting and the straight join would
+/// leave the shape. `None` wherever the lift stands.
+fn routed(
+    ctx: &Context,
+    moves: &[Motion],
+    executions: &[Execution],
+    candidate: &Candidate,
+    cap: f64,
+    final_finish: bool,
+) -> Option<Candidate> {
+    if ctx.settings.transit != FinishTransit::Route
+        || !candidate.points.iter().any(|p| p.depth() > 0.)
+    {
+        return None;
+    }
+    // The previous excursion ended with a placeholder retract, and it has to be
+    // one this stage would join rather than lift between.
+    let retract = moves.last()?;
+    let previous = executions.last()?;
+    if retract.kind != MotionKind::RapidRetract
+        || previous.pass_depth_mm != cap
+        || previous.final_finish != final_finish
+        || previous.pruned_air
+        || previous.end_motion_id <= previous.first_motion_id
+    {
+        return None;
+    }
+    let straight = transit(ctx, retract.start, candidate, cap);
+    if straight.link {
+        return None;
+    }
+    let first = *profile(candidate, cap).first()?;
+    let way = detour(
+        ctx,
+        retract.start,
+        first,
+        cap,
+        lift_budget(ctx, straight.plane, first.z),
+    )?;
+    let mut points = Vec::with_capacity(way.len() + 1 + candidate.points.len());
+    points.push(retract.start);
+    points.extend(way);
+    points.extend(candidate.points.iter().copied());
+    Some(Candidate {
+        family: candidate.family,
+        points,
+        source_branch: candidate.source_branch,
+    })
+}
 fn execute(
     ctx: &Context,
     stock: &EndmillStock<'_>,
@@ -772,39 +822,11 @@ fn execute(
     // spends its time descending at the plunge feed, the detour spends cut feed.
     // Prepending it to the excursion makes one continuous cut out of the two,
     // so the ordinary transit decision below sees a join rather than a lift.
-    let mut extended: Option<Candidate> = None;
-    if !pruned
-        && ctx.settings.transit == FinishTransit::Route
-        && candidate.points.iter().any(|p| p.depth() > 0.)
-    {
-        if let (Some(retract), Some(previous)) = (moves.last(), executions.last()) {
-            if retract.kind == MotionKind::RapidRetract
-                && previous.pass_depth_mm == cap
-                && previous.final_finish == final_finish
-                && !previous.pruned_air
-                && previous.end_motion_id > previous.first_motion_id
-            {
-                let straight = transit(ctx, retract.start, candidate, cap);
-                if !straight.link {
-                    if let Some(&first) = profile(candidate, cap).first() {
-                        let budget = lift_budget(ctx, straight.plane, first.z);
-                        if let Some(way) = detour(ctx, retract.start, first, cap, budget) {
-                            let mut points =
-                                Vec::with_capacity(way.len() + 1 + candidate.points.len());
-                            points.push(retract.start);
-                            points.extend(way);
-                            points.extend(candidate.points.iter().copied());
-                            extended = Some(Candidate {
-                                family: candidate.family,
-                                points,
-                                source_branch: candidate.source_branch,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let extended = if pruned {
+        None
+    } else {
+        routed(ctx, moves, executions, candidate, cap, final_finish)
+    };
     let candidate = extended.as_ref().unwrap_or(candidate);
     // The previous excursion ended with a placeholder retract; the transit this
     // one needs decides what happens to it — a join at depth, a shorter lift, or
