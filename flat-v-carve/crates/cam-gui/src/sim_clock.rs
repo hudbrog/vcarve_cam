@@ -231,6 +231,7 @@ mod tests {
             stage: 0,
             interpolation: Interpolation::Feed,
             feed_mm_min: Some(feed),
+            arc: None,
             x0: x,
             y0: -4.,
             z0: -1.,
@@ -351,6 +352,7 @@ mod tests {
         let rapid = Motion {
             interpolation: Interpolation::Rapid,
             feed_mm_min: None,
+            arc: None,
             x0: 0.,
             y0: 4.,
             z0: 5.,
@@ -418,6 +420,7 @@ mod tests {
             stage: 0,
             interpolation: Interpolation::Feed,
             feed_mm_min: Some(600.),
+            arc: None,
             x0: -10.,
             y0: 0.,
             z0,

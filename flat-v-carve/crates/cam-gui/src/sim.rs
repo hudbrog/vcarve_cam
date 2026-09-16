@@ -11,6 +11,14 @@ const PLUNGE_AREA_EPS: f64 = 1e-16;
 /// Rapid rate a machine that states none is simulated with. The timings say
 /// when this fallback is in use instead of presenting it as machine truth.
 pub const DEFAULT_RAPID_RATE_MM_MIN: f64 = 5000.;
+/// Chord error the swept envelope accepts when it walks a programmed arc, in mm.
+/// The preview field is a raster: this keeps the walked curve inside a fraction
+/// of a display cell while the move stays **one** motion, so the display's
+/// motion index remains the plan's motion index.
+const ARC_CHORD_MM: f64 = 0.002;
+/// Upper bound on the chords one arc is swept with, so a tiny full circle cannot
+/// ask for unbounded work.
+const MAX_ARC_CHORDS: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,6 +181,15 @@ pub struct Motion {
     /// Required on a linear feed, absent on a rapid. The clock needs it; the
     /// removal model does not.
     pub feed_mm_min: Option<f64>,
+    /// The programmed arc this move is, when the program carries one. The move
+    /// stays **one** motion — start, end and the arc between them — so the
+    /// display's motion index stays the plan's motion index and every table the
+    /// display indexes by it (stages, groups, vertices, headings) keeps lining
+    /// up. Expanding an arc into a chord walk here would silently shift all of
+    /// them, which is what `the_display_stream_is_one_motion_per_plan_motion`
+    /// exists to catch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc: Option<cam_core::toolpath::ArcMove>,
     pub x0: f64,
     pub y0: f64,
     pub z0: f64,
@@ -181,13 +198,30 @@ pub struct Motion {
     pub z1: f64,
 }
 impl Motion {
+    /// XY endpoints, for the arc geometry that is defined between them.
+    pub fn start_xy(&self) -> cam_core::geometry::Point {
+        cam_core::geometry::Point::new(self.x0, self.y0)
+    }
+
+    pub fn end_xy(&self) -> cam_core::geometry::Point {
+        cam_core::geometry::Point::new(self.x1, self.y1)
+    }
     /// Path length of the move, which is what a feed rate is measured against:
-    /// a plunge or a ramp is timed by its real path, not by its XY projection.
+    /// a plunge or a ramp is timed by its real path, not by its XY projection,
+    /// and an arc by the arc it is rather than by its chord.
     pub fn length_mm(&self) -> f64 {
         let dx = self.x1 - self.x0;
         let dy = self.y1 - self.y0;
         let dz = self.z1 - self.z0;
-        (dx * dx + dy * dy + dz * dz).sqrt()
+        let xy = match self.arc {
+            // A degenerate arc (a coincident centre, a zero radius) falls back
+            // to the chord: the move is still a move.
+            Some(arc) => arc
+                .length(self.start_xy(), self.end_xy())
+                .unwrap_or_else(|| (dx * dx + dy * dy).sqrt()),
+            None => (dx * dx + dy * dy).sqrt(),
+        };
+        (xy * xy + dz * dz).sqrt()
     }
     /// Program time this move takes on a machine with `rapid_rate_mm_min`.
     /// A zero-length move takes no time: no state changes across it, and a
@@ -213,10 +247,18 @@ impl Motion {
     /// The cutter tip while the animation is inside this move.
     pub fn point_at(&self, fraction: f64) -> [f64; 3] {
         let t = fraction.clamp(0., 1.);
+        let z = self.z0 + (self.z1 - self.z0) * t;
+        // Inside an arc the tool follows the curve, not the chord: the marker,
+        // the trail and the material all read their position from here.
+        if let Some(arc) = self.arc
+            && let Some(point) = arc.point_at(self.start_xy(), self.end_xy(), t)
+        {
+            return [point.x, point.y, z];
+        }
         [
             self.x0 + (self.x1 - self.x0) * t,
             self.y0 + (self.y1 - self.y0) * t,
-            self.z0 + (self.z1 - self.z0) * t,
+            z,
         ]
     }
 }
@@ -559,6 +601,43 @@ impl Field {
         if end <= start {
             return Ok(());
         }
+        // A programmed arc is swept as chords of the *whole* arc, at fixed
+        // fractions of it, so any partition of the move still lands on the same
+        // chords and removes the same material. The move itself stays one
+        // motion: expanding it here keeps the display's index space aligned.
+        if let Some(arc) = motion.arc
+            && let Some(chords) = arc_chord_count(arc, motion)
+        {
+            for chord in 0..chords {
+                let (from, to) = (
+                    chord as f64 / chords as f64,
+                    (chord + 1) as f64 / chords as f64,
+                );
+                let (lo, hi) = (start.max(from), end.min(to));
+                if hi <= lo {
+                    continue;
+                }
+                let span = to - from;
+                let segment = Motion {
+                    arc: None,
+                    x0: motion.point_at(from)[0],
+                    y0: motion.point_at(from)[1],
+                    z0: motion.point_at(from)[2],
+                    x1: motion.point_at(to)[0],
+                    y1: motion.point_at(to)[1],
+                    z1: motion.point_at(to)[2],
+                    ..motion.clone()
+                };
+                self.sweep(&segment, (lo - from) / span, (hi - from) / span)?;
+            }
+            return Ok(());
+        }
+        self.sweep(motion, start, end)
+    }
+
+    /// The straight-line sweep itself: the geometry the reference simulator
+    /// defines, applied over a window of one linear move.
+    fn sweep(&mut self, motion: &Motion, start: f64, end: f64) -> Result<(), String> {
         let a = motion.point_at(start);
         let b = motion.point_at(end);
         if -a[2] <= 0. && -b[2] <= 0. {
@@ -727,6 +806,21 @@ impl Field {
         Ok(())
     }
 }
+/// How many chords one arc is swept with, bounded so the sagitta stays inside
+/// [`ARC_CHORD_MM`]. `2*acos(1 - e/r)` is the exact step angle whose sagitta is
+/// `e`. `None` when the arc geometry is degenerate: the chord between the ends
+/// is then all there is, and the straight sweep already handles it.
+fn arc_chord_count(arc: cam_core::toolpath::ArcMove, motion: &Motion) -> Option<usize> {
+    let radius = arc.radius(motion.start_xy())?;
+    let sweep = arc.sweep_rad(motion.start_xy(), motion.end_xy())?;
+    let step = if ARC_CHORD_MM >= radius {
+        std::f64::consts::PI
+    } else {
+        2. * (1. - ARC_CHORD_MM / radius).acos()
+    };
+    Some(((sweep / step).ceil() as usize).clamp(1, MAX_ARC_CHORDS))
+}
+
 fn coverage(c: f64, a2: f64, b: f64, inv2a: f64) -> Option<(f64, f64)> {
     if inv2a == 0. {
         return if c > 0. { None } else { Some((0., 1.)) };
@@ -970,8 +1064,9 @@ impl Playback {
 /// display process can rebuild the exact replay input without parsing a JSON
 /// array of positions.
 /// kind u8 | stage u16 | interpolation u8 | tool u32 | feed f64 |
+/// arc centre x f64 | arc centre y f64 | arc flags u8 | pad 7 |
 /// six f64 coordinates.
-pub const MOTION_BYTES: usize = 64;
+pub const MOTION_BYTES: usize = 88;
 
 pub fn interpolation_code(interpolation: Interpolation) -> u8 {
     match interpolation {
@@ -1013,6 +1108,19 @@ pub fn encode_motions(motions: &[Motion]) -> Vec<u8> {
         out.push(interpolation_code(motion.interpolation));
         out.extend_from_slice(&(motion.tool as u32).to_le_bytes());
         out.extend_from_slice(&motion.feed_mm_min.unwrap_or(f64::NAN).to_le_bytes());
+        // A programmed arc travels with its move: the centre and the direction
+        // here, the endpoints in the coordinates below.
+        let (center_x, center_y) = motion
+            .arc
+            .map_or((f64::NAN, f64::NAN), |arc| (arc.center.x, arc.center.y));
+        out.extend_from_slice(&center_x.to_le_bytes());
+        out.extend_from_slice(&center_y.to_le_bytes());
+        out.push(match motion.arc {
+            None => 0,
+            Some(arc) if arc.clockwise => 1,
+            Some(_) => 2,
+        });
+        out.extend_from_slice(&[0u8; 7]);
         for value in [
             motion.x0, motion.y0, motion.z0, motion.x1, motion.y1, motion.z1,
         ] {
@@ -1033,9 +1141,12 @@ pub fn decode_motions(bytes: &[u8], tools: usize) -> Result<Vec<Motion>, String>
         let interpolation = code_interpolation(record[3]);
         let tool = u32::from_le_bytes(record[4..8].try_into().unwrap()) as usize;
         let feed = f64::from_le_bytes(record[8..16].try_into().unwrap());
+        let center_x = f64::from_le_bytes(record[16..24].try_into().unwrap());
+        let center_y = f64::from_le_bytes(record[24..32].try_into().unwrap());
+        let arc_flags = record[32];
         let mut values = [0_f64; 6];
         for (i, value) in values.iter_mut().enumerate() {
-            let at = 16 + i * 8;
+            let at = 40 + i * 8;
             *value = f64::from_le_bytes(record[at..at + 8].try_into().unwrap());
         }
         if tool >= tools.max(1) {
@@ -1053,6 +1164,15 @@ pub fn decode_motions(bytes: &[u8], tools: usize) -> Result<Vec<Motion>, String>
             // motion without one is kept as it is: the clock refuses to time it
             // rather than the display refusing to show the plan at all.
             feed_mm_min: feed.is_finite().then_some(feed),
+            arc: match arc_flags {
+                1 | 2 if center_x.is_finite() && center_y.is_finite() => {
+                    Some(cam_core::toolpath::ArcMove {
+                        center: cam_core::geometry::Point::new(center_x, center_y),
+                        clockwise: arc_flags == 1,
+                    })
+                }
+                _ => None,
+            },
             x0: values[0],
             y0: values[1],
             z0: values[2],
@@ -1178,6 +1298,7 @@ mod tests {
                 Interpolation::Feed
             },
             feed_mm_min: if rapid { None } else { Some(120.) },
+            arc: None,
             x0: x,
             y0: x + 1.,
             z0: -x,
@@ -1225,6 +1346,80 @@ mod tests {
         assert!(decode_motions(&bytes, 1).is_err());
     }
 
+    /// The whole display indexes motions by the plan's index — the stages, the
+    /// timeline spans, the path vertices, the picker, the knife headings. A
+    /// programmed arc therefore travels **inside** one motion: it is timed by
+    /// its arc, positioned along its arc, and swept as chords of its arc, and
+    /// none of that may add or remove a motion.
+    #[test]
+    fn an_arc_travels_with_its_motion_instead_of_expanding_it() {
+        use cam_core::geometry::Point;
+        use cam_core::toolpath::ArcMove;
+
+        let quarter = ArcMove {
+            center: Point::new(0., 0.),
+            clockwise: false,
+        };
+        let arc = Motion {
+            kind: "cut".into(),
+            tool: 0,
+            stage: 0,
+            interpolation: Interpolation::Feed,
+            feed_mm_min: Some(600.),
+            arc: Some(quarter),
+            x0: 10.,
+            y0: 0.,
+            z0: -1.,
+            x1: 0.,
+            y1: 10.,
+            z1: -1.,
+        };
+        // The move is timed and measured by its arc, not by its chord.
+        let arc_length = std::f64::consts::FRAC_PI_2 * 10.;
+        assert!((arc.length_mm() - arc_length).abs() < 1e-9);
+        let chord = ((10_f64).powi(2) + (10_f64).powi(2)).sqrt();
+        assert!(arc.length_mm() > chord);
+        // Halfway through it is on the circle, not on the chord.
+        let middle = arc.point_at(0.5);
+        let on_circle = (middle[0] * middle[0] + middle[1] * middle[1]).sqrt();
+        assert!((on_circle - 10.).abs() < 1e-9, "{middle:?}");
+        assert!((middle[2] + 1.).abs() < 1e-9, "z stays linear: {middle:?}");
+
+        // The wire carries the arc, so the display process rebuilds the same
+        // motion — and the same count.
+        let bytes = encode_motions(std::slice::from_ref(&arc));
+        let decoded = decode_motions(&bytes, 1).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].arc, Some(quarter));
+        assert_eq!(decoded[0].length_mm().to_bits(), arc.length_mm().to_bits());
+
+        // A flat quarter-circle cut: the material follows the curve. A cell on
+        // the arc is cut; a cell just inside the chord — which a straight move
+        // would have removed — is not.
+        let stock = Stock {
+            x0: -16.,
+            y0: -16.,
+            x1: 16.,
+            y1: 16.,
+            thickness_mm: 4.,
+        };
+        let tools = [ToolSpec::Endmill {
+            diameter: 0.6,
+            cutting_length: 12.,
+        }];
+        let mut field = Field::new(stock, &tools, 0.05).unwrap();
+        field.apply(&arc, 0., 1.).unwrap();
+        let cut_at = |field: &Field, x: f64, y: f64| {
+            let col = ((x - stock.x0) / field.cell).floor() as usize;
+            let row = ((y - stock.y0) / field.cell).floor() as usize;
+            field.cell_at(col, row).0 > 0
+        };
+        // (7.07, 7.07) is on the arc; the chord runs through (5, 5), which the
+        // arc does not touch.
+        assert!(cut_at(&field, 7.07, 7.07), "the arc is cut");
+        assert!(!cut_at(&field, 5., 5.), "the chord is not cut");
+    }
+
     /// The clock is the plan's own arithmetic: a feed move costs its length at
     /// its programmed feed, a rapid costs its length at the machine's rate, and
     /// the facing job's pass/plunge ratio comes out of the numbers rather than
@@ -1237,6 +1432,7 @@ mod tests {
             stage: 0,
             interpolation: Interpolation::Feed,
             feed_mm_min: Some(2400.),
+            arc: None,
             x0: 0.,
             y0: 0.,
             z0: -1.,
@@ -1250,6 +1446,7 @@ mod tests {
             stage: 0,
             interpolation: Interpolation::Feed,
             feed_mm_min: Some(600.),
+            arc: None,
             x0: 0.,
             y0: 0.,
             z0: 0.,
@@ -1263,6 +1460,7 @@ mod tests {
             stage: 0,
             interpolation: Interpolation::Rapid,
             feed_mm_min: None,
+            arc: None,
             x0: 0.,
             y0: 0.,
             z0: 5.,
@@ -1295,6 +1493,7 @@ mod tests {
                 stage: 0,
                 interpolation: Interpolation::Feed,
                 feed_mm_min: None,
+                arc: None,
                 x0: 0.,
                 y0: 0.,
                 z0: -1.,
@@ -1332,6 +1531,7 @@ mod tests {
             stage: 0,
             interpolation: Interpolation::Feed,
             feed_mm_min: Some(feed),
+            arc: None,
             x0: x,
             y0: 0.,
             z0: -1.,
@@ -1345,6 +1545,7 @@ mod tests {
             stage: 0,
             interpolation: Interpolation::Feed,
             feed_mm_min: Some(100.),
+            arc: None,
             x0: 5.,
             y0: 0.,
             z0: -1.,
@@ -1417,6 +1618,7 @@ mod tests {
             stage: 1,
             interpolation: Interpolation::Feed,
             feed_mm_min: Some(240.),
+            arc: None,
             x0: -3.,
             y0: -1.,
             z0,
@@ -1478,6 +1680,7 @@ mod tests {
                 stage: 0,
                 interpolation: Interpolation::Feed,
                 feed_mm_min: Some(300.),
+                arc: None,
                 x0: -6. + i as f64,
                 y0: -6.,
                 z0: -1.,
@@ -1550,6 +1753,7 @@ mod tests {
                         stage: 0,
                         interpolation: Interpolation::Feed,
                         feed_mm_min: Some(100.),
+                        arc: None,
                         x0: x,
                         y0: -2.5,
                         z0: -0.5,
@@ -1612,6 +1816,7 @@ mod tests {
             stage,
             interpolation: Interpolation::Feed,
             feed_mm_min: Some(100.),
+            arc: None,
             x0: -1.5,
             y0: -1.5,
             z0: z,
@@ -1677,6 +1882,7 @@ mod tests {
                 stage: 0,
                 interpolation: Interpolation::Feed,
                 feed_mm_min: Some(100.),
+                arc: None,
                 x0: -8. + (i % 20) as f64 * 0.8,
                 y0: -8. + (i / 20) as f64 * 0.8,
                 z0: -0.5,

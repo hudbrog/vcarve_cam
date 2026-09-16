@@ -13,6 +13,52 @@ export async function gui10Scenario({control,state,waitFor,send,evaluate,sleep,r
     if (!value) throw new Error('the probe publishes no machine warnings');
     return value;
   };
+  // The cutter the display drew and the move the material is being cut by have
+  // to agree, in the tool they name and in the point they are at. The display's
+  // motion stream and its stage tables share one index, so a stream that grew —
+  // a programmed arc expanded into a chord walk — puts the tool a whole stage
+  // ahead of the material it is cutting; and the plan states its positions in
+  // millimetres, so a marker that skips the scene normalization is drawn tens
+  // of scene units from its own path.
+  const agree = snapshot => {
+    const state = simulation(snapshot);
+    if (state.displayMotions !== state.planMotions)
+      throw new Error(
+        `the display stream has ${state.displayMotions} motions for a ${state.planMotions}-motion plan`,
+      );
+    // Nothing is drawn before the program starts; everywhere else the cutter
+    // has to be there, holding the tool its own move is cut with.
+    if (state.fraction > 0 && !state.markerToolId)
+      throw new Error(`the clock is inside motion ${state.prefix} but no cutter is drawn`);
+    if (state.markerToolId && state.markerToolId !== state.stageToolId)
+      throw new Error(
+        `the tool marker shows ${state.markerToolId} while the material's stage is ${state.stageToolId}`,
+      );
+    // The plan states the tip in millimetres; the viewport draws in scene
+    // coordinates. The cutter the display drew has to be that same point after
+    // the one normalization every drawn vertex takes — a tip that keeps its
+    // millimetres is a marker off in the distance with a trail running off the
+    // screen, which is how the report arrived.
+    if (state.planTip) {
+      const [x0, y0, x1, y1] = state.bounds;
+      const size = Math.max(x1 - x0, y1 - y0, 0.001);
+      const expected = [
+        ((state.planTip[0] - (x0 + x1) / 2) / size) * 1.6,
+        ((state.planTip[1] - (y0 + y1) / 2) / size) * 1.6,
+        (state.planTip[2] / size) * 1.6,
+      ];
+      const drawn = state.sceneTip;
+      if (!drawn)
+        throw new Error(`the material is at a cutter but nothing is drawn there: ${JSON.stringify(state)}`);
+      for (let axis = 0; axis < 3; axis++) {
+        if (Math.abs(drawn[axis] - expected[axis]) > 1e-3)
+          throw new Error(
+            `the drawn cutter tip ${JSON.stringify(drawn)} is not the plan's own ${JSON.stringify(expected)} at motion ${state.prefix}`,
+          );
+      }
+    }
+    return state;
+  };
   const drop = async (json, name) => {
     await evaluate(`(()=>{const t=new DataTransfer();t.items.add(new File([${JSON.stringify(json)}],${JSON.stringify(name)},{type:'application/json'}));document.getElementById('cam').dispatchEvent(new DragEvent('drop',{dataTransfer:t,bubbles:true,cancelable:true}));})()`);
   };
@@ -45,6 +91,7 @@ export async function gui10Scenario({control,state,waitFor,send,evaluate,sleep,r
     240,
   );
   const clock = simulation(timed);
+  agree(timed);
   if (!(clock.totalSeconds > 60 && clock.totalSeconds < 400))
     throw new Error(`the facing job's modeled time is ${clock.totalSeconds} s`);
   if (!clock.rapidRateAssumed || clock.rapidRateMmMin !== 5000)
@@ -69,7 +116,9 @@ export async function gui10Scenario({control,state,waitFor,send,evaluate,sleep,r
   for (let index = 0; index < 8; index++) {
     await sleep(350);
     elapsed += 0.35;
-    samples.push(simulation(await state()));
+    const sample = await state();
+    agree(sample);
+    samples.push(simulation(sample));
   }
   if (await state().then(s => s.controls.Pause)) await control('Pause');
   await waitFor(s => !s.active, 'playback paused');
@@ -115,6 +164,7 @@ export async function gui10Scenario({control,state,waitFor,send,evaluate,sleep,r
   for (let index = 0; index < 6; index++) {
     await sleep(300);
     const sample = await state();
+    agree(sample);
     wallSamples.push({
       prefix: simulation(sample).prefix,
       fraction: simulation(sample).fraction,
@@ -205,7 +255,7 @@ export async function gui10Scenario({control,state,waitFor,send,evaluate,sleep,r
   // --- Fit maps the whole program into one window at the same ratios --------
   await control('Playback Fit');
   const fitted = await waitFor(
-    s => !s.active && simulation(s).fit,
+    s => !s.active && simulation(s).fit && agree(s),
     'the whole program fitted',
     120,
   );

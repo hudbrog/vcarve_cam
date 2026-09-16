@@ -20,6 +20,14 @@ const source = JSON.parse(
 source.operations[0].settings.settings.max_depth_mm = 3.0;
 const endmill = source.tools.find(tool => tool.id === 'endmill');
 endmill.assembly = {shaft_diameter_mm: 2.5, stickout_mm: 0.8};
+// Ask for the arc fit too, so the fixture's motion stream carries programmed
+// arcs: the display has to keep one motion per plan motion with them present.
+const tolerances = source.tolerances;
+const budget = Math.min(
+  tolerances.motion_tolerance_mm ?? Infinity,
+  tolerances.verification_tolerance_mm ?? Infinity,
+);
+tolerances.arc_fit_tolerance_mm = Math.min(budget, 0.005);
 
 const machine = JSON.parse(
   readFileSync(path.join(root, 'fixtures/gui2/machine.json'), 'utf8'),

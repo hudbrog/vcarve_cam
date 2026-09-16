@@ -90,7 +90,10 @@ fn filled_artwork_offers_its_own_outline_as_a_knife_line() {
     let mut service = Retained::new();
     let (meta, _) =
         session::execute(&mut service, Command::generate(flower.to_json().unwrap())).unwrap();
-    assert_eq!(meta.motions, 813);
+    // 813 moves before the knife's path simplification landed, 267 after it:
+    // the merge spends the declared tolerance on fewer, longer moves. The number
+    // is pinned so a further change to the merge has to say so here.
+    assert_eq!(meta.motions, 267);
     assert_eq!(meta.report["gui2"]["checks"]["exportReady"], true);
     assert!(
         meta.stock
@@ -229,6 +232,14 @@ fn knife_execution_preserves_stock_and_replays_exact_checked_bytes() {
     let (meta, payload) =
         session::execute(&mut service, session::Command::generate(text.clone())).unwrap();
     assert!(meta.motions > 10, "{}", meta.report);
+    // The knife's swivels are arcs, and an arc travels inside one motion: the
+    // display's stream stays one motion per plan motion, which is what keeps the
+    // stage spans, the headings and the paths on the same index.
+    assert_eq!(
+        meta.sim.as_ref().map(|sim| sim.motions),
+        Some(meta.motions),
+        "the display stream must stay one motion per plan motion"
+    );
     assert_eq!(meta.report["gui2"]["checks"]["exportReady"], true);
     assert!(
         !meta.report["gui2"]["knifeMotions"]

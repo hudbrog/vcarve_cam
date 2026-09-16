@@ -538,9 +538,9 @@ pub fn scene(
             // A knife removes no material, so no cell ever records this stage
             // and the index only has to exist for the wire format. The machine
             // execution still comes from the plan, so a knife move is timed by
-            // its own cutting, plunge or swivel feed — and a swivel arc is
-            // walked as bounded chords like everywhere else in the display.
-            .flat_map(|m| crate::scene::sim_motions(m, 0, 0, "rapid_xy"))
+            // its own cutting, plunge or swivel feed — and a swivel arc travels
+            // with the motion, so one planned move stays one display move.
+            .map(|m| crate::scene::sim_motion(m, 0, 0, "rapid_xy"))
             .collect::<Vec<_>>();
         report["inspection"] = json!(inspection::inspect_plan(plan).map_err(|e| e.to_string())?);
         // The same two machine checks a milling job gets. A knife cuts no

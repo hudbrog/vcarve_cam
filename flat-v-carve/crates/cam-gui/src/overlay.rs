@@ -246,7 +246,7 @@ fn blade(out: &mut Overlay, marker: &Marker, offset: f32, depth: f32) {
     outline(out, &mark, BLADE_LINE);
 }
 
-const SELECT_FILL_ENDMILL: [f32; 4] = [0.55, 0.85, 0.95, 0.30];
+pub(crate) const SELECT_FILL_ENDMILL: [f32; 4] = [0.55, 0.85, 0.95, 0.30];
 /// The shaft is part of the tool body but not part of the cut, so it is drawn
 /// dimmer than the cutting portion.
 const SHAFT_FILL: [f32; 4] = [0.62, 0.66, 0.72, 0.22];
@@ -256,7 +256,7 @@ const HOLDER_FILL: [f32; 4] = [0.78, 0.72, 0.55, 0.30];
 const HOLDER_LINE: [f32; 4] = [0.92, 0.88, 0.72, 0.9];
 /// The in-flight move's cut part: the same colour the cutting paths use, so it
 /// reads as the path the tool is making rather than a selection.
-const TRAIL_LINE: [f32; 4] = [1., 0.62, 0.2, 0.85];
+pub(crate) const TRAIL_LINE: [f32; 4] = [1., 0.62, 0.2, 0.85];
 
 fn vertex(p: [f32; 3], color: [f32; 4]) -> Vertex {
     Vertex { position: p, color }
@@ -473,6 +473,7 @@ mod tests {
                     stage: 0,
                     interpolation: Interpolation::Feed,
                     feed_mm_min: Some(100.),
+                    arc: None,
                     x0: 0.,
                     y0: 0.,
                     z0: 0.,

@@ -12,9 +12,9 @@ Everything below is in the uncommitted worktree that starts from `0fe0a8d`
 ## What the user can now do
 
 * Play the facing job as one continuous pass instead of a slide show. Its
-  generated plan has **47 motions** and **151.1 s** of modeled motion time; the
-  longest feed move (a 300.2 mm pass at 2400 mm/min) takes **7.505 s** and the
-  shortest (a 14.8 mm stepover) takes **0.370 s**. Under the old transport every
+  generated plan has **31 motions** and **89.94 s** of modeled motion time; the
+  longest feed move (a 250.2 mm pass at 2400 mm/min) takes **6.255 s** and the
+  shortest (a 24.8 mm stepover) takes **0.620 s**. Under the old transport every
   motion cost the same step, so the whole job was one 20-second pass at 1×.
 * Read where the program is in machine terms: `Program time · 0:37 / 2:31
   modeled motion · 42% into motion 12 · feed 2400 mm/min`.
@@ -219,7 +219,7 @@ pre-existing failure recorded below.
 | `sim::tests::the_time_table_moves_between_time_and_position` | position → time → position round trips, zero-length moves are skipped, and a position never carries a fraction of exactly one |
 | `sim::tests::a_feed_without_a_rate_is_refused_by_the_clock_not_by_the_display` | the stream still decodes and the clock refuses to invent a feed; a machine with no rapid rate uses the stated fallback and says so |
 | `sim_clock::tests` | an advance inside a move moves the tip and returns seconds; a target behind the clock asks for a restore; the advanced frame equals a cold replay; a raster patch touches only the tiles that changed |
-| `scene_frame::the_facing_job_is_timed_by_its_own_feeds` | the tester's own job: 2400 mm/min reaches the stream, rapids carry none, the longest feed move takes more than 3× the shortest (measured 7.505 s against 0.370 s), the total is the program's own 151.1 s rather than a fixed playback window, and every motion is timed by its own length and rate |
+| `scene_frame::the_facing_job_is_timed_by_its_own_feeds` | the tester's own job: 2400 mm/min reaches the stream, rapids carry none, the longest feed move takes more than 3× the shortest, the total is the program's own motion time rather than a fixed playback window, and every motion is timed by its own length and rate |
 | `knife::` (the GUI6 knife tour) | a knife stage is timeable: its 150, 50 and 75 mm/min feeds reach the stream and the table builds |
 | `overlay::tests::a_cutter_body_reaches_exactly_as_far_as_the_removal` | **S2/D6**: for an endmill and a truncated V-bit at 0.5, 1.4 and 3.0 mm, a single plunge's removed footprint equals the profile's radius at that depth within one cell, and every profile ring agrees with the cutting envelope at its own height |
 | `overlay::tests::the_knife_blade_stands_along_the_modeled_heading` | the blade reaches `blade_offset` along +X at heading 0 and along +Y at heading 90°, and stands `max_cut_depth` above the tip |
@@ -242,16 +242,17 @@ alongside two screenshots:
 
 | Step | Recorded |
 |---|---|
-| a machine clock | 63 motions, **164.03 s** of modeled motion, rapid rate 5000 mm/min *assumed* (the job states none) |
-| 1× is continuous | eight samples inside **one** pass: fraction 0.084 → 0.510, program time 0.58 s → 3.14 s, feed 2400 mm/min, 3.14 s of program over 2.8 s of wall clock |
-| Fit | 8.202× — 164.03 s / 20 s, the program in one window at its own ratios |
+| a machine clock | 31 motions, **89.94 s** of modeled motion, rapid rate 5000 mm/min *assumed* (the job states none) |
+| 1× is continuous | eight samples inside **one** pass: fraction 0.080 → 0.487, program time 0.57 s → 3.12 s, feed 2400 mm/min, 3.12 s of program over 2.8 s of wall clock |
+| the cutter is on its own move | every sample of that pass: the drawn tip (`sceneTip`, scene coordinates) is the normalization of `planTip` in millimetres, and the tool the marker draws is the tool the stream names |
+| Fit | 4.497× — 89.94 s / 20 s, the program in one window at its own ratios |
 | an unstated assembly | `{shaftDiameterMm: null, stickoutMm: null}` and no warnings: the display does not guess |
-| the holder warning | ER20 nut **0.7 mm** inside the material from motion 83, on a **0.4 mm** raster, one row |
-| a warning seeks | the row's **Show** puts the display at motion 83, 4.27 s into the program |
-| walls move with the floor | six samples inside **one** pass (fraction 0.072 → 0.324) carry six different wall revisions (261 → 368) and 143 → 158 → 156 wall instances |
+| the holder warning | ER20 nut **0.7 mm** inside the material from motion 19, on a **0.4 mm** raster, one row |
+| a warning seeks | the row's **Show** puts the display at motion 19, 4.27 s into the program |
+| walls move with the floor | six samples inside **one** pass (fraction 0.070 → 0.319) carry six different wall revisions (257 → 366) and 141 → 158 wall instances |
 | playback stays in the display | the same **524,384-byte** stock transfer across six samples of a playing job: no round trip per frame |
 | scrubbing to a time | clicking the time slider lands *inside* a move both ways — 83.0 s at motion 28 (fraction 0.063, feed 2400 mm/min) and back to 22.5 s at motion 7 (fraction 0.766, a rapid) |
-| the warnings belong to the execution | seeking to the start leaves the same one row, motion 83, 0.2 mm here and 0.7 mm at worst |
+| the warnings belong to the execution | seeking to the start leaves the same one row, motion 19, 0.2 mm here and 0.7 mm at worst |
 
 ### A report from testing: the walls stood still inside a motion
 
@@ -281,6 +282,62 @@ hundred instances; on a fine-raster, hundred-thousand-motion carving it is a
 full-grid sweep per cutting frame. Incremental wall updates (only the cells
 inside dirty tiles) are the follow-up if a measurement shows it matters.
 
+### A report from the field: the tool a stage ahead of its own material
+
+The tester's words: on `real_data/flower_lagging`, "the tool position/move is
+way ahead of cutting simulation. Like, at some point we are early in endmill
+section from material simulation but the tool is already v-bit".
+
+The job was fine. `9de225e` (*Fit arcs into the knife and milling programs
+instead of micro-moves*) made the display's simulation stream **longer than the
+plan's motion list**: `scene::sim_motions` expanded every programmed arc into a
+chord walk, so one planned move became several display moves. The field, the
+clock and the material followed that longer stream, but every index-keyed table
+in the display still addressed motions by the **plan's** index. Measured on the
+saved job:
+
+| | Plan | Display stream before the fix |
+|---|---|---|
+| motions | 17,780 | **24,144** |
+| endmill (roughing) stage | 667 | **2,948** |
+| V-bit (finishing) stage | 17,113 | 21,196 |
+
+For 2,281 display motions the material was therefore still being roughed by the
+endmill while the marker — `groups` searched by a display index against
+plan-indexed spans — reported the V-bit, and the drawn paths (plan-indexed
+vertices) trailed the material by the same difference.
+
+**The fix keeps one index space.** The display motion carries the arc instead of
+the stream being expanded:
+
+* one planned motion stays one display motion, so the stages, spans, vertices,
+  picker and knife headings line up again by construction;
+* `Motion::point_at` follows the curve, so the marker, the trail and the
+  material agree *on the arc*;
+* `Motion::length_mm` is the arc length, so the clock times the path the machine
+  actually travels;
+* `Field::apply` walks the arc as chords **inside** the move, at fixed fractions
+  of the arc, so any partition of the move still lands on the same chords and
+  removes the same material — the property the animation depends on;
+* the wire record grows 64 → 88 bytes to carry the arc's centre and direction.
+
+Verified by `sim::tests::an_arc_travels_with_its_motion_instead_of_expanding_it`
+(timed by its arc, positioned on the circle, one motion on the wire, and a
+quarter-circle cut where the material under the arc is cut while the material
+inside the chord is not) and by
+`display_stream::a_carving_keeps_one_display_motion_per_plan_motion` — the
+flower carving with the arc fit switched on, which asserts one display motion
+per plan motion with arcs present. The browser scenario carries the same
+invariant: `display.simulation` publishes `planMotions`, `displayMotions`,
+`markerToolId` (the tool the marker draws) and `stageToolId` (the tool the
+material's own stage names), and every sample of a playing job must agree.
+
+Two more things that commit left behind, fixed here because they block the
+suite: `tests/knife.rs` still expected 813 motions for the flower knife outline
+where the simplification now emits **267**, and field 110
+(`path_simplification_mm`) had no `help.rs` entry, so four library tests
+panicked on the help table's length.
+
 The scenario earned its keep: it found two defects no unit test could.
 
 1. **A seek dropped the clock.** A seek response carries cells, not a motion
@@ -299,6 +356,49 @@ passes became forty near-identical rows and the **first six** (the shallowest)
 were all the panel showed. A row is now one **problem**: the first motion that
 shows it, the depth there, and the worst depth the program reaches
 (`depthMm` / `maxDepthMm`).
+
+### A report from the field: "the tool is completely unseen now"
+
+The tester's words, with a screenshot of the job above: "the tool is completely
+unseen now with a yellow line pointing to somewhere in a far distance". The
+yellow line is the in-flight trail, drawn as a constant-width band from the
+move's start; it ran off the top-right corner of the viewport and the cutter
+body was nowhere.
+
+Same commit, different mistake. Once the marker tip follows the arc, its natural
+source is the clock's own motion — and `Motion::point_at` answers in **plan
+millimetres** (the flower carving is 184 × 91 mm on a 252 × 102 mm scene),
+while every vertex the viewport draws has been normalized by `compute::vertex`:
+`(p - centre) / size * 1.6`, which puts the whole job inside a 1.6-unit box. A
+tip that skipped that step therefore landed tens of scene units away from the
+path it belonged to. Measured, from the failure the new unit test produces
+against the pre-fix line: the trail was drawn **31.543 scene units** from the
+move it cuts, and that move was **0.014** scene units long.
+
+The normalization now lives in one named place — `compute::scene_point`, which
+`compute::vertex` itself calls — and the marker tip goes through it. Nothing
+about the plan, the clock or the material changed; only the drawn position of
+the cutter.
+
+Three things keep it closed:
+
+* `viewport::tests::the_cutter_is_drawn_where_its_own_move_is` stands the clock
+  half-way inside a programmed **arc** (the move whose tip is furthest from its
+  chord), builds the real overlay, and measures the drawn trail and the drawn
+  cutter body against the move's own normalized start and its own length. It
+  fails on the pre-fix line with the number above and passes after.
+* `display.simulation` publishes `sceneTip` (the tip the last drawn frame used,
+  in scene coordinates) and `planTip` (the same point in plan millimetres),
+  captured in the same frame; the browser scenario checks one is the
+  normalization of the other. They have to be read together: the clock advances
+  *after* the overlay is built, so a probe that reads the live clock a frame
+  later disagrees by one frame of feed — the first version of this check failed
+  on exactly that, 0.57 mm of x into a facing pass.
+* the same `agree()` step now also requires that the clock being inside a move
+  means a cutter is actually drawn, and it takes the stream's own tool from
+  `LocalClock::tool` rather than `motion()` — at the end of the program there is
+  no move in flight, and the first browser run of the batch stopped there with
+  "the tool marker shows tool-4 while the material's stage is null".
 
 ### State that was already broken before this batch, and is now closed
 

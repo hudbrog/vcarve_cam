@@ -163,6 +163,7 @@
     }
   },
   "tolerances": {
+    "arc_fit_tolerance_mm": 0.005,
     "motion_tolerance_mm": 0.01,
     "verification_tolerance_mm": 0.05
   },

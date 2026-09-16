@@ -424,6 +424,7 @@ mod tests {
                     stage: 0,
                     interpolation: crate::sim::Interpolation::Feed,
                     feed_mm_min: Some(100.),
+                    arc: None,
                     x0: -4. + (i % 80) as f64 * 0.1,
                     y0: -4. + (i / 80) as f64 * 0.1,
                     z0: -0.5,

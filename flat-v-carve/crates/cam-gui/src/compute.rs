@@ -321,14 +321,24 @@ fn section_of(payload: &Payload, kind: u8, index: usize) -> Result<(usize, usize
         .ok_or_else(|| "Payload is missing a required section".into())
 }
 
-pub(crate) fn vertex(p: [f64; 3], b: [f64; 4], color: [f32; 4]) -> Vertex {
+/// Normalized scene coordinates of one plan point. This is **the** conversion
+/// from plan millimetres into the space the viewport draws in: the motion
+/// vertices, the contour outline and the picker index all rest on it, so the
+/// cutter marker has to as well. A point that skips it keeps its millimetres
+/// and lands a scene-extent or two away from the path it belongs to — a marker
+/// off in the distance with a trail running out of the viewport.
+pub(crate) fn scene_point(p: [f64; 3], b: [f64; 4]) -> [f32; 3] {
     let size = (b[2] - b[0]).max(b[3] - b[1]).max(0.001);
+    [
+        ((p[0] - (b[0] + b[2]) / 2.) / size * 1.6) as f32,
+        ((p[1] - (b[1] + b[3]) / 2.) / size * 1.6) as f32,
+        (p[2] / size * 1.6) as f32,
+    ]
+}
+
+pub(crate) fn vertex(p: [f64; 3], b: [f64; 4], color: [f32; 4]) -> Vertex {
     Vertex {
-        position: [
-            ((p[0] - (b[0] + b[2]) / 2.) / size * 1.6) as f32,
-            ((p[1] - (b[1] + b[3]) / 2.) / size * 1.6) as f32,
-            (p[2] / size * 1.6) as f32,
-        ],
+        position: scene_point(p, b),
         color,
     }
 }

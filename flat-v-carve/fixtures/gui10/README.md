@@ -8,6 +8,9 @@ warnings through the shipped build rather than through a unit test:
 * the endmill is a 2.5 mm cutter with a 2.5 mm shaft and a **0.8 mm stickout**,
   so the 25 mm nut stands 0.7 mm inside the material beside the carve;
 * the machine names the `er20` holder, which is what gives the nut its diameter.
+* the job asks for the arc fit (`tolerances.arc_fit_tolerance_mm`), so its
+  motion stream carries programmed arcs: the display has to keep one motion per
+  plan motion with them present, which is what the scenario checks.
 
 `create-fixture.mjs` writes it from the gui4 fixture; run it from the workspace
 root after changing either the assembly numbers or the machine configuration:

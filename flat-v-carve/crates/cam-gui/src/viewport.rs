@@ -322,6 +322,15 @@ pub struct Viewport {
     pub pick_tolerance_px: f32,
     overlay_lines: Arc<Vec<Vertex>>,
     overlay_triangles: Arc<Vec<Vertex>>,
+    /// The cutter tip the overlay was last built with, in scene coordinates:
+    /// published so a review can see that the marker it looks for is drawn
+    /// where the plan says the cutter is, and not only that it was drawn.
+    marker_tip: Option<[f32; 3]>,
+    /// The same tip in plan millimetres, when the frame drew the cutter
+    /// part-way inside a move. The clock advances after the overlay is built,
+    /// so a review that reads the live clock compares this against the drawn
+    /// tip rather than across a frame boundary.
+    marker_plan_tip: Option<[f64; 3]>,
     overlay_revision: u64,
     overlay_signature: Option<OverlaySignature>,
     // Paged transport and residency
@@ -405,6 +414,8 @@ impl Default for Viewport {
             pick_tolerance_px: 8.,
             overlay_lines: Arc::new(Vec::new()),
             overlay_triangles: Arc::new(Vec::new()),
+            marker_tip: None,
+            marker_plan_tip: None,
             overlay_revision: 0,
             overlay_signature: None,
             page_hashes: Arc::new(Vec::new()),
@@ -1784,9 +1795,43 @@ impl Viewport {
             "elapsedSeconds": clock.seconds(),
             "totalSeconds": clock.total_seconds(),
             "tip": tip,
+            // The cutter the last drawn frame actually put on screen: the same
+            // point in the coordinates the viewport draws in, and in the plan
+            // millimetres it came from. The marker has to stand here, and the
+            // two agreeing is what an unnormalized tip — a marker nowhere near
+            // its own path — breaks.
+            "sceneTip": self.marker_tip,
+            "planTip": self.marker_plan_tip,
+            "bounds": self
+                .scene
+                .as_ref()
+                .map(|scene| scene.meta.bounds)
+                .unwrap_or([0.; 4]),
             "feedMmMin": feed,
             "rapidRateMmMin": clock.time().rapid_rate_mm_min(),
             "rapidRateAssumed": clock.time().assumes_rapid_rate(),
+            // The stream the clock walks and the plan it came from, plus the tool
+            // the marker draws next to the tool the motion's own stage names.
+            // Those two agreeing is the invariant an expanded stream breaks.
+            "planMotions": self.motion_count(),
+            "displayMotions": self
+                .scene
+                .as_ref()
+                .and_then(|scene| scene.meta.sim.as_ref())
+                .map(|sim| sim.motions),
+            "markerToolId": self
+                .marker_index()
+                .and_then(|index| self.group_tool_at(index))
+                .and_then(|tool| self.tool_ids.get(tool))
+                .cloned(),
+            // The tool the motion stream itself names, at the position the
+            // marker draws. At the end of the program there is no move in
+            // flight, and the stream's own answer is the last one that ran —
+            // the same rule the marker uses, so the two stay comparable.
+            "stageToolId": clock
+                .tool()
+                .and_then(|tool| self.tool_ids.get(tool))
+                .cloned(),
             "fastForward": if self.playback_fit { self.fit_scale() } else { self.playback_speed },
             "fit": self.playback_fit,
             // What the display is drawing above the cutter, so a review can see
@@ -2023,6 +2068,41 @@ impl Viewport {
         // Canonical degrees, so a swivel across the 0/360 seam reads as 0°
         // rather than 360°.
         Some(heading.rem_euclid(360.) as f32)
+    }
+
+    /// The motion the cutter is drawn at: the one it is inside, or the last one
+    /// it finished when it sits exactly on a boundary. The marker and the probe
+    /// both ask here, so what a review reads is what is drawn.
+    fn marker_index(&self) -> Option<usize> {
+        let (playhead, fraction) = self
+            .stock
+            .as_ref()
+            .and_then(|stock| stock.clock.as_ref())
+            .map_or((self.playhead, 0.), |clock| clock.position());
+        if playhead == 0 && fraction <= 0. {
+            return None;
+        }
+        Some(if fraction > 0. {
+            playhead
+        } else {
+            playhead.checked_sub(1)?
+        })
+    }
+
+    /// The tool the display draws at a motion: the timeline group that owns it.
+    /// The stages, the spans and the motion stream share one index, so this is
+    /// the plan's own stage for that move — unless a stream and its tables have
+    /// drifted apart, which is what the probe's `markerToolId` exists to catch.
+    fn group_tool_at(&self, index: usize) -> Option<usize> {
+        self.groups
+            .iter()
+            .find(|group| index >= group.start && index < group.end)
+            .map(|group| group.tool)
+    }
+
+    /// The motion the clock is inside, for a position that follows the curve.
+    fn clock_motion(&self) -> Option<&crate::sim::Motion> {
+        self.stock.as_ref()?.clock.as_ref()?.motion()
     }
 
     /// Time scale that plays the whole program in [`FIT_SECONDS`] of wall clock.
@@ -2422,34 +2502,48 @@ impl Viewport {
         // and the removal agree frame by frame instead of jumping at motion
         // boundaries. Nothing here is CAM geometry.
         let picker = self.picker.as_ref();
-        let (marker, trail) = match scene.meta.sim.as_ref().and_then(|sim| {
+        let (marker, trail, plan_tip) = match scene.meta.sim.as_ref().and_then(|sim| {
             let picker = picker?;
             if playhead == 0 && fraction <= 0. {
                 return None;
             }
-            let (tip, trail, index) = if fraction > 0. {
+            let index = self.marker_index()?;
+            let (tip, trail, plan_tip) = if fraction > 0. {
                 let points = picker.endpoints(playhead as u32)?;
                 let (start, end) = (points[0], points[1]);
-                let lerp = |a: f32, b: f32| a + (b - a) * fraction as f32;
-                let tip = [
-                    lerp(start[0], end[0]),
-                    lerp(start[1], end[1]),
-                    lerp(start[2], end[2]),
-                ];
-                (tip, Some((start, tip)), playhead)
+                // Inside an arc the tip follows the curve, exactly as the
+                // material sweep does; the two must not disagree. The curve is
+                // in plan millimetres, so it takes the same normalization the
+                // motion vertices took to become scene coordinates.
+                let (tip, plan_tip) = match self.clock_motion() {
+                    Some(motion) => {
+                        let point = motion.point_at(fraction);
+                        (
+                            crate::compute::scene_point(point, scene.meta.bounds),
+                            Some(point),
+                        )
+                    }
+                    None => {
+                        let lerp = |a: f32, b: f32| a + (b - a) * fraction as f32;
+                        (
+                            [
+                                lerp(start[0], end[0]),
+                                lerp(start[1], end[1]),
+                                lerp(start[2], end[2]),
+                            ],
+                            None,
+                        )
+                    }
+                };
+                (tip, Some((start, tip)), plan_tip)
             } else {
                 // On a motion boundary the tip is the end of the last move.
-                let index = playhead.checked_sub(1)?;
                 let points = picker.endpoints(index as u32)?;
-                (points[1], None, index)
+                (points[1], None, None)
             };
             // The cutter body follows the stage that owns this motion, and a
             // knife turns with the blade heading the plan modeled for it.
-            let motion_tool = self
-                .groups
-                .iter()
-                .find(|group| index >= group.start && index < group.end)
-                .map_or(0, |group| group.tool);
+            let motion_tool = self.group_tool_at(index).unwrap_or(0);
             let tool = sim.tools.get(motion_tool).copied()?;
             let heading_deg = self.knife_heading(index, fraction as f32);
             let assembly = sim.assemblies.get(motion_tool).copied().unwrap_or_default();
@@ -2464,13 +2558,16 @@ impl Viewport {
                     holder: (!self.holder_body.is_empty()).then(|| self.holder_body.as_slice()),
                 },
                 trail,
+                plan_tip,
             ))
         }) {
-            Some((marker, trail)) => (Some(marker), trail),
-            None => (None, None),
+            Some((marker, trail, plan_tip)) => (Some(marker), trail, plan_tip),
+            None => (None, None, None),
         };
         let half = self.pick_tolerance_px * 0.5 / ppp.max(1e-3) / per_unit.max(1e-6);
         let mut built = overlay::build(selection, trail, half, marker.as_slice());
+        self.marker_tip = marker.as_ref().map(|marker| marker.tip);
+        self.marker_plan_tip = plan_tip;
         self.knife_overlay(&mut built);
         self.profile_overlay(&mut built);
         self.face_overlay(&mut built);
@@ -2583,6 +2680,119 @@ fn visible_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cutter and its trail are drawn in the same scene space as the motion
+    /// vertices. A tip left in plan millimetres is tens of scene units from the
+    /// path it belongs to — the marker is nowhere on screen and its trail runs
+    /// out of the viewport, which is how the report from `real_data/
+    /// flower_lagging` read. Both are measured here against the move the plan
+    /// itself draws, so an invented position cannot pass.
+    #[test]
+    fn the_cutter_is_drawn_where_its_own_move_is() {
+        // The arc fit is opt-in through the job's tolerances, and an arc is the
+        // move whose tip is furthest from its chord.
+        let mut job: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/gui2/flower.job.json"))
+                .expect("a job document");
+        let budget = ["motion_tolerance_mm", "verification_tolerance_mm"]
+            .iter()
+            .filter_map(|key| job["tolerances"].get(*key).and_then(|v| v.as_f64()))
+            .fold(f64::INFINITY, f64::min);
+        job["tolerances"]["arc_fit_tolerance_mm"] = serde_json::json!(budget.min(0.005));
+        let job = job.to_string();
+        let (meta, payload) = crate::session::execute(
+            &mut cam_service::retained::Retained::new(),
+            crate::session::Command::generate(job),
+        )
+        .expect("the fixture generates");
+        let scene = Scene {
+            meta,
+            payload: Arc::new(payload),
+        };
+        let size = (scene.meta.bounds[2] - scene.meta.bounds[0])
+            .max(scene.meta.bounds[3] - scene.meta.bounds[1])
+            .max(0.001);
+        // Scene units per millimetre, the factor every drawn vertex carries.
+        let per_mm = 1.6 / size;
+        let mut view = Viewport::default();
+        view.set_scene(scene);
+        // Stand halfway inside a motion the plan programs as an arc: that is
+        // where a tip that skipped the normalization is furthest off the move.
+        let mut stood = None;
+        {
+            let clock = view
+                .stock
+                .as_mut()
+                .and_then(|stock| stock.clock.as_mut())
+                .expect("the fixture carries a playback clock");
+            // The transport hands the clock the state the display opens on —
+            // the end of the program — so walk forward from the start.
+            clock.restore(0, 0.).expect("the program's own start");
+            for prefix in 0..clock.motions() {
+                clock.move_to_position(prefix, 0.5, LOCAL_ADVANCE_LIMIT);
+                let motion = clock.motion().expect("the position names a motion").clone();
+                if motion.arc.is_some() {
+                    stood = Some((prefix, motion));
+                    break;
+                }
+            }
+        }
+        let (prefix, motion) = stood.expect("the fixture programs an arc");
+        view.build_overlay(
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 900.)),
+            1.,
+        );
+        let start = view
+            .picker
+            .as_ref()
+            .and_then(|picker| picker.endpoints(prefix as u32))
+            .expect("every motion is indexed")[0];
+        let corner = |v: &Vertex| {
+            (((v.position[0] - start[0]).powi(2) + (v.position[1] - start[1]).powi(2)) as f64)
+                .sqrt()
+        };
+        // What may legitimately stand outside the part of the move already
+        // made: the ribbon's own half width, and the cutter's radius around its
+        // tip. Both are fractions of a millimetre in scene units; a tip in
+        // millimetres is two orders of magnitude over this and fails loudly.
+        let made = motion.length_mm() * per_mm;
+        let trail: Vec<&Vertex> = view
+            .overlay_triangles
+            .iter()
+            .filter(|v| v.color == overlay::TRAIL_LINE)
+            .collect();
+        assert_eq!(trail.len(), 6, "one ribbon for the part of the move made");
+        for vertex in &trail {
+            assert!(
+                corner(vertex) <= made + 0.05,
+                "the trail is drawn {:.3} scene units from the move it cuts, \
+                 which is {made:.3} long",
+                corner(vertex)
+            );
+        }
+        let radius_mm = view
+            .scene
+            .as_ref()
+            .and_then(|scene| scene.meta.sim.as_ref())
+            .and_then(|sim| sim.tools.get(motion.tool))
+            .and_then(|tool| tool.profile())
+            .map_or(0., |profile| {
+                profile.iter().map(|(_, radius)| *radius).fold(0., f64::max)
+            });
+        let body: Vec<&Vertex> = view
+            .overlay_triangles
+            .iter()
+            .filter(|v| v.color == overlay::SELECT_FILL_ENDMILL)
+            .collect();
+        assert!(!body.is_empty(), "the cutter's own body is drawn");
+        for vertex in &body {
+            assert!(
+                corner(vertex) <= made + 0.05 + radius_mm * per_mm,
+                "the cutter body is drawn {:.3} scene units from its own move",
+                corner(vertex)
+            );
+        }
+    }
 
     #[test]
     fn the_timeline_lays_out_a_bounded_window_around_the_selected_stage() {

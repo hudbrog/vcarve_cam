@@ -187,7 +187,7 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
     })
 }
 
-const FIELD_HELP: [&str; 110] = [
+const FIELD_HELP: [&str; 111] = [
     "Total carving depth below the operation top, in millimeters. Stepdown controls how much is removed in each pass.",
     "Material left on walls by roughing, in millimeters, for a later finishing pass. Zero requests no extra allowance.",
     "Endmill cutting speed along the path, in mm/min. Choose for your cutter, material and machine; it is not spindle RPM.",
@@ -298,6 +298,7 @@ const FIELD_HELP: [&str; 110] = [
     "Sweep of the tangent arc lead-out in degrees, between 0 and 360.",
     "Position of the cut start as a fraction from 0 up to 1 along the selected contour's canonical start. It is the numeric equivalent of dragging the start.",
     "The exact position the pass starts at, along the pass direction, in setup coordinates. Used by the 'Start at…' entry choice: it replaces the entry travel, so the panel shows the travel this position implies. It must be at or beyond the pass's own span, or the strip behind it would go unswept. Negative values are ordinary.",
+    "How far a knife tip merge may move the resolved polyline, in millimeters. Unset lets the planner spend the motion tolerance it already promises; 0 follows the resolved polyline exactly. It is a path-shape budget, not a machining feed.",
 ];
 
 #[cfg(test)]
