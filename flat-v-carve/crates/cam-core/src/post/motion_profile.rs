@@ -62,8 +62,8 @@ pub struct MotionLengthProfile {
     pub p10_feed_mm: f64,
     pub median_feed_mm: f64,
     pub longest_feed_mm: f64,
-    pub share_feed_under_0_01_mm: f64,
-    pub share_feed_under_0_05_mm: f64,
+    pub share_feed_under_0p01_mm: f64,
+    pub share_feed_under_0p05_mm: f64,
     /// Feed moves per millimetre of feed path: the micro-move density.
     pub feed_moves_per_mm: f64,
     pub histogram: Vec<MotionLengthBucket>,
@@ -85,8 +85,8 @@ impl Default for MotionLengthProfile {
             p10_feed_mm: 0.,
             median_feed_mm: 0.,
             longest_feed_mm: 0.,
-            share_feed_under_0_01_mm: 0.,
-            share_feed_under_0_05_mm: 0.,
+            share_feed_under_0p01_mm: 0.,
+            share_feed_under_0p05_mm: 0.,
             feed_moves_per_mm: 0.,
             histogram: buckets_of(&[]),
         }
@@ -153,8 +153,8 @@ impl MotionLengthProfile {
         profile.p10_feed_mm = quantile(0.1);
         profile.median_feed_mm = quantile(0.5);
         profile.longest_feed_mm = lengths[lengths.len() - 1];
-        profile.share_feed_under_0_01_mm = share_below(0.01);
-        profile.share_feed_under_0_05_mm = share_below(MICRO_MOVE_MM);
+        profile.share_feed_under_0p01_mm = share_below(0.01);
+        profile.share_feed_under_0p05_mm = share_below(MICRO_MOVE_MM);
         if profile.feed_length_mm > 0. {
             profile.feed_moves_per_mm = lengths.len() as f64 / profile.feed_length_mm;
         }
@@ -165,7 +165,7 @@ impl MotionLengthProfile {
     /// execute at feed.
     pub fn is_micro_move_bound(&self) -> bool {
         self.xy_feed_moves > 0
-            && self.share_feed_under_0_05_mm >= MICRO_MOVE_SHARE
+            && self.share_feed_under_0p05_mm >= MICRO_MOVE_SHARE
             && self.feed_moves_per_mm >= MICRO_MOVE_DENSITY_PER_MM
     }
 }
@@ -303,7 +303,7 @@ impl MotionProfileReport {
                     profile.xy_feed_moves,
                     profile.feed_length_mm,
                     profile.feed_moves_per_mm,
-                    profile.share_feed_under_0_05_mm * 100.,
+                    profile.share_feed_under_0p05_mm * 100.,
                     MICRO_MOVE_MM,
                     profile.median_feed_mm,
                     if exact {

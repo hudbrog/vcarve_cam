@@ -46,6 +46,17 @@ fn fittable(motion: &PlannedMotion) -> bool {
 }
 
 /// Whether two consecutive motions may share one fitted primitive.
+///
+/// `pass_id` is deliberately *not* part of this: for the V-carve adapter it is
+/// the execution (candidate) index — the identity the inspector groups
+/// finish paths by — and a fan of medial branches emits thousands of
+/// single-motion executions that are continuous in space with the same tool,
+/// purpose, effect, feed and depth. Treating that bookkeeping as a machining
+/// boundary is what kept the finish fan at one move per run. The primitive
+/// carries the pass of its first motion, so the label sequence stays ordered
+/// and the plan's evidence is recomputed from it. `contour_id` stays a hard
+/// break: separate contours are separate cuts, whatever the geometry does
+/// between them.
 fn same_run(first: &PlannedMotion, next: &PlannedMotion) -> bool {
     fittable(next)
         && first.stage_id == next.stage_id
@@ -55,7 +66,6 @@ fn same_run(first: &PlannedMotion, next: &PlannedMotion) -> bool {
         && first.effect == next.effect
         && first.feed_mm_min == next.feed_mm_min
         && first.layer == next.layer
-        && first.pass_id == next.pass_id
         && first.contour_id == next.contour_id
         && first.end == next.start
 }

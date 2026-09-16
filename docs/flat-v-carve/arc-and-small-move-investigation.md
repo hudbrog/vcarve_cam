@@ -39,7 +39,12 @@ and with option 4's arc fit at 0.005 mm, on the same flower job:
 | Program | Moves | Of them arcs | Median move | Feed path |
 | --- | ---: | ---: | ---: | ---: |
 | V-carve rough, endmill | **667** | 519 | **1.72 mm** | 1 186 mm (unchanged) |
-| V-carve finish, V-bit | **17 113** | 1 306 | 0.024 mm | 2 544 mm (unchanged) |
+| V-carve finish, V-bit | **2 893** | 1 626 | **0.85 mm** | 2 544 mm (unchanged) |
+
+Nothing in either stage is now shorter than 0.05 mm (46 % of the finish
+stage's moves were, before), and the program is written at the machine
+profile's own three decimal places instead of the five the writer had to
+escalate to.
 
 Both knife programs are about 10 to 18 programmed moves per millimetre of cut,
 at a median move of 0.017 mm — roughly one millisecond of commanded motion at
@@ -102,6 +107,41 @@ skip rule).
 The same computation on the flower-box outlines (22 039 vertices)
 gives 44 255 → 8 620 moves at 0.005 mm. Simplifying the *tip* polyline is the
 cheapest large win, and it is exactly what W7 step 3 already proposes.
+
+### What actually limited the V-carve finish fan
+
+The first fitted flower plan was 17 780 moves, and the finish stage was still
+17 113 of them at a 0.024 mm median. Measuring the *run structure* — the
+maximal stretches the fit is allowed to merge — found the reason, and it was
+not geometry: `flat-v-carve` emits each V-bit *execution* (one medial branch or
+boundary path) with its own `pass_id`, and the fit treated a change of `pass_id`
+as a machining boundary. The finish stage's first 10 386 motions were **4 459
+runs, median length 1**, and 4 078 of them descended (the medial fan's
+tapered branches), with no gap between runs at all: the branches are
+continuous in space, and only bookkeeping separated them.
+
+`pass_id` is now a *label* rather than a break: the fit merges across it when
+stage, tool, purpose, effect, feed, depth layer, contour and endpoint
+continuity all agree, the emitted primitive carries the pass of its first
+motion, and the plan's evidence ranges are recomputed against the motions that
+actually carry each label (they addressed the planner's numbering, which a
+rewrite invalidates). Result: 34 707 → **3 560** moves, the finish stage
+8.7× smaller, feed path unchanged at 3 730 mm, measured deviation unchanged at
+0.00499998 mm of a 0.005 mm budget.
+
+Raising the tolerance is the wrong lever, and the measurement says so:
+
+| `arc_fit_tolerance_mm` | Total moves | Finish moves | Median finish move | Measured deviation |
+| --- | ---: | ---: | ---: | ---: |
+| 0.005 (default) | **3 560** | 2 893 | 0.85 mm | 0.00499998 mm |
+| 0.010 | 3 066 | 2 492 | 1.04 mm | 0.00999833 mm |
+
+Doubling the deviation budget buys 14 %, because what remains is genuinely
+short-branched geometry, not approximation slack. The same measurement also
+shows the next real lever: of the finish stage's 2 893 moves, 663 are
+clearance, approach and entry motions — one retract-and-re-enter cycle per
+execution — so the fan's *transit* structure, not its sampling, is what is
+left.
 
 Implemented as `path_simplification_mm` on the drag-knife operation
 (`None` = the planner's declared share of the motion tolerance, `0` = follow
@@ -309,6 +349,13 @@ The resolved tolerance, the motion counts and the measured deviation travel
 with the plan as an `arc_fit` named output, and the export report counts the
 arcs per stage (`arcFeedMotions`).
 
+It is **per stage, by role, not per operation**: every enabled operation's
+stages are fitted at plan assembly, so a Face pass, a Flat V-carve and a
+Profile all get it, and only knife stages are exempt (their arcs are the
+planner's own). A profile pass around a 40 mm circle goes 1 261 motions → 6,
+two of them arcs; the `arc_fit` evidence is published per operation, so a job
+with several milling operations reports each one separately.
+
 Measured on the flower V-carve at 0.005 mm: **34 707 → 17 780 motions**, 1 825
 of them arcs, feed path unchanged at 3 730 mm (the fitted stream's own length
 is within 0.01 % of the polyline's), and an independent measurement of the
@@ -326,7 +373,7 @@ execution digests are byte-identical before and after this change.
 | 1 | Simplify the tip polyline to a declared tolerance before compensation (W7 step 3, first half) | bounded by the declared tolerance, spent from the motion budget | medium: needs replay evidence and an explicit setting (W7 step 4) | **done**: slitherin 23 578 → 8 122 moves at the default, 6 048 at 0.005 mm, 4 392 at 0.01 mm; cut length unchanged |
 | 2 | Spend the tolerance instead of overshooting (exact elliptical-arc curvature bound; the chain merge budget applied to closed rings too) | none — same declared 0.001 mm chord bound | low, local to `svg/path.rs` and `contours.rs` | **done**: circles 770 → 545 vertices (29 %), flower contours 22 039 → 18 277 (17 %); cubics are already within 15 % of optimal |
 | 3 | Emit `G2/G3` for arcs the planner already models (knife corner/alignment swivels) | none — exact | medium: touches writer, reader, verification, simulation | **done**: slitherin 8 122 → 7 887 moves with 3 793 of them arcs, and the replayed tip deviation falls from 0.0039 mm to **0.00009 mm** because the chord error is gone |
-| 4 | Bounded arc/line fitting of the motion stream, emitted as `G2/G3` | bounded by the declared `arc_fit_tolerance_mm` | high: new plan interpolation, writer, reader, stock sweeps, simulation | **done**: flower V-carve 34 707 → 17 780 moves (rough 14.4×, finish 1.5×), 1 825 arcs, path length unchanged, independent deviation 0.0014 mm inside a 0.005 mm tolerance |
+| 4 | Bounded arc/line fitting of the motion stream, emitted as `G2/G3` | bounded by the declared `arc_fit_tolerance_mm` | high: new plan interpolation, writer, reader, stock sweeps, simulation | **done**: flower V-carve 34 707 → **3 560** moves (rough 14.4×, finish 8.7×), 2 145 arcs, path length unchanged, nothing left under 0.05 mm, written at the profile's own precision |
 | 5 | Carry source arcs/curves end-to-end through import, offsetting and the plan | none where the artwork has arcs | highest: replaces the flatten-then-polygon pipeline | removes the whole 2× compensation subdivision for arc artwork; no benefit for the two Bézier jobs here |
 | 6 | Let the knife stage use a verified blend tolerance instead of forced `G61` (W7 step 2) | changes corner geometry by up to P | medium: needs verification that blending cannot move the tip | **done**: the slitherin knife runs `G64 P0.003` instead of stopping at 8 122 endpoints, bounded by half the replay's unused tip budget |
 | 7 | Report per-stage moves, move-length histogram, moves/mm and any precision escalation as export findings | none | low | **done**: `motionProfile` plus `EXPORT_PRECISION_ESCALATED`, `EXPORT_MICRO_MOVE_DENSITY`, `EXPORT_EXACT_PATH_MICRO_MOVES`, `EXPORT_KNIFE_BLENDED_PATH` |
@@ -374,12 +421,25 @@ record:
   descent it replaced: the entry check's question is about the *tool's* ability
   to enter material while moving, not about how the move is programmed.
 
-The one thing worth doing next, outside this objective, is raising the V-carve
-finish stage's fit tolerance toward the motion tolerance (0.005 → 0.01) or
-simplifying that stage's medial fan at the source: at 0.005 mm the finish stage
-still emits 17 113 moves, 66 % of them under 0.05 mm, because its short
-tightly-curved branches cannot be merged further without spending more of the
-declared tolerance.
+Two things are worth doing next, outside this objective:
+
+* **The fan's transit structure.** After the pass-label fix the finish stage is
+  2 893 moves, of which 663 are clearance, approach and entry — one
+  retract-and-re-enter cycle per execution. That is the planner's link
+  policy for the fan, not its sampling.
+* **The medial sampling budget.** `vcarve/medial.rs` subdivides medial branches
+  at `motion_tolerance * slope.min(1) / 8`, an eighth of the tolerance, which
+  is eight times finer than the plan promises. The fit now collapses that
+  density in the program, so the remaining cost is planner time and memory
+  rather than emitted moves; loosening it would need the engine's own depth
+  verification to show the headroom, which this investigation did not measure.
+
+The export dialog's **Technical details** section now draws the move-length
+histogram the report published — one chart per stage and one for the whole
+program, square-root scaled so a dominant bucket cannot hide the tail, with the
+buckets at or under 0.05 mm flagged and the threshold marked. `cargo test -p
+cam-gui --lib export_ui` checks both the mapping and that the chart paints one
+bar per bucket.
 
 Option 6 was done after option 1 rather than instead of it — the reason `G61`
 was forced is that the path had thousands of corners, so the honest fix was to
@@ -425,4 +485,5 @@ cargo test --locked -p cam-core --test motion_profile         # option 7
 cargo test --locked -p cam-core --test contour_density        # option 2
 cargo test --locked -p cam-core --test arc_sweep              # option 4 prerequisites
 cargo test --locked -p cam-core --test arc_fit                # option 4 fitting pass
+cargo test --locked -p cam-gui --lib export_ui                # the export dialog's charts
 ```

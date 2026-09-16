@@ -97,8 +97,8 @@ fn lengths_quantiles_shares_and_density_come_from_the_xy_feed_moves() {
     assert_eq!(profile.shortest_feed_mm, first);
     assert_eq!(profile.longest_feed_mm, fourth);
     assert_eq!(profile.median_feed_mm, third);
-    assert_eq!(profile.share_feed_under_0_01_mm, 0.5);
-    assert_eq!(profile.share_feed_under_0_05_mm, 0.75);
+    assert_eq!(profile.share_feed_under_0p01_mm, 0.5);
+    assert_eq!(profile.share_feed_under_0p05_mm, 0.75);
     assert!((profile.feed_moves_per_mm - 4. / feed_length).abs() < 1e-9);
     // The histogram always carries the whole ladder, including empty buckets.
     assert_eq!(profile.histogram.len(), 12);
@@ -111,6 +111,22 @@ fn lengths_quantiles_shares_and_density_come_from_the_xy_feed_moves() {
     assert_eq!(profile.histogram.last().unwrap().upper_mm, None);
     assert_eq!(profile.histogram.last().unwrap().motions, 0);
     assert!(profile.is_micro_move_bound());
+}
+
+/// The published key is a contract: the export dialog's charts read it, and a
+/// name like `shareFeedUnder005Mm` was a puzzle rather than a name.
+#[test]
+fn the_published_profile_uses_readable_threshold_keys() {
+    let profile = MotionLengthProfile::of(&[feed(0, (0., 0.), (0.001, 0.))]);
+    let json = serde_json::to_value(&profile).unwrap();
+    assert!(json.get("shareFeedUnder0p01Mm").is_some(), "{json}");
+    assert!(json.get("shareFeedUnder0p05Mm").is_some(), "{json}");
+    assert!(json.get("arcFeedMotions").is_some(), "{json}");
+    assert!(
+        json["histogram"]
+            .as_array()
+            .is_some_and(|rows| rows.len() == 12)
+    );
 }
 
 #[test]

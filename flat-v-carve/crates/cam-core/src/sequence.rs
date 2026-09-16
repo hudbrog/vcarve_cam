@@ -78,10 +78,62 @@ fn fit_milling_arcs(planned: &mut PlannedOperation, tolerances: &PlanningToleran
         totals.arcs_emitted += measured.arcs_emitted;
         totals.max_deviation_mm = totals.max_deviation_mm.max(measured.max_deviation_mm);
     }
+    // A stream the fit left alone keeps its planner numbering and evidence
+    // untouched: nothing about it changed.
+    let rewrote = motions.len() != planned.motions.len()
+        || motions
+            .iter()
+            .zip(&planned.motions)
+            .any(|(after, before)| after.interpolation != before.interpolation);
+    if !rewrote {
+        planned.named_outputs.push(NamedOutput {
+            kind: "arc_fit".into(),
+            source_operation_id: None,
+            z_mm: None,
+            covered: None,
+            tab_placements: vec![],
+            path_simplification: None,
+            arc_fit: Some(totals),
+        });
+        return;
+    }
     // Operation-local motion ids stay dense and in order, so a slice of the
     // plan addresses the same motions after the rewrite.
     for (index, motion) in motions.iter_mut().enumerate() {
         motion.id = index;
+    }
+    // The legacy evidence ranges addressed the planner's own numbering, which
+    // no longer exists once the stream is rewritten. Recompute them against
+    // the motions that actually carry each label, and drop a label that lost
+    // its last motion to a merge.
+    let mut passes: std::collections::BTreeMap<usize, (usize, usize)> =
+        std::collections::BTreeMap::new();
+    for (index, motion) in motions.iter().enumerate() {
+        passes
+            .entry(motion.pass_id)
+            .and_modify(|range| range.1 = index + 1)
+            .or_insert((index, index + 1));
+    }
+    planned
+        .pass_evidence
+        .retain_mut(|evidence| match passes.get(&evidence.pass_id) {
+            Some((first, end)) => {
+                evidence.first_motion_id = *first;
+                evidence.end_motion_id = *end;
+                true
+            }
+            None => false,
+        });
+    let stages: std::collections::BTreeMap<String, (usize, usize)> = planned
+        .stages
+        .iter()
+        .map(|stage| (stage.stage_id.clone(), stage.motion_range))
+        .collect();
+    for evidence in &mut planned.stage_evidence {
+        if let Some((first, end)) = stages.get(&evidence.stage_id) {
+            evidence.legacy_first_motion_id = *first;
+            evidence.legacy_end_motion_id = *end;
+        }
     }
     planned.motions = motions;
     planned.named_outputs.push(NamedOutput {

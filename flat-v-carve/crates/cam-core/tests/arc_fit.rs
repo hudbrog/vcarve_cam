@@ -181,6 +181,14 @@ fn a_declared_tolerance_collapses_the_polyline_within_its_budget() {
     assert_eq!(tolerance.tolerance_mm, 0.005);
     assert_eq!(tolerance.motions_before, exact.motions.len());
     assert_eq!(tolerance.motions_after, fitted.motions.len());
+    // A profile pass around a 40 mm circle: 1 261 motions become 6, two of
+    // them arcs. The bound is loose so a planner change does not make this
+    // fixture fail for the wrong reason.
+    assert!(
+        fitted.motions.len() < 20,
+        "the profile pass collapses to a handful of primitives, not {}",
+        fitted.motions.len()
+    );
     assert!(tolerance.arcs_emitted > 0, "{tolerance:?}");
     assert!(
         fitted.motions.len() * 2 < exact.motions.len(),
@@ -244,5 +252,60 @@ fn semantic_breakpoints_survive_the_fit() {
             );
             assert_eq!(motion.effect, MotionEffect::MillingSweep);
         }
+    }
+}
+
+/// A rewrite that changes the motion stream must leave the plan's own evidence
+/// addressing it: the ranges the inspector and the preview read are recomputed
+/// against the fitted motions, not left pointing at numbering that no longer
+/// exists.
+#[test]
+fn the_rewrite_leaves_every_evidence_range_addressing_the_fitted_stream() {
+    // The V-carve adapter is the one that publishes per-execution evidence, so
+    // this check runs on its fixture rather than on the profile circle.
+    const FLOWER: &str = include_str!("../../../fixtures/gui2/flower.job.json");
+    let mut job: cam_core::project::v5::CamJobV5 = serde_json::from_str(FLOWER).unwrap();
+    job.tolerances.arc_fit_tolerance_mm = Some(0.005);
+    job.validate_structure().unwrap();
+    let exact: cam_core::project::v5::CamJobV5 = serde_json::from_str(FLOWER).unwrap();
+    let plan_v5 = |job: &cam_core::project::v5::CamJobV5| {
+        cam_core::sequence::OperationPlanV5::plan_job_v5(
+            job,
+            &cam_core::project::v5::ReadinessScope::AllEnabled,
+            &PlanLimits::default(),
+        )
+        .unwrap()
+    };
+    let fitted = plan_v5(&job);
+    let unfitted = plan_v5(&exact);
+    assert_ne!(
+        fitted.motions.len(),
+        unfitted.motions.len(),
+        "this fixture must actually be rewritten"
+    );
+    let result = &fitted.operation_results[0];
+    assert!(!result.legacy_pass_evidence.is_empty());
+    for evidence in &result.legacy_pass_evidence {
+        assert!(
+            evidence.end_motion_id > evidence.first_motion_id,
+            "pass {} kept an empty range",
+            evidence.pass_id
+        );
+        for motion in &fitted.motions[evidence.first_motion_id..evidence.end_motion_id] {
+            assert_eq!(
+                motion.pass_id, evidence.pass_id,
+                "range of pass {} covers motion {} of pass {}",
+                evidence.pass_id, motion.id, motion.pass_id
+            );
+        }
+    }
+    for evidence in &result.legacy_stage_evidence {
+        let stage = fitted
+            .stages
+            .iter()
+            .find(|stage| stage.stage_id == evidence.stage_id)
+            .expect("stage evidence names a plan stage");
+        assert_eq!(evidence.legacy_first_motion_id, stage.motion_range.0);
+        assert_eq!(evidence.legacy_end_motion_id, stage.motion_range.1);
     }
 }
