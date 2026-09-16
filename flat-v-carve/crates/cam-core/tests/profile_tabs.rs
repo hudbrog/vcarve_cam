@@ -124,6 +124,7 @@ fn job(svg: &str, operation: Operation) -> CamJob {
         tolerances: PlanningTolerances {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.05),
+            arc_fit_tolerance_mm: None,
         },
     }
 }
@@ -517,6 +518,8 @@ fn tab_placement_output_serializes_strictly() {
         source_operation_id: Some("op".into()),
         z_mm: None,
         covered: None,
+        path_simplification: None,
+        arc_fit: None,
         tab_placements: vec![cam_core::sequence::TabPlacementOutput {
             contour_id: "c".into(),
             bridge_start_mm: 0.,

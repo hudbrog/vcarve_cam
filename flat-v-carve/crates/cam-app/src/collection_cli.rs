@@ -493,6 +493,20 @@ pub fn run(args: Vec<String>) -> AppResult<bool> {
                     .as_str()
                     .unwrap_or("?"),
             );
+            // The motion shape belongs in front of the operator, not only in
+            // report.json: a program of micro-moves is a planning problem, and
+            // the report's observations are never a gate on the bytes.
+            for observation in bundle["report"]["observations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                eprintln!(
+                    "  {} {}",
+                    observation["code"].as_str().unwrap_or("observation"),
+                    observation["message"].as_str().unwrap_or("")
+                );
+            }
             Ok(true)
         }
         _ => unreachable!("command checked above"),

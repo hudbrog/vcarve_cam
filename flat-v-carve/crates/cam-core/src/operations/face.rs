@@ -1152,6 +1152,8 @@ pub(crate) fn plan(
                 z_mm: Some(*layers.last().expect("layers are nonempty")),
                 covered: Some(coverage),
                 tab_placements: vec![],
+                path_simplification: None,
+                arc_fit: None,
             }]
         },
         status: if motion_count == 0 {

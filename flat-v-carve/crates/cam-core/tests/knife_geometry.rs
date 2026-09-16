@@ -24,7 +24,7 @@ use cam_core::{
         GenerationStatus, OperationPlan, OperationPlanV5, PlanLimits, StageRole, TrustedPlan,
     },
     svg::{ImportOptions, Placement},
-    toolpath::{MotionEffect, MotionPurpose, PlannedMotion, knife_tip},
+    toolpath::{Interpolation, MotionEffect, MotionPurpose, PlannedMotion, knife_tip},
 };
 
 const KNIFE: &str = "knife";
@@ -68,6 +68,7 @@ fn knife_settings(chains: &[&str]) -> DragKnifeSettings {
         alignment: KnifeAlignment {
             initial_heading_deg: Some(90.),
         },
+        path_simplification_mm: None,
     }
 }
 
@@ -121,6 +122,7 @@ fn job_with_offset(svg_body: &str, settings: DragKnifeSettings, blade_offset_mm:
         tolerances: PlanningTolerances {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.01),
+            arc_fit_tolerance_mm: None,
         },
     };
     job.validate().unwrap();
@@ -192,29 +194,52 @@ fn right_angle_corner_swivel_matches_the_plan_numbers() {
         .iter()
         .filter(|m| m.purpose == MotionPurpose::KnifeSwivel)
         .collect();
-    // Chords change XY at the resolved swivel depth; the rise/lower around
-    // them are vertical moves at the corner pivots.
-    let chords: Vec<&&PlannedMotion> = swivels
+    // One arc changes XY per pass at the resolved swivel depth; the rise and
+    // lower around it are vertical moves at the corner pivot.
+    let arcs: Vec<&&PlannedMotion> = swivels
         .iter()
         .filter(|m| m.start.xy().distance(m.end.xy()) > 1e-12)
         .collect();
-    assert_eq!(chords.len(), 24, "one 90-degree swivel per pass, chorded");
+    assert_eq!(arcs.len(), 2, "one 90-degree swivel arc per depth pass");
     assert!(
-        chords
-            .iter()
+        arcs.iter()
             .all(|m| close(m.start.z, -0.5, 1e-9) && close(m.end.z, -0.5, 1e-9))
     );
+    // Each swivel is a single programmed arc about the planted corner with
+    // the blade offset as its radius: no chord error is spent at all.
+    for arc in &arcs {
+        let PlannedMotion {
+            interpolation: Interpolation::ArcFeed(arc),
+            start,
+            end,
+            ..
+        } = ***arc
+        else {
+            panic!("a swivel is programmed as an arc");
+        };
+        assert!(!arc.clockwise, "a left turn swivels counter-clockwise");
+        // The planted tip is the drawn corner; the holder endpoints are one
+        // blade offset away from it.
+        assert!(close(arc.center.x, 15., 1e-9) && close(arc.center.y, 15., 1e-9));
+        assert!(close(arc.radius(start.xy()).unwrap(), 1., 1e-9));
+        assert!(close(arc.radius(end.xy()).unwrap(), 1., 1e-9));
+        assert!(close(
+            arc.sweep_rad(start.xy(), end.xy()).unwrap().to_degrees(),
+            90.,
+            1e-6
+        ));
+    }
     assert!(
-        close(chords[0].start.x, 16., 1e-9) && close(chords[0].start.y, 15., 1e-9),
+        close(arcs[0].start.x, 16., 1e-9) && close(arcs[0].start.y, 15., 1e-9),
         "the swivel starts at the incoming holder endpoint"
     );
-    let last = **chords.last().unwrap();
+    let last = **arcs.last().unwrap();
     assert!(
         close(last.end.x, 15., 1e-9) && close(last.end.y, 16., 1e-9),
         "the swivel ends at the outgoing holder endpoint"
     );
-    // The modeled headings swing 180 -> 270 across the swivel chords.
-    assert_eq!(chords[0].blade_heading_deg.unwrap().0, 180.);
+    // The modeled headings swing 180 -> 270 across the swivel.
+    assert_eq!(arcs[0].blade_heading_deg.unwrap().0, 180.);
     assert_eq!(last.blade_heading_deg.unwrap().1, 270.);
     let outgoing = motions
         .iter()
@@ -249,7 +274,18 @@ fn right_angle_corner_swivel_matches_the_plan_numbers() {
         .iter()
         .filter(|m| m.purpose == MotionPurpose::KnifeAlign && m.layer == 0)
         .collect();
-    assert_eq!(align.len(), 12, "one alignment swivel, chorded");
+    // The 90-degree alignment turn is one arc about the planted tip.
+    assert_eq!(align.len(), 1, "one alignment swivel arc");
+    let PlannedMotion {
+        interpolation: Interpolation::ArcFeed(arc),
+        start,
+        ..
+    } = *align[0]
+    else {
+        panic!("an alignment swivel is programmed as an arc");
+    };
+    assert!(close(arc.center.x, 5., 1e-9) && close(arc.center.y, 15., 1e-9));
+    assert!(close(arc.radius(start.xy()).unwrap(), 1., 1e-9));
     assert!(close(align[0].start.x, 5., 1e-9) && close(align[0].start.y, 14., 1e-9));
     assert_eq!(align[0].blade_heading_deg.unwrap().0, 90.);
     assert_eq!(align.last().unwrap().blade_heading_deg.unwrap().1, 180.);
@@ -359,15 +395,30 @@ fn concave_right_turn_swivels_clockwise_around_the_corner() {
     // clockwise, never the long way around.
     assert_eq!(swivel[0].blade_heading_deg.unwrap().0, 180.);
     assert_eq!(last.blade_heading_deg.unwrap().1, 90.);
-    for chord in swivel
+    // The whole turn is one clockwise arc about the planted corner: the same
+    // 90-degree sweep the twelve chords used to approximate.
+    let turns: Vec<&&PlannedMotion> = swivel
         .iter()
         .filter(|m| m.start.xy().distance(m.end.xy()) > 1e-12)
-    {
-        let (start, end) = chord.blade_heading_deg.unwrap();
-        assert!(
-            close((start - end).rem_euclid(360.), 7.5, 1e-6),
-            "each chord turns 7.5 degrees clockwise: {start} -> {end}"
-        );
+        .collect();
+    assert_eq!(turns.len(), 2, "one swivel arc per depth pass");
+    for turn in &turns {
+        let PlannedMotion {
+            interpolation: Interpolation::ArcFeed(arc),
+            start,
+            end,
+            ..
+        } = **turn
+        else {
+            panic!("a swivel is programmed as an arc");
+        };
+        assert!(arc.clockwise, "this corner swivels clockwise");
+        assert!(close(arc.center.x, 15., 1e-9) && close(arc.center.y, 25., 1e-9));
+        assert!(close(
+            arc.sweep_rad(start.xy(), end.xy()).unwrap().to_degrees(),
+            90.,
+            1e-6
+        ));
     }
 }
 
@@ -493,7 +544,9 @@ fn disconnected_chain_entry_uses_the_carried_heading_in_contact() {
         .iter()
         .filter(|m| m.purpose == MotionPurpose::KnifeAlign && m.pass_id == 2)
         .collect();
-    assert_eq!(second_entry.len(), 12, "one contact alignment per entry");
+    // The whole 180-degree contact turn is one arc; it used to be twelve
+    // chords.
+    assert_eq!(second_entry.len(), 1, "one contact alignment arc per entry");
     assert!(close(second_entry[0].start.x, 26., 1e-9) && close(second_entry[0].start.y, 15., 1e-9));
     assert_eq!(second_entry[0].blade_heading_deg.unwrap().0, 180.);
     assert_eq!(
@@ -558,7 +611,7 @@ fn closed_contour_cuts_the_loop_once_with_a_single_closing_swivel() {
                 m.purpose == MotionPurpose::KnifeSwivel && m.start.xy().distance(m.end.xy()) > 1e-12
             })
             .count();
-        assert_eq!(swivel_chords, 4 * 12, "four swivel actions per pass");
+        assert_eq!(swivel_chords, 4, "four swivel arcs per pass");
         assert!(
             close(pass.last().unwrap().start.x, 13., 1e-9),
             "the pass ends 2 mm past the seam: tip (12,20), pivot (13,20)"
@@ -577,7 +630,10 @@ fn closed_contour_cuts_the_loop_once_with_a_single_closing_swivel() {
         .iter()
         .filter(|m| m.purpose == MotionPurpose::KnifeAlign)
         .count();
-    assert_eq!(aligns, 12, "alignment only before the first pass");
+    assert_eq!(
+        aligns, 1,
+        "alignment only before the first pass, as one arc"
+    );
 }
 
 #[test]
@@ -860,9 +916,18 @@ fn planner_output_exports_through_the_independent_readback() {
         cam_core::post::sequence::PreparedSpindle::Off
     ));
     assert_eq!(knife_process.coolant, Coolant::Off);
-    assert_eq!(knife_process.path_control, PathControl::ExactPath);
+    // The planner verified tip headroom, so the knife may blend — bounded by
+    // half of the unused tip budget, never by the profile's own tolerance.
+    let PathControl::Blend { tolerance_mm, .. } = knife_process.path_control else {
+        panic!("knife stage must carry the verified bounded blend");
+    };
+    assert!(
+        tolerance_mm > 0. && tolerance_mm <= 0.005,
+        "knife blend bound {tolerance_mm} exceeds half the 0.01 mm tip budget"
+    );
     let gcode = &export.program.gcode;
-    assert!(gcode.lines().any(|l| l.contains("G61")));
+    assert!(gcode.lines().any(|l| l.contains("G64 P")));
+    assert!(!gcode.lines().any(|l| l.contains("G61")));
     assert!(!gcode.lines().any(|l| l.contains("M3") || l.contains("M4")));
     verify_program(&prepared, &trusted, &export.program).unwrap();
 }
@@ -1005,10 +1070,15 @@ fn replay_convergence_with_a_finer_planner_tolerance() {
         "{:?}",
         plan.generation_diagnostics
     );
-    // More chords for the tighter budget.
-    let chords = knife_motions(&plan)
+    // The swivels are exact arcs, so a tighter motion tolerance changes the
+    // *geometry* budget rather than the chord count: one arc per swivel at
+    // both tolerances, and the plan still replays within the tighter budget.
+    let arcs = knife_motions(&plan)
         .iter()
-        .filter(|m| m.purpose == MotionPurpose::KnifeSwivel)
+        .filter(|m| {
+            m.purpose == MotionPurpose::KnifeSwivel
+                && matches!(m.interpolation, Interpolation::ArcFeed(_))
+        })
         .count();
-    assert!(chords > 12 * 2, "finer linearization: {chords}");
+    assert_eq!(arcs, 2, "one swivel arc per depth pass");
 }

@@ -131,6 +131,7 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
         "swivel_depth_mm" => 68,
         "corner_threshold_deg" => 69,
         "alignment.initial_heading_deg" => 72,
+        "path_simplification_mm" => 110,
         "setup.stock.xy" => 42,
         "chains" | "artwork" => return Some((2, "Select all knife chains".into())),
         "max_depth_mm" => 0,

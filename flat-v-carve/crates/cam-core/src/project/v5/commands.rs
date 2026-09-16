@@ -1168,6 +1168,7 @@ pub fn add_operation(
                 start: Default::default(),
                 closure_overlap_mm: None,
                 alignment: Default::default(),
+                path_simplification_mm: None,
             })
         }
     };

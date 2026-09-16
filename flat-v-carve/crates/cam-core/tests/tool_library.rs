@@ -489,6 +489,7 @@ fn knife_job() -> CamJob {
             start: Default::default(),
             closure_overlap_mm: None,
             alignment: KnifeAlignment::default(),
+            path_simplification_mm: None,
         })
     };
     let job = CamJob {

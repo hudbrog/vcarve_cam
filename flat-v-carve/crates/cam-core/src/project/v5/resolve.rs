@@ -454,6 +454,7 @@ pub(crate) fn to_knife_settings(settings: &DragKnifeSettingsV5) -> project::Drag
         start: to_start(&settings.start),
         closure_overlap_mm: settings.closure_overlap_mm,
         alignment: settings.alignment.clone(),
+        path_simplification_mm: settings.path_simplification_mm,
     }
 }
 

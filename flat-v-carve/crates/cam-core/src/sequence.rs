@@ -33,6 +33,68 @@ fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("sequence")
 }
 
+/// Rewrite one planned operation's milling stages within the job's declared
+/// arc-fit tolerance and publish what the fit measured (plan section 8.4).
+///
+/// The pass runs on the *plan*, not on the program: the readback compares the
+/// emitted bytes with the plan one-to-one, so a representation change has to
+/// exist here before any writer sees it. Knife stages are left alone — their
+/// arcs are the planner's own — and a stage range is rewritten in place so the
+/// plan's stage/motion correspondence survives.
+fn fit_milling_arcs(planned: &mut PlannedOperation, tolerances: &PlanningTolerances) {
+    let Some(tolerance) = tolerances.arc_fit_tolerance_mm.filter(|value| *value > 0.) else {
+        return;
+    };
+    let mut motions: Vec<PlannedMotion> = Vec::with_capacity(planned.motions.len());
+    let mut totals = ArcFitOutput {
+        tolerance_mm: tolerance,
+        ..Default::default()
+    };
+    for stage in &mut planned.stages {
+        let (from, end) = stage.motion_range;
+        let (fitted, measured) = if crate::operations::arc_fit::fittable_role(stage.role) {
+            crate::operations::arc_fit::fit_motions(&planned.motions[from..end], tolerance)
+        } else {
+            let span = end - from;
+            (
+                planned.motions[from..end].to_vec(),
+                ArcFitOutput {
+                    tolerance_mm: tolerance,
+                    motions_before: span,
+                    motions_after: span,
+                    arcs_emitted: planned.motions[from..end]
+                        .iter()
+                        .filter(|motion| matches!(motion.interpolation, Interpolation::ArcFeed(_)))
+                        .count(),
+                    max_deviation_mm: 0.,
+                },
+            )
+        };
+        let start = motions.len();
+        motions.extend(fitted);
+        stage.motion_range = (start, motions.len());
+        totals.motions_before += measured.motions_before;
+        totals.motions_after += measured.motions_after;
+        totals.arcs_emitted += measured.arcs_emitted;
+        totals.max_deviation_mm = totals.max_deviation_mm.max(measured.max_deviation_mm);
+    }
+    // Operation-local motion ids stay dense and in order, so a slice of the
+    // plan addresses the same motions after the rewrite.
+    for (index, motion) in motions.iter_mut().enumerate() {
+        motion.id = index;
+    }
+    planned.motions = motions;
+    planned.named_outputs.push(NamedOutput {
+        kind: "arc_fit".into(),
+        source_operation_id: None,
+        z_mm: None,
+        covered: None,
+        tab_placements: vec![],
+        path_simplification: None,
+        arc_fit: Some(totals),
+    });
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StageRole {
@@ -64,11 +126,18 @@ pub enum CoolantIntent {
     UseMachineProfile,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathControlIntent {
     UseMachineProfile,
     ExactPath,
+    /// Knife stages: the machine profile's path control is allowed, bounded by
+    /// this deviation. The planner publishes it only after its own tip replay
+    /// left that much headroom, so blending can never spend more of the tip
+    /// budget than the operation measured (plan sections 12.5 and 14.4).
+    BlendWithin {
+        tolerance_mm: f64,
+    },
 }
 
 /// Requested process state for a stage. Unresolved legacy fields are legal
@@ -159,6 +228,48 @@ pub struct NamedOutput {
     /// Profile tab payload: the resolved placements of one profile operation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tab_placements: Vec<TabPlacementOutput>,
+    /// Knife path simplification payload: the tolerance the tip polyline was
+    /// merged within and what the merge removed, measured after the merge on
+    /// every chain (plan section 12.4 step 2b).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_simplification: Option<KnifePathSimplification>,
+    /// Arc-fit payload: the tolerance a milling stream was rewritten within
+    /// and what the rewrite measured (plan section 8.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc_fit: Option<ArcFitOutput>,
+}
+
+/// What one operation's arc/line fitting did, measured on every primitive it
+/// emitted (plan section 8.4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArcFitOutput {
+    /// The tolerance the fit was bounded by, in mm.
+    pub tolerance_mm: f64,
+    /// Motions of the fitted stages before and after the rewrite.
+    pub motions_before: usize,
+    pub motions_after: usize,
+    /// How many of the emitted motions are programmed arcs.
+    pub arcs_emitted: usize,
+    /// Largest measured deviation of any covered vertex from the primitive
+    /// that replaced it, in mm; never above the tolerance.
+    pub max_deviation_mm: f64,
+}
+
+/// What one knife operation's tip simplification removed, summed over its
+/// chains (plan section 12.4 step 2b). Published so the resolved tolerance and
+/// the measured deviation travel with the plan instead of being implied.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnifePathSimplification {
+    /// The resolved merge tolerance in mm; zero means the resolved polyline is
+    /// followed exactly.
+    pub tolerance_mm: f64,
+    pub vertices_before: usize,
+    pub vertices_after: usize,
+    /// Largest distance any removed vertex moved from the segment that
+    /// replaced it, measured independently of the merge.
+    pub max_removed_deviation_mm: f64,
 }
 
 /// Legacy planner evidence retained per adapted operation so candidate and
@@ -565,7 +676,9 @@ impl OperationPlan {
                     "job exceeds the stage or motion budget before completing all operations",
                 ));
             }
-            let planned = crate::operations::plan_operation(job, op, &published_faces, &motions)?;
+            let mut planned =
+                crate::operations::plan_operation(job, op, &published_faces, &motions)?;
+            fit_milling_arcs(&mut planned, &job.tolerances);
             let base = motions.len();
             if base + planned.motions.len() > limits.max_motions {
                 return Err(error(
@@ -860,6 +973,10 @@ fn compose_stock_history(
             .map(|motion| crate::stock::history::SweepMotion {
                 start: motion.start,
                 end: motion.end,
+                arc: match motion.interpolation {
+                    crate::toolpath::Interpolation::ArcFeed(arc) => Some(arc),
+                    _ => None,
+                },
             })
             .collect();
         if !sweeps.is_empty() {
@@ -1074,6 +1191,7 @@ fn semantic_settings(settings: &OperationSettingsV5) -> OperationSettingsV5 {
                 start: s.start.clone(),
                 closure_overlap_mm: s.closure_overlap_mm,
                 alignment: s.alignment.clone(),
+                path_simplification_mm: s.path_simplification_mm,
             })
         }
     }
@@ -1166,7 +1284,7 @@ impl OperationPlanV5 {
             }
             // Invalid references cannot reach planners (plan section 22.5):
             // the blocked operation turns incomplete with its located issues.
-            let planned = match readiness
+            let mut planned = match readiness
                 .operations
                 .iter()
                 .find(|entry| entry.operation_id == op.id)
@@ -1204,6 +1322,7 @@ impl OperationPlanV5 {
                     &motions,
                 )?,
             };
+            fit_milling_arcs(&mut planned, &job.tolerances);
             let base = motions.len();
             if base + planned.motions.len() > limits.max_motions {
                 return Err(error(

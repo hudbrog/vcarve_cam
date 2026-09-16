@@ -54,6 +54,7 @@ fn knife_settings() -> DragKnifeSettings {
         alignment: KnifeAlignment {
             initial_heading_deg: Some(90.),
         },
+        path_simplification_mm: None,
     }
 }
 
@@ -164,6 +165,7 @@ fn base_job(operations: Vec<Operation>) -> CamJob {
         tolerances: PlanningTolerances {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: None,
+            arc_fit_tolerance_mm: None,
         },
     };
     job.validate().unwrap();
@@ -323,9 +325,25 @@ fn knife_modal_line(gcode: &str) -> usize {
 fn knife_only_export_decodes_and_replays_within_budget() {
     let profile = profile(None);
     let (trusted, prepared, gcode) = export(&knife_only_job(), &profile);
-    // The knife stage re-establishes exact path under a blending profile.
+    // The knife stage may blend under a blending profile, but only inside the
+    // deviation its own replay left (plan sections 12.5 and 14.4): never the
+    // profile's 0.01 mm, and never more than half the tip budget.
     let knife_modal = knife_modal_line(&gcode);
-    assert!(gcode.lines().nth(knife_modal).unwrap().contains("G61"));
+    let modal = gcode.lines().nth(knife_modal).unwrap();
+    let declared: f64 = modal
+        .split("G64 P")
+        .nth(1)
+        .expect("a bounded knife blend")
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        declared > 0. && declared <= 0.005,
+        "the knife blend bound {declared} must stay inside half the tip budget"
+    );
+    assert!(!modal.contains("G61"));
     // The emitted bytes decode with every modal group and verify exactly.
     let decoded = prepared
         .decode_program(trusted.plan(), prepared.output_decimal_places, &gcode)
@@ -334,12 +352,12 @@ fn knife_only_export_decodes_and_replays_within_budget() {
     assert_eq!(decoded.tool_changes.len(), 1);
     assert_eq!(decoded.tool_changes[0].0, 3);
     verify(&prepared, &trusted, &gcode).unwrap();
-    // Every knife motion decodes under exact path with spindle and coolant
-    // off and the prepared work frame.
+    // Every knife motion decodes under the bounded blend with spindle and
+    // coolant off and the prepared work frame.
     for motion in &decoded.motions {
         assert!(matches!(
             motion.path_control,
-            cam_core::post::sequence::DecodedPathControl::ExactPath
+            cam_core::post::sequence::DecodedPathControl::Blend { .. }
         ));
         assert!(matches!(
             motion.spindle,
@@ -348,6 +366,21 @@ fn knife_only_export_decodes_and_replays_within_budget() {
         assert_eq!(motion.work_offset, "G54");
         assert!(motion.line > 0);
     }
+}
+
+#[test]
+fn an_exact_path_profile_keeps_the_knife_exact() {
+    let mut profile = profile(None);
+    profile.path_control = PathControl::ExactPath;
+    let (_, prepared, gcode) = export(&knife_only_job(), &profile);
+    let knife_modal = knife_modal_line(&gcode);
+    let modal = gcode.lines().nth(knife_modal).unwrap();
+    assert!(modal.contains("G61"), "{modal}");
+    assert!(!modal.contains("G64"), "{modal}");
+    assert_eq!(
+        prepared.stages[0].process.path_control,
+        PathControl::ExactPath
+    );
 }
 
 #[test]
@@ -455,32 +488,47 @@ fn mutation_fixtures_cannot_evade_output_checks() {
     let (trusted, prepared, gcode) = export(&knife_only_job(), &profile);
     let modal = knife_modal_line(&gcode);
     let modal_text = gcode.lines().nth(modal).unwrap().to_string();
+    // The knife stage's verified blend bound, as emitted.
+    let declared: f64 = modal_text
+        .split("G64 P")
+        .nth(1)
+        .expect("a bounded knife blend")
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let group = "G21 G17 G90 G94 G40 G80";
+    let without_bound = group.to_string();
+    let loosened = format!("{group} G64 P{}", declared * 10.);
 
     let cases: Vec<(String, &str)> = vec![
-        // Remove the knife stage's exact-path word: its motions would run
-        // under the profile's G64 blend inherited from the header.
+        // Remove the knife stage's path-control word: its motions would run
+        // under the profile's wider blend inherited from the header.
         (
-            {
-                let mutated = modal_text.replace(" G61", "");
-                replace(&gcode, &modal_text, &mutated, 1)
-            },
+            replace(&gcode, &modal_text, &without_bound, 1),
             "POST_PATH_CONTROL_STATE",
         ),
-        // Exact stop is a different machine mode than exact path.
+        // Loosen the verified bound: the machine may then deviate further
+        // than the tip replay allowed.
         (
-            replace(&gcode, &modal_text, &modal_text.replace("G61", "G61.1"), 1),
+            replace(&gcode, &modal_text, &loosened, 1),
             "POST_PATH_CONTROL_STATE",
         ),
-        // Substituted blend tolerance in place of the knife's exact path.
+        // Exact path where the plan verified a bounded blend.
         (
-            replace(&gcode, &modal_text, "G21 G17 G90 G94 G40 G80 G64 P0.01", 1),
+            replace(&gcode, &modal_text, &format!("{group} G61"), 1),
+            "POST_PATH_CONTROL_STATE",
+        ),
+        // Exact stop is a different machine mode than either.
+        (
+            replace(&gcode, &modal_text, &format!("{group} G61.1"), 1),
             "POST_PATH_CONTROL_STATE",
         ),
         // Removing the initial modal word leaves every motion without a
-        // path-control mode at all (knife-only: the header word is the
-        // profile's blend; the stage word is its exact path).
+        // path-control mode at all.
         (
-            gcode.replacen(" G64 P0.01", "", 1).replacen(" G61", "", 1),
+            replace(&gcode, &modal_text, &without_bound, 1).replacen("G64", "", 1),
             "POST_MODAL_STATE",
         ),
         // Unrecognized/mode-changing blocks are rejected, not skipped.
@@ -543,19 +591,50 @@ fn mutation_fixtures_cannot_evade_output_checks() {
     }
 
     // Altered swivel geometry and deleted entries fail through the motion
-    // comparison even though every other byte matches.
+    // comparison even though every other byte matches. The swivel is one
+    // programmed arc, so the centre and the direction are the geometry that
+    // has to be pinned as well as the end point.
     let lines: Vec<&str> = gcode.lines().collect();
     let swivel = lines
         .iter()
-        .position(|l| l.starts_with("G1 ") && l.contains("F50"))
-        .expect("a swivel chord");
+        .position(|l| (l.starts_with("G2 ") || l.starts_with("G3 ")) && l.contains("F50"))
+        .expect("a swivel arc");
     let nudged = nudge_first_number(lines[swivel], 'X');
-    assert_ne!(nudged, lines[swivel], "the chord must change");
+    assert_ne!(nudged, lines[swivel], "the arc must change");
     let mut copy = lines.clone();
     copy[swivel] = &nudged;
     let error = verify(&prepared, &trusted, &(copy.join("\n") + "\n"))
         .expect_err("altered swivel coordinate");
     assert!(error.to_string().contains("POST_SEQUENCE_MISMATCH"));
+    // A moved centre is a different arc through the same end point.
+    let mut copy = lines.clone();
+    let nudged = nudge_first_number(lines[swivel], 'I');
+    copy[swivel] = &nudged;
+    let error =
+        verify(&prepared, &trusted, &(copy.join("\n") + "\n")).expect_err("altered arc centre");
+    assert!(error.to_string().contains("POST_SEQUENCE_MISMATCH"));
+    // And so is the other direction around the same circle.
+    let flipped = if lines[swivel].starts_with("G2 ") {
+        lines[swivel].replacen("G2 ", "G3 ", 1)
+    } else {
+        lines[swivel].replacen("G3 ", "G2 ", 1)
+    };
+    let mut copy = lines.clone();
+    copy[swivel] = &flipped;
+    let error =
+        verify(&prepared, &trusted, &(copy.join("\n") + "\n")).expect_err("flipped arc direction");
+    assert!(error.to_string().contains("POST_SEQUENCE_MISMATCH"));
+    // An arc without its centre offsets is not the supported subset.
+    let mut copy = lines.clone();
+    let bare = lines[swivel]
+        .split_ascii_whitespace()
+        .filter(|w| !w.starts_with('I') && !w.starts_with('J'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    copy[swivel] = &bare;
+    let error = verify(&prepared, &trusted, &(copy.join("\n") + "\n"))
+        .expect_err("arc without centre offsets");
+    assert!(error.to_string().contains("POST_GCODE_SUBSET"), "{error}");
 
     let error =
         verify(&prepared, &trusted, &drop_line(&gcode, "F50")).expect_err("deleted swivel motion");
@@ -771,7 +850,12 @@ fn decode_program_reports_source_lines_and_modal_mapping() {
     // that line really carries its coordinates.
     for motion in &decoded.motions {
         let line = gcode.lines().nth(motion.line - 1).unwrap();
-        assert!(line.starts_with("G0 ") || line.starts_with("G1 "));
+        assert!(
+            line.starts_with("G0 ")
+                || line.starts_with("G1 ")
+                || line.starts_with("G2 ")
+                || line.starts_with("G3 ")
+        );
         assert!(line.contains(&format!("Z{:.3}", motion.end.z)));
     }
     // Motion starts continue from the previous block; the first block after

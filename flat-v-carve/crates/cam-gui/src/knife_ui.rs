@@ -100,7 +100,7 @@ impl App {
                         }
                     }
                 }
-                self.numbers(ui, ctx, &[73, 74, 67, 68, 69, 70, 71, 72]);
+                self.numbers(ui, ctx, &[73, 74, 67, 68, 69, 70, 71, 72, 110]);
                 let settings =
                     crate::knife::settings(&self.document.as_ref().unwrap().job).unwrap();
                 ui.label(match &settings.start {

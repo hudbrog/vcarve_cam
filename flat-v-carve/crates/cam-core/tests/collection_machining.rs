@@ -126,6 +126,7 @@ fn tolerances() -> PlanningTolerances {
     PlanningTolerances {
         motion_tolerance_mm: Some(0.01),
         verification_tolerance_mm: Some(0.05),
+        arc_fit_tolerance_mm: None,
     }
 }
 
@@ -284,6 +285,7 @@ fn knife_operation(chains: Vec<GeometryRef>) -> OperationV5 {
             alignment: KnifeAlignment {
                 initial_heading_deg: Some(180.),
             },
+            path_simplification_mm: None,
         }),
     }
 }

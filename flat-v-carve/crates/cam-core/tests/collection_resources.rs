@@ -151,6 +151,7 @@ fn base_job() -> CamJobV5 {
         tolerances: PlanningTolerances {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.05),
+            arc_fit_tolerance_mm: None,
         },
         machine_configuration: None,
     }
@@ -260,6 +261,7 @@ fn knife_operation(chain: GeometryRef) -> OperationV5 {
             alignment: KnifeAlignment {
                 initial_heading_deg: Some(180.),
             },
+            path_simplification_mm: None,
         }),
     }
 }

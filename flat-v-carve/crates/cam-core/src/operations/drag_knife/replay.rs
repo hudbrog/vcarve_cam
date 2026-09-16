@@ -133,14 +133,114 @@ fn heading_error_deg(a: f64, b: f64) -> f64 {
     delta
 }
 
-/// One RK4 step of `dphi/ds = -sin(beta - phi)/d`.
-fn rk4_step(phi: f64, h: f64, beta: f64, d: f64) -> f64 {
-    let f = |phi: f64| -(beta - phi).sin() / d;
-    let k1 = f(phi);
-    let k2 = f(phi + h / 2. * k1);
-    let k3 = f(phi + h / 2. * k2);
-    let k4 = f(phi + h * k3);
+/// One RK4 step of `dphi/ds = -sin(beta(s) - phi)/d`. The travel direction is
+/// a function of the arclength because a programmed arc turns as it goes.
+fn rk4_step(phi: f64, s: f64, h: f64, beta: impl Fn(f64) -> f64, d: f64) -> f64 {
+    let f = |s: f64, phi: f64| -(beta(s) - phi).sin() / d;
+    let k1 = f(s, phi);
+    let k2 = f(s + h / 2., phi + h / 2. * k1);
+    let k3 = f(s + h / 2., phi + h / 2. * k2);
+    let k4 = f(s + h, phi + h * k3);
     phi + h / 6. * (k1 + 2. * k2 + 2. * k3 + k4)
+}
+
+/// The holder path of one emitted motion, in the form the integrator needs:
+/// a point and a travel direction at any arclength along it.
+enum HolderPath {
+    /// A lifted move, a plunge, or any straight holder travel.
+    Straight {
+        start: Point,
+        direction: Point,
+        length: f64,
+    },
+    /// A programmed arc: the holder follows the circle instead of its chord.
+    Arc {
+        center: Point,
+        radius: f64,
+        start_angle: f64,
+        /// +1 counter-clockwise, -1 clockwise.
+        turn: f64,
+        length: f64,
+    },
+}
+
+impl HolderPath {
+    fn of(motion: &PlannedMotion) -> Self {
+        let start = motion.start.xy();
+        let end = motion.end.xy();
+        if let crate::toolpath::Interpolation::ArcFeed(arc) = motion.interpolation
+            && let (Some(radius), Some(length)) = (arc.radius(start), arc.length(start, end))
+            && length > 1e-12
+        {
+            return Self::Arc {
+                center: arc.center,
+                radius,
+                start_angle: (start.y - arc.center.y).atan2(start.x - arc.center.x),
+                turn: if arc.clockwise { -1. } else { 1. },
+                length,
+            };
+        }
+        let length = start.distance(end);
+        Self::Straight {
+            start,
+            direction: Point::new(
+                if length > 0. {
+                    (end.x - start.x) / length
+                } else {
+                    1.
+                },
+                if length > 0. {
+                    (end.y - start.y) / length
+                } else {
+                    0.
+                },
+            ),
+            length,
+        }
+    }
+
+    fn length(&self) -> f64 {
+        match self {
+            Self::Straight { length, .. } | Self::Arc { length, .. } => *length,
+        }
+    }
+
+    fn point_at(&self, s: f64) -> Point {
+        match self {
+            Self::Straight {
+                start, direction, ..
+            } => Point::new(start.x + direction.x * s, start.y + direction.y * s),
+            Self::Arc {
+                center,
+                radius,
+                start_angle,
+                turn,
+                ..
+            } => {
+                let angle = start_angle + turn * s / radius;
+                Point::new(
+                    center.x + radius * angle.cos(),
+                    center.y + radius * angle.sin(),
+                )
+            }
+        }
+    }
+
+    /// Travel direction in radians at arclength `s`.
+    fn beta_at(&self, s: f64) -> f64 {
+        match self {
+            Self::Straight { direction, .. } => direction.y.atan2(direction.x),
+            Self::Arc {
+                radius,
+                start_angle,
+                turn,
+                ..
+            } => {
+                let angle = start_angle + turn * s / radius;
+                angle + turn * std::f64::consts::FRAC_PI_2
+            }
+        }
+    }
 }
 
 struct ReplayRun {
@@ -267,14 +367,16 @@ pub fn replay_traced(
         let a = motion.start.xy();
         let b = motion.end.xy();
         run.sample(index, true, a, phi, *intent);
-        let length = a.distance(b);
+        // The holder follows the *programmed* path: a straight move's line, or
+        // an arc's circle rather than its chord.
+        let path = HolderPath::of(motion);
+        let length = path.length();
         if length <= 1e-12 {
             // Vertical contact move: the tip stays planted; the modeled
             // headings must be constant through it.
             run.check_heading(modeled_start, modeled_end);
             continue;
         }
-        let beta = (b.y - a.y).atan2(b.x - a.x);
         let mut s = 0f64;
         let mut h = length.min(blade_offset_mm);
         let mut phi = phi;
@@ -282,9 +384,11 @@ pub fn replay_traced(
             if s + h > length {
                 h = length - s;
             }
-            let full = rk4_step(phi, h, beta, blade_offset_mm);
+            let beta = |at: f64| path.beta_at(at);
+            let full = rk4_step(phi, s, h, beta, blade_offset_mm);
             let half = rk4_step(
-                rk4_step(phi, h / 2., beta, blade_offset_mm),
+                rk4_step(phi, s, h / 2., beta, blade_offset_mm),
+                s + h / 2.,
                 h / 2.,
                 beta,
                 blade_offset_mm,
@@ -304,10 +408,7 @@ pub fn replay_traced(
             s += h;
             // Interior points refine the deviation maximum; they are not
             // part of the boundary sample evidence.
-            let pivot = Point::new(
-                a.x + (b.x - a.x) * s / length,
-                a.y + (b.y - a.y) * s / length,
-            );
+            let pivot = path.point_at(s);
             let tip = Point::new(
                 pivot.x + run.blade_offset_mm * phi.cos(),
                 pivot.y + run.blade_offset_mm * phi.sin(),

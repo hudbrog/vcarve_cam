@@ -178,6 +178,7 @@ fn knife_operation() -> v5::OperationV5 {
             alignment: cam_core::project::KnifeAlignment {
                 initial_heading_deg: Some(180.),
             },
+            path_simplification_mm: None,
         }),
     }
 }
@@ -206,6 +207,7 @@ fn base_job(operations: Vec<v5::OperationV5>) -> CamJobV5 {
         tolerances: PlanningTolerances {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.05),
+            arc_fit_tolerance_mm: None,
         },
         machine_configuration: None,
     }

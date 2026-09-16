@@ -111,6 +111,12 @@ pub struct OperationSettings {
 pub struct PlanningTolerances {
     pub motion_tolerance_mm: Option<f64>,
     pub verification_tolerance_mm: Option<f64>,
+    /// Arc/line fitting of milling motion streams, in mm: the largest
+    /// deviation the fitted program may have from the polyline the planners
+    /// resolved (plan section 8.4). Unset leaves the stream exactly as the
+    /// planners emitted it; `0` is the same as unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc_fit_tolerance_mm: Option<f64>,
 }
 
 /// Everything one Flat V-carve planning run needs: the operation's settings,

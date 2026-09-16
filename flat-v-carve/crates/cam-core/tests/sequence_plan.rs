@@ -371,6 +371,7 @@ fn unconfigured_knife_operations_plan_incomplete_never_silently() {
             start: Default::default(),
             closure_overlap_mm: None,
             alignment: Default::default(),
+            path_simplification_mm: None,
         }),
     });
     let plan = OperationPlan::plan_job(&cam, &PlanLimits::default()).unwrap();

@@ -122,6 +122,7 @@ fn job_with(svg: &str, settings: ProfileSettings, tool: JobTool) -> CamJob {
         tolerances: PlanningTolerances {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.05),
+            arc_fit_tolerance_mm: None,
         },
     }
 }

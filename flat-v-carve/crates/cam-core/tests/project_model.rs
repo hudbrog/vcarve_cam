@@ -97,6 +97,7 @@ fn face_job(complete: bool) -> CamJob {
         tolerances: PlanningTolerances {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.05),
+            arc_fit_tolerance_mm: None,
         },
     }
 }
@@ -310,6 +311,7 @@ fn knife_assignment_requires_knife_geometry() {
             alignment: KnifeAlignment {
                 initial_heading_deg: Some(0.),
             },
+            path_simplification_mm: None,
         }),
     });
     let err = job.validate().unwrap_err();

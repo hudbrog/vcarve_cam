@@ -12,11 +12,118 @@ use crate::geometry::Point;
 use crate::motion::Position;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One circular feed move in the XY plane, at constant or linearly varying Z.
+///
+/// The arc is the circle of `center` through the motion's start and end, run
+/// in `clockwise` order; Z interpolates linearly over the same parameter. The
+/// plan states the centre rather than a radius because that is what the
+/// program carries (`G2/G3` with `I`/`J`) and what a reader can reconstruct
+/// without choosing between the two arcs that share a chord.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArcMove {
+    pub center: Point,
+    pub clockwise: bool,
+}
+
+impl ArcMove {
+    /// Radius of the arc through `from`, or `None` when the centre is
+    /// degenerate.
+    pub fn radius(self, from: Point) -> Option<f64> {
+        let radius = from.distance(self.center);
+        (radius.is_finite() && radius > 0.).then_some(radius)
+    }
+
+    /// Angular sweep in radians over `from` -> `to`, in the arc's direction:
+    /// always positive, and `TAU` for a closed circle.
+    pub fn sweep_rad(self, from: Point, to: Point) -> Option<f64> {
+        self.radius(from)?;
+        let start = (from.y - self.center.y).atan2(from.x - self.center.x);
+        let end = (to.y - self.center.y).atan2(to.x - self.center.x);
+        let mut sweep = if self.clockwise {
+            start - end
+        } else {
+            end - start
+        };
+        if sweep < 0. {
+            sweep += std::f64::consts::TAU;
+        }
+        if sweep <= 1e-12 {
+            // Coincident endpoints: a full circle, never a zero-length arc.
+            sweep = std::f64::consts::TAU;
+        }
+        Some(sweep)
+    }
+
+    /// XY length of the arc, for feed timing and motion shape reports.
+    pub fn length(self, from: Point, to: Point) -> Option<f64> {
+        Some(self.radius(from)? * self.sweep_rad(from, to)?)
+    }
+
+    /// The point at `fraction` of the arc's sweep, for sampling and replay.
+    pub fn point_at(self, from: Point, to: Point, fraction: f64) -> Option<Point> {
+        let start = (from.y - self.center.y).atan2(from.x - self.center.x);
+        let radius = self.radius(from)?;
+        let sweep = self.sweep_rad(from, to)?;
+        let angle = start + if self.clockwise { -1. } else { 1. } * sweep * fraction;
+        Some(Point::new(
+            self.center.x + radius * angle.cos(),
+            self.center.y + radius * angle.sin(),
+        ))
+    }
+
+    /// Distance from `p` to the arc from `from` to `to`: the radial distance
+    /// when `p`'s angle falls inside the sweep, otherwise the nearer endpoint.
+    /// Degenerate arcs fall back to the chord so a caller never has to choose
+    /// between "no answer" and an invented one.
+    pub fn distance(self, from: Point, to: Point, p: Point) -> f64 {
+        let (Some(radius), Some(sweep)) = (self.radius(from), self.sweep_rad(from, to)) else {
+            return distance_to_segment(p, from, to);
+        };
+        let start_angle = (from.y - self.center.y).atan2(from.x - self.center.x);
+        let point_angle = (p.y - self.center.y).atan2(p.x - self.center.x);
+        let mut along = if self.clockwise {
+            start_angle - point_angle
+        } else {
+            point_angle - start_angle
+        };
+        along = along.rem_euclid(std::f64::consts::TAU);
+        if along <= sweep {
+            return (p.distance(self.center) - radius).abs();
+        }
+        p.distance(from).min(p.distance(to))
+    }
+}
+
+/// Distance from a point to a segment; the arc helper's fallback.
+pub fn distance_to_segment(p: Point, a: Point, b: Point) -> f64 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let length_squared = dx * dx + dy * dy;
+    if length_squared == 0. {
+        return p.distance(a);
+    }
+    let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / length_squared).clamp(0., 1.);
+    p.distance(Point::new(a.x + t * dx, a.y + t * dy))
+}
+
+/// Distance from a point to a motion's axis path: its arc when it has one,
+/// its segment otherwise.
+pub fn motion_distance(motion: &PlannedMotion, p: Point) -> f64 {
+    let (from, to) = (motion.start.xy(), motion.end.xy());
+    match motion.interpolation {
+        Interpolation::ArcFeed(arc) => arc.distance(from, to, p),
+        _ => distance_to_segment(p, from, to),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Interpolation {
     Rapid,
     LinearFeed,
+    /// Circular feed: the machine runs `G2`/`G3` for this motion.
+    ArcFeed(ArcMove),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

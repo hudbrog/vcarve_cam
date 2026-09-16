@@ -6,14 +6,14 @@
 //! spindle state from the emitted bytes. Detailed stock-quality analysis
 //! stays optional and is never run here.
 use crate::{
-    checks::{BasicCheckReport, require_pass},
+    checks::{BasicCheckReport, CheckFinding, require_pass},
     geometry::{Diagnostic, Result},
     operations::drag_knife::replay::ReplayStatus,
     project::{
         CamJob, MillingAssignment, OperationSettings, SpindleDirection as JobSpindleDirection,
     },
     sequence::{
-        ExecutionStage, GenerationStatus, ProcessSpindle, SequencePlan, StageRole,
+        ExecutionStage, GenerationStatus, ProcessIntent, ProcessSpindle, SequencePlan, StageRole,
         TrustedSequencePlan,
     },
     toolpath::{Interpolation, PlannedMotion},
@@ -179,6 +179,16 @@ pub struct SequenceExportReport {
     pub motion_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knife_replay: Option<KnifeReplaySummary>,
+    /// How the emitted program actually moves: per-stage move counts, length
+    /// histogram, moves per millimetre and the precision it needed. Always
+    /// present; a report from before this field carries the default.
+    #[serde(default)]
+    pub motion_profile: super::motion_profile::MotionProfileReport,
+    /// Informational observations derived from the motion profile. Never a
+    /// gate: unlike `basic_checks.findings`, these do not make output
+    /// unavailable and always have an empty `operationId`.
+    #[serde(default)]
+    pub observations: Vec<CheckFinding>,
     pub diagnostics: Vec<String>,
 }
 
@@ -440,15 +450,15 @@ pub fn apply_legacy_profile(profile: &LinuxCncProfile, job: &CamJob) -> Result<C
     Ok(applied)
 }
 
-fn stage_intent(plan: &dyn SequencePlan, stage: &ExecutionStage) -> Result<ProcessSpindle> {
+fn stage_intent(plan: &dyn SequencePlan, stage: &ExecutionStage) -> Result<ProcessIntent> {
     // Walk execution in order; the intent immediately preceding this stage's
     // RunStage is the one that applies to it.
-    let mut pending: Option<ProcessSpindle> = None;
+    let mut pending: Option<ProcessIntent> = None;
     for item in plan.execution() {
         match item {
             crate::sequence::ExecutionItem::ToolChange { .. } => {}
             crate::sequence::ExecutionItem::SetProcessIntent { intent } => {
-                pending = Some(intent.spindle.clone());
+                pending = Some(intent.clone());
             }
             crate::sequence::ExecutionItem::RunStage { stage_id } => {
                 if stage_id == &stage.stage_id {
@@ -470,10 +480,10 @@ fn stage_intent(plan: &dyn SequencePlan, stage: &ExecutionStage) -> Result<Proce
 
 fn resolve_process(
     stage: &ExecutionStage,
-    intent_spindle: &ProcessSpindle,
+    intent: &ProcessIntent,
     profile: &SequenceProfile,
 ) -> Result<PreparedProcess> {
-    let spindle = match intent_spindle {
+    let spindle = match &intent.spindle {
         ProcessSpindle::Off => PreparedSpindle::Off,
         ProcessSpindle::Milling { rpm, direction } => match direction {
             Some(JobSpindleDirection::Clockwise) => PreparedSpindle::On {
@@ -505,11 +515,52 @@ fn resolve_process(
             _ => profile.coolant,
         },
         path_control: match stage.role {
-            // Knife stages always run exact path; blending could change
-            // swivel geometry (plan section 12.5).
-            StageRole::Knife => PathControl::ExactPath,
+            // Knife stages run the machine profile's path control only inside
+            // the deviation the planner verified with its own tip replay; an
+            // intent that did not ask for a bound stays exact path (plan
+            // sections 12.5 and 14.4).
+            StageRole::Knife => knife_path_control(&intent.path_control, profile)?,
             _ => profile.path_control,
         },
+    })
+}
+
+/// Resolve a knife stage's path control: the profile's blend, bounded by the
+/// deviation the plan verified, or exact path.
+fn knife_path_control(
+    intent: &crate::sequence::PathControlIntent,
+    profile: &SequenceProfile,
+) -> Result<PathControl> {
+    let crate::sequence::PathControlIntent::BlendWithin { tolerance_mm } = intent else {
+        return Ok(PathControl::ExactPath);
+    };
+    if !tolerance_mm.is_finite() || *tolerance_mm <= 0. {
+        return Err(error(
+            "PROCESS_PATH_CONTROL",
+            "a knife stage's verified blend bound must be finite and positive",
+        ));
+    }
+    let PathControl::Blend {
+        tolerance_mm: profile_tolerance,
+        naive_cam_tolerance_mm,
+    } = profile.path_control
+    else {
+        // The machine asked for exact path: no blend to bound.
+        return Ok(PathControl::ExactPath);
+    };
+    let bound = tolerance_mm.min(profile_tolerance);
+    // Quantize the bound down to the profile's own precision: the prepared
+    // state has to be the number the program carries, so the readback compares
+    // two identical values, and rounding down can only spend less of the
+    // verified headroom. A bound that quantizes to zero is exact path.
+    let factor = 10f64.powi(profile.decimal_places as i32);
+    let quantized = (bound * factor).floor() / factor;
+    if quantized <= 0. {
+        return Ok(PathControl::ExactPath);
+    }
+    Ok(PathControl::Blend {
+        tolerance_mm: quantized,
+        naive_cam_tolerance_mm: naive_cam_tolerance_mm.map(|q| q.min(quantized)),
     })
 }
 
@@ -738,6 +789,7 @@ impl PreparedExecution {
                         tip_budget_mm: replay.tip_budget_mm,
                     }),
                     places,
+                    profile.decimal_places,
                 ));
             }
             if places >= 9 {
@@ -773,6 +825,7 @@ impl PreparedExecution {
     }
 
     /// Build the manifest and aggregate report of fully checked files.
+    #[allow(clippy::too_many_arguments)]
     fn finish_bundle(
         &self,
         plan: &dyn SequencePlan,
@@ -781,6 +834,7 @@ impl PreparedExecution {
         groups: &[(usize, usize)],
         knife_replay: Option<KnifeReplaySummary>,
         places: usize,
+        requested_places: usize,
     ) -> SequenceBundle {
         let mut entries = vec![];
         let mut previous_names = vec![];
@@ -830,6 +884,16 @@ impl PreparedExecution {
             output_decimal_places: places,
             files: entries,
         };
+        // Published motion shape: per-stage counts, histogram, density and
+        // the precision the program actually needed. Observations are
+        // informational and never gate the bytes already checked above.
+        let motion_profile = super::motion_profile::MotionProfileReport::of(
+            &self.stages,
+            plan.motions(),
+            requested_places,
+            places,
+        );
+        let observations = motion_profile.observations();
         let report = SequenceExportReport {
             artifact_kind: "sequence_export_report".into(),
             schema_version: 1,
@@ -843,6 +907,8 @@ impl PreparedExecution {
             program_sha256,
             motion_count: plan.motions().len(),
             knife_replay,
+            motion_profile,
+            observations,
             diagnostics: vec![],
         };
         SequenceBundle {
@@ -945,19 +1011,36 @@ impl PreparedExecution {
             let motions = &plan.motions()[stage.motion_range.0..stage.motion_range.1];
             for motion in motions {
                 let end = machine_position(motion.end, self.machine_offset_mm, places);
+                let start = machine_position(motion.start, self.machine_offset_mm, places);
                 let feed = match motion.feed_mm_min {
                     Some(f) => format!(" F{}", scalar(f)?),
                     None => String::new(),
                 };
-                lines.push(format!(
-                    "{} {}{}",
-                    match motion.interpolation {
-                        Interpolation::Rapid => "G0",
-                        Interpolation::LinearFeed => "G1",
-                    },
-                    xyz(end, places),
-                    feed
-                ));
+                match motion.interpolation {
+                    Interpolation::Rapid => lines.push(format!("G0 {}{}", xyz(end, places), feed)),
+                    Interpolation::LinearFeed => {
+                        lines.push(format!("G1 {}{}", xyz(end, places), feed))
+                    }
+                    Interpolation::ArcFeed(arc) => {
+                        // G2/G3 with the centre as I/J offsets from the start
+                        // point, which is what the controller needs and what
+                        // the reader reconstructs; Z rides along linearly.
+                        let center = machine_position(
+                            crate::motion::Position::new(arc.center, motion.start.z),
+                            self.machine_offset_mm,
+                            places,
+                        );
+                        let (i, j) = (center.x - start.x, center.y - start.y);
+                        lines.push(format!(
+                            "{} {} I{} J{}{}",
+                            if arc.clockwise { "G2" } else { "G3" },
+                            xyz(end, places),
+                            number(i, places),
+                            number(j, places),
+                            feed
+                        ));
+                    }
+                }
             }
             previous_stage_end = motions
                 .last()
@@ -1021,6 +1104,15 @@ pub fn verify_program(
     let plan = plan.trusted();
     let decoded = prepared.decode_program(plan, prepared.output_decimal_places, &program.gcode)?;
     compare_with_plan(prepared, plan, &program.gcode, &decoded)?;
+    // The verified bytes are measured the same way an export measures them, so
+    // a re-verified program reports the same motion shape.
+    let motion_profile = super::motion_profile::MotionProfileReport::of(
+        &prepared.stages,
+        plan.motions(),
+        prepared.output_decimal_places,
+        prepared.output_decimal_places,
+    );
+    let observations = motion_profile.observations();
     Ok(SequenceExportReport {
         artifact_kind: "sequence_export_report".into(),
         schema_version: 1,
@@ -1034,6 +1126,8 @@ pub fn verify_program(
         program_sha256: format!("{:x}", Sha256::digest(program.gcode.as_bytes())),
         motion_count: decoded.motions.len(),
         knife_replay: None,
+        motion_profile,
+        observations,
         diagnostics: vec![],
     })
 }
@@ -1284,6 +1378,10 @@ fn decode_program(
         // Parse the block into words first; only a known vocabulary may
         // continue into state tracking.
         let mut motion: Option<Interpolation> = None;
+        // G2/G3 are resolved after the block, when the centre offsets and the
+        // modal start position are both known.
+        let mut arc_clockwise: Option<bool> = None;
+        let mut arc_offsets: Option<(f64, f64)> = None;
         let mut coordinates: Option<crate::motion::Position> = None;
         let mut words = 0u8;
         let mut block_feed: Option<f64> = None;
@@ -1303,6 +1401,7 @@ fn decode_program(
                 b'G' => match value {
                     "0" => motion = Some(Interpolation::Rapid),
                     "1" => motion = Some(Interpolation::LinearFeed),
+                    "2" | "3" => arc_clockwise = Some(value == "2"),
                     "4" => {
                         // Dwell: P must be present and finite; nothing else.
                         let Some(rest) = line
@@ -1446,11 +1545,11 @@ fn decode_program(
                             format!("invalid coordinate {token}"),
                         ));
                     };
-                    if motion.is_none() {
+                    if motion.is_none() && arc_clockwise.is_none() {
                         return Err(reject(
                             line_number,
                             "POST_GCODE_SUBSET",
-                            "coordinates outside a G0/G1 block".into(),
+                            "coordinates outside a motion block".into(),
                         ));
                     }
                     words |= match letter {
@@ -1466,6 +1565,28 @@ fn decode_program(
                         b'X' => slot.x = number,
                         b'Y' => slot.y = number,
                         _ => slot.z = number,
+                    }
+                }
+                b'I' | b'J' => {
+                    let Some(number) = numeric() else {
+                        return Err(reject(
+                            line_number,
+                            "POST_GCODE_SUBSET",
+                            format!("invalid arc offset {token}"),
+                        ));
+                    };
+                    if arc_clockwise.is_none() {
+                        return Err(reject(
+                            line_number,
+                            "POST_GCODE_SUBSET",
+                            "arc centre offsets outside a G2/G3 block".into(),
+                        ));
+                    }
+                    let slot = arc_offsets.get_or_insert((0., 0.));
+                    if letter == b'I' {
+                        slot.0 = number;
+                    } else {
+                        slot.1 = number;
                     }
                 }
                 b'P' | b'Q' | b'H' => {} // consumed by their G words above
@@ -1513,6 +1634,29 @@ fn decode_program(
             bridges_expected = expected_bridges
                 .get(tool_changes.len() - 1)
                 .map_or(0, Vec::len);
+        }
+        // Resolve G2/G3 now that the block is complete: the centre is the
+        // start point plus the I/J offsets, both as written, and the modal
+        // start position must already be established.
+        if let Some(clockwise) = arc_clockwise {
+            let Some((i, j)) = arc_offsets else {
+                return Err(reject(
+                    line_number,
+                    "POST_GCODE_SUBSET",
+                    "arc block without I and J centre offsets".into(),
+                ));
+            };
+            let Some(start) = position else {
+                return Err(reject(
+                    line_number,
+                    "POST_MODAL_STATE",
+                    "arc block before any known start position".into(),
+                ));
+            };
+            motion = Some(Interpolation::ArcFeed(crate::toolpath::ArcMove {
+                center: crate::geometry::Point::new(start.x + i, start.y + j),
+                clockwise,
+            }));
         }
         let Some(interpolation) = motion else {
             if let Some((true, rpm)) = spindle_command
@@ -1863,7 +2007,37 @@ fn compare_motions(
                 ),
             ));
         }
-        if read.interpolation != planned.interpolation {
+        // Arcs compare in machine space: the program carries the centre as
+        // offsets from the start point, so the planned centre travels through
+        // the same shift and rounding as the endpoints.
+        let expected_interpolation = match planned.interpolation {
+            Interpolation::ArcFeed(arc) => {
+                let center = machine_position(
+                    crate::motion::Position::new(arc.center, planned.start.z),
+                    prepared.machine_offset_mm,
+                    prepared.output_decimal_places,
+                );
+                Interpolation::ArcFeed(crate::toolpath::ArcMove {
+                    center: crate::geometry::Point::new(center.x, center.y),
+                    clockwise: arc.clockwise,
+                })
+            }
+            other => other,
+        };
+        // Positions compare exactly because both sides are built the same way
+        // from the output grid. An arc's centre is not: the program carries
+        // `I`/`J` offsets and the reader adds them back, so the reconstructed
+        // centre sits within a couple of grid steps of the planned one.
+        let grid = 10f64.powi(-(prepared.output_decimal_places as i32));
+        let same = match (read.interpolation, expected_interpolation) {
+            (Interpolation::ArcFeed(read_arc), Interpolation::ArcFeed(planned_arc)) => {
+                read_arc.clockwise == planned_arc.clockwise
+                    && (read_arc.center.x - planned_arc.center.x).abs() <= 2. * grid + 1e-9
+                    && (read_arc.center.y - planned_arc.center.y).abs() <= 2. * grid + 1e-9
+            }
+            (read_kind, planned_kind) => read_kind == planned_kind,
+        };
+        if !same {
             return Err(error(
                 "POST_SEQUENCE_MISMATCH",
                 format!("motion {global} interpolation differs from the plan"),
@@ -1871,7 +2045,11 @@ fn compare_motions(
         }
         // Feeds are modal words that rapids do not consume; only linear feed
         // motions carry an authoritative per-motion feed to compare.
-        if read.interpolation == Interpolation::LinearFeed && read.feed != planned.feed_mm_min {
+        if matches!(
+            read.interpolation,
+            Interpolation::LinearFeed | Interpolation::ArcFeed(_)
+        ) && read.feed != planned.feed_mm_min
+        {
             return Err(error(
                 "POST_SEQUENCE_MISMATCH",
                 format!("motion {global} feed differs from the plan"),
@@ -1965,6 +2143,11 @@ fn rounded(v: f64, places: usize) -> f64 {
 }
 fn xyz(p: crate::motion::Position, places: usize) -> String {
     format!("X{:.p$} Y{:.p$} Z{:.p$}", p.x, p.y, p.z, p = places)
+}
+/// One rounded coordinate word; arc centre offsets may be negative, so this
+/// never takes a sign for granted.
+fn number(v: f64, places: usize) -> String {
+    format!("{v:.places$}")
 }
 fn scalar(v: f64) -> Result<String> {
     if !v.is_finite() || !(0.000001..=1_000_000.).contains(&v) {

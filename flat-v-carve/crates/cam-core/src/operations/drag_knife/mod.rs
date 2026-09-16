@@ -16,14 +16,14 @@ pub mod replay;
 
 use crate::{
     contours::ResolvedAnchor,
-    geometry::{Diagnostic, Point, Result},
+    geometry::{Diagnostic, Point, Result, Segment},
     model::VBit,
     motion::Position,
     operations::{LocatedDiagnostic, PlanContext, PlannerGeometry},
     project::{DragKnifeSettings, StartSelection, ToolGeometry},
     sequence::{
-        CoolantIntent, GenerationStatus, LocalStage, PathControlIntent, PlanIssue,
-        PlannedOperation, ProcessIntent, ProcessSpindle, StageRole,
+        CoolantIntent, GenerationStatus, KnifePathSimplification, LocalStage, NamedOutput,
+        PathControlIntent, PlanIssue, PlannedOperation, ProcessIntent, ProcessSpindle, StageRole,
     },
     setup::resolve_heights_values,
     toolpath::{Interpolation, MotionEffect, MotionPurpose, PlannedMotion},
@@ -33,6 +33,24 @@ use std::collections::BTreeMap;
 
 fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("drag_knife")
+}
+
+/// Path-control intent for one knife stage, given the tip budget the plan
+/// promises and what the emitted-program replay actually spent. Exact path
+/// stays the answer whenever the replay left no verified headroom; otherwise
+/// the machine profile may blend, but no further than the headroom allows
+/// (plan sections 12.5 and 14.4).
+fn blend_intent(tolerance_mm: f64, replayed_tip_deviation_mm: f64) -> PathControlIntent {
+    let headroom = (tolerance_mm - replayed_tip_deviation_mm).max(0.) / TIP_BLEND_HEADROOM_SHARE;
+    // Below the plan's own numerical reserve a blend is indistinguishable from
+    // exact path, and saying "exact" is the honest answer.
+    if headroom <= RESERVE_MM {
+        PathControlIntent::ExactPath
+    } else {
+        PathControlIntent::BlendWithin {
+            tolerance_mm: headroom,
+        }
+    }
 }
 
 /// Numerical reserve for in-stock contact checks.
@@ -47,6 +65,17 @@ const AMBIGUOUS_REVERSAL_DEG: f64 = 170.;
 /// swivel arcs (section 8.4) each take one share, leaving the rest of the
 /// declared tip-path budget to the replay gate.
 const TOLERANCE_ERROR_SHARE: f64 = 4.;
+/// Share of the motion tolerance the tip simplification may spend when the
+/// operation does not name its own (plan section 12.4 step 2b). Import
+/// flattening and the artwork merge already spent two shares upstream, so the
+/// resolved tip path stays inside the motion tolerance of the artwork with a
+/// share left over for the replay gate.
+const TIP_SIMPLIFY_ERROR_SHARE: f64 = 4.;
+/// Share of the replay's unused tip budget that a blended knife path may
+/// spend. The tip is derived from the pivot, so a pivot deviation can move it
+/// by more than itself; halving the remaining headroom keeps the total inside
+/// the motion tolerance the plan promises.
+const TIP_BLEND_HEADROOM_SHARE: f64 = 2.;
 /// An alignment/contact swivel whose sweep is this close to 180 degrees is
 /// equally ambiguous and is rejected rather than arbitrarily sided.
 const AMBIGUOUS_ALIGNMENT_DEG: f64 = 0.5;
@@ -251,6 +280,19 @@ struct KnifePath {
     start_pivot: Point,
     /// Display-convention heading of the first cut (trailing the tangent).
     first_heading: f64,
+    /// What the tip simplification removed on this chain and how far it
+    /// moved those vertices (plan section 12.4 step 2b).
+    simplification: TipSimplification,
+}
+
+/// Measured result of merging near-collinear tip vertices on one chain.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct TipSimplification {
+    vertices_before: usize,
+    vertices_after: usize,
+    /// Largest distance from any removed vertex to the simplified polyline,
+    /// measured after the merge instead of trusted from it.
+    max_removed_deviation_mm: f64,
 }
 
 /// Build the tip polyline in travel order: open chains as drawn, closed
@@ -368,14 +410,136 @@ fn clean_degenerate_segments(points: &mut Vec<Point>, closed: bool, budget_mm: f
     }
 }
 
+/// Merge near-collinear tip vertices before any turn is compensated (plan
+/// section 12.4 step 2b).
+///
+/// Blade compensation turns every tip vertex into a pivot step of `d*Δθ`, so
+/// the vertex count of a flattened curve is roughly the program's move count
+/// twice over. This removes the vertices the import tolerance already allows
+/// to move, and with them the moves that carried them. It is bounded by
+/// `budget_mm` — named by the operation, or the planner's declared share of
+/// the motion tolerance — and a turn at or above `corner_threshold_deg` is a
+/// corner that always survives, so no swivel is merged away. The first vertex
+/// (the chain start, or the closed ring's seam) and the last (the open end,
+/// or the seam's repeat) are never removed.
+///
+/// The merge is measured afterwards instead of trusted: every removed vertex
+/// is re-measured against the segment that replaced it, and a merge that
+/// moved one further than the budget fails with `KNIFE_SIMPLIFY_BOUND`
+/// instead of emitting a tip path the plan does not claim.
+#[allow(clippy::too_many_arguments)]
+fn simplify_tip(
+    chain_id: &str,
+    points: &mut Vec<Point>,
+    closed: bool,
+    budget_mm: f64,
+    corner_threshold_deg: f64,
+) -> Result<TipSimplification> {
+    let before = points.len();
+    let mut evidence = TipSimplification {
+        vertices_before: before,
+        vertices_after: before,
+        max_removed_deviation_mm: 0.,
+    };
+    if budget_mm <= 0. || before <= 3 {
+        return Ok(evidence);
+    }
+    // Anchors: the chain start, the open end or the ring's seam repeat, and
+    // every real corner. A subpath is simplified only *between* anchors, so a
+    // swivel is never merged away and the ends never move.
+    let last = points.len() - 1;
+    let mut keep = vec![false; points.len()];
+    keep[0] = true;
+    keep[last] = true;
+    for index in 1..last {
+        let previous = points[index - 1];
+        let candidate = points[index];
+        let next = points[index + 1];
+        let turn = signed_turn_deg(
+            Point::new(candidate.x - previous.x, candidate.y - previous.y),
+            Point::new(next.x - candidate.x, next.y - candidate.y),
+        )
+        .abs();
+        if turn >= corner_threshold_deg {
+            keep[index] = true;
+        }
+    }
+    // Douglas-Peucker inside each anchored run. Its invariant is exactly what
+    // the setting promises: every removed vertex lies within `budget_mm` of
+    // the segment that replaces it, whatever the run does further out.
+    let anchors: Vec<usize> = (0..points.len()).filter(|index| keep[*index]).collect();
+    for pair in anchors.windows(2) {
+        let mut pending = vec![(pair[0], pair[1])];
+        while let Some((from, to)) = pending.pop() {
+            if to <= from + 1 {
+                continue;
+            }
+            let chord = Segment {
+                start: points[from],
+                end: points[to],
+            };
+            let mut worst = 0.;
+            let mut index = from;
+            for (candidate, point) in points.iter().enumerate().take(to).skip(from + 1) {
+                let distance = chord.distance(*point);
+                if distance > worst {
+                    worst = distance;
+                    index = candidate;
+                }
+            }
+            if worst > budget_mm {
+                keep[index] = true;
+                pending.push((from, index));
+                pending.push((index, to));
+            }
+        }
+    }
+    if anchors.len() == before {
+        return Ok(evidence);
+    }
+    let kept: Vec<usize> = (0..points.len()).filter(|index| keep[*index]).collect();
+    let mut worst: f64 = 0.;
+    for window in kept.windows(2) {
+        let chord = Segment {
+            start: points[window[0]],
+            end: points[window[1]],
+        };
+        for index in window[0] + 1..window[1] {
+            if let Some(removed) = points.get(index) {
+                worst = worst.max(chord.distance(*removed));
+            }
+        }
+    }
+    if !worst.is_finite() || worst > budget_mm + RESERVE_MM {
+        return Err(error(
+            "KNIFE_SIMPLIFY_BOUND",
+            format!(
+                "chain '{chain_id}': merging tip vertices moved one by {worst:.6} mm, over the declared {budget_mm:.6} mm budget"
+            ),
+        ));
+    }
+    let simplified: Vec<Point> = kept.iter().map(|index| points[*index]).collect();
+    if closed && simplified.len() < 4 {
+        // A closed ring walks its seam twice; below four vertices there is no
+        // positive-length segment left to cut.
+        return Ok(evidence);
+    }
+    *points = simplified;
+    evidence.vertices_after = points.len();
+    evidence.max_removed_deviation_mm = worst;
+    Ok(evidence)
+}
+
 /// Analyze one chain into compensated path elements. Every turn becomes a
 /// swivel arc in the geometry; whether it executes as an explicit
 /// depth-lifted swivel or a continuous cutting arc is decided at emission
 /// from the corner threshold. The holder leads the first tip vertex by one
 /// blade offset along the opening tangent, so the offset is a parameter
-/// here, never a fixed standoff. Degenerate segments are cleaned first (plan
-/// section 12.4 step 2); near-reversal turns that survive that cleaning are
-/// rejected here rather than guessed.
+/// here, never a fixed standoff. Degenerate segments are cleaned (plan
+/// section 12.4 step 2) and the surviving path is merged within its declared
+/// budget (step 2b) before any turn is compensated; near-reversal turns that
+/// survive both are rejected here rather than guessed.
+#[allow(clippy::too_many_arguments)]
 fn build_path(
     chain_id: &str,
     vertices: &[Point],
@@ -383,9 +547,18 @@ fn build_path(
     overlap_mm: f64,
     blade_offset_mm: f64,
     near_zero_mm: f64,
+    simplify_mm: f64,
+    corner_threshold_deg: f64,
 ) -> Result<KnifePath> {
     let mut tip = tip_polyline(vertices, closed, overlap_mm, chain_id)?;
     clean_degenerate_segments(&mut tip, closed, near_zero_mm);
+    let simplification = simplify_tip(
+        chain_id,
+        &mut tip,
+        closed,
+        simplify_mm,
+        corner_threshold_deg,
+    )?;
     let mut elements = vec![];
     let mut previous_tangent: Option<Point> = None;
     for pair in tip.windows(2) {
@@ -461,6 +634,7 @@ fn build_path(
             first_from.y + blade_offset_mm * first_t.y,
         ),
         first_heading: angle_of(Point::new(-first_t.x, -first_t.y)),
+        simplification,
     })
 }
 
@@ -814,10 +988,15 @@ struct PassContext {
     layer: usize,
 }
 
-/// Emit the swivel arc chords around a planted tip at `ctx.swivel_z` with
-/// the swivel feed; the caller owns the vertical transitions around it.
+/// Emit the swivel arc around a planted tip at `ctx.swivel_z` with the swivel
+/// feed; the caller owns the vertical transitions around it.
+///
+/// The holder rides a radius-`d` circle, which is exactly what the plan says
+/// it is, so the motion is programmed as that arc (`G2`/`G3`) instead of a
+/// chain of chords: the geometry is the same circle the plan models, the
+/// controller keeps moving through it, and no chord error is spent at all.
 #[allow(clippy::too_many_arguments)]
-fn emit_swivel_chords(
+fn emit_swivel_arc(
     emitter: &mut Emitter,
     chain_id: &str,
     center: Point,
@@ -825,7 +1004,6 @@ fn emit_swivel_chords(
     heading_out: f64,
     ctx: &PassContext,
     swivel_feed: f64,
-    linearization_error: f64,
     d: f64,
     alignment: bool,
 ) {
@@ -836,38 +1014,31 @@ fn emit_swivel_chords(
     };
     let psi_in = heading_in - std::f64::consts::PI;
     let sweep = normalize_angle(heading_out - heading_in);
-    let chords = arc_chords(sweep, d, linearization_error);
-    let mut previous = Position {
-        x: center.x + d * psi_in.cos(),
-        y: center.y + d * psi_in.sin(),
-        z: ctx.swivel_z,
-    };
-    for chord in 1..=chords {
-        let psi = psi_in + sweep * chord as f64 / chords as f64;
-        let next = Position {
-            x: center.x + d * psi.cos(),
-            y: center.y + d * psi.sin(),
+    let psi_out = psi_in + sweep;
+    emitter.push(
+        purpose,
+        Interpolation::ArcFeed(crate::toolpath::ArcMove {
+            center,
+            clockwise: sweep < 0.,
+        }),
+        MotionEffect::KnifeTrace,
+        Position {
+            x: center.x + d * psi_in.cos(),
+            y: center.y + d * psi_in.sin(),
             z: ctx.swivel_z,
-        };
-        let fraction = (chord as f64 - 1.) / chords as f64;
-        emitter.push(
-            purpose,
-            Interpolation::LinearFeed,
-            MotionEffect::KnifeTrace,
-            previous,
-            next,
-            Some(swivel_feed),
-            Some((
-                heading_deg(psi_in + sweep * fraction + std::f64::consts::PI),
-                heading_deg(psi + std::f64::consts::PI),
-            )),
-            Some(chain_id.to_string()),
-            ctx.pass,
-            ctx.layer,
-            IntendedTip::Planted(center),
-        );
-        previous = next;
-    }
+        },
+        Position {
+            x: center.x + d * psi_out.cos(),
+            y: center.y + d * psi_out.sin(),
+            z: ctx.swivel_z,
+        },
+        Some(swivel_feed),
+        Some((heading_deg(heading_in), heading_deg(heading_out))),
+        Some(chain_id.to_string()),
+        ctx.pass,
+        ctx.layer,
+        IntendedTip::Planted(center),
+    );
 }
 
 /// Plan one drag-knife operation against the stock prefix the preceding
@@ -910,6 +1081,21 @@ pub(crate) fn plan(
     // polyline) keeps headroom.
     let near_zero = tolerance / TOLERANCE_ERROR_SHARE;
     let linearization_error = tolerance / TOLERANCE_ERROR_SHARE;
+    // Tip simplification (plan section 12.4 step 2b) spends its own share
+    // unless the operation names a tolerance. It may never exceed the motion
+    // tolerance the plan promises.
+    let simplify = settings
+        .path_simplification_mm
+        .unwrap_or(tolerance / TIP_SIMPLIFY_ERROR_SHARE);
+    if simplify > tolerance + RESERVE_MM {
+        return Ok(incomplete(vec![issue(
+            "KNIFE_SIMPLIFY_RANGE",
+            format!(
+                "path_simplification_mm {simplify} exceeds the motion tolerance {tolerance}; a smoothed path may not promise less than the plan does"
+            ),
+            operation_id,
+        )]));
+    }
     let catalogue = geometry.catalogue()?;
     let selected = match catalogue.select_chains(&settings.chains) {
         Ok(selected) => selected,
@@ -1069,7 +1255,17 @@ pub(crate) fn plan(
                 operation_id,
             )]));
         }
-        match build_path(&chain.id, &vertices, chain.closed, overlap, d, near_zero) {
+        let corner_threshold = settings.corner_threshold_deg.expect("checked above");
+        match build_path(
+            &chain.id,
+            &vertices,
+            chain.closed,
+            overlap,
+            d,
+            near_zero,
+            simplify,
+            corner_threshold,
+        ) {
             Ok(path) => paths.push(path),
             Err(diag) => {
                 return Ok(incomplete(vec![issue(
@@ -1236,7 +1432,7 @@ pub(crate) fn plan(
             if needs_align {
                 // Contact alignment swivel around the planted tip, then the
                 // fed descent to pass depth at the cutting pivot.
-                emit_swivel_chords(
+                emit_swivel_arc(
                     &mut emitter,
                     &chain_id,
                     start_tip,
@@ -1244,7 +1440,6 @@ pub(crate) fn plan(
                     target_heading,
                     &ctx,
                     swivel_feed,
-                    linearization_error,
                     d,
                     true,
                 );
@@ -1340,7 +1535,7 @@ pub(crate) fn plan(
                                     IntendedTip::Planted(center),
                                 );
                             }
-                            emit_swivel_chords(
+                            emit_swivel_arc(
                                 &mut emitter,
                                 &chain_id,
                                 center,
@@ -1348,7 +1543,6 @@ pub(crate) fn plan(
                                 heading_out,
                                 &ctx,
                                 swivel_feed,
-                                linearization_error,
                                 d,
                                 false,
                             );
@@ -1382,43 +1576,40 @@ pub(crate) fn plan(
                             // the continuous compensated cut; compensation is
                             // never discarded at small vertices, so many
                             // small turns cannot accumulate tip error (plan
-                            // section 12.4).
+                            // section 12.4). The holder's radius-`d` pivot is
+                            // programmed as the arc it is.
                             let sweep = normalize_angle(sweep_rad);
-                            let chords = arc_chords(sweep, d, linearization_error);
-                            let mut previous = Position {
+                            let start = Position {
                                 x: center.x + d * psi_start.cos(),
                                 y: center.y + d * psi_start.sin(),
                                 z: cut_z,
                             };
-                            for chord in 1..=chords {
-                                let psi = psi_start + sweep * chord as f64 / chords as f64;
-                                let next = Position {
-                                    x: center.x + d * psi.cos(),
-                                    y: center.y + d * psi.sin(),
-                                    z: cut_z,
-                                };
-                                let fraction = (chord as f64 - 1.) / chords as f64;
-                                emitter.push(
-                                    MotionPurpose::KnifeCut,
-                                    Interpolation::LinearFeed,
-                                    MotionEffect::KnifeTrace,
-                                    previous,
-                                    next,
-                                    Some(cutting_feed),
-                                    Some((
-                                        heading_deg(
-                                            psi_start + sweep * fraction + std::f64::consts::PI,
-                                        ),
-                                        heading_deg(psi + std::f64::consts::PI),
-                                    )),
-                                    Some(chain_id.clone()),
-                                    ctx.pass,
-                                    ctx.layer,
-                                    IntendedTip::Planted(center),
-                                );
-                                previous = next;
-                            }
-                            position = previous;
+                            let psi_out = psi_start + sweep;
+                            let end = Position {
+                                x: center.x + d * psi_out.cos(),
+                                y: center.y + d * psi_out.sin(),
+                                z: cut_z,
+                            };
+                            emitter.push(
+                                MotionPurpose::KnifeCut,
+                                Interpolation::ArcFeed(crate::toolpath::ArcMove {
+                                    center,
+                                    clockwise: sweep < 0.,
+                                }),
+                                MotionEffect::KnifeTrace,
+                                start,
+                                end,
+                                Some(cutting_feed),
+                                Some((
+                                    heading_deg(psi_start + std::f64::consts::PI),
+                                    heading_deg(psi_out + std::f64::consts::PI),
+                                )),
+                                Some(chain_id.clone()),
+                                ctx.pass,
+                                ctx.layer,
+                                IntendedTip::Planted(center),
+                            );
+                            position = end;
                         }
                     }
                 }
@@ -1481,8 +1672,27 @@ pub(crate) fn plan(
         )])),
         ReplayStatus::Within => {
             let motion_count = emitter.motions.len();
+            // Publish what the tip merge actually did: the resolved tolerance
+            // and the deviation it moved, summed over the chains.
+            let simplification = KnifePathSimplification {
+                tolerance_mm: simplify,
+                vertices_before: paths.iter().map(|p| p.simplification.vertices_before).sum(),
+                vertices_after: paths.iter().map(|p| p.simplification.vertices_after).sum(),
+                max_removed_deviation_mm: paths
+                    .iter()
+                    .map(|p| p.simplification.max_removed_deviation_mm)
+                    .fold(0., f64::max),
+            };
             Ok(PlannedOperation {
-                named_outputs: vec![],
+                named_outputs: vec![NamedOutput {
+                    kind: "knife_path_simplification".into(),
+                    source_operation_id: Some(operation_id.into()),
+                    z_mm: None,
+                    covered: None,
+                    tab_placements: vec![],
+                    path_simplification: Some(simplification),
+                    arc_fit: None,
+                }],
                 status: GenerationStatus::Complete,
                 stages: vec![LocalStage {
                     stage_id: stage,
@@ -1490,12 +1700,13 @@ pub(crate) fn plan(
                     tool_id: settings.assignment.tool_id.clone(),
                     motion_range: (0, motion_count),
                     // Knife intent resolves to spindle off and exact path in
-                    // this release (plan sections 8.2 and 12.5); the writer
-                    // re-establishes the full group after every tool change.
+                    // this release unless the replay above left verified
+                    // headroom for a bounded blend; the writer re-establishes
+                    // the full group after every tool change.
                     intent: ProcessIntent {
                         spindle: ProcessSpindle::Off,
                         coolant: CoolantIntent::Off,
-                        path_control: PathControlIntent::ExactPath,
+                        path_control: blend_intent(tolerance, outcome.max_tip_deviation_mm),
                     },
                 }],
                 motions: emitter.motions,

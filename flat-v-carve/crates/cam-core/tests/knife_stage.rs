@@ -97,6 +97,7 @@ fn knife_operation() -> Operation {
             start: Default::default(),
             closure_overlap_mm: None,
             alignment: KnifeAlignment::default(),
+            path_simplification_mm: None,
         }),
     }
 }
@@ -149,6 +150,7 @@ fn job() -> CamJob {
         tolerances: PlanningTolerances {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: None,
+            arc_fit_tolerance_mm: None,
         },
     };
     job.validate().unwrap();

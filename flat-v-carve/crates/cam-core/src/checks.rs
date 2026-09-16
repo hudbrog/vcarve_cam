@@ -59,16 +59,47 @@ fn finding(code: &str, message: impl Into<String>) -> CheckFinding {
     }
 }
 
-/// Distance from a point to a segment, in the plane.
-fn segment_distance(ax: f64, ay: f64, bx: f64, by: f64, px: f64, py: f64) -> f64 {
-    let (dx, dy) = (bx - ax, by - ay);
-    let length2 = dx * dx + dy * dy;
-    if length2 <= f64::EPSILON {
-        return (px - ax).hypot(py - ay);
+/// Why one arc feed motion cannot be programmed, or `None` when it can.
+///
+/// A `G2`/`G3` block states its centre as offsets from the start point, so the
+/// reader reconstructs the arc from the start, the centre and the end. An arc
+/// whose endpoints are not the same distance from the centre is a geometry the
+/// machine has to reconcile, and one whose endpoints coincide has no swing to
+/// state at all (a full circle is two arcs). Both are refused here rather than
+/// left to the controller.
+fn arc_problem(motion: &PlannedMotion, arc: &crate::toolpath::ArcMove) -> Option<String> {
+    let from = motion.start.xy();
+    let to = motion.end.xy();
+    if !arc.center.finite() {
+        return Some("has a non-finite arc centre".into());
     }
-    let t = (((px - ax) * dx + (py - ay) * dy) / length2).clamp(0., 1.);
-    (px - (ax + t * dx)).hypot(py - (ay + t * dy))
+    let start_radius = from.distance(arc.center);
+    let end_radius = to.distance(arc.center);
+    if !(start_radius.is_finite() && end_radius.is_finite()) || start_radius <= ARC_RESERVE_MM {
+        return Some("has a degenerate arc radius".into());
+    }
+    if (start_radius - end_radius).abs() > ARC_RADIUS_TOLERANCE_MM {
+        return Some(format!(
+            "has endpoints {:.6} mm and {:.6} mm from its centre; a programmable arc needs matching radii",
+            start_radius, end_radius
+        ));
+    }
+    if from.distance(to) <= ARC_RESERVE_MM {
+        return Some("starts and ends at the same point; a full circle is two arcs".into());
+    }
+    match arc.sweep_rad(from, to) {
+        Some(sweep) if sweep.is_finite() && sweep > 0. && sweep < std::f64::consts::TAU => None,
+        _ => Some("has no programmed sweep".into()),
+    }
 }
+
+/// Smallest arc radius the plan will program, in mm.
+pub const ARC_RESERVE_MM: f64 = 1e-6;
+/// How far the two endpoint radii of one programmed arc may differ, in mm.
+/// The post quantizes coordinates to the output precision, so this is the
+/// budget a rounded `I`/`J` centre may spend before the machine has to
+/// reconcile a radius it was not told about.
+pub const ARC_RADIUS_TOLERANCE_MM: f64 = 0.001;
 
 impl BasicCheckReport {
     /// First blocking finding when the report failed.
@@ -306,7 +337,7 @@ impl Safety {
                 // The sample sits exactly on a swept boundary when a layer
                 // re-enters its own corridor; compare with a numerical
                 // reserve rather than deciding the boundary by one ulp.
-                segment_distance(prior.start.x, prior.start.y, prior.end.x, prior.end.y, x, y)
+                crate::toolpath::motion_distance(prior, crate::geometry::Point::new(x, y))
                     <= prior_radius + SAMPLE_RESERVE_MM
             })
         };
@@ -333,6 +364,49 @@ impl Safety {
             let y = descent.end.y + dy * radius;
             !inside(x, y) || cut(x, y)
         })
+    }
+
+    /// Whether an arc descent stays clear of the stock: the arc's own bounding
+    /// box, dilated by the cutter radius, must not meet the rectangle. The
+    /// exact box is used rather than samples of the curve, because a missed
+    /// sample could only make this test looser than the truth.
+    fn arc_descent_clear(&self, motion: &PlannedMotion, radius: f64) -> bool {
+        let Some(rect) = self.stock else {
+            return false;
+        };
+        let Interpolation::ArcFeed(arc) = motion.interpolation else {
+            return false;
+        };
+        let (from, to) = (motion.start.xy(), motion.end.xy());
+        let (Some(arc_radius), Some(sweep)) = (arc.radius(from), arc.sweep_rad(from, to)) else {
+            return false;
+        };
+        let start_angle = (from.y - arc.center.y).atan2(from.x - arc.center.x);
+        let (mut min_x, mut max_x) = (from.x.min(to.x), from.x.max(to.x));
+        let (mut min_y, mut max_y) = (from.y.min(to.y), from.y.max(to.y));
+        // The axis extremes the sweep actually passes extend the box.
+        for quarter in 0..4 {
+            let angle = quarter as f64 * std::f64::consts::FRAC_PI_2;
+            let mut along = if arc.clockwise {
+                start_angle - angle
+            } else {
+                angle - start_angle
+            };
+            along = along.rem_euclid(std::f64::consts::TAU);
+            if along <= sweep {
+                let x = arc.center.x + arc_radius * angle.cos();
+                let y = arc.center.y + arc_radius * angle.sin();
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+        }
+        let clear = radius + SAMPLE_RESERVE_MM;
+        max_x + clear < rect.min_x_mm
+            || min_x - clear > rect.min_x_mm + rect.width_mm
+            || max_y + clear < rect.min_y_mm
+            || min_y - clear > rect.min_y_mm + rect.length_mm
     }
 
     /// Whether the XY span of a move intersects the stock rectangle.
@@ -503,6 +577,27 @@ fn check_assembly(
                         format!("linear feed motion {} lacks a positive feed", motion.id),
                     );
                     f.operation_id = Some(motion.operation_id.clone());
+                    findings.push(f);
+                    failed = true;
+                }
+            }
+            Interpolation::ArcFeed(arc) => {
+                if !motion.feed_mm_min.is_some_and(|f| f.is_finite() && f > 0.) {
+                    let mut f = finding(
+                        "PLAN_FEED_REQUIRED",
+                        format!("arc feed motion {} lacks a positive feed", motion.id),
+                    );
+                    f.operation_id = Some(motion.operation_id.clone());
+                    findings.push(f);
+                    failed = true;
+                }
+                if let Some(problem) = arc_problem(motion, &arc) {
+                    let mut f = finding(
+                        "PLAN_ARC_GEOMETRY",
+                        format!("motion {} {problem}", motion.id),
+                    );
+                    f.operation_id = Some(motion.operation_id.clone());
+                    f.stage_id = Some(motion.stage_id.clone());
                     findings.push(f);
                     failed = true;
                 }
@@ -702,8 +797,12 @@ fn check_assembly(
                 if depth > 0. {
                     let cutter = safety.cutter(&motion.tool_id);
                     let radius = cutter.and_then(|cutter| cutter.radius_at(depth));
-                    let in_air =
-                        radius.is_some_and(|radius| safety.descent_clear(from, motion.end, radius));
+                    // A programmed arc descends along its own curve, not the
+                    // chord, so its clearance question is asked about the arc.
+                    let in_air = radius.is_some_and(|radius| match motion.interpolation {
+                        Interpolation::ArcFeed(_) => safety.arc_descent_clear(motion, radius),
+                        _ => safety.descent_clear(from, motion.end, radius),
+                    });
                     let axial = (motion.end.x - from.x).abs() <= 1e-9
                         && (motion.end.y - from.y).abs() <= 1e-9;
                     // A rapid is never a licensed entry. A feed descent needs a
@@ -715,7 +814,13 @@ fn check_assembly(
                     // refusal would stop every saved profile job that never
                     // declared it. Requiring the declaration for profile and
                     // pocket entries is the recorded follow-up.
-                    let authorized = motion.interpolation == Interpolation::LinearFeed
+                    //
+                    // The authorization is about the *tool's* ability to enter
+                    // material while moving, not about how the move is
+                    // programmed: a fitted arc descends exactly like the
+                    // straight descent it replaced, so it asks the same
+                    // question.
+                    let authorized = !matches!(motion.interpolation, Interpolation::Rapid)
                         && cutter.is_some_and(|cutter| match cutter.plunge_capable {
                             Some(true) => true,
                             Some(false) => !axial && cutter.ramp_capable == Some(true),

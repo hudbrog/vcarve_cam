@@ -157,6 +157,10 @@ pub struct CatalogueEntry {
     pub source_fingerprint: String,
     pub bounds: SetupBounds,
     pub perimeter_mm: f64,
+    /// How many vertices the resolved boundary carries. Published because it
+    /// is what the planner follows and the emitted program scales with: a
+    /// filled boundary that skipped the merge budget shows up here.
+    pub vertices: usize,
 }
 
 /// One item's resolved state: current revision, the imported catalogue when
@@ -197,6 +201,7 @@ fn entry(
         source_fingerprint: contour.source_fingerprint.clone(),
         bounds: SetupBounds::of_vertices(&contour.vertices)?,
         perimeter_mm: contour.perimeter_mm,
+        vertices: contour.vertices.len(),
     })
 }
 

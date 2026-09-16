@@ -1,6 +1,7 @@
 //! M6 linear LinuxCNC output, with explicit machine contracts and numeric
 //! readback. No filesystem, machine connection, or arbitrary G-code templates.
 pub mod holder;
+pub mod motion_profile;
 mod profile;
 mod reader;
 pub mod sequence;

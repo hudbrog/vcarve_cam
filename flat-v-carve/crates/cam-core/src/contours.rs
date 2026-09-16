@@ -23,6 +23,12 @@ const FINGERPRINT_STEP_MM: f64 = 0.01;
 /// deleting corners needed for knife orientation). Import flattening already
 /// bounds curve error by a quarter tolerance; this spends at most another
 /// quarter, leaving half the budget for planning.
+///
+/// Both centreline chains and closed contour rings spend this budget. A ring
+/// that skips it keeps the fill-resolution pass's own re-sampling: every
+/// flattened chord comes back split in two, so the planners follow twice the
+/// vertices the import tolerance needs and the emitted program doubles with
+/// them.
 const CHAIN_SIMPLIFY_BUDGET_FRACTION: f64 = 4.;
 /// Turns sharper than this are corners and always survive simplification.
 const CHAIN_CORNER_TURN_DEG: f64 = 30.;
@@ -189,6 +195,9 @@ impl ContourCatalogue {
         };
         let geometry = crate::svg::import_svg(&source.svg, &job.import, None)?;
         let placement = job.import.placement.clone();
+        // One declared merge budget, shared by contour rings and centreline
+        // chains, so both spend the same quarter of the import tolerance.
+        let budget = job.import.geometry_tolerance_mm / CHAIN_SIMPLIFY_BUDGET_FRACTION;
         let mut contours = vec![];
         for component in &geometry.sources {
             let region = &component.geometry;
@@ -197,10 +206,11 @@ impl ContourCatalogue {
             let mut outers = vec![];
             let mut holes = vec![];
             for (ring, vertices) in rings.iter().zip(&vertices) {
+                let merged = simplify_ring(vertices, 1. * budget);
                 if ring.is_hole() {
-                    holes.push(canonical_ring(vertices));
+                    holes.push(canonical_ring(&merged));
                 } else {
-                    outers.push(canonical_ring(vertices));
+                    outers.push(canonical_ring(&merged));
                 }
             }
             // A source component is single-outer by construction; the hole
@@ -274,7 +284,6 @@ impl ContourCatalogue {
         // Centerline chains: place each chain with the artwork transform,
         // then merge only within the declared near-zero budget. Source order,
         // direction and endpoints survive exactly as drawn.
-        let budget = job.import.geometry_tolerance_mm / CHAIN_SIMPLIFY_BUDGET_FRACTION;
         let mut open_chains = vec![];
         for chain in &geometry.chains {
             let forward = forward_space(&placement);
@@ -683,6 +692,20 @@ fn simplify_chain(points: &[Point], budget_mm: f64, closed: bool) -> Vec<Point> 
         return points.to_vec();
     }
     kept
+}
+
+/// Merge a closed ring's near-collinear interior vertices within the same
+/// declared budget the chains spend. The first vertex is kept as the ring's
+/// seed, every removal moves the boundary by at most `budget_mm` from the
+/// source vertex, and corners survive. A ring that would fall below three
+/// vertices keeps its source geometry: a filled boundary is never dropped.
+fn simplify_ring(vertices: &[Point], budget_mm: f64) -> Vec<Point> {
+    let merged = simplify_chain(vertices, budget_mm, true);
+    if merged.len() >= 3 {
+        merged
+    } else {
+        vertices.to_vec()
+    }
 }
 
 /// Quantized page-space fingerprint of a canonical ring.

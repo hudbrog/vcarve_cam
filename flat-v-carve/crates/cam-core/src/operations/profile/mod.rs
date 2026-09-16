@@ -1864,6 +1864,8 @@ pub(crate) fn plan(
                 z_mm: None,
                 covered: None,
                 tab_placements,
+                path_simplification: None,
+                arc_fit: None,
             }]
         },
         status: if motion_count == 0 {

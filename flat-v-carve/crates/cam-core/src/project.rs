@@ -865,6 +865,12 @@ pub struct DragKnifeSettings {
     pub closure_overlap_mm: Option<f64>,
     #[serde(default)]
     pub alignment: KnifeAlignment,
+    /// Path simplification before compensation, in mm: the largest distance a
+    /// merged tip vertex may move from the resolved polyline. Unset uses the
+    /// planner's declared share of the motion tolerance; `0` follows the
+    /// resolved polyline exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_simplification_mm: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1132,6 +1138,11 @@ fn validate_drag_knife(
     number(
         settings.closure_overlap_mm,
         "knife.closure_overlap_mm",
+        false,
+    )?;
+    number(
+        settings.path_simplification_mm,
+        "knife.path_simplification_mm",
         false,
     )?;
     if settings

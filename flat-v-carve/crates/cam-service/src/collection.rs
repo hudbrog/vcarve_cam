@@ -285,6 +285,7 @@ fn artwork_projection(job: &CamJobV5) -> Result<Value> {
                         "sourceFingerprint": entry.source_fingerprint,
                         "bounds": entry.bounds,
                         "perimeterMm": entry.perimeter_mm,
+                        "vertices": entry.vertices,
                     })).collect::<Vec<_>>(),
                 })
             })
@@ -346,6 +347,8 @@ pub(crate) fn plan_summary(
                     "zMm": output.z_mm,
                     "covered": output.covered,
                     "tabPlacements": output.tab_placements,
+                    "pathSimplification": output.path_simplification,
+                    "arcFit": output.arc_fit,
                 })).collect::<Vec<_>>(),
             })
         }).collect::<Vec<_>>(),

@@ -850,6 +850,13 @@ pub struct DragKnifeSettingsV5 {
     pub closure_overlap_mm: Option<f64>,
     #[serde(default)]
     pub alignment: crate::project::KnifeAlignment,
+    /// Path simplification before compensation, in mm: the largest distance a
+    /// merged tip vertex may move from the resolved polyline. Unset uses the
+    /// planner's declared share of the motion tolerance and publishes the
+    /// resolved value with the plan; `0` follows the resolved polyline
+    /// exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_simplification_mm: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1060,6 +1067,11 @@ fn validate_drag_knife(settings: &DragKnifeSettingsV5) -> Result<()> {
         "knife.closure_overlap_mm",
         false,
     )?;
+    number(
+        settings.path_simplification_mm,
+        "knife.path_simplification_mm",
+        false,
+    )?;
     if settings
         .alignment
         .initial_heading_deg
@@ -1161,6 +1173,32 @@ impl CamJobV5 {
             "tolerances.verification_tolerance_mm",
             true,
         )?;
+        number(
+            self.tolerances.arc_fit_tolerance_mm,
+            "tolerances.arc_fit_tolerance_mm",
+            true,
+        )?;
+        // The fitted program replaces the resolved polyline: the stock model
+        // sweeps what the program says, and the plan promises the motion
+        // tolerance. A fit may therefore spend neither more than that promise
+        // nor more than the job verifies.
+        if let Some(fit) = self.tolerances.arc_fit_tolerance_mm {
+            for (budget, name) in [
+                (self.tolerances.motion_tolerance_mm, "motion"),
+                (self.tolerances.verification_tolerance_mm, "verification"),
+            ] {
+                if let Some(budget) = budget
+                    && fit > budget
+                {
+                    return Err(error(
+                        "PROJECT_PARAMETER",
+                        format!(
+                            "tolerances.arc_fit_tolerance_mm {fit} exceeds the {name} tolerance {budget}; the fitted path may not promise less than the plan does"
+                        ),
+                    ));
+                }
+            }
+        }
         if let Some(configuration) = &self.machine_configuration {
             configuration.validate()?;
         }

@@ -126,6 +126,7 @@ pub fn value_in(job: &CamJobV5, operation_id: &str, field: usize) -> Option<f64>
         72 => s.alignment.initial_heading_deg,
         73 => Some(s.top.offset_mm),
         74 => Some(s.bottom.offset_mm),
+        110 => s.path_simplification_mm,
         _ => crate::authoring::value_in(job, operation_id, field),
     }
 }
@@ -163,6 +164,7 @@ pub fn set_in(
         72 => s.alignment.initial_heading_deg = value,
         73 => s.top.offset_mm = value.ok_or("Top offset cannot be unset")?,
         74 => s.bottom.offset_mm = value.ok_or("Bottom offset cannot be unset")?,
+        110 => s.path_simplification_mm = value,
         _ => return Err("Unknown knife field".into()),
     }
     Ok(())
@@ -276,11 +278,16 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
                 start: Default::default(),
                 closure_overlap_mm: None,
                 alignment: Default::default(),
+                path_simplification_mm: None,
             }),
         }],
         tolerances: cam_core::job::PlanningTolerances {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.05),
+            // A new document fits milling arcs within half the motion
+            // tolerance; the operator can clear or retune it on the
+            // tolerances tab.
+            arc_fit_tolerance_mm: Some(0.005),
         },
         machine_configuration: None,
     };
@@ -531,8 +538,9 @@ pub fn scene(
             // A knife removes no material, so no cell ever records this stage
             // and the index only has to exist for the wire format. The machine
             // execution still comes from the plan, so a knife move is timed by
-            // its own cutting, plunge or swivel feed.
-            .map(|m| crate::scene::sim_motion(m, 0, 0, "rapid_xy"))
+            // its own cutting, plunge or swivel feed — and a swivel arc is
+            // walked as bounded chords like everywhere else in the display.
+            .flat_map(|m| crate::scene::sim_motions(m, 0, 0, "rapid_xy"))
             .collect::<Vec<_>>();
         report["inspection"] = json!(inspection::inspect_plan(plan).map_err(|e| e.to_string())?);
         // The same two machine checks a milling job gets. A knife cuts no

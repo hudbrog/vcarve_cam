@@ -362,28 +362,87 @@ fn executed_frame(
 /// always comes from the plan. The animation clock times a move from its
 /// interpolation and its feed, so those two values have to travel with the
 /// motion rather than being re-derived (or guessed) in the display.
-pub(crate) fn sim_motion(
+/// Largest chord error the display stream accepts when it walks a programmed
+/// arc, in mm. The simulator animates a straight-line envelope; an arc is
+/// walked as chords inside this bound so the animation and the material checks
+/// it feeds stay on the programmed curve to a fraction of the output grid.
+const SIM_ARC_CHORD_MM: f64 = 0.002;
+
+/// Chord count for one arc, bounded so the sagitta stays inside
+/// [`SIM_ARC_CHORD_MM`]. `2*acos(1 - e/r)` is the exact step angle whose
+/// sagitta is `e`.
+fn arc_chords(radius: f64, sweep_rad: f64) -> usize {
+    let step = if SIM_ARC_CHORD_MM >= radius {
+        std::f64::consts::PI
+    } else {
+        2. * (1. - SIM_ARC_CHORD_MM / radius).acos()
+    };
+    ((sweep_rad / step).ceil() as usize).max(1)
+}
+
+/// The display motions one planned motion becomes: itself for straight and
+/// rapid moves, a bounded chord walk for a programmed arc.
+pub(crate) fn sim_motions(
     motion: &cam_core::toolpath::PlannedMotion,
     tool: usize,
     stage: u16,
     kind: &str,
-) -> crate::sim::Motion {
-    crate::sim::Motion {
+) -> Vec<crate::sim::Motion> {
+    let display = |x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64| crate::sim::Motion {
         kind: kind.into(),
         tool,
         stage,
         interpolation: match motion.interpolation {
             cam_core::toolpath::Interpolation::Rapid => crate::sim::Interpolation::Rapid,
-            cam_core::toolpath::Interpolation::LinearFeed => crate::sim::Interpolation::Feed,
+            cam_core::toolpath::Interpolation::LinearFeed
+            | cam_core::toolpath::Interpolation::ArcFeed(_) => crate::sim::Interpolation::Feed,
         },
         feed_mm_min: motion.feed_mm_min,
-        x0: motion.start.x,
-        y0: motion.start.y,
-        z0: motion.start.z,
-        x1: motion.end.x,
-        y1: motion.end.y,
-        z1: motion.end.z,
+        x0,
+        y0,
+        z0,
+        x1,
+        y1,
+        z1,
+    };
+    let cam_core::toolpath::Interpolation::ArcFeed(arc) = motion.interpolation else {
+        return vec![display(
+            motion.start.x,
+            motion.start.y,
+            motion.start.z,
+            motion.end.x,
+            motion.end.y,
+            motion.end.z,
+        )];
+    };
+    let (from, to) = (motion.start.xy(), motion.end.xy());
+    let (Some(radius), Some(sweep)) = (arc.radius(from), arc.sweep_rad(from, to)) else {
+        return vec![display(
+            motion.start.x,
+            motion.start.y,
+            motion.start.z,
+            motion.end.x,
+            motion.end.y,
+            motion.end.z,
+        )];
+    };
+    let chords = arc_chords(radius, sweep);
+    let mut motions = Vec::with_capacity(chords);
+    let mut previous = motion.start;
+    for chord in 1..=chords {
+        let fraction = chord as f64 / chords as f64;
+        let point = arc.point_at(from, to, fraction).unwrap_or(motion.end.xy());
+        let next = cam_core::motion::Position {
+            x: point.x,
+            y: point.y,
+            z: motion.start.z + (motion.end.z - motion.start.z) * fraction,
+        };
+        motions.push(display(
+            previous.x, previous.y, previous.z, next.x, next.y, next.z,
+        ));
+        previous = next;
     }
+    motions
 }
 
 fn role_color(role: StageRole) -> [f32; 4] {
@@ -689,7 +748,7 @@ pub fn build_with_preset(
     for (index, motion) in plan.motions.iter().enumerate() {
         let stage = stage_of(index).ok_or("Plan motion outside every stage")?;
         let cutting = motion.effect == cam_core::toolpath::MotionEffect::MillingSweep;
-        motions.push(sim_motion(
+        motions.extend(sim_motions(
             motion,
             stage.tool_index,
             stage_of_motion.get(index).copied().unwrap_or(0) as u16,

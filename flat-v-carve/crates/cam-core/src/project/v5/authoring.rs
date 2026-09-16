@@ -86,6 +86,9 @@ pub fn from_svg(filename: String, svg: String, geometry_tolerance_mm: f64) -> Re
         tolerances: PlanningTolerances {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.05),
+            // A new job fits milling arcs within a tenth of what it verifies;
+            // the operator can clear or retune it on the tolerances tab.
+            arc_fit_tolerance_mm: Some(0.005),
         },
         machine_configuration: None,
     };

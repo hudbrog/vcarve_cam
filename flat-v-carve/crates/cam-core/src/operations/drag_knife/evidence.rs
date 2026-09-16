@@ -171,6 +171,16 @@ pub(crate) fn replay_emitted_bounded(
             None => planned.start,
         };
         replayed.end = setup_position(read.end, offset);
+        // The replayed path is the *emitted* one: an arc keeps the centre the
+        // program actually carried, transformed back into setup space.
+        if let crate::toolpath::Interpolation::ArcFeed(arc) = read.interpolation {
+            let center = setup_position(crate::motion::Position::new(arc.center, 0.), offset);
+            replayed.interpolation =
+                crate::toolpath::Interpolation::ArcFeed(crate::toolpath::ArcMove {
+                    center: center.xy(),
+                    clockwise: arc.clockwise,
+                });
+        }
         motions.push(replayed);
         intended.push(intended_from_plan(planned, blade_offset));
     }

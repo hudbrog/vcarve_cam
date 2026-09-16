@@ -156,8 +156,14 @@ impl Flattener {
             .apply(Point::new(center.x + axes[1].x, center.y + axes[1].y));
         let u = Point::new(u.x - o.x, u.y - o.y);
         let v = Point::new(v.x - o.x, v.y - o.y);
-        // |r''(t)| <= |u|+|v|; interpolation error <= max|r''| * dt^2/8.
-        let curvature = u.x.hypot(u.y) + v.x.hypot(v.y);
+        // r(t) = o + u*cos t + v*sin t, so r''(t) = -(u*cos t + v*sin t) and
+        // max|r''| is the largest singular value of [u v] — the exact bound,
+        // where |u|+|v| is up to twice it (half again for a circle). Uniform
+        // sampling error is at most max|r''| * dt^2/8.
+        let uu = u.x * u.x + u.y * u.y;
+        let vv = v.x * v.x + v.y * v.y;
+        let uv = u.x * v.x + u.y * v.y;
+        let curvature = (0.5 * (uu + vv + ((uu - vv).powi(2) + 4. * uv * uv).sqrt())).sqrt();
         let n = (sweep.abs() * (curvature / (8.0 * self.tolerance)).sqrt())
             .ceil()
             .max(1.0);

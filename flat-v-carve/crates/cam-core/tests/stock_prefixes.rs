@@ -23,6 +23,7 @@ fn cut(start: (f64, f64, f64), end: (f64, f64, f64)) -> SweepMotion {
             y: end.1,
             z: end.2,
         },
+        arc: None,
     }
 }
 

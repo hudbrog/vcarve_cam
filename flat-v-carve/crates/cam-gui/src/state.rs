@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const FIELDS: [&str; 110] = [
+pub const FIELDS: [&str; 111] = [
     "Maximum depth",
     "Wall allowance",
     "Roughing feed",
@@ -113,6 +113,10 @@ pub const FIELDS: [&str; 110] = [
     "Start fraction",
     // 109: the explicit face entry position, used by the `At` entry mode.
     "Face entry at",
+    // 110: how far a knife tip merge may move the resolved polyline. Unset
+    // uses the planner's declared share of the motion tolerance; 0 follows the
+    // resolved polyline exactly.
+    "Knife path tolerance",
 ];
 
 /// Fields whose raw text belongs to one qualified geometry reference rather

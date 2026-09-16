@@ -8,6 +8,7 @@ use crate::{
     sequence::PlannedOperation,
 };
 
+pub mod arc_fit;
 pub mod drag_knife;
 pub mod face;
 pub mod flat_vcarve;

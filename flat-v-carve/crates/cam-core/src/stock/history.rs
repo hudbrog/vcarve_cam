@@ -36,6 +36,12 @@ pub enum SweepCutter {
 pub struct SweepMotion {
     pub start: Position,
     pub end: Position,
+    /// Set when the move is a programmed arc: the tool axis follows the
+    /// circle instead of the chord. The prefix model is an analytic point
+    /// query, so an arc sweep is exact here — the distance from the queried
+    /// point to the arc, not an approximation of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc: Option<crate::toolpath::ArcMove>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -101,17 +107,27 @@ impl StockHistory {
         p.distance(Point::new(a.x + t * dx, a.y + t * dy))
     }
 
+    /// Distance from a point to one sweep motion's axis path: the segment for
+    /// a straight move, the arc itself for a programmed one. The prefix model
+    /// is an analytic point query, so a programmed arc needs no bracket: the
+    /// distance to the arc is closed form.
+    fn motion_distance(motion: &SweepMotion, p: Point) -> f64 {
+        let (from, to) = (motion.start.xy(), motion.end.xy());
+        match motion.arc {
+            Some(arc) => arc.distance(from, to, p),
+            None => Self::segment_distance(p, from, to),
+        }
+    }
+
     fn batch_floor_at(&self, batch: &SweepBatch, p: Point) -> Result<Option<f64>> {
         let mut floor: Option<f64> = None;
         for motion in &batch.motions {
-            let a = motion.start.xy();
-            let b = motion.end.xy();
             let cut_z = motion.start.z.min(motion.end.z);
             if cut_z >= 0. {
                 // A sweep entirely at or above the original top removes nothing.
                 continue;
             }
-            let distance = Self::segment_distance(p, a, b);
+            let distance = Self::motion_distance(motion, p);
             let candidate = match &batch.cutter {
                 SweepCutter::FlatEndmill { radius_mm } => {
                     if distance <= *radius_mm {

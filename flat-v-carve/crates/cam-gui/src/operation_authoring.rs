@@ -80,6 +80,10 @@ pub fn empty_job() -> CamJobV5 {
         tolerances: cam_core::job::PlanningTolerances {
             motion_tolerance_mm: Some(0.01),
             verification_tolerance_mm: Some(0.05),
+            // A new document fits milling arcs within half the motion
+            // tolerance; the operator can clear or retune it on the
+            // tolerances tab.
+            arc_fit_tolerance_mm: Some(0.005),
         },
         machine_configuration: None,
     }
