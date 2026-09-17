@@ -474,6 +474,23 @@ fn artwork_command(
             )
         }
     };
+    let mut outcome = outcome;
+    // The first artwork added to a job that has no stock yet also brings
+    // that page's stock — the same defaults a fresh SVG import starts with.
+    // A job that began as "New job" otherwise keeps an unset stock, and the
+    // stock never renders until every value is typed in by hand.
+    let first_page_stock = (job.artwork.is_empty()
+        && outcome.job.artwork.len() > job.artwork.len()
+        && outcome.job.setup.stock.xy.is_none())
+    .then(|| outcome.job.artwork.last())
+    .flatten()
+    .and_then(|item| crate::authoring::svg_page_stock(item).ok());
+    if let Some(page) = first_page_stock {
+        outcome.job.setup.stock.xy = Some(page);
+        if outcome.job.setup.stock.thickness_mm.is_none() {
+            outcome.job.setup.stock.thickness_mm = Some(18.);
+        }
+    }
     let report = json!({"kind":"artwork", "activeArtwork":selected, "issues":outcome.issues,"rejectedFiles":rejected});
     let job = open(&outcome.job.to_json().map_err(|e| e.to_string())?)?;
     Ok((job, report))
@@ -954,4 +971,54 @@ pub fn scene(
     preset: crate::stock_preview::DisplayPreset,
 ) -> Result<(SceneMeta, Vec<u8>), String> {
     crate::scene::build_with_preset(job, Some(plan), report, preset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAGE_SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' width='40mm' height='20mm' viewBox='0 0 40 20'><path id='shape' fill-rule='evenodd' d='M0 0H20V20H0Z'/></svg>";
+
+    /// A first artwork added to a job that has no stock yet brings the page
+    /// stock, the same defaults a fresh SVG import starts with — a job that
+    /// began as "New job" otherwise never shows stock until it is typed in.
+    #[test]
+    fn first_artwork_into_an_empty_job_brings_the_page_stock() {
+        let job = crate::operation_authoring::empty_job();
+        let (imported, _) = artwork_command(
+            &job,
+            "",
+            ArtworkCommand::Add {
+                filename: "page.svg".into(),
+                svg: PAGE_SVG.into(),
+            },
+        )
+        .unwrap();
+        let stock = imported.setup.stock;
+        let page = stock.xy.expect("page stock populated");
+        assert!((page.min_x_mm - 0.).abs() < 1e-6);
+        assert!((page.min_y_mm - 0.).abs() < 1e-6);
+        assert!((page.width_mm - 40.).abs() < 1e-6);
+        assert!((page.length_mm - 20.).abs() < 1e-6);
+        assert_eq!(stock.thickness_mm, Some(18.));
+    }
+
+    /// A job that already carries artwork keeps its stock when more artwork
+    /// arrives: the page stock is a first-import default, not an update.
+    #[test]
+    fn later_artwork_keeps_the_existing_stock() {
+        let job = crate::authoring::import_svg("first.svg".into(), PAGE_SVG.into()).unwrap();
+        let before = job.setup.stock.clone();
+        let (imported, _) = artwork_command(
+            &job,
+            "",
+            ArtworkCommand::Add {
+                filename: "second.svg".into(),
+                svg: PAGE_SVG.into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(imported.setup.stock.xy, before.xy);
+        assert_eq!(imported.setup.stock.thickness_mm, before.thickness_mm);
+    }
 }
