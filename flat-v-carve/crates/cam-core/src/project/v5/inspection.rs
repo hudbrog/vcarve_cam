@@ -454,6 +454,11 @@ pub struct OperationInspection {
     pub stage_ids: Vec<String>,
     pub stock_before_id: String,
     pub stock_after_id: String,
+    /// Machine time of this operation's motions, in seconds. Each move is
+    /// timed by its own programmed feed (an arc by its swing, a plunge by its
+    /// true path) and rapids by the machine's rapid rate.
+    #[serde(default)]
+    pub estimated_seconds: f64,
 }
 
 /// One ordered stage of the timeline with its motion span.
@@ -466,6 +471,10 @@ pub struct StageInspection {
     pub role: StageRole,
     pub motion_range: (usize, usize),
     pub motion_count: usize,
+    /// Machine time of this stage's motions, in seconds, with the same
+    /// per-move rule the operation readout uses.
+    #[serde(default)]
+    pub estimated_seconds: f64,
 }
 
 /// Stock extents and the plan's initial stock identity — present for
@@ -491,6 +500,49 @@ pub struct PlanInspection {
     pub operations: Vec<OperationInspection>,
     pub stages: Vec<StageInspection>,
     pub stock: StockReadout,
+    /// The rapid rate the estimates timed `Rapid` moves with: the machine
+    /// configuration's own rate, or the same assumption the playback
+    /// transport rests on when the job states none.
+    #[serde(default = "assumed_rapid_rate_mm_min")]
+    pub rapid_rate_mm_min: f64,
+}
+
+/// The rapid rate used for timing when the job's machine configuration
+/// states none. The playback transport assumes the same value, so the
+/// inspection's times and the transport's program time agree.
+pub const ASSUMED_RAPID_RATE_MM_MIN: f64 = 5000.;
+
+fn assumed_rapid_rate_mm_min() -> f64 {
+    ASSUMED_RAPID_RATE_MM_MIN
+}
+
+/// Machine time of one move: the true 3D path length — a plunge or ramp is
+/// timed by its real path, an arc by the arc it is rather than its chord —
+/// divided by the move's own rate. A feed without a usable rate contributes
+/// nothing instead of failing the readout; the plan checks own that failure.
+fn motion_seconds(motion: &crate::toolpath::PlannedMotion, rapid_rate_mm_min: f64) -> f64 {
+    let dx = motion.end.x - motion.start.x;
+    let dy = motion.end.y - motion.start.y;
+    let dz = motion.end.z - motion.start.z;
+    let xy = match motion.interpolation {
+        crate::toolpath::Interpolation::ArcFeed(arc) => arc
+            .length(motion.start.xy(), motion.end.xy())
+            .unwrap_or_else(|| dx.hypot(dy)),
+        _ => dx.hypot(dy),
+    };
+    let rate = match motion.interpolation {
+        crate::toolpath::Interpolation::Rapid => rapid_rate_mm_min,
+        crate::toolpath::Interpolation::LinearFeed | crate::toolpath::Interpolation::ArcFeed(_) => {
+            match motion.feed_mm_min {
+                Some(feed) if feed.is_finite() && feed > 0. => feed,
+                _ => return 0.,
+            }
+        }
+    };
+    if !rate.is_finite() || rate <= 0. {
+        return 0.;
+    }
+    (xy * xy + dz * dz).sqrt() / rate * 60.
 }
 
 impl From<&ExecutionStage> for StageInspection {
@@ -502,6 +554,7 @@ impl From<&ExecutionStage> for StageInspection {
             role: stage.role,
             motion_range: stage.motion_range,
             motion_count: stage.motion_range.1.saturating_sub(stage.motion_range.0),
+            estimated_seconds: 0.,
         }
     }
 }
@@ -512,6 +565,30 @@ impl From<&ExecutionStage> for StageInspection {
 /// diagnostics already carry the located failure).
 pub fn inspect_plan(plan: &OperationPlanV5) -> Result<PlanInspection> {
     let job = &plan.job_snapshot;
+    let rapid_rate_mm_min = job
+        .machine_configuration
+        .as_ref()
+        .and_then(|configuration| configuration.rapid_rate_mm_min)
+        .filter(|rate| rate.is_finite() && *rate > 0.)
+        .unwrap_or(ASSUMED_RAPID_RATE_MM_MIN);
+    // The machine time of every stage, in plan order; an operation's own time
+    // is the sum of the stages it ran.
+    let stage_seconds: Vec<f64> = plan
+        .stages
+        .iter()
+        .map(|stage| {
+            plan.motions[stage.motion_range.0..stage.motion_range.1]
+                .iter()
+                .map(|motion| motion_seconds(motion, rapid_rate_mm_min))
+                .sum()
+        })
+        .collect();
+    let mut stages = vec![];
+    for (stage, seconds) in plan.stages.iter().zip(stage_seconds.iter()) {
+        let mut inspection = StageInspection::from(stage);
+        inspection.estimated_seconds = *seconds;
+        stages.push(inspection);
+    }
     let mut published: BTreeMap<String, f64> = BTreeMap::new();
     let mut operations = vec![];
     for result in &plan.operation_results {
@@ -552,13 +629,23 @@ pub fn inspect_plan(plan: &OperationPlanV5) -> Result<PlanInspection> {
             stage_ids: result.stage_ids.clone(),
             stock_before_id: result.stock_before_id.clone(),
             stock_after_id: result.stock_after_id.clone(),
+            estimated_seconds: result
+                .stage_ids
+                .iter()
+                .filter_map(|stage_id| {
+                    plan.stages
+                        .iter()
+                        .position(|stage| &stage.stage_id == stage_id)
+                        .and_then(|index| stage_seconds.get(index).copied())
+                })
+                .sum(),
         });
     }
     Ok(PlanInspection {
         machining_identity: plan.machining_identity.clone(),
         execution_fingerprint: plan.execution_fingerprint.clone(),
         operations,
-        stages: plan.stages.iter().map(StageInspection::from).collect(),
+        stages,
         stock: StockReadout {
             thickness_mm: job.setup.stock.thickness_mm,
             xy: job.setup.stock.xy,
@@ -567,6 +654,7 @@ pub fn inspect_plan(plan: &OperationPlanV5) -> Result<PlanInspection> {
                 .first()
                 .map(|result| result.stock_before_id.clone()),
         },
+        rapid_rate_mm_min,
     })
 }
 
@@ -608,5 +696,91 @@ fn resolve_settings_heights(
                     bottom_z_mm: Some(heights.bottom_z),
                 })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        geometry::Point,
+        motion::Position,
+        toolpath::{ArcMove, Interpolation, MotionEffect, MotionPurpose, PlannedMotion},
+    };
+
+    fn motion(
+        interpolation: Interpolation,
+        start: (f64, f64, f64),
+        end: (f64, f64, f64),
+        feed_mm_min: Option<f64>,
+    ) -> PlannedMotion {
+        let at = |(x, y, z): (f64, f64, f64)| Position { x, y, z };
+        PlannedMotion {
+            id: 0,
+            operation_id: "op".into(),
+            stage_id: "stage".into(),
+            tool_id: "tool".into(),
+            contour_id: None,
+            pass_id: 0,
+            layer: 0,
+            interpolation,
+            purpose: MotionPurpose::Rough,
+            effect: MotionEffect::None,
+            start: at(start),
+            end: at(end),
+            feed_mm_min,
+            blade_heading_deg: None,
+        }
+    }
+
+    /// A move is timed by its true path — a plunge by its depth, an arc by
+    /// its swing — at its own rate, and an unusable feed rate contributes
+    /// nothing rather than inventing time.
+    #[test]
+    fn machine_time_follows_the_real_path_and_rate() {
+        // 8 mm of feed at 480 mm/min is one second, XY or Z alike.
+        let cut = motion(
+            Interpolation::LinearFeed,
+            (0., 0., 0.),
+            (8., 0., 0.),
+            Some(480.),
+        );
+        assert_eq!(motion_seconds(&cut, ASSUMED_RAPID_RATE_MM_MIN), 1.);
+        let plunge = motion(
+            Interpolation::LinearFeed,
+            (0., 0., 0.),
+            (0., 0., -3.),
+            Some(60.),
+        );
+        assert_eq!(motion_seconds(&plunge, ASSUMED_RAPID_RATE_MM_MIN), 3.);
+        // A ramp is timed by its 3D path, not its XY projection.
+        let ramp = motion(
+            Interpolation::LinearFeed,
+            (0., 0., 0.),
+            (3., 4., -12.),
+            Some(60.),
+        );
+        assert_eq!(motion_seconds(&ramp, ASSUMED_RAPID_RATE_MM_MIN), 13.);
+        // A quarter circle of radius 4 swings 2π mm, not its 4√2 chord.
+        let arc = motion(
+            Interpolation::ArcFeed(ArcMove {
+                center: Point::new(0., 0.),
+                clockwise: false,
+            }),
+            (4., 0., 0.),
+            (0., 4., 0.),
+            Some(480.),
+        );
+        assert!(
+            (motion_seconds(&arc, ASSUMED_RAPID_RATE_MM_MIN) - std::f64::consts::TAU / 8.).abs()
+                < 1e-12
+        );
+        // Rapids run at the machine's rate, and a move without a usable feed
+        // takes no time in the readout.
+        let rapid = motion(Interpolation::Rapid, (0., 0., 0.), (100., 0., 0.), None);
+        assert_eq!(motion_seconds(&rapid, 5000.), 1.2);
+        assert_eq!(motion_seconds(&rapid, 3000.), 2.);
+        let unpriced = motion(Interpolation::LinearFeed, (0., 0., 0.), (8., 0., 0.), None);
+        assert_eq!(motion_seconds(&unpriced, ASSUMED_RAPID_RATE_MM_MIN), 0.);
     }
 }

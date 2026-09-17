@@ -195,4 +195,19 @@ fn created_operations_leave_machining_values_unset() {
     assert!(settings.components.is_empty());
     assert!(settings.max_depth_mm.is_none());
     assert_eq!(vcarve.tools.len(), 2, "endmill and V-bit target");
+    // A new carve starts as the intended combined program with the quality
+    // targets and roughing strategy it is expected to hold; only cutter
+    // geometry, feeds and depths stay unset.
+    assert_eq!(settings.mode, cam_core::project::FlatVcarveMode::Combined);
+    assert_eq!(settings.wall_allowance_mm, Some(0.));
+    assert_eq!(settings.max_floor_ridge_mm, Some(0.1));
+    assert_eq!(settings.max_detail_residual_mm, Some(0.1));
+    let rough = settings.rough.as_ref().expect("rough defaults");
+    assert_eq!(
+        rough.strategy,
+        cam_core::pocket::ClearingStrategy::DeepestRegion
+    );
+    let finish = settings.finish.as_ref().expect("finish defaults");
+    assert_eq!(finish.transit, cam_core::vcarve::FinishTransit::ShortLift);
+    finish.validate().unwrap();
 }

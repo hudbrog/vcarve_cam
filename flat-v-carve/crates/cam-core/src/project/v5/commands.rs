@@ -1111,16 +1111,25 @@ pub fn add_operation(
             affected.push(AffectedEntity::JobTool(vbit.clone()));
             OperationSettingsV5::FlatVcarve(super::FlatVcarveSettingsV5 {
                 components: vec![],
-                mode: crate::project::FlatVcarveMode::EndmillOnly,
+                // A new carve starts as the combined endmill + V-bit program
+                // the operator intends to run, with the quality targets a
+                // fresh carve is expected to hold: no wall allowance, a
+                // 0.1 mm floor ridge and detail residual, and roughing that
+                // clears from the deepest region. Cutter geometry, feeds and
+                // depths stay unset until edited.
+                mode: crate::project::FlatVcarveMode::Combined,
                 endmill: new_milling_assignment(endmill),
                 vbit: new_milling_assignment(vbit),
                 top: Default::default(),
                 max_depth_mm: None,
-                wall_allowance_mm: None,
-                max_floor_ridge_mm: None,
-                max_detail_residual_mm: None,
-                rough: None,
-                finish: None,
+                wall_allowance_mm: Some(0.),
+                max_floor_ridge_mm: Some(0.1),
+                max_detail_residual_mm: Some(0.1),
+                rough: Some(crate::project::FlatVcarveRoughSettings {
+                    strategy: crate::pocket::ClearingStrategy::DeepestRegion,
+                    ..Default::default()
+                }),
+                finish: Some(crate::vcarve::VBitPlanningSettings::new_combined()),
             })
         }
         NewOperationKind::Profile => {

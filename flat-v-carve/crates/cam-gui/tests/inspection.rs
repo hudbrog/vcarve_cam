@@ -291,6 +291,35 @@ fn a_profile_with_tabs_inspects_at_a_finer_resolution_without_changing_the_plan(
         "the tabbed profile placed bridges: {}",
         scene.report["gui2"]["inspection"]
     );
+    // Calculated machine time per operation and stage, with the rapid rate
+    // the estimate rests on: what the "Inspect result" panel prints.
+    let operations = scene.report["gui2"]["inspection"]["operations"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(!operations.is_empty());
+    for operation in &operations {
+        assert!(
+            operation["estimatedSeconds"]
+                .as_f64()
+                .is_some_and(|s| s > 0.),
+            "operation carries a positive time: {operation}"
+        );
+    }
+    assert!(
+        scene.report["gui2"]["inspection"]["rapidRateMmMin"]
+            .as_f64()
+            .is_some_and(|rate| rate > 0.)
+    );
+    let stages = scene.report["gui2"]["inspection"]["stages"]
+        .as_array()
+        .unwrap();
+    assert!(!stages.is_empty());
+    assert!(
+        stages
+            .iter()
+            .all(|stage| stage["estimatedSeconds"].as_f64().is_some_and(|s| s >= 0.))
+    );
     let motions = scene.motions;
     let prefix = scene.stock.as_ref().unwrap().frames.last().unwrap().prefix;
     assert_eq!(prefix, motions);

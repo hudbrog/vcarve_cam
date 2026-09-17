@@ -635,8 +635,6 @@ enum ResourceIntent {
 }
 #[derive(Clone, Copy)]
 enum IoKind {
-    KnifeSvg,
-    ProfileSvg,
     Svg,
     AddSvg,
     ReplaceSvg,
@@ -850,9 +848,7 @@ impl App {
             });
         }
         self.status = match command {
-            Command::ImportSvg { .. }
-            | Command::ImportKnifeSvg { .. }
-            | Command::ImportProfileSvg { .. } => "Importing SVG…",
+            Command::ImportSvg { .. } => "Importing SVG…",
             Command::Artwork { .. } => "Updating artwork collection…",
             Command::Operation { .. } => "Updating operations…",
             Command::Resource { .. } => "Copying reviewed resource values…",
@@ -1090,14 +1086,7 @@ impl App {
         };
         self.port.open(
             id,
-            matches!(
-                kind,
-                IoKind::Svg
-                    | IoKind::KnifeSvg
-                    | IoKind::ProfileSvg
-                    | IoKind::AddSvg
-                    | IoKind::ReplaceSvg
-            ),
+            matches!(kind, IoKind::Svg | IoKind::AddSvg | IoKind::ReplaceSvg),
             matches!(kind, IoKind::AddSvg),
             ctx.clone(),
         );
@@ -1122,10 +1111,6 @@ impl App {
                 engine::ArtworkCommand::Add { filename, svg }
             };
             self.artwork_command(action, ctx);
-        } else if matches!(kind, IoKind::KnifeSvg) {
-            self.submit(Command::ImportKnifeSvg { filename, svg }, ctx);
-        } else if matches!(kind, IoKind::ProfileSvg) {
-            self.submit(Command::ImportProfileSvg { filename, svg }, ctx);
         } else {
             self.submit(Command::ImportSvg { filename, svg }, ctx);
         }
@@ -1590,7 +1575,7 @@ impl App {
                         self.import_file(kind, filename, svg, ctx)
                     }
                     Ok(IoValue::Job(json)) => match kind {
-                        IoKind::Svg | IoKind::KnifeSvg | IoKind::AddSvg | IoKind::ReplaceSvg => {
+                        IoKind::Svg | IoKind::AddSvg | IoKind::ReplaceSvg => {
                             self.import_file(kind, "Imported.svg".into(), json, ctx)
                         }
                         IoKind::Open => self.submit(Command::Open { json }, ctx),
@@ -1663,6 +1648,21 @@ impl App {
                     self.recovery.status = format!(
                         "Session recovery could not be loaded; automatic recovery is paused. You can still edit and save the job. Details: {e}"
                     );
+                }
+            },
+            Event::RecoveryCleared(result) => match result {
+                Ok(()) => {
+                    // The unreadable record is gone: recovery resumes from a
+                    // fresh revision the next time the job is edited.
+                    self.recovery.failed = false;
+                    self.recovery.ready = true;
+                    self.recovery.revision = None;
+                    self.recovery.offered = None;
+                    self.recovery.status =
+                        "Stored recovery discarded; new edits are recovered again.".into();
+                }
+                Err(e) => {
+                    self.recovery.status = format!("Could not discard the stored recovery: {e}");
                 }
             },
             Event::RecoverySaved { edit, result } => self.recovery.written(edit, result),

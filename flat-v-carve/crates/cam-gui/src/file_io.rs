@@ -95,6 +95,16 @@ impl Store {
         let _lock = self.lock()?;
         self.read_unlocked()
     }
+    /// Discard the stored session record. The next save starts a fresh
+    /// revision sequence; a missing record is already clear.
+    pub fn clear(&self) -> Result<(), String> {
+        let _lock = self.lock()?;
+        match fs::remove_file(self.directory.join("session.json")) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
     fn resources_unlocked(&self) -> Result<Option<crate::resources::StoredCatalog>, String> {
         let path = self.directory.join("resources.json");
         match fs::metadata(&path) {
@@ -156,6 +166,23 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clearing_the_store_removes_the_record_and_resumes_fresh_saves() {
+        let directory =
+            std::env::temp_dir().join(format!("cam-gui-store-clear-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let store = Store::new(directory.clone());
+        let doc = crate::app::Document::new(crate::session::open(crate::session::FLOWER).unwrap());
+        assert_eq!(store.save(None, doc.snapshot()).unwrap(), 1);
+        store.clear().unwrap();
+        assert_eq!(store.load().unwrap(), None);
+        // A missing record is already clear, and the next save begins at 1.
+        store.clear().unwrap();
+        assert_eq!(store.save(None, doc.snapshot()).unwrap(), 1);
+        fs::remove_file(directory.join("session.json")).unwrap();
+        fs::remove_file(directory.join("session.lock")).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
     #[test]
     fn recovery_conflict_and_denied_replacement_preserve_last_good_draft() {
         let directory =

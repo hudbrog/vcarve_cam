@@ -48,6 +48,28 @@ pub struct VBitPlanningSettings {
     pub transit: FinishTransit,
 }
 impl VBitPlanningSettings {
+    /// The limits and transit a newly created combined carve starts from.
+    /// Saved jobs keep their own values; the serialized `transit` field
+    /// defaults to [`FinishTransit::Retract`] for documents that predate it,
+    /// so this constructor is the only source of the new-carve choice.
+    pub fn new_combined() -> Self {
+        Self {
+            max_paths: 65_536,
+            max_motions: 100_000,
+            max_curve_segments: 1_000_000,
+            max_depth_passes: 256,
+            max_cleanup_iterations: 2,
+            quality_sample_spacing_mm: 1.,
+            max_quality_samples: 1_000_000,
+            reachability_max_cells: 100_000,
+            stock_slices: 8,
+            // A new combined carve lifts clear of the cut it just made and
+            // re-enters at feed instead of climbing to the clearance plane
+            // and back down; the operator can choose otherwise on the
+            // finish settings.
+            transit: FinishTransit::ShortLift,
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         if !(1..=65_536).contains(&self.max_paths)
             || !(1..=1_000_000).contains(&self.max_motions)

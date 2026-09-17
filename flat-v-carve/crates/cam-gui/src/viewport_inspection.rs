@@ -471,11 +471,12 @@ impl Viewport {
             });
             if let Some(s) = stage {
                 ui.label(format!(
-                    "{} · tool {} · {}/{} motions",
+                    "{} · tool {} · {}/{} motions · {}",
                     s.stage_id,
                     s.tool_id,
                     self.stock_prefix.saturating_sub(s.motion_range.0),
-                    s.motion_count
+                    s.motion_count,
+                    format_program_time(s.estimated_seconds)
                 ));
             }
             let pin = ui.add_enabled(
@@ -502,6 +503,40 @@ impl Viewport {
                     self.inspection.pinned = None;
                 }
             }
+        });
+        // Calculated machine time per operation: every move timed by its own
+        // programmed feed, rapids by the machine's (or assumed) rapid rate —
+        // the same rule the playback transport uses.
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("Calculated time");
+            let total: f64 = plan.operations.iter().map(|o| o.estimated_seconds).sum();
+            for operation in &plan.operations {
+                let label = format!(
+                    "{} {}",
+                    operation.operation_id,
+                    format_program_time(operation.estimated_seconds)
+                );
+                let response = ui.label(label);
+                crate::app::observe_control(
+                    &format!("Operation time {}", operation.operation_id),
+                    response.rect,
+                );
+            }
+            let response = ui.strong(format!("Total {}", format_program_time(total)));
+            crate::app::observe_control("Total program time", response.rect);
+        });
+        ui.small(if plan.rapid_rate_mm_min
+            == cam_core::project::v5::inspection::ASSUMED_RAPID_RATE_MM_MIN
+        {
+            format!(
+                "Rapids timed at the assumed {} mm/min; apply a machine configuration to time them at the machine's own rate.",
+                plan.rapid_rate_mm_min as u64
+            )
+        } else {
+            format!(
+                "Rapids timed at the machine's {} mm/min.",
+                plan.rapid_rate_mm_min as u64
+            )
         });
         ui.horizontal(|ui| {
             let b = self.scene.as_ref().unwrap().meta.bounds;
@@ -805,6 +840,7 @@ mod tests {
             role: cam_core::sequence::StageRole::VcarveFinish,
             motion_range: (100, 200),
             motion_count: 100,
+            estimated_seconds: 42.,
         };
         let p = StagePosition::at(&[stage.clone()], 175).unwrap();
         stage.motion_range = (300, 500);

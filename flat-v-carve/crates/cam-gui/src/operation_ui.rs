@@ -773,6 +773,12 @@ mod tests {
     #[test]
     fn endmill_only_keeps_vbit_geometry_but_hides_finishing_fields() {
         let mut app = app();
+        // A new carve starts combined; this check is about the explicit
+        // endmill-only choice.
+        authoring::set_mode(
+            &mut app.document.as_mut().unwrap().job,
+            FlatVcarveMode::EndmillOnly,
+        );
         let ctx = egui::Context::default();
         let controls = render(&mut app, &ctx);
         assert!(controls.contains_key("V-bit angle"));

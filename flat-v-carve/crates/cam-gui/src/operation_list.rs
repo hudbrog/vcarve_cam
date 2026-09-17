@@ -73,10 +73,19 @@ impl App {
         for (index, (id, name, enabled, _)) in operations.iter().enumerate() {
             let label = format!("{:02}  {name}", index + 1);
             ui.horizontal(|ui| {
-                let response = ui.add_sized(
-                    [ui.available_width() - 26., 32.],
-                    egui::Button::selectable(selected == *id, label).truncate(),
-                );
+                // Every row's name starts at the same x. A justified button
+                // centers its label by default, so longer names would start
+                // further left than short ones; the row's layout pins the
+                // alignment to Min while the frame still spans the row.
+                let response = ui
+                    .allocate_ui_with_layout(
+                        egui::vec2(ui.available_width() - 26., 32.),
+                        egui::Layout::left_to_right(egui::Align::Center)
+                            .with_main_align(egui::Align::Min)
+                            .with_main_justify(true),
+                        |ui| ui.add(egui::Button::selectable(selected == *id, label).truncate()),
+                    )
+                    .inner;
                 observe_control(&format!("Operation row {id}"), response.rect);
                 if response.clicked() {
                     self.select_operation(id, ctx);
@@ -298,5 +307,73 @@ impl App {
         } else {
             "Operations updated. Select a row to edit it; Generate a prefix to inspect one operation's result.".into()
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sized egui button centers its label, so rows with longer names
+    /// started further left than rows with short ones and the second
+    /// operation looked shifted out of line. The rows share one left edge.
+    #[test]
+    fn operation_rows_start_at_the_same_left_edge() {
+        let empty = operation_authoring::empty_job();
+        let job = operation_authoring::apply(&empty, operation_authoring::add(Kind::Face, &empty))
+            .unwrap();
+        let job =
+            operation_authoring::apply(&job, operation_authoring::add(Kind::FlatVcarve, &job))
+                .unwrap();
+        let mut app = App {
+            document: Some(Document::new(job)),
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280., 800.),
+                )),
+                ..Default::default()
+            },
+            |ctx| app.navigator(ctx),
+        );
+        // The painted labels of the two list rows. The selected operation
+        // repeats its name in the nav row further up, so the list rows are
+        // the pair of "01 …"/"02 …" texts closest together vertically.
+        let texts: Vec<(String, egui::Pos2)> = output
+            .shapes
+            .into_iter()
+            .filter_map(|clipped| match clipped.shape {
+                egui::Shape::Text(text) => Some((text.galley.text().trim().to_owned(), text.pos)),
+                _ => None,
+            })
+            .filter(|(text, _)| text.starts_with("01") || text.starts_with("02"))
+            .collect();
+        let mut closest = (f32::INFINITY, 0., 0.);
+        for (first_text, first) in &texts {
+            if !first_text.starts_with("01") {
+                continue;
+            }
+            for (second_text, second) in &texts {
+                if second_text.starts_with("02") {
+                    let gap = (first.y - second.y).abs();
+                    if gap < closest.0 {
+                        closest = (gap, first.x, second.x);
+                    }
+                }
+            }
+        }
+        assert!(
+            closest.0 < 40.,
+            "the two operation rows are adjacent: {:?}",
+            texts
+        );
+        assert!(
+            (closest.1 - closest.2).abs() < 0.5,
+            "both names start at the same x: {closest:?} of {texts:?}"
+        );
     }
 }

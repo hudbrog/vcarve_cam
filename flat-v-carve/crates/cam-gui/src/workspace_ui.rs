@@ -127,29 +127,15 @@ impl App {
         egui::TopBottomPanel::top("gui2-files").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let menu = ui.menu_button("File", |ui| {
-                    if button(ui, "New drag knife from SVG", idle).clicked() {
-                        self.open(IoKind::KnifeSvg, ctx);
-                        ui.close();
-                    }
-                    if button(ui, "New face job", idle).clicked() {
-                        // Source-free facing: stock, tool and cutting values
-                        // only. Nothing is invented; Setup and the Face panel
-                        // report every value that is still missing.
-                        self.operation_command(
-                            crate::operation_authoring::add(
-                                crate::operation_authoring::Kind::Face,
-                                &crate::operation_authoring::empty_job(),
-                            ),
+                    if button(ui, "New job", idle).clicked() {
+                        // A fresh document with no artwork, tools or
+                        // operations; every value is authored afterwards.
+                        self.submit(
+                            Command::Open {
+                                json: crate::operation_authoring::empty_job().to_json().unwrap(),
+                            },
                             ctx,
                         );
-                        ui.close();
-                    }
-                    if button(ui, "New profile job from SVG", idle).clicked() {
-                        self.open(IoKind::ProfileSvg, ctx);
-                        ui.close();
-                    }
-                    if button(ui, "New from SVG", idle).clicked() {
-                        self.open(IoKind::Svg, ctx);
                         ui.close();
                     }
                     if button(ui, "Open job", idle).clicked() {
@@ -228,9 +214,16 @@ impl App {
                         self.recovery.changed(ctx.input(|i| i.time));
                     }
                 }
-                if self.recovery.failed && button(ui, "Reload recovery", true).clicked() {
-                    self.recovery.failed = false;
-                    self.port.load_recovery(ctx.clone());
+                if self.recovery.failed {
+                    if button(ui, "Reload recovery", true).clicked() {
+                        self.recovery.failed = false;
+                        self.port.load_recovery(ctx.clone());
+                    }
+                    // An unloadable record keeps the warning up; discarding
+                    // it lets automatic recovery start over from scratch.
+                    if button(ui, "Clear stored recovery", true).clicked() {
+                        self.port.clear_recovery(ctx.clone());
+                    }
                 }
                 if self.retry
                     && self.io.is_none()
@@ -376,11 +369,27 @@ impl App {
                             .document
                             .as_ref()
                             .is_some_and(|d| d.raw.artwork_item == id);
-                        let r = ui.add_sized(
-                            [ui.available_width(), 34.],
-                            egui::Button::selectable(selected && self.inspector_tab == 0, name)
-                                .truncate(),
-                        );
+                        // Left-aligned like the operation rows below: a
+                        // justified button centers its label by default, so
+                        // names of different widths would start at different
+                        // x positions.
+                        let r = ui
+                            .allocate_ui_with_layout(
+                                egui::vec2(ui.available_width(), 34.),
+                                egui::Layout::left_to_right(egui::Align::Center)
+                                    .with_main_align(egui::Align::Min)
+                                    .with_main_justify(true),
+                                |ui| {
+                                    ui.add(
+                                        egui::Button::selectable(
+                                            selected && self.inspector_tab == 0,
+                                            name,
+                                        )
+                                        .truncate(),
+                                    )
+                                },
+                            )
+                            .inner;
                         observe_control(&format!("Artwork {id}"), r.rect);
                         if selected {
                             observe_control("Artwork", r.rect);

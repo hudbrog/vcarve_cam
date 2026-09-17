@@ -246,8 +246,9 @@ impl ResourceCommand {
                 AssignmentRole::Endmill => vec![2, 8, 9, 10, 11, 12, 13, 32, 33],
                 AssignmentRole::Vbit => vec![3, 20, 21, 22, 46, 16, 17, 18, 19, 38, 39],
                 // Applying a library tool + cutting profile rewrites the
-                // operation's milling assignment and its cutter geometry.
-                AssignmentRole::Milling => vec![2, 10, 11, 88, 12, 13],
+                // operation's milling assignment and its cutter geometry; a
+                // face operation's stepover comes from the profile too.
+                AssignmentRole::Milling => vec![2, 9, 10, 11, 88, 12, 13],
                 AssignmentRole::Knife => vec![],
             };
         }
@@ -255,7 +256,7 @@ impl ResourceCommand {
             return match role {
                 AssignmentRole::Endmill => vec![2, 8, 9, 10, 11],
                 AssignmentRole::Vbit => vec![3, 20, 21, 22, 46],
-                AssignmentRole::Milling => vec![2, 10, 11, 88],
+                AssignmentRole::Milling => vec![2, 9, 10, 11, 88],
                 AssignmentRole::Knife => vec![63, 64, 65, 66],
             };
         }
@@ -298,9 +299,10 @@ impl ResourceCommand {
             Some(AssignmentRole::Endmill) => vec![2, 8, 9, 10, 11],
             Some(AssignmentRole::Vbit) => vec![3, 20, 21, 22, 46],
             // A Profile (or Face) operation's single milling assignment owns
-            // the cutting feed, plunge feed, spindle speed and tool stepdown
-            // limit; its own stepdown is a separate field and stays.
-            Some(AssignmentRole::Milling) => vec![2, 10, 11, 88],
+            // the cutting feed, plunge feed, spindle speed, tool stepdown
+            // limit and — for a face — the pass stepover; its own stepdown
+            // (field 8) is a separate setting and stays.
+            Some(AssignmentRole::Milling) => vec![2, 9, 10, 11, 88],
             _ => vec![],
         };
         if matches!(self, Self::UseTool { .. } | Self::EditTool { .. }) {

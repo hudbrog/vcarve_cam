@@ -100,6 +100,12 @@ export async function loadRecovery() {
     emit({RecoveryLoaded:{Ok:text===null?null:JSON.parse(globalThis.CAM_GUI.validate_session(text))}});
   }catch(error){emit({RecoveryLoaded:{Err:String(error)}});}
 }
+export async function clearRecovery() {
+  try {
+    await (await recoveryStore()).deleteRecord();
+    emit({RecoveryCleared:{Ok:null}});
+  }catch(error){emit({RecoveryCleared:{Err:String(error)}});}
+}
 export async function saveRecovery(edit,expected,snapshot) {
   try {
     const value=JSON.parse(snapshot);const previous=JSON.parse(expected);

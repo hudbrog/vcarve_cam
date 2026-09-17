@@ -345,6 +345,44 @@ mod tests {
         assert!(app.status.contains("Document changed"));
     }
     #[test]
+    fn clearing_an_unloadable_recovery_resumes_automatic_saving() {
+        let mut app = App::default();
+        let ctx = egui::Context::default();
+        app.recovery.enabled = true;
+        app.event(
+            serde_json::from_value::<Event>(json!({
+                "RecoveryLoaded": {"Err": "Unsupported recovery identity/schema"}
+            }))
+            .unwrap(),
+            &ctx,
+        );
+        assert!(app.recovery.failed && !app.recovery.ready);
+        assert!(app.recovery.status.contains("automatic recovery is paused"));
+        app.document = Some(Document::new(engine::open(engine::FLOWER).unwrap()));
+        app.recovery.changed(10.);
+        assert!(!app.recovery.due(11.), "a failed load pauses saving");
+        // The browser sends the same event shape after the record is deleted.
+        app.event(
+            serde_json::from_value::<Event>(json!({"RecoveryCleared": {"Ok": null}})).unwrap(),
+            &ctx,
+        );
+        assert!(!app.recovery.failed && app.recovery.ready);
+        assert_eq!(app.recovery.revision, None);
+        assert!(app.recovery.status.contains("discarded"));
+        assert!(
+            app.recovery.due(11.),
+            "saving resumes from a fresh revision"
+        );
+        app.event(
+            serde_json::from_value::<Event>(json!({
+                "RecoveryCleared": {"Err": "denied"}
+            }))
+            .unwrap(),
+            &ctx,
+        );
+        assert!(app.recovery.status.contains("Could not discard"));
+    }
+    #[test]
     fn saved_job_identity_survives_restart_but_partial_text_remains_unsaved() {
         let mut app = app();
         let ctx = egui::Context::default();

@@ -395,7 +395,8 @@ impl App {
 
     fn face_passes(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.operation_group(ui, "Stepover & limits", true, |app, ui| {
-            help::label(ui, "Stepover");
+            // The field names itself; applying a library tool & profile fills
+            // it from the cutter's own stepover.
             app.operation_numbers(ui, ctx, &[9]);
             ui.small("Stepover must be positive and no greater than the cutter diameter; a larger value is rejected with the allowed range.");
         });

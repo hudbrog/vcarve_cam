@@ -17,6 +17,14 @@ export async function loadRecord(name=DATABASE) {
     tx.oncomplete=()=>resolve(value);tx.onabort=()=>reject(tx.error??new Error('Recovery read aborted'));
   });} finally {db.close();}
 }
+export async function deleteRecord(name=DATABASE) {
+  const db=await open(name);
+  try {return await new Promise((resolve,reject)=>{
+    const tx=db.transaction('records','readwrite');
+    tx.objectStore('records').delete('current');
+    tx.oncomplete=()=>resolve();tx.onabort=()=>reject(tx.error??new Error('Recovery delete aborted'));
+  });}finally{db.close();}
+}
 export async function writeRecord(expected,snapshot,name=DATABASE) {
   const db=await open(name);
   try {return await new Promise((resolve,reject)=>{

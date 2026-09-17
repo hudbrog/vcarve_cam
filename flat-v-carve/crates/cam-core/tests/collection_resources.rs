@@ -579,6 +579,122 @@ fn scenario7_two_named_profiles_on_one_tool_stay_independent() {
     );
 }
 
+/// A face operation spaces its passes with its own stepover field while the
+/// preset carries the cutter's values on the assignment: applying a library
+/// tool & profile seeds both the stepover and the tool stepdown limit, Reset
+/// restores them, and a cutter switch or Clear drops the seeded stepover with
+/// the assignment it came from.
+#[test]
+fn a_face_takes_its_stepover_and_stepdown_limit_from_the_applied_profile() {
+    let face = OperationV5 {
+        id: "face-1".into(),
+        name: "Face".into(),
+        enabled: true,
+        settings: OperationSettingsV5::Face(v5::FaceSettingsV5 {
+            area: FaceArea::EntireStock,
+            margins: FaceMargins::default(),
+            entry: Default::default(),
+            entry_overrun_mm: Some(2.),
+            exit_overrun_mm: Some(2.),
+            top: HeightRef {
+                reference: HeightReference::StockTop,
+                offset_mm: 0.,
+            },
+            bottom: HeightRef {
+                reference: HeightReference::StockTop,
+                offset_mm: -1.5,
+            },
+            stepdown_mm: Some(1.),
+            stepover_mm: None,
+            pass_angle_deg: None,
+            pattern: Default::default(),
+            assignment: milling("t1"),
+        }),
+    };
+    let mut job = job_of(vec![face]);
+    let library = library();
+    job = apply_cutting_profile(
+        &job,
+        "face-1",
+        Role::Milling,
+        &library,
+        "lib-1",
+        "lib-e",
+        "soft",
+    )
+    .unwrap()
+    .job;
+    fn face_of(job: &CamJobV5) -> &v5::FaceSettingsV5 {
+        match &job.operations[0].settings {
+            OperationSettingsV5::Face(settings) => settings,
+            other => panic!("face settings expected, got {other:?}"),
+        }
+    }
+    let settings = face_of(&job);
+    assert_eq!(settings.stepover_mm, Some(2.), "the preset's stepover");
+    assert_eq!(settings.assignment.stepover_mm, Some(2.));
+    assert_eq!(
+        settings.assignment.max_stepdown_mm,
+        Some(0.8),
+        "the preset's tool stepdown limit"
+    );
+    // A pass stepover edited afterwards is a face setting; Reset restores the
+    // profile's value together with the assignment.
+    let OperationSettingsV5::Face(edited) = &mut job.operations[0].settings else {
+        panic!("face settings expected");
+    };
+    edited.stepover_mm = Some(1.25);
+    job = reset_assignment(&job, "face-1", Role::Milling).unwrap().job;
+    assert_eq!(face_of(&job).stepover_mm, Some(2.));
+    // Switching to a different cutter clears the assignment and the seeded
+    // stepover with it; a partial preset then copies its unset stepover too.
+    let (import, tool_id) =
+        v5::resources::add_library_tool(&job, &library, "lib-1", "lib-e").unwrap();
+    assert_eq!(tool_id, "lib-e");
+    job = use_job_tool(&import.job, "face-1", Role::Milling, &tool_id)
+        .unwrap()
+        .job;
+    let settings = face_of(&job);
+    assert_eq!(
+        settings.stepover_mm, None,
+        "the old cutter's stepover is gone"
+    );
+    assert_eq!(settings.assignment.spindle_rpm, None);
+    job = apply_cutting_profile(
+        &job,
+        "face-1",
+        Role::Milling,
+        &library,
+        "lib-1",
+        "lib-e",
+        "partial",
+    )
+    .unwrap()
+    .job;
+    assert_eq!(
+        face_of(&job).stepover_mm,
+        None,
+        "the partial preset's unset stepover is copied"
+    );
+    // Clear drops the seeded stepover along with the copied values.
+    job = apply_cutting_profile(
+        &job,
+        "face-1",
+        Role::Milling,
+        &library,
+        "lib-1",
+        "lib-e",
+        "soft",
+    )
+    .unwrap()
+    .job;
+    job = v5::resources::clear_assignment_values(&job, "face-1", Role::Milling)
+        .unwrap()
+        .job;
+    assert_eq!(face_of(&job).stepover_mm, None);
+    job.to_json().unwrap();
+}
+
 /// Reapply loads the explicitly supplied current revision: changed preset
 /// values become the new baseline; a removed library record is a located
 /// error, never a silent no-op (plan section 22.6).
@@ -997,6 +1113,26 @@ fn inspection_reports_used_by_heights_and_stock() {
             .sum::<usize>(),
         plan.motions.len()
     );
+    // Machine time: every operation's estimate is the sum of its stages, the
+    // stages together cover the plan, and a real cut takes real time. Rapids
+    // rest on the stated assumption because this job has no machine
+    // configuration.
+    for operation in &inspection.operations {
+        let stages: f64 = inspection
+            .stages
+            .iter()
+            .filter(|stage| stage.operation_id == operation.operation_id)
+            .map(|stage| stage.estimated_seconds)
+            .sum();
+        assert!(
+            (stages - operation.estimated_seconds).abs() < 1e-9,
+            "{}: stages {stages} vs operation {}",
+            operation.operation_id,
+            operation.estimated_seconds
+        );
+        assert!(operation.estimated_seconds > 0.);
+    }
+    assert!(inspection.rapid_rate_mm_min > 0.);
 }
 
 /// Collection plans export and replay through the same post pipeline (H4 +

@@ -62,14 +62,6 @@ pub enum Command {
         job: String,
         action: crate::operation_authoring::Action,
     },
-    ImportKnifeSvg {
-        filename: String,
-        svg: String,
-    },
-    ImportProfileSvg {
-        filename: String,
-        svg: String,
-    },
     ImportSvg {
         filename: String,
         svg: String,
@@ -741,14 +733,6 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 package(Package {name:String::new(),job:String::new(),report:json!({"protocol":PROTOCOL,"gui2":{"kind":"preset","handle":handle,"preset":preset.wire(),"key":meta.key,"cellMm":meta.cell_mm,"prefix":position,"retainedBytes":meta.retained_bytes,"checkpoints":checkpoints,"changed":true,"displayMemory":display_memory}}),programs:vec![],bounds:[0.,0.,1.,1.],contour_vertices:0,rough_vertices:0,vertices:vec![],preview:Some(crate::stock_preview::Preview {meta,cells:vec![cells]}),sim:None})
             });
         }
-        Command::ImportKnifeSvg { filename, svg } => (
-            crate::knife::import_svg(filename, svg)?,
-            json!({"kind":"imported"}),
-        ),
-        Command::ImportProfileSvg { filename, svg } => (
-            crate::profile::import_svg(filename, svg)?,
-            json!({"kind":"imported"}),
-        ),
         Command::Operation { job, action } => {
             // Adding an operation selects it so its unset inputs are what the
             // editor addresses next; every other edit keeps the current

@@ -158,24 +158,11 @@ pub fn set_mode_in(job: &mut CamJobV5, operation_id: &str, mode: FlatVcarveMode)
     s.mode = mode;
     s.finish = match mode {
         FlatVcarveMode::EndmillOnly => s.finish.clone(),
-        FlatVcarveMode::Combined => Some(s.finish.clone().unwrap_or(
-            cam_core::vcarve::VBitPlanningSettings {
-                max_paths: 65536,
-                max_motions: 100000,
-                max_curve_segments: 1000000,
-                max_depth_passes: 256,
-                max_cleanup_iterations: 2,
-                quality_sample_spacing_mm: 1.,
-                max_quality_samples: 1000000,
-                reachability_max_cells: 100000,
-                stock_slices: 8,
-                // A new combined carve lifts clear of the cut it just made and
-                // re-enters at feed instead of climbing to the clearance plane
-                // and back down. The operator can choose the full retract or a
-                // proved stay-down join on the finish settings.
-                transit: cam_core::vcarve::FinishTransit::ShortLift,
-            },
-        )),
+        FlatVcarveMode::Combined => Some(
+            s.finish
+                .clone()
+                .unwrap_or_else(cam_core::vcarve::VBitPlanningSettings::new_combined),
+        ),
     };
 }
 

@@ -41,6 +41,7 @@ pub enum Event {
         result: Result<IoValue, String>,
     },
     RecoveryLoaded(Result<Option<Stored>, String>),
+    RecoveryCleared(Result<(), String>),
     Resources {
         id: u64,
         result: Result<Option<crate::resources::StoredCatalog>, String>,
@@ -210,6 +211,14 @@ mod native {
                 ctx.request_repaint();
             });
         }
+        pub fn clear_recovery(&self, ctx: egui::Context) {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let result = crate::file_io::Store::default_location().and_then(|s| s.clear());
+                let _ = tx.send(Event::RecoveryCleared(result));
+                ctx.request_repaint();
+            });
+        }
         pub fn resources(
             &self,
             id: u64,
@@ -263,6 +272,7 @@ mod browser {
         fn openFile(id: f64, svg: bool, multiple: bool);
         fn saveFile(id: f64, name: &str, bytes: &[u8], deny: bool);
         fn loadRecovery();
+        fn clearRecovery();
         fn saveRecovery(edit: f64, expected: &str, snapshot: &str);
         fn resourceStore(id: f64, save: &str);
     }
@@ -372,6 +382,10 @@ mod browser {
         pub fn load_recovery(&self, ctx: egui::Context) {
             CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
             loadRecovery();
+        }
+        pub fn clear_recovery(&self, ctx: egui::Context) {
+            CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
+            clearRecovery();
         }
         pub fn save_recovery(
             &self,

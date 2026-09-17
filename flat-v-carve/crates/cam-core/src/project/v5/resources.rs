@@ -91,6 +91,19 @@ fn resource_error(message: impl Into<String>) -> Diagnostic {
     Diagnostic::new("RESOURCE_COMMAND", message).at_stage("resources")
 }
 
+/// A face operation spaces its passes with its own settings field, while the
+/// library preset carries the cutter's stepover on the assignment. Applying,
+/// resetting or clearing a milling profile carries that stepover (or its
+/// absence) into the settings field as well, so the face panel and planner
+/// agree with the cutter's library values. Other operations keep their
+/// settings: a carve's stage stepover is the assignment value itself, and a
+/// profile has no stepover.
+fn sync_face_stepover(settings: &mut OperationSettingsV5, stepover_mm: Option<f64>) {
+    if let OperationSettingsV5::Face(face) = settings {
+        face.stepover_mm = stepover_mm;
+    }
+}
+
 /// Whether an assignment's effective cutting values match its stored
 /// baseline (plan section 22.6): `Custom` without provenance, `Applied`
 /// while the copied values stand unmodified, `Modified` once any applicable
@@ -220,6 +233,9 @@ pub fn apply_cutting_profile(
     let index = operation_index(job, operation_id)?;
     let mut candidate = job.clone();
     let tool = library.tool(library_tool_id)?;
+    // `Some(_)` after the match means a milling preset was applied; the inner
+    // option is the preset's own (possibly unset) stepover.
+    let mut milled_stepover: Option<Option<f64>> = None;
     match assignment_mut(
         &mut candidate.operations[index].settings,
         operation_id,
@@ -227,6 +243,7 @@ pub fn apply_cutting_profile(
     )? {
         AssignmentRef::Milling(assignment) => {
             let preset = tool.preset(preset_id)?;
+            milled_stepover = Some(preset.stepover_mm);
             copy_milling_preset(assignment, preset);
             assignment.applied_profile = Some(super::AppliedProfile {
                 library_id: library_id.to_string(),
@@ -261,6 +278,9 @@ pub fn apply_cutting_profile(
             });
         }
     }
+    if let Some(stepover) = milled_stepover {
+        sync_face_stepover(&mut candidate.operations[index].settings, stepover);
+    }
     super::commands::CommandOutcome::commit(
         candidate,
         vec![super::commands::AffectedEntity::Operation(
@@ -279,6 +299,7 @@ pub fn reset_assignment(
 ) -> Result<super::commands::CommandOutcome> {
     let index = operation_index(job, operation_id)?;
     let mut candidate = job.clone();
+    let mut milled_stepover: Option<Option<f64>> = None;
     match assignment_mut(
         &mut candidate.operations[index].settings,
         operation_id,
@@ -303,6 +324,7 @@ pub fn reset_assignment(
                     "the stored baseline does not match the assignment kind",
                 ));
             };
+            milled_stepover = Some(*stepover_mm);
             assignment.spindle_rpm = *spindle_rpm;
             assignment.cutting_feed_mm_min = *cutting_feed_mm_min;
             assignment.plunge_feed_mm_min = *plunge_feed_mm_min;
@@ -333,6 +355,9 @@ pub fn reset_assignment(
             assignment.max_stepdown_mm = *max_stepdown_mm;
         }
     }
+    if let Some(stepover) = milled_stepover {
+        sync_face_stepover(&mut candidate.operations[index].settings, stepover);
+    }
     super::commands::CommandOutcome::commit(
         candidate,
         vec![super::commands::AffectedEntity::Operation(
@@ -354,6 +379,7 @@ pub fn reapply_profile(
 ) -> Result<super::commands::CommandOutcome> {
     let index = operation_index(job, operation_id)?;
     let mut candidate = job.clone();
+    let mut milled_stepover: Option<Option<f64>> = None;
     let (library_tool_id, preset_id) = {
         let settings = &candidate.operations[index].settings;
         match assignment_ref_of(settings, role)? {
@@ -388,6 +414,7 @@ pub fn reapply_profile(
             let preset = tool.preset(&preset_id).map_err(|e| {
                 resource_error(format!("reapply needs the library record: {}", e.message))
             })?;
+            milled_stepover = Some(preset.stepover_mm);
             copy_milling_preset(assignment, preset);
             assignment.applied_profile = Some(super::AppliedProfile {
                 library_id: library_id.to_string(),
@@ -423,6 +450,9 @@ pub fn reapply_profile(
                 },
             });
         }
+    }
+    if let Some(stepover) = milled_stepover {
+        sync_face_stepover(&mut candidate.operations[index].settings, stepover);
     }
     super::commands::CommandOutcome::commit(
         candidate,
@@ -576,13 +606,20 @@ pub fn clear_assignment_values(
 ) -> Result<super::commands::CommandOutcome> {
     let index = operation_index(job, operation_id)?;
     let mut candidate = job.clone();
+    let mut milled_clear = false;
     match assignment_mut(
         &mut candidate.operations[index].settings,
         operation_id,
         role,
     )? {
-        AssignmentRef::Milling(assignment) => clear_milling(assignment),
+        AssignmentRef::Milling(assignment) => {
+            clear_milling(assignment);
+            milled_clear = true;
+        }
         AssignmentRef::Knife(assignment) => clear_knife(assignment),
+    }
+    if milled_clear {
+        sync_face_stepover(&mut candidate.operations[index].settings, None);
     }
     super::commands::CommandOutcome::commit(
         candidate,
@@ -695,6 +732,7 @@ pub fn use_job_tool(
         )));
     }
     let mut candidate = job.clone();
+    let mut milled_switch = false;
     match assignment_mut(
         &mut candidate.operations[index].settings,
         operation_id,
@@ -704,6 +742,7 @@ pub fn use_job_tool(
             if assignment.tool_id != tool.id {
                 clear_milling(assignment);
                 assignment.tool_id = tool.id.clone();
+                milled_switch = true;
             }
         }
         AssignmentRef::Knife(assignment) => {
@@ -712,6 +751,11 @@ pub fn use_job_tool(
                 assignment.tool_id = tool.id.clone();
             }
         }
+    }
+    if milled_switch {
+        // A face's seeded stepover belongs to the previous cutter's
+        // profile; it must not survive the switch unexamined.
+        sync_face_stepover(&mut candidate.operations[index].settings, None);
     }
     super::commands::CommandOutcome::commit(
         candidate,

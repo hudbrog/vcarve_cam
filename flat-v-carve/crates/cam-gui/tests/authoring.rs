@@ -250,6 +250,10 @@ fn carving_job(filename: &str, svg: &str) -> v5::CamJobV5 {
 
 fn configured() -> Document {
     let mut doc = Document::new(carving_job("new-carving.svg", SVG));
+    // A new carve starts combined; this fixture is the reviewed
+    // endmill-only configuration, and the tests that need the combined
+    // program switch to it and finish the V-bit values explicitly.
+    authoring::set_mode(&mut doc.job, FlatVcarveMode::EndmillOnly);
     let catalogue = v5::artwork::inspect_artwork(&doc.job).unwrap();
     settings_mut(&mut doc.job).components = vec![
         catalogue.items[0]

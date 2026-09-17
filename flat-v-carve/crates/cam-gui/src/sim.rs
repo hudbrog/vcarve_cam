@@ -10,7 +10,10 @@ pub const MAX_CELLS: usize = 64_000_000;
 const PLUNGE_AREA_EPS: f64 = 1e-16;
 /// Rapid rate a machine that states none is simulated with. The timings say
 /// when this fallback is in use instead of presenting it as machine truth.
-pub const DEFAULT_RAPID_RATE_MM_MIN: f64 = 5000.;
+/// The inspection readouts assume the same value, so the transport's program
+/// time and the per-operation estimates agree.
+pub const DEFAULT_RAPID_RATE_MM_MIN: f64 =
+    cam_core::project::v5::inspection::ASSUMED_RAPID_RATE_MM_MIN;
 /// Chord error the swept envelope accepts when it walks a programmed arc, in mm.
 /// The preview field is a raster: this keeps the walked curve inside a fraction
 /// of a display cell while the move stays **one** motion, so the display's
