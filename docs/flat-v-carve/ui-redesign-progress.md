@@ -6,7 +6,7 @@ The scope and acceptance criteria are in the [visual redesign plan](ui-visual-re
 |---|---|---|
 | V0 baseline | Complete | Fresh native/browser captures; 111-field inventory; baseline tests |
 | V1 visual foundation | Complete | Shared tokens/icons, bounded forms, Stock sections and live datum diagram; 167 tests |
-| V2 workspace shell | Pending | Header, navigator, status, execution scope |
+| V2 workspace shell | Complete | Compact header, one ordered row per operation, anchored job tools, scope/status, adaptive panels; 171 tests |
 | V3 resources | Pending | Library/machines and job tools pages |
 | V4 authoring | Pending | All four operations, artwork, machine, diagrams |
 | V5 inspection | Pending | View controls, transport, timeline, result inspection |
@@ -63,6 +63,27 @@ Evidence:
 Validation: 167/167 `cam-gui` library tests; clippy with `ui-review` and warnings denied; native/WASM builds; formatting and diff checks; all 111 field IDs still mapped. The final help-heading adjustment was also checked with both setup-tab tests and the complete browser capture scenario. Native review remains debug, so cross-target timings are not a performance comparison.
 
 One older `--authoring` scenario was attempted and stopped at its initial import assertion: it expects absent machining probe properties to equal null on an artwork-only import, although current imports correctly contain zero operations. It did not reach any modified field. The current-schema checks above are the V1 acceptance evidence. A capture-script attempt also clicked a stale field-filter rectangle; waiting for the real layout to settle fixed the script without changing application behavior.
+
+## V2 — workspace shell
+
+The graphite header now combines File, compact Save/Undo/Redo, an elided document name with a separately visible document state, Prepare/Simulate, Generate all, an attached scope menu and Export. The scope menu can generate all enabled operations or through the selected operation; the work-area strip shows the active generation scope or the retained result's scope. Prefix export stays visibly named. The operation footer uses neutral actions and reserves enough space above the status bar, including at 640×400 logical points.
+
+The 248-point resizable navigator has fixed Setup controls, a bounded Artwork/Operations scroll, and anchored job-wide tools with Manage and a Global library link. Every operation appears once, with enable checkbox, ordinal/type icon, name, cutter summary, located-issue text and an actions menu. Rename, move earlier/later, generate-through and delete keep their existing commands. Artwork has independent eye/lock targets with explicit display/picking semantics. Inspect result is reached through Simulate. The selected operation's legacy geometry inspectors remain available through the explicitly labeled Selected operation tools menu.
+
+Panels have persistent widths/collapse state with backward-compatible recovery defaults. Below 960 logical points, opening one side panel closes the other; both can be closed to expand the canvas. Short windows get Setup pages and a compact job-tool summary. The normal status row is 24 points; recovery offers/failures and save retry still expand into visible actions. This follows revision 2's hierarchy while retaining the actual job settings, operation enablement and execution-scope controls absent from the image.
+
+The zero-operation acceptance check found an old resource guard that forcibly closed Job tools and replaced the library with an add-operation message. Job-wide geometry and the global library are now reachable without an operation. Artwork and Machine also open their real editors instead of the prior no-operation placeholder. Assignment-only actions require a selected operation; assignment inspection/application addresses that selected operation rather than indexing the first one. No machining defaults or operation are created by browsing resources.
+
+Evidence:
+
+- [Native shell at 1280×800](ui-redesign-evidence/v2/native-stock.png), [twelve duplicate-name operations](ui-redesign-evidence/v2/native-twelve.png), and [640×400 logical points at 2×](ui-redesign-evidence/v2/native-compact.png).
+- [Browser last operation and anchored tools](ui-redesign-evidence/v2/browser-twelve.png), [empty operation list](ui-redesign-evidence/v2/browser-empty.png), and [current prefix result](ui-redesign-evidence/v2/browser-prefix.png).
+- Native PNG/metadata and generated review jobs: `flat-v-carve/artifacts/gui/visual-v2/`.
+- Browser shell acceptance: `flat-v-carve/artifacts/gui/browser-smoke/2026-09-18T07-58-07.085Z/`. Browser size/DPI and editing review: `flat-v-carve/artifacts/gui/browser-smoke/2026-09-18T07-58-10.213Z/`. Both use build `8d097a052c5c`, passed and reported no console errors.
+
+Validation: 171/171 library tests; clippy with warnings denied; native/WASM builds; fmt and diff checks; all 111 numeric IDs remain mapped. Focused tests cover long header names, separate hit regions for twelve rows, anchored resources, 640×400 through 1920×1080 layouts, footer bounds, same-operation ramp-draft/scroll preservation and recovery compatibility. The browser shell scenario exercises rename/move/delete/Undo, independent enable/eye/lock controls, collapsed-panel reopening, empty-job resource access and creation, and prefix generation followed by checked preparation without scope widening. The visual scenario repeats baseline sizes/scales plus partial fields/navigation/Undo, datum choices, simulation and library import. Native and browser renders were compared with revision 2; remaining inspector/card density and the overflowing view toolbar belong to V4/V5, so this milestone does not claim completion of those panels or the complete narrow-width application.
+
+Reproduction: build as in V0, then run `node crates/cam-gui/web/smoke.mjs --shell` and `node crates/cam-gui/web/smoke.mjs --visual-review`. The smoke driver now opens actual row/scope/tool/setup menus and scrolls by the distance needed to reveal a control; it never treats an offscreen row as a fixed header control.
 
 ## Control migration checklist
 

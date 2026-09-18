@@ -489,17 +489,6 @@ impl App {
         }
     }
     pub(super) fn resource_windows(&mut self, ctx: &egui::Context) {
-        if self
-            .document
-            .as_ref()
-            .is_some_and(|d| d.job.operations.is_empty())
-        {
-            self.resources.jobs_open = false;
-            if self.resources.open {
-                egui::Window::new("Tool library").open(&mut self.resources.open).show(ctx, |ui| { ui.label("Add an operation before choosing its tools and cutting profiles. Existing job tools are retained."); });
-            }
-            return;
-        }
         if let Some(doc) = &self.document {
             if crate::knife::settings(&doc.job).is_some() {
                 self.resources.role = Role::Knife;
@@ -652,10 +641,12 @@ impl App {
             false,
             |ui| {
                 if let Some(doc) = &self.document {
-                    let status = core::assignment_statuses(&doc.job)
-                        .into_iter()
-                        .find(|s| s.role == self.resources.role)
-                        .unwrap();
+                    let Some(status) = core::assignment_statuses(&doc.job).into_iter().find(|s| {
+                        s.role == self.resources.role && s.operation_id == doc.raw.operation
+                    }) else {
+                        ui.small("Choose an operation to inspect its assignment.");
+                        return;
+                    };
                     ui.label(format!(
                         "Selected assignment: {:?} · {:?}",
                         status.role, status.status
@@ -666,7 +657,7 @@ impl App {
                             applied.name_at_application, applied.revision_at_application
                         ));
                     }
-                    let operation = doc.job.operations[0].id.clone();
+                    let operation = status.operation_id.clone();
                     ui.horizontal_wrapped(|ui| {
                         if button(
                             ui,
@@ -707,6 +698,14 @@ impl App {
         );
     }
     fn resource_role(&mut self, ui: &mut egui::Ui) {
+        if self
+            .document
+            .as_ref()
+            .is_none_or(|d| d.active_operation().is_none())
+        {
+            ui.small("No operation selected. Library and job geometry remain editable.");
+            return;
+        }
         if self
             .document
             .as_ref()
@@ -1199,9 +1198,9 @@ impl App {
                     .operations
                     .iter()
                     .find(|operation| operation.id == self.document.as_ref().unwrap().raw.operation)
-                    .map(|operation| operation.id.clone())
-                    .unwrap_or_else(|| job.operations[0].id.clone());
-                if button(ui,"Use tool in assignment",self.active.is_none()).clicked(){self.resource_command(R::UseTool{operation,role:self.resources.role,tool:tool.id.clone()},ctx);}
+                    .map(|operation| operation.id.clone());
+                if button(ui,"Use tool in assignment",self.active.is_none() && operation.is_some()).clicked()
+                    && let Some(operation)=operation {self.resource_command(R::UseTool{operation,role:self.resources.role,tool:tool.id.clone()},ctx);}
                 if button(ui,"Edit copied geometry",true).clicked(){
                     match crate::resources::capture_tool(tool,tool.id.clone(),tool.name.clone()){
                         Ok(t)=>{self.resources.job_tool_draft=Some((self.revision,t));self.resources.job_raw.clear();self.resources.job_invalid.clear();},Err(e)=>self.status=e,

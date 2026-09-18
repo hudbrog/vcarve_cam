@@ -147,7 +147,10 @@ impl App {
         }
     }
     pub(super) fn inspector(&mut self, ctx: &egui::Context) {
-        let panel=egui::SidePanel::right("gui2-inspector").default_width(self.inspector_width).width_range(300.0..=480.0).resizable(true).show(ctx,|ui|{
+        if self.inspector_collapsed {
+            return;
+        }
+        let panel=egui::SidePanel::right("gui2-inspector").default_width(self.inspector_width).width_range(320.0..=440.0).resizable(true).show(ctx,|ui|{
             ui.add_space(8.);
             if self.inspector_tab != 2 {
                 let title = self.inspector_heading();
@@ -164,13 +167,15 @@ impl App {
             }
             let operation = self.inspector_tab == 2;
             let offset = if operation { self.operation_scroll[self.operation_tab] } else { self.scroll[self.inspector_tab] };
-            let area=egui::ScrollArea::vertical().id_salt(("inspector-scroll",self.inspector_tab,if operation {self.operation_tab} else {0})).auto_shrink([false,!operation]).max_height(if operation { (ui.available_height()-55.).max(100.) } else {ui.available_height()}).vertical_scroll_offset(offset).show(ui,|ui|{
+            let area=egui::ScrollArea::vertical().min_scrolled_height(32.).id_salt(("inspector-scroll",self.inspector_tab,if operation {self.operation_tab} else {0})).auto_shrink([false,!operation]).max_height(if operation { (ui.available_height()-80.).max(48.) } else {ui.available_height()}).vertical_scroll_offset(offset).show(ui,|ui|{
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 if operation { ui.spacing_mut().interact_size.y = 22.; }
                 if self.document.is_none(){ui.label("Import an SVG or open a saved job to begin.");return;}
                 if self.document.as_ref().unwrap().job.operations.is_empty() {
                     match self.inspector_tab {
+                        0 => self.artwork_panel(ui,ctx),
                         1 => self.setup_panel(ui,ctx),
+                        3 => self.machine_panel(ui,ctx),
                         7 => self.job_settings_panel(ui,ctx),
                         _ => { ui.heading("No operations"); ui.label("Add an operation from the Operations list. Your artwork, stock, tools and machine settings are retained."); if self.inspector_tab == 0 {self.numbers(ui,ctx,&[26,27,28,29]);} }
                     }
@@ -195,10 +200,10 @@ impl App {
             if operation {
                 self.operation_scroll[self.operation_tab]=area.state.offset.y;
                 ui.separator();
+                ui.small("Changes apply to this job");
                 ui.horizontal(|ui| {
-                    ui.small("Changes apply to this job");
                     let ready = !self.operation_ramp_draft && self.document.as_ref().is_some_and(|d| !d.pending() && !d.job.operations.is_empty());
-                    let generate = ui.add_enabled(ready && self.active.is_none() && self.io.is_none(),egui::Button::new("Generate").fill(Color32::from_rgb(49,190,195)));
+                    let generate = ui.add_enabled(ready && self.active.is_none() && self.io.is_none(),egui::Button::new("Generate all"));
                     observe_control("Generate operation",generate.rect);
                     if generate.clicked() {
                         self.generate(crate::session::GenerateScope::AllEnabled, ctx);

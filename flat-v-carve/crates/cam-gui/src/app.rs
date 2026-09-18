@@ -590,6 +590,7 @@ pub struct App {
     pending: Option<Pending>,
     plan: Option<(String, u64)>,
     plan_scope: Option<GenerateScope>,
+    active_scope: Option<GenerateScope>,
     prepared: Option<(Value, u64)>,
     export_dialog: Option<export_ui::ExportDialog>,
     pub status: String,
@@ -610,6 +611,9 @@ pub struct App {
     operation_ramp_draft: bool,
     preview_dirty: bool,
     inspector_width: f32,
+    navigator_width: f32,
+    navigator_collapsed: bool,
+    inspector_collapsed: bool,
     scroll: [f32; 8],
     simulate: bool,
     last_workspace: Option<crate::recovery::Workspace>,
@@ -665,6 +669,7 @@ impl Default for App {
             pending: None,
             plan: None,
             plan_scope: None,
+            active_scope: None,
             prepared: None,
             export_dialog: None,
             status: "Open a portable Flat V-carve project, or import SVG artwork to start.".into(),
@@ -685,6 +690,9 @@ impl Default for App {
             operation_ramp_draft: false,
             preview_dirty: false,
             inspector_width: crate::ui_theme::INSPECTOR,
+            navigator_width: crate::ui_theme::NAVIGATOR,
+            navigator_collapsed: false,
+            inspector_collapsed: false,
             scroll: [0.; 8],
             simulate: false,
             last_workspace: None,
@@ -869,6 +877,10 @@ impl App {
             }
         }
         .into();
+        self.active_scope = match &command {
+            Command::Generate { scope, .. } => Some(scope.clone()),
+            _ => None,
+        };
         self.busy = Some(self.status.clone());
         self.port
             .start(id, Request::Gui2(Box::new(command)), ctx.clone());
@@ -1991,7 +2003,7 @@ impl App {
         let stock_transfer = self.view.last_stock_transfer();
         let display = self.view.display_probe();
         let renderer = self.view.renderer_probe();
-        crate::viewport::probe::publish(json!({"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"busy":self.busy,"queued":self.pending.as_ref().map(Pending::label),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"requestedStock":self.view.requested_stock_prefix(),"stockTransferBytes":stock_transfer.0,"stockReplayed":stock_transfer.1,"timelineRows":self.view.timeline_rows(),"display":display,"renderer":renderer,"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
+        crate::viewport::probe::publish(json!({"planScope":self.plan_scope,"activeScope":self.active.as_ref().and(self.active_scope.as_ref()),"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"busy":self.busy,"queued":self.pending.as_ref().map(Pending::label),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"requestedStock":self.view.requested_stock_prefix(),"stockTransferBytes":stock_transfer.0,"stockReplayed":stock_transfer.1,"timelineRows":self.view.timeline_rows(),"display":display,"renderer":renderer,"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
     }
     fn save_output(&mut self, ctx: &egui::Context) {
         if let Some((prepared, revision)) = &self.prepared

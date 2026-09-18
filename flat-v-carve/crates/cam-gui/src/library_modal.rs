@@ -639,7 +639,13 @@ impl App {
                     "Use tool"
                 };
                 let r = ui.add_enabled(
-                    self.library_can_use() && selected,
+                    self.library_can_use()
+                        && selected
+                        && (machines
+                            || self
+                                .document
+                                .as_ref()
+                                .is_some_and(|d| d.active_operation().is_some())),
                     egui::Button::new(RichText::new(title).color(Color32::WHITE))
                         .fill(Color32::from_rgb(18, 133, 144))
                         .min_size(egui::vec2(140., 34.)),
@@ -667,8 +673,7 @@ impl App {
                             self.resource_command(R::Machine { profile }, ctx);
                         }
                     } else {
-                        let operation =
-                            self.document.as_ref().unwrap().job.operations[0].id.clone();
+                        let operation = self.document.as_ref().unwrap().raw.operation.clone();
                         let role = self.resources.role;
                         let command = if has_preset {
                             R::ApplyToolProfile {

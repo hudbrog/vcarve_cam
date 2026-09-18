@@ -27,6 +27,10 @@ impl App {
     /// Select the operation the inspector edits. Selection is workspace state:
     /// it never changes the document or the machining order.
     pub(super) fn select_operation(&mut self, id: &str, ctx: &egui::Context) {
+        let same = self
+            .document
+            .as_ref()
+            .is_some_and(|d| d.raw.operation == id);
         if self
             .document
             .as_mut()
@@ -34,183 +38,199 @@ impl App {
         {
             self.edit_group = None;
             self.search.clear();
-            self.operation_scroll = [0.; 3];
-            self.operation_ramp_draft = false;
+            if !same {
+                self.operation_scroll = [0.; 3];
+                self.operation_ramp_draft = false;
+            }
             self.navigate(2);
             self.recovery.changed(ctx.input(|i| i.time));
         }
     }
 
     pub(super) fn operation_actions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        use crate::{
+            ui_icons::{self, Icon},
+            ui_widgets,
+        };
+        use cam_core::project::v5::{OperationSettingsV5 as Settings, resources};
         let idle = self.active.is_none() && self.io.is_none();
-        let operations: Vec<(String, String, bool, bool)> = self
-            .document
-            .as_ref()
-            .map(|d| {
-                d.job
-                    .operations
-                    .iter()
-                    .map(|op| {
-                        (
-                            op.id.clone(),
-                            op.name.clone(),
-                            op.enabled,
-                            matches!(
-                                op.settings,
-                                cam_core::project::v5::OperationSettingsV5::Face(_)
-                            ),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let job = self.current_job();
+        let assignments = resources::assignment_statuses(&job);
         let selected = self
             .document
             .as_ref()
-            .map(|d| d.raw.operation.clone())
-            .unwrap_or_default();
-        let count = operations.len();
-        for (index, (id, name, enabled, _)) in operations.iter().enumerate() {
-            let label = format!("{:02}  {name}", index + 1);
-            ui.horizontal(|ui| {
-                // The checkbox leads so its column is pinned to the row's
-                // start, and the button fills exactly what remains. A
-                // trailing checkbox needed its space reserved next to the
-                // button, and a name wide enough to overflow that
-                // reservation pushed its checkbox right — and widened the
-                // scroll content, which grew the fixed-width panel and left
-                // the growth as an unpainted strip at the panel edge.
-                let mut on = *enabled;
-                let toggle = ui
-                    .add_enabled(idle, egui::Checkbox::without_text(&mut on))
-                    .on_hover_text(if on {
-                        "Enabled: included in every generation scope"
-                    } else {
-                        "Disabled: excluded from every scope; dependents see missing outputs"
-                    });
-                observe_control(&format!("Operation enabled {id}"), toggle.rect);
-                // Every row's name starts at the same x. A justified button
-                // centers its label by default, so longer names would start
-                // further left than short ones; the row's layout pins the
-                // alignment to Min while the frame still spans the row.
-                let response = ui
-                    .allocate_ui_with_layout(
-                        egui::vec2(ui.available_width(), 32.),
-                        egui::Layout::left_to_right(egui::Align::Center)
-                            .with_main_align(egui::Align::Min)
-                            .with_main_justify(true),
-                        |ui| ui.add(egui::Button::selectable(selected == *id, label).truncate()),
-                    )
-                    .inner;
-                observe_control(&format!("Operation row {id}"), response.rect);
-                if response.clicked() {
-                    self.select_operation(id, ctx);
-                }
-                if toggle.changed() {
-                    self.operation_command(
-                        Action::SetEnabled {
-                            operation_id: id.clone(),
-                            enabled: on,
-                        },
-                        ctx,
-                    );
-                }
-            });
+            .map(|d| d.raw.operation.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let count = job.operations.len();
+        if count == 0 {
+            ui.small("No operations yet");
         }
-        if let Some((rename_id, rename_text)) = self.operation_rename.clone() {
-            let mut text = rename_text;
-            // The field takes the full row width and the buttons follow on
-            // their own row: side by side they are wider than the navigator,
-            // and a row that overflows grows the fixed-width panel past its
-            // painted edge.
-            let edit = ui.add(
-                egui::TextEdit::singleline(&mut text)
-                    .id(egui::Id::new(("operation-rename", &rename_id)))
-                    .hint_text("Operation name")
-                    .desired_width(ui.available_width()),
-            );
-            observe_control("Rename operation", edit.rect);
-            if edit.changed() {
-                self.operation_rename = Some((rename_id.clone(), text.clone()));
-            }
-            ui.horizontal_wrapped(|ui| {
-                if button(ui, "Apply name", idle && !text.trim().is_empty()).clicked() {
-                    self.operation_command(
-                        Action::Rename {
-                            operation_id: rename_id.clone(),
-                            name: text.clone(),
-                        },
-                        ctx,
-                    );
-                    self.operation_rename = None;
-                }
-                if button(ui, "Cancel rename", true).clicked() {
-                    self.operation_rename = None;
-                }
-            });
-        }
-        if let Some((id, name, _, _)) = operations.iter().find(|(id, ..)| *id == selected).cloned()
-        {
-            let index = operations
+        for (index, op) in job.operations.iter().enumerate() {
+            let id = &op.id;
+            let icon = match op.settings {
+                Settings::Face(_) => Icon::Face,
+                Settings::FlatVcarve(_) => Icon::Carve,
+                Settings::Profile(_) => Icon::Profile,
+                Settings::DragKnife(_) => Icon::Knife,
+            };
+            let tools: Vec<_> = assignments
                 .iter()
-                .position(|(candidate, ..)| *candidate == id)
-                .unwrap_or(0);
-            ui.horizontal_wrapped(|ui| {
-                if button(ui, "Move earlier", idle && index > 0).clicked() {
-                    self.operation_command(
-                        Action::Move {
-                            operation_id: id.clone(),
-                            to_index: index - 1,
-                        },
-                        ctx,
-                    );
-                }
-                if button(ui, "Move later", idle && index + 1 < count).clicked() {
-                    self.operation_command(
-                        Action::Move {
-                            operation_id: id.clone(),
-                            to_index: index + 1,
-                        },
-                        ctx,
-                    );
-                }
-                if button(ui, "Rename", idle).clicked() {
-                    self.operation_rename = Some((id.clone(), name.clone()));
-                }
-                if button(ui, "Delete operation", idle).clicked() {
-                    self.operation_command(
-                        Action::Delete {
-                            operation_id: id.clone(),
-                        },
-                        ctx,
-                    );
-                }
+                .filter(|a| a.operation_id == *id)
+                .map(|a| {
+                    job.tools
+                        .iter()
+                        .find(|t| t.id == a.tool_id)
+                        .filter(|t| t.geometry.is_some())
+                        .map(|t| t.name.clone())
+                        .unwrap_or_else(|| "Tool unset".into())
+                })
+                .collect();
+            let issue = self
+                .issues
+                .iter()
+                .any(|i| i.operation_id.as_deref() == Some(id));
+            let detail = format!(
+                "{}{}{}",
+                if op.enabled { "" } else { "Disabled · " },
+                if issue { "Issue · " } else { "" },
+                tools.join(" / ")
+            );
+            ui.push_id(id, |ui| {
+                ui.horizontal(|ui| {
+                    let mut on = op.enabled;
+                    let toggle = ui
+                        .add_enabled(idle, egui::Checkbox::without_text(&mut on))
+                        .on_hover_text(
+                            "Include this operation when it falls within the generated scope",
+                        );
+                    observe_control(&format!("Operation enabled {id}"), toggle.rect);
+                    let label = format!("{:02}  {}", index + 1, op.name);
+                    let response = ui
+                        .allocate_ui_with_layout(
+                            egui::vec2((ui.available_width() - 36.).max(20.), 46.),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui_widgets::navigation_row(
+                                    ui,
+                                    &label,
+                                    Some(&detail),
+                                    icon,
+                                    selected == *id && self.inspector_tab == 2,
+                                )
+                            },
+                        )
+                        .inner;
+                    observe_control(&format!("Operation row {id}"), response.rect);
+                    if selected == *id {
+                        observe_control("Cutting", response.rect);
+                    }
+                    if response.clicked() {
+                        self.select_operation(id, ctx);
+                    }
+                    if toggle.changed() {
+                        self.operation_command(
+                            Action::SetEnabled {
+                                operation_id: id.clone(),
+                                enabled: on,
+                            },
+                            ctx,
+                        );
+                    }
+                    let menu =
+                        ui_icons::button(ui, Icon::More, &format!("Actions for {label}"), false);
+                    observe_control(&format!("Operation actions {id}"), menu.rect);
+                    if selected == *id {
+                        observe_control("Operation actions", menu.rect);
+                    }
+                    egui::Popup::menu(&menu).show(|ui| {
+                        ui.strong(&label);
+                        ui.small(id);
+                        ui.separator();
+                        if button(ui, "Rename", idle).clicked() {
+                            self.operation_rename = Some((id.clone(), op.name.clone()));
+                            ui.close();
+                        }
+                        if button(ui, "Move earlier", idle && index > 0).clicked() {
+                            self.operation_command(
+                                Action::Move {
+                                    operation_id: id.clone(),
+                                    to_index: index - 1,
+                                },
+                                ctx,
+                            );
+                            ui.close();
+                        }
+                        if button(ui, "Move later", idle && index + 1 < count).clicked() {
+                            self.operation_command(
+                                Action::Move {
+                                    operation_id: id.clone(),
+                                    to_index: index + 1,
+                                },
+                                ctx,
+                            );
+                            ui.close();
+                        }
+                        let ready = idle
+                            && !self.operation_ramp_draft
+                            && self.document.as_ref().is_some_and(|d| !d.pending());
+                        let through = button(ui, "Generate through here", ready);
+                        observe_control("Generate through operation", through.rect);
+                        if through.clicked() {
+                            self.generate(
+                                GenerateScope::ThroughOperation {
+                                    operation_id: id.clone(),
+                                },
+                                ctx,
+                            );
+                            ui.close();
+                        }
+                        ui.separator();
+                        if button(ui, "Delete operation", idle).clicked() {
+                            self.operation_command(
+                                Action::Delete {
+                                    operation_id: id.clone(),
+                                },
+                                ctx,
+                            );
+                            ui.close();
+                        }
+                    });
+                })
             });
-            let ready = !self.operation_ramp_draft
-                && self
-                    .document
-                    .as_ref()
-                    .is_some_and(|d| !d.pending() && !d.job.operations.is_empty());
-            // A renamed operation can be wider than the navigator; the
-            // truncated label keeps this button from growing the panel.
-            let through = ui.add_enabled(
-                idle && ready,
-                egui::Button::new(format!("Generate through {name}")).truncate(),
-            );
-            observe_control("Generate through operation", through.rect);
-            if through.clicked() {
-                self.generate(
-                    GenerateScope::ThroughOperation {
-                        operation_id: id.clone(),
-                    },
-                    ctx,
+            if self
+                .operation_rename
+                .as_ref()
+                .is_some_and(|(rename, _)| rename == id)
+            {
+                let mut text = self.operation_rename.as_ref().unwrap().1.clone();
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut text)
+                        .id(egui::Id::new(("operation-rename", id)))
+                        .hint_text("Operation name")
+                        .desired_width(ui.available_width()),
                 );
+                observe_control("Rename operation", edit.rect);
+                if edit.changed() {
+                    self.operation_rename = Some((id.clone(), text.clone()));
+                }
+                ui.horizontal(|ui| {
+                    if button(ui, "Apply name", idle && !text.trim().is_empty()).clicked() {
+                        self.operation_command(
+                            Action::Rename {
+                                operation_id: id.clone(),
+                                name: text,
+                            },
+                            ctx,
+                        );
+                        self.operation_rename = None;
+                    }
+                    if button(ui, "Cancel rename", true).clicked() {
+                        self.operation_rename = None;
+                    }
+                });
             }
-            ui.small(
-                "A prefix generation binds this operation and every enabled operation before it; export then prepares exactly that scope.",
-            );
         }
-        let job = self.current_job();
         let menu = ui.menu_button("+ Add operation", |ui| {
             for (label, kind) in [
                 ("Add Face", Kind::Face),
@@ -233,7 +253,6 @@ impl App {
         });
         observe_control("Add operation", menu.response.rect);
     }
-
     fn current_job(&self) -> CamJobV5 {
         self.document
             .as_ref()
@@ -390,23 +409,22 @@ mod tests {
             (rows[0][2] - rows[1][2]).abs() < 0.5,
             "buttons share one right edge: {rows:?}"
         );
-        // A row that leaves the 205pt panel widens the scroll content, which
+        // A row that leaves the panel widens the scroll content, which
         // grows the panel's reserved space past its painted width — the
         // growth shows up as a black band at the panel edge.
         for rect in rows.iter().chain(toggles.iter()) {
             assert!(
-                rect[2] <= 205.,
-                "row stays inside the fixed-width panel: {rect:?} of {rows:?} {toggles:?}"
+                rect[2] <= crate::ui_theme::NAVIGATOR,
+                "row stays inside the panel: {rect:?} of {rows:?} {toggles:?}"
             );
         }
     }
 
-    /// The navigator is an exact-width, non-resizable panel. Rows that asked
-    /// for more width than it had grew the panel's reserved space past its
+    /// Rows that asked for more width than the navigator had grew its reserved space past its
     /// painted width, and the gap between the two showed through as a black
     /// band between the panel and the canvas.
     #[test]
-    fn navigator_keeps_its_exact_width() {
+    fn navigator_content_stays_within_its_default_width() {
         let empty = operation_authoring::empty_job();
         let job = operation_authoring::apply(&empty, operation_authoring::add(Kind::Face, &empty))
             .unwrap();
@@ -447,8 +465,10 @@ mod tests {
             })
             .collect();
         assert!(
-            navigator.iter().any(|rect| rect.max.x <= 206.),
-            "the navigator paints no wider than its exact 205pt width: {navigator:?}"
+            navigator
+                .iter()
+                .any(|rect| rect.max.x <= crate::ui_theme::NAVIGATOR + 1.),
+            "the navigator paints within its default width: {navigator:?}"
         );
     }
 
@@ -475,9 +495,7 @@ mod tests {
             },
             |ctx| app.navigator(ctx),
         );
-        // The painted labels of the two list rows. The selected operation
-        // repeats its name in the nav row further up, so the list rows are
-        // the pair of "01 …"/"02 …" texts closest together vertically.
+        // There is one painted label per operation. Both start at the same x.
         let texts: Vec<(String, egui::Pos2)> = output
             .shapes
             .into_iter()
@@ -502,7 +520,7 @@ mod tests {
             }
         }
         assert!(
-            closest.0 < 40.,
+            closest.0 < 56.,
             "the two operation rows are adjacent: {:?}",
             texts
         );

@@ -46,6 +46,9 @@ impl App {
             operation_scroll: self.operation_scroll,
             operation_ramp_draft: self.operation_ramp_draft,
             inspector_width: self.inspector_width,
+            navigator_width: self.navigator_width,
+            navigator_collapsed: self.navigator_collapsed,
+            inspector_collapsed: self.inspector_collapsed,
             scroll: self.scroll,
             search: self.search.clone(),
             simulate: self.simulate,
@@ -124,6 +127,9 @@ impl App {
         self.operation_scroll = workspace.operation_scroll;
         self.operation_ramp_draft = workspace.operation_ramp_draft;
         self.inspector_width = workspace.inspector_width;
+        self.navigator_width = workspace.navigator_width;
+        self.navigator_collapsed = workspace.navigator_collapsed;
+        self.inspector_collapsed = workspace.inspector_collapsed;
         self.scroll = workspace.scroll;
         self.search = workspace.search.clone();
         self.simulate = workspace.simulate;
@@ -164,6 +170,16 @@ mod tests {
             .unwrap_err();
         let mut value = json!({"revision": 7, "snapshot": app.recovery_snapshot().unwrap()});
         value["snapshot"]["workspace"]["scroll"] = json!([42., 0., 0., 0., 0., 0., 12.]);
+        for key in [
+            "navigator_width",
+            "navigator_collapsed",
+            "inspector_collapsed",
+        ] {
+            value["snapshot"]["workspace"]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+        }
         // The browser receives the same snapshot inside a platform event.
         assert!(
             serde_json::from_value::<Event>(json!({"RecoveryLoaded": {"Ok": value.clone()}}))
@@ -179,6 +195,8 @@ mod tests {
         restored.restore(stored.snapshot, &egui::Context::default());
         assert_eq!(restored.document.as_ref().unwrap().text(0), "-");
         assert_eq!(restored.undo.len(), 1);
+        assert_eq!(restored.navigator_width, crate::ui_theme::NAVIGATOR);
+        assert!(!restored.navigator_collapsed && !restored.inspector_collapsed);
         assert!(restored.plan.is_none() && restored.prepared.is_none());
         value["snapshot"]["workspace"]["scroll"][0] = json!(-1.);
         assert!(crate::recovery::Stored::decode(&value.to_string()).is_err());
@@ -199,6 +217,9 @@ mod tests {
         app.operation_tab = 2;
         app.operation_scroll = [0., 42., 75.];
         app.operation_ramp_draft = true;
+        app.navigator_width = 280.;
+        app.navigator_collapsed = true;
+        app.inspector_collapsed = true;
         app.search = "Rotation".into();
         app.scroll[0] = 42.;
         app.view.restore_settings(&crate::viewport::ViewSettings {
@@ -225,6 +246,8 @@ mod tests {
         assert_eq!(restored.operation_tab, 2);
         assert_eq!(restored.operation_scroll, [0., 42., 75.]);
         assert!(restored.operation_ramp_draft);
+        assert_eq!(restored.navigator_width, 280.);
+        assert!(restored.navigator_collapsed && restored.inspector_collapsed);
         assert_eq!(restored.search, "Rotation");
         assert!(restored.view.settings().isometric);
         assert_eq!(restored.view.settings().inspection_xy, Some([9., 23.]));

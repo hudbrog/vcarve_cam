@@ -84,6 +84,85 @@ pub fn table_header(ui: &mut egui::Ui, labels: &[&str]) {
         });
 }
 
+/// A bounded navigation row. Its siblings own toggles and menus separately.
+pub fn navigation_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    detail: Option<&str>,
+    icon: Icon,
+    selected: bool,
+) -> egui::Response {
+    let height = if detail.is_some() { 46. } else { 32. };
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width().max(1.), height),
+        Sense::click(),
+    );
+    if selected || response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(
+            rect,
+            3.,
+            if selected {
+                theme::SELECTION
+            } else {
+                theme::DIVIDER.gamma_multiply(0.5)
+            },
+        );
+    }
+    if selected {
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(rect.min, egui::vec2(3., height)),
+            0.,
+            theme::ACCENT,
+        );
+    }
+    let icon_rect = egui::Rect::from_center_size(
+        rect.left_center() + egui::vec2(15., 0.),
+        egui::vec2(18., 18.),
+    );
+    ui_icons::paint(ui.painter(), icon_rect, icon, theme::TEXT);
+    let text_rect = egui::Rect::from_min_max(
+        rect.min + egui::vec2(30., 0.),
+        rect.max - egui::vec2(4., 0.),
+    );
+    let paint_text = |text: &str, y: f32, size: f32, color| {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            text.into(),
+            egui::FontId::proportional(size),
+            color,
+        );
+        job.wrap.max_width = text_rect.width().max(1.);
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        let galley = ui.painter().layout_job(job);
+        ui.painter().with_clip_rect(text_rect).galley(
+            egui::pos2(text_rect.left(), y),
+            galley,
+            color,
+        );
+    };
+    paint_text(
+        label,
+        rect.top() + if detail.is_some() { 5. } else { 8. },
+        14.,
+        theme::TEXT,
+    );
+    if let Some(detail) = detail {
+        paint_text(detail, rect.top() + 26., 12., theme::MUTED);
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            selected,
+            label,
+        )
+    });
+    response.on_hover_text(match detail {
+        Some(detail) => format!("{label}\n{detail}"),
+        None => label.into(),
+    })
+}
+
 /// Schematic setup Z diagram; coordinates and labels use the actual stock datum.
 pub fn stock_datum(
     ui: &mut egui::Ui,

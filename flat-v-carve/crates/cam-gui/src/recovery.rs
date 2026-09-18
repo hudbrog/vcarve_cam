@@ -13,6 +13,12 @@ pub struct Workspace {
     #[serde(default)]
     pub operation_ramp_draft: bool,
     pub inspector_width: f32,
+    #[serde(default = "default_navigator_width")]
+    pub navigator_width: f32,
+    #[serde(default)]
+    pub navigator_collapsed: bool,
+    #[serde(default)]
+    pub inspector_collapsed: bool,
     #[serde(deserialize_with = "read_scroll_positions")]
     pub scroll: [f32; 8],
     pub search: String,
@@ -31,6 +37,9 @@ pub struct Workspace {
 }
 // Scroll positions are presentation state. Adding a tab must not disable
 // recovery of the editable job or its undo history.
+fn default_navigator_width() -> f32 {
+    crate::ui_theme::NAVIGATOR
+}
 fn read_scroll_positions<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<[f32; 8], D::Error> {
@@ -52,6 +61,9 @@ impl Default for Workspace {
             operation_scroll: [0.; 3],
             operation_ramp_draft: false,
             inspector_width: crate::ui_theme::INSPECTOR,
+            navigator_width: default_navigator_width(),
+            navigator_collapsed: false,
+            inspector_collapsed: false,
             scroll: [0.; 8],
             search: String::new(),
             simulate: false,
@@ -81,6 +93,8 @@ impl Workspace {
             || self.selected_artwork.len() > 10000
             || !self.inspector_width.is_finite()
             || !(240. ..=600.).contains(&self.inspector_width)
+            || !self.navigator_width.is_finite()
+            || !(200. ..=400.).contains(&self.navigator_width)
             || self
                 .scroll
                 .iter()
