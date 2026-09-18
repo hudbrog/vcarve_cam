@@ -29,6 +29,9 @@ mod resource_ui;
 mod resume;
 #[path = "source_identity.rs"]
 pub(crate) mod source_identity;
+#[cfg(all(feature = "ui-review", not(target_arch = "wasm32")))]
+#[path = "ui_review.rs"]
+pub mod ui_review;
 #[path = "workspace_ui.rs"]
 mod workspace_ui;
 

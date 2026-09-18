@@ -195,7 +195,10 @@ try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
   if(process.argv.includes('--trace-io'))await evaluate(`(()=>{globalThis.GUI_IO_TRACE=[];const original=globalThis.CAM_GUI.receive_event;globalThis.CAM_GUI.receive_event=text=>{try{const event=JSON.parse(text);if(event.Io)globalThis.GUI_IO_TRACE.push(event.Io);}catch{}return original(text);};})()`);
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  if(process.argv.includes('--knife-authoring')) {
+  if(process.argv.includes('--visual-review')) {
+    const {visualReviewScenario}=await import('./visual-review-scenario.mjs');
+    await visualReviewScenario({control,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,chooseFile});
+  } else if(process.argv.includes('--knife-authoring')) {
     const {knifeAuthoringScenario}=await import('./knife-authoring-scenario.mjs');
     await knifeAuthoringScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,path,out,chooseFile});
   } else if(process.argv.includes('--lifecycle')) {

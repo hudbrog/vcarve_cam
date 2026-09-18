@@ -4,6 +4,8 @@ Synthetic screenshots for a new egui-based web/desktop workspace, aimed at exper
 
 The proposed flow is **Prepare → Generate → Simulate → Export**, with free movement between editing and inspection. Machine editing lives under Setup; Export reviews the applied settings and links back to their editor. The core layout stays stable: job and operation order on the left, work area in the center, contextual controls on the right.
 
+The [2026-09-18 visual redesign plan](../../ui-visual-redesign-plan.md) compares revision 2 with the current application and defines shared style rules, a plan for each panel, assets, implementation slices and review criteria. It carries these concepts forward to the functionality implemented since they were drawn.
+
 These images communicate layout and interaction context. They are not egui application captures, measured machining geometry, or cutting presets. The written proposal governs exact labels and behavior.
 
 ## Revision 2 — Independent artwork sources

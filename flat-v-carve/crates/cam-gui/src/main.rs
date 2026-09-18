@@ -35,6 +35,10 @@ fn install_panic_log() {
 fn main() -> eframe::Result {
     install_panic_log();
     let args: Vec<_> = std::env::args_os().collect();
+    #[cfg(feature = "ui-review")]
+    if args.get(1).is_some_and(|a| a == "--ui-review") {
+        return cam_gui_runtime::app::ui_review::run(&args[2..]);
+    }
     if args.get(1).is_some_and(|a| a == "--worker") {
         let result = args
             .get(2)
