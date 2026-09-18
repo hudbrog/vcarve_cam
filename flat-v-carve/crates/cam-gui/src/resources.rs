@@ -537,12 +537,29 @@ pub fn capture_assignment(
     id: String,
     name: String,
 ) -> Result<CuttingPreset, String> {
-    let s = crate::session::carving(job)
+    let operation = job
+        .operations
+        .iter()
+        .find(|op| matches!(op.settings, v5::OperationSettingsV5::FlatVcarve(_)))
         .ok_or("Choose a milling assignment to capture milling values")?;
-    let a = match role {
-        AssignmentRole::Endmill => &s.endmill,
-        AssignmentRole::Vbit => &s.vbit,
-        _ => return Err("Unsupported assignment role".into()),
+    capture_assignment_in(job, &operation.id, role, id, name)
+}
+
+pub fn capture_assignment_in(
+    job: &CamJobV5,
+    operation: &str,
+    role: AssignmentRole,
+    id: String,
+    name: String,
+) -> Result<CuttingPreset, String> {
+    let operation = crate::session::operation(job, operation)
+        .ok_or("Choose an operation to capture its assignment")?;
+    let a = match (&operation.settings, role) {
+        (v5::OperationSettingsV5::FlatVcarve(s), AssignmentRole::Endmill) => &s.endmill,
+        (v5::OperationSettingsV5::FlatVcarve(s), AssignmentRole::Vbit) => &s.vbit,
+        (v5::OperationSettingsV5::Face(s), AssignmentRole::Milling) => &s.assignment,
+        (v5::OperationSettingsV5::Profile(s), AssignmentRole::Milling) => &s.assignment,
+        _ => return Err("Choose a compatible milling assignment to capture".into()),
     };
     let preset = CuttingPreset {
         id,
@@ -695,13 +712,11 @@ pub struct Editor {
     pub search: [String; 2],
     pub error: Option<String>,
     pub new_machine_id: String,
-    pub machines_view: bool,
     pub picker_loaded: bool,
     /// One selection per assignment role (endmill, V-bit, milling, knife).
     pub picker_tools: [String; 4],
+    pub picker_job_tools: [String; 4],
     pub picker_profiles: [String; 4],
-    pub open: bool,
-    pub jobs_open: bool,
     pub base: Option<StoredCatalog>,
     pub draft: Catalog,
     pub ready: bool,
@@ -715,6 +730,7 @@ pub struct Editor {
     pub preset: String,
     pub machine: String,
     pub job_tool: String,
+    pub job_assignment: Option<(String, AssignmentRole)>,
     pub job_tool_draft: Option<(u64, LibraryTool)>,
     pub job_raw: std::collections::BTreeMap<String, String>,
     pub job_invalid: BTreeSet<String>,
@@ -741,12 +757,10 @@ impl Default for Editor {
             search: Default::default(),
             error: None,
             new_machine_id: "my-machine".into(),
-            machines_view: false,
             picker_loaded: false,
             picker_tools: Default::default(),
+            picker_job_tools: Default::default(),
             picker_profiles: Default::default(),
-            open: false,
-            jobs_open: false,
             base: None,
             draft: Catalog::empty(format!("library-{unique}")),
             ready: false,
@@ -760,6 +774,7 @@ impl Default for Editor {
             preset: String::new(),
             machine: String::new(),
             job_tool: String::new(),
+            job_assignment: None,
             job_tool_draft: None,
             job_raw: Default::default(),
             job_invalid: Default::default(),
@@ -778,6 +793,49 @@ mod tests {
         operation_authoring::apply(&empty, operation_authoring::add(Kind::Profile, &empty)).unwrap()
     }
 
+    #[test]
+    fn capture_addresses_the_selected_operation_in_a_mixed_job() {
+        let job =
+            CamJobV5::from_json(include_str!("../../../fixtures/gui4/lettering.job.json")).unwrap();
+        let action = operation_authoring::add(Kind::Face, &job);
+        let mut job = operation_authoring::apply(&job, action).unwrap();
+        let op = job.operations.last_mut().unwrap();
+        let operation = op.id.clone();
+        let v5::OperationSettingsV5::Face(s) = &mut op.settings else {
+            panic!("Face fixture")
+        };
+        s.assignment.cutting_feed_mm_min = Some(777.);
+        s.assignment.spindle_rpm = Some(9000.);
+        let captured = capture_assignment_in(
+            &job,
+            &operation,
+            AssignmentRole::Milling,
+            "face-profile".into(),
+            "Face profile".into(),
+        )
+        .unwrap();
+        assert_eq!(captured.cutting_feed_mm_min, Some(777.));
+        assert_eq!(captured.spindle_rpm, Some(9000.));
+        let first = capture_assignment_in(
+            &job,
+            &job.operations[0].id,
+            AssignmentRole::Endmill,
+            "first".into(),
+            "First".into(),
+        )
+        .unwrap();
+        assert_eq!(first.cutting_feed_mm_min, Some(1200.));
+        assert!(
+            capture_assignment_in(
+                &job,
+                &operation,
+                AssignmentRole::Vbit,
+                "wrong".into(),
+                "Wrong".into()
+            )
+            .is_err()
+        );
+    }
     #[test]
     fn a_fresh_operation_reports_no_chosen_tool_and_custom_values() {
         let job = profile_job();

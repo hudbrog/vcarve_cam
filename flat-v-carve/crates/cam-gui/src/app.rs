@@ -32,8 +32,11 @@ pub(crate) mod source_identity;
 #[cfg(all(feature = "ui-review", not(target_arch = "wasm32")))]
 #[path = "ui_review.rs"]
 pub mod ui_review;
+#[path = "workspace_route.rs"]
+mod workspace_route;
 #[path = "workspace_ui.rs"]
 mod workspace_ui;
+use workspace_route::ResourcePage;
 
 // Read-only widget geometry for real-browser pointer tests of the canvas.
 // No command or document mutation is exposed by this probe.
@@ -625,6 +628,7 @@ pub struct App {
     artwork_io: Option<(u64, String)>,
     artwork_rejections: Vec<String>,
     resources: crate::resources::Editor,
+    resource_page: Option<ResourcePage>,
     resource_request: Option<(u64, ResourceIntent)>,
     resource_import_stamp: Option<String>,
     profile_io_revision: Option<u64>,
@@ -704,6 +708,7 @@ impl Default for App {
             artwork_io: None,
             artwork_rejections: vec![],
             resources: Default::default(),
+            resource_page: None,
             resource_request: None,
             resource_import_stamp: None,
             profile_io_revision: None,
@@ -1745,8 +1750,8 @@ impl App {
         });
         if self.io.is_none()
             && !self.ime
-            && !self.resources.open
-            && !self.resources.jobs_open
+            && !self.library_open()
+            && self.resource_page != Some(ResourcePage::JobTools)
             && self.export_dialog.is_none()
         {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
@@ -1771,7 +1776,10 @@ impl App {
         self.navigator(ctx);
         self.issue_panel(ctx);
         self.view.result_current = self.current();
-        self.inspector(ctx);
+        if self.resource_page.is_none() {
+            self.inspector(ctx);
+        }
+        let resource_presented = self.resource_page.is_some();
         self.resource_windows(ctx);
         // A user action that arrived while the worker was busy runs first, once
         // the worker is free: it was the click the user actually made.
@@ -1815,7 +1823,9 @@ impl App {
                     .is_some_and(|i| self.view.artwork_matches(&i.id.0, &i.placement))
             });
         self.view.artwork.revision = self.revision;
-        self.view.show(ctx, self.simulate);
+        if !resource_presented {
+            self.view.show(ctx, self.simulate);
+        }
         for event in self.view.take_artwork_events() {
             match event {
                 crate::viewport::ArtworkEvent::KnifeSelection(references) => {
@@ -1998,7 +2008,7 @@ impl App {
                 ui.spinner();
             });
         }
-        let resources_probe = json!({"open":self.resources.open,"jobsOpen":self.resources.jobs_open,"ready":self.resources.ready,"busy":self.resources.busy,"dirty":self.resources.dirty,"status":self.resources.status,"revision":self.resources.base.as_ref().map(|s|s.revision),"catalog":self.resources.draft,"selectedTool":self.resources.tool,"selectedProfile":self.resources.preset,"role":self.resources.role,"conflictRevision":self.resources.conflict.as_ref().map(|s|s.revision)});
+        let resources_probe = json!({"page":self.resource_page.map(|p|format!("{p:?}")),"raw":self.resources.raw,"invalid":self.resources.invalid,"jobRaw":self.resources.job_raw,"selectedJobTool":self.resources.job_tool,"selectedAssignment":self.resources.job_assignment,"open":self.library_open(),"jobsOpen":self.resource_page == Some(ResourcePage::JobTools),"ready":self.resources.ready,"busy":self.resources.busy,"dirty":self.resources.dirty,"status":self.resources.status,"revision":self.resources.base.as_ref().map(|s|s.revision),"catalog":self.resources.draft,"selectedTool":self.resources.tool,"selectedProfile":self.resources.preset,"role":self.resources.role,"conflictRevision":self.resources.conflict.as_ref().map(|s|s.revision)});
         let job_probe = self.document.as_ref().map(|d| self.job_probe(d));
         let stock_transfer = self.view.last_stock_transfer();
         let display = self.view.display_probe();

@@ -13,29 +13,24 @@ impl App {
             self.request_resources(ResourceIntent::Load, ctx);
         }
         self.library_selection();
-        let screen = ctx.content_rect();
-        let size = egui::vec2(1000., 640.).min(screen.size() - egui::vec2(72., 72.));
-        egui::Window::new("Library")
-            .id(egui::Id::new("library-browser"))
-            .title_bar(false)
-            .collapsible(false)
-            .default_pos(screen.center() - size * 0.5)
-            .default_size(size)
-            .min_size(egui::vec2(680., 400.).min(size))
-            .max_size(screen.size() - egui::vec2(72., 72.))
-            .frame(egui::Frame::window(&ctx.style()).inner_margin(16.))
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::ui_theme::PANEL)
+                    .inner_margin(16.),
+            )
             .show(ctx, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Library").size(25.).strong());
+                    ui.label(RichText::new("Global library").size(20.).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if action(ui, "×", "Close library", true)
+                        if action(ui, "Back to job", "Close library", true)
                             .on_hover_text(
                                 "Close library; unsaved edits stay here until you save or reload.",
                             )
                             .clicked()
                         {
-                            self.resources.open = false;
+                            self.close_resource();
                         }
                         let menu = ui.menu_button("Library actions  ···", |ui| {
                             self.library_actions(ui, ctx)
@@ -46,9 +41,12 @@ impl App {
                 ui.add_space(8.);
                 ui.horizontal(|ui| {
                     for (title, machines) in [("Tools & profiles", false), ("Machines", true)] {
-                        let selected = self.resources.machines_view == machines;
+                        let selected = self.machines_open() == machines;
                         let r = ui.add_sized(
-                            [190., 38.],
+                            [
+                                (ui.available_width() / if machines { 1. } else { 2. }).min(190.),
+                                28.,
+                            ],
                             egui::Button::new(RichText::new(title).size(17.).strong())
                                 .selected(selected),
                         );
@@ -61,68 +59,63 @@ impl App {
                             );
                         }
                         if r.clicked() {
-                            self.resources.machines_view = machines;
+                            self.open_resource(if machines {
+                                ResourcePage::MachineLibrary
+                            } else {
+                                ResourcePage::ToolLibrary
+                            });
                         }
                     }
                 });
                 ui.separator();
-                let body_height = (ui
-                    .available_height()
-                    .min(screen.bottom() - ui.cursor().min.y - 28.)
-                    - 96.)
-                    .max(160.);
+                let body_height = (ui.available_height() - 96.).max(32.);
                 ui.add_enabled_ui(self.resources.ready && !self.resources.busy, |ui| {
-                    ui.horizontal_top(|ui| {
-                        let width = (ui.available_width() * 0.27).clamp(200., 270.);
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(width, body_height),
-                            egui::Layout::top_down(egui::Align::Min),
+                    if ui.available_width() < 850. {
+                        let menu = ui.menu_button(
+                            if self.machines_open() {
+                                "Choose machine…"
+                            } else {
+                                "Choose tool…"
+                            },
                             |ui| {
-                                ui.set_width(width);
-                                self.library_list(ui, body_height);
+                                ui.set_width(250.);
+                                self.library_list(ui, 360.);
                             },
                         );
-                        let (divider, _) = ui
-                            .allocate_exact_size(egui::vec2(1., body_height), egui::Sense::hover());
-                        ui.painter().vline(
-                            divider.center().x,
-                            divider.y_range(),
-                            egui::Stroke::new(1., Color32::from_rgb(209, 219, 225)),
-                        );
-                        let width = ui.available_width();
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(width, body_height),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                ui.set_width(width);
-                                let selected = if self.resources.machines_view {
-                                    &self.resources.machine
-                                } else {
-                                    &self.resources.tool
-                                };
-                                let scroll = egui::ScrollArea::vertical()
-                                    .scroll_bar_visibility(
-                                        egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
-                                    )
-                                    .id_salt((
-                                        "library-details",
-                                        self.resources.machines_view,
-                                        selected,
-                                    ))
-                                    .auto_shrink([false, false])
-                                    .max_height(body_height)
-                                    .show(ui, |ui| {
-                                        self.library_details_header(ui, ctx);
-                                        if self.resources.machines_view {
-                                            self.library_machines(ui, ctx);
-                                        } else {
-                                            self.library_tools(ui, ctx);
-                                        }
-                                    });
-                                observe_control("Resource viewport", scroll.inner_rect);
-                            },
-                        );
-                    });
+                        observe_control("Resource item chooser", menu.response.rect);
+                        self.library_editor(ui, ctx, (body_height - 36.).max(16.));
+                    } else {
+                        ui.horizontal_top(|ui| {
+                            let width = (ui.available_width() * 0.24).clamp(200., 240.);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(width, body_height),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(width);
+                                    self.library_list(ui, body_height);
+                                },
+                            );
+                            let (divider, _) = ui.allocate_exact_size(
+                                egui::vec2(1., body_height),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().vline(
+                                divider.center().x,
+                                divider.y_range(),
+                                egui::Stroke::new(1., crate::ui_theme::DIVIDER),
+                            );
+
+                            let width = ui.available_width();
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(width, body_height),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(width);
+                                    self.library_editor(ui, ctx, body_height);
+                                },
+                            );
+                        });
+                    }
                 });
                 ui.separator();
                 let footer = ui.scope(|ui| self.library_footer(ui, ctx));
@@ -131,6 +124,27 @@ impl App {
             });
     }
 
+    fn library_editor(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, height: f32) {
+        let selected = if self.machines_open() {
+            &self.resources.machine
+        } else {
+            &self.resources.tool
+        };
+        let scroll = egui::ScrollArea::vertical()
+            .id_salt(("library-details", self.machines_open(), selected))
+            .auto_shrink([false, false])
+            .min_scrolled_height(0.)
+            .max_height(height)
+            .show(ui, |ui| {
+                self.library_details_header(ui, ctx);
+                if self.machines_open() {
+                    self.library_machines(ui, ctx);
+                } else {
+                    self.library_tools(ui, ctx);
+                }
+            });
+        observe_control("Resource viewport", scroll.inner_rect);
+    }
     fn library_selection(&mut self) {
         if !self
             .resources
@@ -146,6 +160,7 @@ impl App {
                     .cutting_presets
                     .first()
                     .map(|p| p.id.clone())
+                    .or_else(|| t.knife_cutting_presets.first().map(|p| p.id.clone()))
                     .unwrap_or_default();
             } else {
                 self.resources.tool.clear();
@@ -250,7 +265,7 @@ impl App {
     }
 
     fn library_list(&mut self, ui: &mut egui::Ui, height: f32) {
-        let machines = self.resources.machines_view;
+        let machines = self.machines_open();
         let count = if machines {
             self.resources.draft.machines.len()
         } else {
@@ -420,11 +435,21 @@ impl App {
                     } else {
                         self.resources.tool == id
                     };
-                    let r = ui.add_sized(
-                        [ui.available_width(), 60.],
-                        egui::Button::new(format!("{name}\n{summary}"))
-                            .selected(selected)
-                            .wrap(),
+                    let icon = if machines {
+                        crate::ui_icons::Icon::Machine
+                    } else if summary.starts_with("V-bit") {
+                        crate::ui_icons::Icon::Vbit
+                    } else if summary.starts_with("Drag knife") {
+                        crate::ui_icons::Icon::Knife
+                    } else {
+                        crate::ui_icons::Icon::Endmill
+                    };
+                    let r = crate::ui_widgets::navigation_row(
+                        ui,
+                        &name,
+                        Some(&summary),
+                        icon,
+                        selected,
                     );
                     observe_control(
                         &format!("Library {} {id}", if machines { "machine" } else { "tool" }),
@@ -442,8 +467,11 @@ impl App {
                                 .tools
                                 .iter()
                                 .find(|t| t.id == id)
-                                .and_then(|t| t.cutting_presets.first())
-                                .map(|p| p.id.clone())
+                                .and_then(|t| {
+                                    t.cutting_presets.first().map(|p| p.id.clone()).or_else(|| {
+                                        t.knife_cutting_presets.first().map(|p| p.id.clone())
+                                    })
+                                })
                                 .unwrap_or_default();
                         }
                     }
@@ -453,7 +481,7 @@ impl App {
     }
 
     fn library_details_header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let machines = self.resources.machines_view;
+        let machines = self.machines_open();
         let name = if machines {
             self.resources
                 .draft
@@ -577,7 +605,7 @@ impl App {
             });
         } else if self.resources.conflict.is_some() {
             ui.small("Stored revision available to compare in Library actions.");
-        } else if self.resources.machines_view {
+        } else if self.machines_open() {
             ui.small("Using a profile copies its settings into this job. Set tool numbers in the job's Machine panel.");
         } else {
             self.resource_role(ui);
@@ -594,7 +622,7 @@ impl App {
             };
             ui.label(status).on_hover_text(&self.resources.status);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let machines = self.resources.machines_view;
+                let machines = self.machines_open();
                 let tool = self
                     .resources
                     .draft

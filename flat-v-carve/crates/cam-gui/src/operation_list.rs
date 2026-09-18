@@ -331,8 +331,7 @@ impl App {
         self.retry = false;
         self.resume_view = None;
         self.operation_ramp_draft = false;
-        self.resources.jobs_open = false;
-        self.resources.open = false;
+        self.close_resource();
         self.issues.clear();
         self.navigate(2);
         self.search.clear();

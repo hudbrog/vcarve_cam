@@ -121,10 +121,13 @@ const control = async label => {
       'Load library':'Library actions','Compare stored revision':'Library actions','Reload stored library':'Library actions','Overwrite reviewed revision':'Library actions',
       'Duplicate library tool':'Library item actions','Duplicate machine configuration':'Library item actions','Add geometry to job':'Library item actions',
       'New endmill':'New tool','New V-bit':'New tool','New drag knife':'New tool','Capture job geometry':'New tool',
+      'New knife profile':'Library profile actions','Capture knife assignment':'Library profile actions','New cutting profile':'Library profile actions','Duplicate cutting profile':'Library profile actions','Capture assignment as profile':'Library profile actions','Library profile context':'Library profile actions','Profile material':'Library profile context','Profile machine context':'Library profile context',
       'New machine profile':'New machine','New machine ID':'New machine','Capture applied machine':'New machine'
     };
     const dropdown=['Library rotation','Library plunge','Library ramp','Copied plunge','Copied ramp','Work offset','Length compensation','Coolant','Path control','M6 return'].find(prefix=>label.startsWith(prefix+' '));
     if(!rect){
+      if(current.resources?.open&&current.controls?.['Resource item chooser']&&(label==='Library search'||label==='New tool'||label==='New machine'||label.startsWith('Library tool ')||label.startsWith('Library machine '))){await control('Resource item chooser');continue;}
+      if(current.resources?.open&&current.controls?.['Library profile chooser']&&label.startsWith('Library profile ')&&!label.includes('actions')){await control('Library profile chooser');continue;}
       if(['Setup','Machine','Job settings'].includes(label)&&current.controls?.['Setup pages']){await control('Setup pages');continue;}
       if(['Rename','Move earlier','Move later','Delete operation','Generate through operation'].includes(label)&&current.controls?.['Operation actions']){await control('Operation actions');continue;}
       if(['Endmill tool','V-bit tool','Knife tool'].includes(label)&&current.controls?.['Tool geometry']){await control('Tool geometry');continue;}
@@ -162,11 +165,11 @@ const control = async label => {
     const nav=label.startsWith('Artwork ')||label.startsWith('Operation row ')||label.startsWith('Operation enabled ')||label.startsWith('Operation actions')||['Add operation','Artwork','Cutting','+ Import artwork','Rename operation','Apply name','Cancel rename'].includes(label);
     const resource=!nav&&current.resources?.open,jobTools=!nav&&current.resources?.jobsOpen;
     const list=resource&&label!=='Library tool name'&&(label.startsWith('Library tool ')||label.startsWith('Library machine '));
-    const clip=current.controls?.[nav?'Navigator viewport':list?'Resource list viewport':resource?'Resource viewport':jobTools?'Job tools viewport':'Inspector viewport'];
+    const clip=current.controls?.[current.controls?.['Assignment picker']?'Assignment picker viewport':nav?'Navigator viewport':list?'Resource list viewport':resource?'Resource viewport':jobTools?'Job tools viewport':'Inspector viewport'];
     const bottom=(clip?.[3]??await evaluate('innerHeight-65'))+1;
     const top=(clip?.[1]??150)-1;
     const shellAction=(!nav&&rect[1]>=0&&rect[3]<=90)||['All enabled operations','Through selected operation','Setup','Machine','Job settings','Endmill tool','V-bit tool','Knife tool','Rename','Move earlier','Move later','Delete operation','Generate through operation','Tool geometry','Job tools','Tool library','Setup pages'].includes(label);
-    if(shellAction||label.includes('library tool')||label.includes('library profile')||label.startsWith('Apply Roughing')||label.startsWith('Apply Finish')||['Endmill only','Combined','Operation Shape & depth','Operation Endmill','Operation V-bit','Generate operation'].includes(label)||rect[1]>=top && rect[3]<=bottom || !nav && !resource && !jobTools && rect[0]<(clip?.[0]??850) || libraryMenus[label] || dropdown && (resource||jobTools) || ['Library actions','Library search','New tool','New machine','Use machine','Use tool','Use tool & profile','Apply reviewed machine','Tools & profiles','Machines','Close library','Load library','Save library','Compare stored revision','Reload stored library','Overwrite reviewed revision','Import library','Export library','Import machine configuration','Close job tools','Roughing assignment','Finishing assignment','Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
+    if(shellAction||label.includes('library tool')||label.includes('library profile')||label.startsWith('Apply Roughing')||label.startsWith('Apply Finish')||['Endmill only','Combined','Operation Shape & depth','Operation Endmill','Operation V-bit','Generate operation'].includes(label)||rect[1]>=top && rect[3]<=bottom || !nav && !resource && !jobTools && rect[0]<(clip?.[0]??850) || libraryMenus[label] || dropdown && (resource||jobTools) || ['Cancel selection','Browse library…','Resource item chooser','Library profile chooser','Library profile actions','Library actions','Library search','New tool','New machine','Use machine','Use tool','Use tool & profile','Apply reviewed machine','Tools & profiles','Machines','Close library','Load library','Save library','Compare stored revision','Reload stored library','Overwrite reviewed revision','Import library','Export library','Import machine configuration','Close job tools','Roughing assignment','Finishing assignment','Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
       await click((rect[0]+rect[2])/2,(rect[1]+rect[3])/2); await sleep(120);return;
     }
     const x=nav?100:clip?(clip[0]+clip[2])/2:1100,y=(top+bottom)/2;
@@ -203,7 +206,10 @@ try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
   if(process.argv.includes('--trace-io'))await evaluate(`(()=>{globalThis.GUI_IO_TRACE=[];const original=globalThis.CAM_GUI.receive_event;globalThis.CAM_GUI.receive_event=text=>{try{const event=JSON.parse(text);if(event.Io)globalThis.GUI_IO_TRACE.push(event.Io);}catch{}return original(text);};})()`);
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  if(process.argv.includes('--shell')) {
+  if(process.argv.includes('--resources-review')) {
+    const {resourcesReviewScenario}=await import('./resources-review-scenario.mjs');
+    await resourcesReviewScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,chooseFile,pressKey});
+  } else if(process.argv.includes('--shell')) {
     const {shellScenario}=await import('./shell-scenario.mjs');
     await shellScenario({control,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey});
   } else if(process.argv.includes('--visual-review')) {

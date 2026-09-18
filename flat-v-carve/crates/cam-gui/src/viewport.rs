@@ -1174,6 +1174,10 @@ impl Viewport {
     }
 
     /// Shared production viewport and cumulative stock transport.
+    /// Pause presentation while retaining the exact playhead and result.
+    pub fn pause(&mut self) {
+        self.playing = false;
+    }
     pub fn show(&mut self, ctx: &egui::Context, simulate: bool) {
         self.fingerprint_pages();
         if simulate {
@@ -1778,7 +1782,7 @@ impl Viewport {
     fn simulation_probe(&self) -> serde_json::Value {
         let Some(clock) = self.stock.as_ref().and_then(|stock| stock.clock.as_ref()) else {
             return serde_json::json!({
-                "timed": false,
+                "timed": false, "playing": self.playing,
                 "fastForward": self.playback_speed,
                 "fit": self.playback_fit,
             });
@@ -1789,7 +1793,7 @@ impl Viewport {
             .map(|(tip, motion)| (Some(tip), motion.feed_mm_min))
             .unwrap_or((None, None));
         serde_json::json!({
-            "timed": true,
+            "timed": true, "playing": self.playing,
             "prefix": prefix,
             "fraction": fraction,
             "elapsedSeconds": clock.seconds(),

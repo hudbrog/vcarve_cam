@@ -30,6 +30,7 @@ pub mod stock_preview;
 pub mod stock_render;
 pub mod stock_style;
 pub mod stock_walls;
+pub mod tool_diagram;
 pub mod ui_icons;
 pub mod ui_theme;
 pub mod ui_widgets;

@@ -76,8 +76,46 @@ pub fn run(args: &[OsString]) -> eframe::Result {
             app.resources.draft = crate::resources::Catalog::decode(include_str!(
                 "../../../fixtures/gui5/library.json"
             ))?;
-            app.resources.open = panel == "library";
-            app.resources.jobs_open = panel == "tools";
+            if panel == "library-knife" {
+                let doc = app.document.as_ref().unwrap();
+                let source = doc
+                    .job
+                    .tools
+                    .iter()
+                    .find(|t| {
+                        matches!(
+                            t.geometry,
+                            Some(cam_core::project::ToolGeometry::DragKnife(_))
+                        )
+                    })
+                    .ok_or_else(|| failure("Knife review needs a knife job"))?;
+                let tool = crate::resources::capture_tool(
+                    source,
+                    "review-knife".into(),
+                    source.name.clone(),
+                )
+                .map_err(|e| failure(&e))?;
+                app.resources.tool = tool.id.clone();
+                app.resources.draft.library.tools.push(tool);
+            }
+            app.resources.base = Some(crate::resources::StoredCatalog {
+                revision: app.resources.draft.library.revision,
+                snapshot: app.resources.draft.clone(),
+            });
+            if panel.starts_with("library") {
+                app.open_resource(ResourcePage::ToolLibrary);
+                if panel == "library-vbit" {
+                    app.resources.tool = "vbit".into();
+                    app.resources.preset = "finish".into();
+                }
+            } else if panel == "machines" {
+                app.open_resource(ResourcePage::MachineLibrary);
+            } else if panel == "tools" {
+                app.open_resource(ResourcePage::JobTools);
+            } else if panel == "picker" {
+                app.operation_tab = 1;
+                app.operation_picker = Some(0);
+            }
             Ok(Box::new(Review {
                 app,
                 output,

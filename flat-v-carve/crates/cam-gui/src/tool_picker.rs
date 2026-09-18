@@ -160,23 +160,50 @@ impl App {
         if change.clicked() {
             self.operation_picker = if changing { None } else { Some(index) };
             self.resources.role = cutter.role;
+            self.resources.picker_job_tools[index] = state.tool_id.clone();
         }
         if self.operation_picker == Some(index) {
-            ui.scope(|ui| {
-                ui.set_max_width(ui.available_width().min(350.));
-                self.library_pick(ui, ctx, cutter, index);
-                if button(ui, "Browse library…", self.active.is_none()).clicked() {
-                    self.resources.role = cutter.role;
-                    self.resources.machines_view = false;
-                    self.resources.open = true;
-                    if !self.resources.ready && !self.resources.busy {
-                        self.request_resources(ResourceIntent::Load, ctx);
-                    }
-                    self.operation_picker = None;
-                }
+            let modal = egui::Modal::new(egui::Id::new((
+                "assignment-picker",
+                &cutter.operation,
+                index,
+            )))
+            .show(ctx, |ui| {
+                ui.set_width(460_f32.min(ctx.content_rect().width() - 48.));
+                let operation = job
+                    .operations
+                    .iter()
+                    .find(|op| op.id == cutter.operation)
+                    .unwrap();
+                ui.heading(format!("{} · {}", operation.name, cutter.prefix));
+                ui.small("Choose a cutter and review its geometry before applying.");
                 ui.separator();
-                self.job_tool_pick(ui, ctx, &job, cutter);
+                let scroll = egui::ScrollArea::vertical()
+                    .max_height((ctx.content_rect().height() - 180.).max(100.))
+                    .show(ui, |ui| {
+                        self.library_pick(ui, ctx, cutter, index);
+                        ui.separator();
+                        self.job_tool_pick(ui, ctx, &job, cutter);
+                    });
+                observe_control("Assignment picker viewport", scroll.inner_rect);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if button(ui, "Browse library…", self.active.is_none()).clicked() {
+                        self.resources.role = cutter.role;
+                        self.open_resource(ResourcePage::ToolLibrary);
+                        if !self.resources.ready && !self.resources.busy {
+                            self.request_resources(ResourceIntent::Load, ctx);
+                        }
+                    }
+                    if button(ui, "Cancel selection", true).clicked() {
+                        self.operation_picker = None;
+                    }
+                });
+                observe_control("Assignment picker", ui.max_rect());
             });
+            if modal.should_close() {
+                self.operation_picker = None;
+            }
         }
         ui.separator();
         self.cutting_profile(ui, ctx, cutter, &state);
@@ -197,8 +224,11 @@ impl App {
         else {
             return;
         };
-        let mut selected = status.tool_id.clone();
-        let before = selected.clone();
+        let index = role_index(cutter.role);
+        let mut selected = self.resources.picker_job_tools[index].clone();
+        if selected.is_empty() {
+            selected = status.tool_id.clone();
+        }
         let current = job
             .tools
             .iter()
@@ -247,7 +277,34 @@ impl App {
                 }
             });
         observe_control(&cutter.assignment_probe, response.response.rect);
-        if selected != before && !selected.is_empty() {
+        self.resources.picker_job_tools[index] = selected.clone();
+        if let Some(tool) = job.tools.iter().find(|t| t.id == selected) {
+            ui.label(match &tool.geometry {
+                Some(ToolGeometry::Endmill(g)) => format!(
+                    "Endmill · Ø {} mm · {} mm cutting length",
+                    g.diameter_mm, g.cutting_length_mm
+                ),
+                Some(ToolGeometry::Vbit(g)) => format!(
+                    "V-bit · {}° · Ø {} mm tip",
+                    g.included_angle_deg, g.tip_diameter_mm
+                ),
+                Some(ToolGeometry::DragKnife(g)) => format!(
+                    "Knife · {} mm offset · {} mm cut depth",
+                    g.blade_offset_mm, g.max_cut_depth_mm
+                ),
+                None => "Never configured".into(),
+            });
+        }
+        if button(
+            ui,
+            "Use selected job tool",
+            !selected.is_empty()
+                && selected != status.tool_id
+                && self.active.is_none()
+                && self.io.is_none(),
+        )
+        .clicked()
+        {
             self.resource_command(
                 R::UseTool {
                     operation: cutter.operation.clone(),
@@ -256,6 +313,7 @@ impl App {
                 },
                 ctx,
             );
+            self.operation_picker = None;
         }
         if button(ui, &cutter.clear_label, self.active.is_none()).clicked() {
             self.resource_command(
@@ -265,6 +323,7 @@ impl App {
                 },
                 ctx,
             );
+            self.operation_picker = None;
         }
         ui.small("Choosing another job tool clears this assignment's cutting values; enter values for the chosen cutter.");
     }
@@ -333,18 +392,44 @@ impl App {
         let Some(tool) = tools.iter().find(|tool| tool.id == chosen_tool) else {
             return;
         };
+        ui.label(match &tool.geometry {
+            LibraryGeometry::Endmill(g) => format!(
+                "Endmill · Ø {} mm · {} mm cutting length",
+                g.diameter_mm, g.cutting_length_mm
+            ),
+            LibraryGeometry::Vbit(g) => format!(
+                "V-bit · {}° · Ø {} mm tip",
+                g.included_angle_deg, g.tip_diameter_mm
+            ),
+            LibraryGeometry::DragKnife(g) => format!(
+                "Knife · {} mm offset · {} mm cut depth",
+                g.blade_offset_mm, g.max_cut_depth_mm
+            ),
+        });
+        if self.resources.dirty || !self.resources.invalid.is_empty() {
+            ui.colored_label(
+                crate::ui_theme::WARNING,
+                "Saved library version shown. Unsaved edits are excluded.",
+            );
+        }
+        let profiles: Vec<_> = tool
+            .cutting_presets
+            .iter()
+            .map(|p| (&p.id, &p.name))
+            .chain(tool.knife_cutting_presets.iter().map(|p| (&p.id, &p.name)))
+            .collect();
         let profile_combo = egui::ComboBox::from_id_salt(("library-profile", index))
             .selected_text(
-                tool.cutting_presets
+                profiles
                     .iter()
-                    .find(|cut| cut.id == chosen_preset)
-                    .map_or("Tool only (no profile)", |cut| cut.name.as_str()),
+                    .find(|(id, _)| **id == chosen_preset)
+                    .map_or("Tool only (no profile)", |(_, name)| name.as_str()),
             )
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut chosen_preset, String::new(), "Tool only (no profile)");
-                for cut in &tool.cutting_presets {
-                    let r = ui.selectable_value(&mut chosen_preset, cut.id.clone(), &cut.name);
-                    observe_control(&format!("{prefix} library profile {}", cut.id), r.rect);
+                for (id, name) in &profiles {
+                    let r = ui.selectable_value(&mut chosen_preset, (*id).clone(), name.as_str());
+                    observe_control(&format!("{prefix} library profile {id}"), r.rect);
                 }
             });
         observe_control(
@@ -352,15 +437,12 @@ impl App {
             profile_combo.response.rect,
         );
         self.resources.picker_profiles[index] = chosen_preset.clone();
-        let valid = chosen_preset.is_empty()
-            || tool
-                .cutting_presets
-                .iter()
-                .any(|cut| cut.id == chosen_preset);
+        let valid =
+            chosen_preset.is_empty() || profiles.iter().any(|(id, _)| **id == chosen_preset);
         let apply = ui.add_enabled(
             valid && self.active.is_none() && self.io.is_none(),
             egui::Button::new(if chosen_preset.is_empty() {
-                "Use library tool"
+                "Use tool only"
             } else {
                 "Apply tool & profile"
             }),
@@ -417,15 +499,13 @@ impl App {
             observe_control(&cutter.profiles_probe, profiles.rect);
             if profiles.clicked() {
                 self.resources.role = cutter.role;
+                let index = role_index(cutter.role);
+                self.resources.picker_job_tools[index] = state.tool_id.clone();
                 if let Some(applied) = &state.applied {
-                    self.resources.tool = applied.library_tool_id.clone();
-                    self.resources.preset = applied.preset_id.clone();
+                    self.resources.picker_tools[index] = applied.library_tool_id.clone();
+                    self.resources.picker_profiles[index] = applied.preset_id.clone();
                 }
-                self.resources.machines_view = false;
-                self.resources.open = true;
-                if !self.resources.ready {
-                    self.request_resources(ResourceIntent::Load, ctx);
-                }
+                self.operation_picker = Some(index);
             }
             let menu = ui.menu_button("More…", |ui| {
                 if button(

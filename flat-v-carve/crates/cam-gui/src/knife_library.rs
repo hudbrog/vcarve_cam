@@ -3,64 +3,66 @@ use cam_core::tool_library::KnifeCuttingPreset;
 
 impl App {
     pub(super) fn knife_library_profiles(&mut self, ui: &mut egui::Ui, tool: &mut LibraryTool) {
-        ui.heading("Knife cutting profiles");
-        for p in &tool.knife_cutting_presets {
-            let r = ui.selectable_value(&mut self.resources.preset, p.id.clone(), &p.name);
-            observe_control(&format!("Library profile {}", p.id), r.rect);
-        }
-        if button(
-            ui,
-            "New knife profile",
-            tool.knife_cutting_presets.len() < 100,
-        )
-        .clicked()
-        {
-            let id = unique(
-                "profile",
-                tool.knife_cutting_presets.iter().map(|p| p.id.clone()),
-            );
-            tool.knife_cutting_presets.push(KnifeCuttingPreset {
-                id: id.clone(),
-                name: "New knife profile".into(),
-                material: None,
-                machine: None,
-                cutting_feed_mm_min: None,
-                plunge_feed_mm_min: None,
-                swivel_feed_mm_min: None,
-                max_stepdown_mm: None,
-            });
-            self.resources.preset = id;
-            self.resources.dirty = true;
-        }
-        if button(
-            ui,
-            "Capture knife assignment",
-            self.document
-                .as_ref()
-                .is_some_and(|d| crate::knife::settings(&d.job).is_some()),
-        )
-        .clicked()
-        {
-            let a = &crate::knife::settings(&self.document.as_ref().unwrap().job)
+        ui.strong("Knife cutting values");
+        let menu = ui.menu_button("Profile actions", |ui| {
+            if button(
+                ui,
+                "New knife profile",
+                tool.knife_cutting_presets.len() < 100,
+            )
+            .clicked()
+            {
+                let id = unique(
+                    "profile",
+                    tool.knife_cutting_presets.iter().map(|p| p.id.clone()),
+                );
+                tool.knife_cutting_presets.push(KnifeCuttingPreset {
+                    id: id.clone(),
+                    name: "New knife profile".into(),
+                    material: None,
+                    machine: None,
+                    cutting_feed_mm_min: None,
+                    plunge_feed_mm_min: None,
+                    swivel_feed_mm_min: None,
+                    max_stepdown_mm: None,
+                });
+                self.resources.preset = id;
+                self.resources.dirty = true;
+            }
+            if button(
+                ui,
+                "Capture knife assignment",
+                self.document
+                    .as_ref()
+                    .is_some_and(|d| crate::knife::settings_in(&d.job, &d.raw.operation).is_some()),
+            )
+            .clicked()
+            {
+                let a = &crate::knife::settings_in(
+                    &self.document.as_ref().unwrap().job,
+                    &self.document.as_ref().unwrap().raw.operation,
+                )
                 .unwrap()
                 .assignment;
-            let id = unique(
-                "profile",
-                tool.knife_cutting_presets.iter().map(|p| p.id.clone()),
-            );
-            tool.knife_cutting_presets.push(KnifeCuttingPreset {
-                id: id.clone(),
-                name: "Captured knife values".into(),
-                material: None,
-                machine: None,
-                cutting_feed_mm_min: a.cutting_feed_mm_min,
-                plunge_feed_mm_min: a.plunge_feed_mm_min,
-                swivel_feed_mm_min: a.swivel_feed_mm_min,
-                max_stepdown_mm: a.max_stepdown_mm,
-            });
-            self.resources.preset = id;
-            self.resources.dirty = true;
-        }
+                let id = unique(
+                    "profile",
+                    tool.knife_cutting_presets.iter().map(|p| p.id.clone()),
+                );
+                tool.knife_cutting_presets.push(KnifeCuttingPreset {
+                    id: id.clone(),
+                    name: "Captured knife values".into(),
+                    material: None,
+                    machine: None,
+                    cutting_feed_mm_min: a.cutting_feed_mm_min,
+                    plunge_feed_mm_min: a.plunge_feed_mm_min,
+                    swivel_feed_mm_min: a.swivel_feed_mm_min,
+                    max_stepdown_mm: a.max_stepdown_mm,
+                });
+                self.resources.preset = id;
+                self.resources.dirty = true;
+            }
+        });
+        observe_control("Library profile actions", menu.response.rect);
         if let Some(index) = tool
             .knife_cutting_presets
             .iter()

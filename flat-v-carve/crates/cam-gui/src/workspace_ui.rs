@@ -9,6 +9,7 @@ impl App {
         theme::apply(ctx);
     }
     pub(super) fn navigate(&mut self, index: usize) {
+        self.close_resource();
         self.inspector_collapsed = false;
         if self.inspector_tab != index {
             self.inspector_tab = index;
@@ -185,6 +186,7 @@ impl App {
                                 observe_control("Inspect result", response.rect);
                             }
                             if response.clicked() {
+                                self.close_resource();
                                 self.simulate = simulate;
                                 if !simulate && !self.current() {
                                     self.preview_dirty = true;
@@ -235,10 +237,18 @@ impl App {
                             self.inspector_collapsed = true;
                         }
                     }
-                    let inspector = ui.selectable_label(!self.inspector_collapsed, "Inspector");
+                    let inspector = ui.selectable_label(
+                        !self.inspector_collapsed && self.resource_page.is_none(),
+                        "Inspector",
+                    );
                     observe_control("Toggle inspector", inspector.rect);
                     if inspector.clicked() {
-                        self.inspector_collapsed = !self.inspector_collapsed;
+                        if self.resource_page.is_some() {
+                            self.close_resource();
+                            self.inspector_collapsed = false;
+                        } else {
+                            self.inspector_collapsed = !self.inspector_collapsed;
+                        }
                         if narrow && !self.inspector_collapsed {
                             self.navigator_collapsed = true;
                         }
@@ -378,7 +388,9 @@ impl App {
             label,
             None,
             icon,
-            self.inspector_tab == index && !self.resources.open && !self.resources.jobs_open,
+            self.inspector_tab == index
+                && !self.library_open()
+                && self.resource_page != Some(ResourcePage::JobTools),
         );
         observe_control(probe, response.rect);
         if response.clicked() {
@@ -487,7 +499,7 @@ impl App {
             let manage = button(ui, "Manage", self.document.is_some());
             observe_control("Job tools", manage.rect);
             if manage.clicked() {
-                self.resources.jobs_open = true;
+                self.open_resource(ResourcePage::JobTools);
             }
         });
         let tools: Vec<_> = self
@@ -521,7 +533,7 @@ impl App {
             observe_control(&format!("Navigator job tool {id}"), row.rect);
             if row.clicked() {
                 self.resources.job_tool = id.clone();
-                self.resources.jobs_open = true;
+                self.open_resource(ResourcePage::JobTools);
             }
         }
         if compact && !tools.is_empty() {
@@ -552,7 +564,7 @@ impl App {
         observe_control("Tool geometry", menu.response.rect);
         ui.horizontal(|ui| {
             if button(ui, "Tool library", true).clicked() {
-                self.resources.open = true;
+                self.open_resource(ResourcePage::ToolLibrary);
                 if !self.resources.ready {
                     self.request_resources(ResourceIntent::Load, ctx);
                 }
@@ -832,8 +844,11 @@ mod shell_tests {
             assert!(control_rect(control).is_some(), "empty job lost {control}");
         }
         for library in [false, true] {
-            app.resources.open = library;
-            app.resources.jobs_open = !library;
+            app.open_resource(if library {
+                ResourcePage::ToolLibrary
+            } else {
+                ResourcePage::JobTools
+            });
             for _ in 0..3 {
                 CONTROLS.with(|c| c.borrow_mut().clear());
                 let _ = ctx.run(

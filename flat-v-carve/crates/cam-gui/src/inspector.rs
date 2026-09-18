@@ -707,8 +707,7 @@ impl App {
     fn machine_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Applied machine");
         if button(ui, "Create or choose machine profile", true).clicked() {
-            self.resources.machines_view = true;
-            self.resources.open = true;
+            self.open_resource(ResourcePage::MachineLibrary);
             if !self.resources.ready {
                 self.request_resources(ResourceIntent::Load, ctx);
             }
