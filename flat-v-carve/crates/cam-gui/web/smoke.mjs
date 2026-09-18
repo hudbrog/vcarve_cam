@@ -197,7 +197,7 @@ try {
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
   if(process.argv.includes('--visual-review')) {
     const {visualReviewScenario}=await import('./visual-review-scenario.mjs');
-    await visualReviewScenario({control,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,chooseFile});
+    await visualReviewScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,chooseFile,pressKey});
   } else if(process.argv.includes('--knife-authoring')) {
     const {knifeAuthoringScenario}=await import('./knife-authoring-scenario.mjs');
     await knifeAuthoringScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,path,out,chooseFile});

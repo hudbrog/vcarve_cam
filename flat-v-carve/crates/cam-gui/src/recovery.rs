@@ -51,7 +51,7 @@ impl Default for Workspace {
             operation_tab: 0,
             operation_scroll: [0.; 3],
             operation_ramp_draft: false,
-            inspector_width: 325.,
+            inspector_width: crate::ui_theme::INSPECTOR,
             scroll: [0.; 8],
             search: String::new(),
             simulate: false,

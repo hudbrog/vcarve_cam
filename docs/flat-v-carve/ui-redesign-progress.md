@@ -5,7 +5,7 @@ The scope and acceptance criteria are in the [visual redesign plan](ui-visual-re
 | Milestone | State | Evidence |
 |---|---|---|
 | V0 baseline | Complete | Fresh native/browser captures; 111-field inventory; baseline tests |
-| V1 visual foundation | Next | Shared tokens, icons and bounded fields; Stock proving panel |
+| V1 visual foundation | Complete | Shared tokens/icons, bounded forms, Stock sections and live datum diagram; 167 tests |
 | V2 workspace shell | Pending | Header, navigator, status, execution scope |
 | V3 resources | Pending | Library/machines and job tools pages |
 | V4 authoring | Pending | All four operations, artwork, machine, diagrams |
@@ -44,6 +44,25 @@ node scripts/ui-field-inventory.mjs
 ```
 
 The native review arguments are JOB, OUTPUT.png, PANEL, logical WIDTH, logical HEIGHT, SCALE. Panels: artwork, stock, machine, settings, operation, library, tools, simulation. It uses the actual egui/wgpu frame, writes observed control rectangles and renderer statistics, and exits. Its image encoder is optional and absent from the normal build.
+
+## V1 — visual foundation and Stock
+
+Shared presentation now lives in `ui_theme.rs`, `ui_icons.rs` and `ui_widgets.rs`: semantic colors, 14/12-point text, 28-point bounded numeric rows, flat section headings, scope badges and a table-header primitive. The [asset manifest](ui-asset-manifest.md) records the original vector icon family and procedural stock schematic. New inspector sessions start at 344 points; saved widths are retained.
+
+The numeric renderer keeps existing field identities, raw text, units, help, diagnostic focus and undo/recovery paths. It replaces the unbounded horizontal layout that centered each field in all remaining vertical space. A regression test checks input height, row spacing and the first field's position across 800/900/1080-point window heights.
+
+Stock is grouped into Dimensions, Position, Work zero, and Clearance & start. Existing page/bounds capture, resize anchors, unset commands and custom XY remain available. There is one documented Z0 selector. The schematic labels actual committed thickness, clearance above stock, top and bottom coordinates for the selected datum. Help sits beside the section heading. The panel scrolls to its lower sections; compact shell/toolbar and other authoring-panel layout changes remain V2/V4/V5 work.
+
+Evidence:
+
+- [Native Stock at 1280×800](ui-redesign-evidence/v1/native-stock.png) and [Work zero at 1440×900](ui-redesign-evidence/v1/native-work-zero.png).
+- [Browser Stock at 1280×800](ui-redesign-evidence/v1/browser-stock.png) and [bottom-datum Work zero](ui-redesign-evidence/v1/browser-work-zero.png).
+- Full native PNG/metadata: `flat-v-carve/artifacts/gui/visual-v1/`, including 2× DPI. The review panel `stock-zero` applies a lower scroll position after initial window layout.
+- Full browser evidence: `flat-v-carve/artifacts/gui/browser-smoke/2026-09-18T07-13-09.176Z/`; build `e42ae3d3eb21`. This repeats V0's sizes/scales and adds real-input assertions for partial thickness, navigation, two-step Undo, and both Z datum choices, followed by generation, final-stock simulation and library import. It passed with no console errors.
+
+Validation: 167/167 `cam-gui` library tests; clippy with `ui-review` and warnings denied; native/WASM builds; formatting and diff checks; all 111 field IDs still mapped. The final help-heading adjustment was also checked with both setup-tab tests and the complete browser capture scenario. Native review remains debug, so cross-target timings are not a performance comparison.
+
+One older `--authoring` scenario was attempted and stopped at its initial import assertion: it expects absent machining probe properties to equal null on an artwork-only import, although current imports correctly contain zero operations. It did not reach any modified field. The current-schema checks above are the V1 acceptance evidence. A capture-script attempt also clicked a stale field-filter rectangle; waiting for the real layout to settle fixed the script without changing application behavior.
 
 ## Control migration checklist
 

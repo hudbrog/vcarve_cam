@@ -2,35 +2,7 @@ use super::*;
 
 impl App {
     pub(super) fn theme(ctx: &egui::Context) {
-        let mut style = (*ctx.style()).clone();
-        style.visuals = egui::Visuals::light();
-        style.visuals.panel_fill = Color32::from_rgb(237, 242, 246);
-        style.visuals.window_fill = Color32::from_rgb(247, 249, 251);
-        style.visuals.extreme_bg_color = Color32::WHITE;
-        style.visuals.override_text_color = Some(Color32::from_rgb(34, 49, 63));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(14.));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Small, egui::FontId::proportional(11.));
-        style.visuals.selection.bg_fill = Color32::from_rgb(183, 230, 233);
-        style.visuals.selection.stroke = egui::Stroke::new(1., Color32::from_rgb(13, 66, 73));
-        style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(205, 218, 227);
-        style.visuals.slider_trailing_fill = true;
-        style.visuals.widgets.inactive.bg_stroke =
-            egui::Stroke::new(1., Color32::from_rgb(191, 204, 214));
-        for widget in [
-            &mut style.visuals.widgets.inactive,
-            &mut style.visuals.widgets.hovered,
-            &mut style.visuals.widgets.active,
-        ] {
-            widget.corner_radius = egui::CornerRadius::same(3);
-        }
-        style.spacing.item_spacing = egui::vec2(8., 8.);
-        style.spacing.button_padding = egui::vec2(10., 6.);
-        style.spacing.interact_size.y = 28.;
-        ctx.set_style(style);
+        crate::ui_theme::apply(ctx);
     }
     pub(super) fn navigate(&mut self, index: usize) {
         if self.inspector_tab != index {

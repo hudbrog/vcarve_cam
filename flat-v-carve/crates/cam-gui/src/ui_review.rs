@@ -9,6 +9,7 @@ struct Review {
     frames: usize,
     requested: bool,
     size: egui::Vec2,
+    stock_zero: bool,
 }
 
 pub fn run(args: &[OsString]) -> eframe::Result {
@@ -64,7 +65,7 @@ pub fn run(args: &[OsString]) -> eframe::Result {
             app.preview_dirty = false;
             app.inspector_tab = match panel.as_str() {
                 "artwork" => 0,
-                "stock" => 1,
+                "stock" | "stock-zero" => 1,
                 "machine" => 3,
                 "simulation" => 6,
                 "settings" => 7,
@@ -83,6 +84,7 @@ pub fn run(args: &[OsString]) -> eframe::Result {
                 frames: 0,
                 requested: false,
                 size,
+                stock_zero: panel == "stock-zero",
             }))
         }),
     )
@@ -90,6 +92,10 @@ pub fn run(args: &[OsString]) -> eframe::Result {
 
 impl eframe::App for Review {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Apply the review scroll after the initial DPI resize/layout settles.
+        if self.stock_zero && self.frames == 8 {
+            self.app.scroll[1] = 600.;
+        }
         self.app.ui(ctx);
         self.frames += 1;
         if self.frames == 1 {

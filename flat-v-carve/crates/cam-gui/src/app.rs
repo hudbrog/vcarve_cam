@@ -684,7 +684,7 @@ impl Default for App {
             operation_scroll: [0.; 3],
             operation_ramp_draft: false,
             preview_dirty: false,
-            inspector_width: 325.,
+            inspector_width: crate::ui_theme::INSPECTOR,
             scroll: [0.; 8],
             simulate: false,
             last_workspace: None,

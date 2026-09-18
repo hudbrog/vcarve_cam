@@ -65,74 +65,41 @@ impl App {
             };
             let mut text = doc.text(field);
             let operation = self.inspector_tab == 2;
-            let response = ui
-                .with_layout(
-                    if operation {
-                        egui::Layout::top_down(egui::Align::Min)
-                    } else {
-                        egui::Layout::left_to_right(egui::Align::Center)
-                    },
-                    |ui| {
-                        let name = match field {
-                            2 | 3 if operation => "Cutting feed",
-                            21 if operation => "Plunge feed",
-                            20 if operation => "Stepdown",
-                            46 if operation => "Stepover",
-                            16 if operation => "Included angle",
-                            32 => "Tool number (T)",
-                            33 => "Length entry (H)",
-                            38 => "V-bit tool (T)",
-                            39 => "V-bit entry (H)",
-                            _ => FIELDS[field],
-                        };
-                        let label = if operation {
-                            ui.horizontal_wrapped(|ui| {
-                                let response = ui.label(name);
-                                help::icon(ui, FIELDS[field]);
-                                response
-                            })
-                            .inner
-                        } else {
-                            ui.add_sized([116., 20.], egui::Label::new(name))
-                        };
-                        ui.horizontal(|ui| {
-                            let response = ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut text)
-                                        .id(egui::Id::new((
-                                            "carving-field",
-                                            doc.raw.key(field),
-                                            &doc.raw.operation,
-                                            field,
-                                        )))
-                                        .desired_width(if operation {
-                                            (ui.available_width() - 58.).clamp(65., 160.)
-                                        } else {
-                                            72.
-                                        })
-                                        .char_limit(128)
-                                        .hint_text("Unset"),
-                                )
-                                .labelled_by(label.id);
-                            ui.small(match field {
-                                2 | 3 | 10 | 21 | 51 | 63..=65 => "mm/min",
-                                11 | 22 => "RPM",
-                                14 | 16 | 28 | 69 | 72 => "deg",
-                                29 => "×",
-                                34 | 37 => "s",
-                                35 => "digits",
-                                32 | 33 | 38 | 39 | 48..=50 | 52..=56 | 58..=60 => "",
-                                _ => "mm",
-                            });
-                            if !operation {
-                                help::icon(ui, FIELDS[field]);
-                            }
-                            response
-                        })
-                        .inner
-                    },
-                )
-                .inner;
+            let name = match field {
+                2 | 3 if operation => "Cutting feed",
+                21 if operation => "Plunge feed",
+                20 if operation => "Stepdown",
+                46 if operation => "Stepover",
+                16 if operation => "Included angle",
+                32 => "Tool number (T)",
+                33 => "Length entry (H)",
+                38 => "V-bit tool (T)",
+                39 => "V-bit entry (H)",
+                _ => FIELDS[field],
+            };
+            let unit = match field {
+                2 | 3 | 10 | 21 | 51 | 63..=65 => "mm/min",
+                11 | 22 => "RPM",
+                14 | 16 | 28 | 69 | 72 => "deg",
+                29 => "×",
+                34 | 37 => "s",
+                35 => "digits",
+                32 | 33 | 38 | 39 | 48..=50 | 52..=56 | 58..=60 => "",
+                _ => "mm",
+            };
+            let response = crate::ui_widgets::number_row(
+                ui,
+                egui::Id::new((
+                    "carving-field",
+                    doc.raw.key(field),
+                    &doc.raw.operation,
+                    field,
+                )),
+                name,
+                &mut text,
+                unit,
+                FIELDS[field],
+            );
             observe_control(FIELDS[field], response.rect);
             if self.issue_focus.as_deref() == Some(FIELDS[field]) {
                 response.scroll_to_me(Some(egui::Align::Center));
@@ -470,9 +437,6 @@ impl App {
     fn stock_anchor_controls(&mut self, ui: &mut egui::Ui) {
         use cam_core::project::v5::commands::StockAnchor;
         help::label(ui, "Stock resize anchor");
-        ui.small(
-            "Which point of the stock rectangle stays put when width or length changes. Artwork is never moved.",
-        );
         ui.horizontal_wrapped(|ui| {
             for anchor in StockAnchor::ALL {
                 let r = ui.selectable_label(self.stock_anchor == anchor, anchor.label());
@@ -482,10 +446,17 @@ impl App {
                 }
             }
         });
-        ui.small(self.stock_anchor.help());
+        ui.small(self.stock_anchor.help()).on_hover_text(
+            "Width and length edits keep this anchor fixed. Artwork is never moved.",
+        );
     }
     fn setup_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.heading("Physical stock");
+        crate::ui_widgets::scope(ui, "This job · setup coordinates");
+        crate::ui_widgets::section(ui, "Dimensions", Some(crate::ui_icons::Icon::Stock));
+        self.numbers(ui, ctx, &[42, 43, 6]);
+        crate::ui_widgets::section(ui, "Position", None);
+        self.numbers(ui, ctx, &[40, 41]);
+        self.stock_anchor_controls(ui);
         if button(
             ui,
             "Stock XY from SVG page",
@@ -526,23 +497,14 @@ impl App {
                 item.name
             ));
         }
-        self.numbers(ui, ctx, &[6, 40, 41, 42, 43]);
         self.stock_outside_notice(ui);
-        self.stock_anchor_controls(ui);
         if button(ui, "Unset stock XY", true).clicked() {
             self.edit_job(ctx, &[40, 41, 42, 43], |job| {
                 job.setup.stock.xy = None;
                 Ok(())
             });
         }
-        if crate::knife::settings(&self.document.as_ref().unwrap().job).is_some() {
-            ui.small("Set actual stock thickness and clearance. Page capture changes only XY.");
-        } else {
-            ui.small("New SVG jobs use the page size, 18 mm thickness and 5 mm clearance. Adjust these to your actual stock. Page capture changes only XY.");
-        }
-        ui.separator();
-        ui.heading("Work zero");
-        help::icon(ui, "Work zero");
+        crate::ui_widgets::section(ui, "Work zero", None);
         let custom = matches!(
             self.document.as_ref().unwrap().job.setup.work_zero.xy,
             WorkZeroXY::CustomPoint { .. }
@@ -576,26 +538,6 @@ impl App {
         if custom {
             self.numbers(ui, ctx, &[44, 45]);
         }
-        ui.horizontal(|ui| {
-            for (label, z) in [
-                ("Z: stock top", WorkZeroZ::StockTop),
-                ("Z: stock bottom", WorkZeroZ::StockBottom),
-            ] {
-                let r = ui.selectable_label(
-                    self.document.as_ref().unwrap().job.setup.work_zero.z == z,
-                    label,
-                );
-                observe_control(label, r.rect);
-                if r.clicked() {
-                    self.edit_job(ctx, &[], |job| {
-                        job.setup.work_zero.z = z;
-                        Ok(())
-                    });
-                }
-            }
-        });
-        ui.small("Work zero affects output coordinates; simulation stays in setup coordinates. Applying a machine does not change this datum.");
-        ui.separator();
         // The Z datum decides the surface the first plunge is measured from.
         // It is a single choice with a physical consequence, so it is stated
         // here in the machine's terms instead of left to the operator to
@@ -619,22 +561,15 @@ impl App {
                 }
             }
         });
-        let thickness = self.document.as_ref().unwrap().job.setup.stock.thickness_mm;
-        match self.document.as_ref().unwrap().job.setup.work_zero.z {
-            WorkZeroZ::StockTop => {
-                ui.strong("Z0 is the top surface of the stock: the tool touches the stock at Z0.");
-            }
-            WorkZeroZ::StockBottom => {
-                let text = match thickness {
-                    Some(t) => format!(
-                        "Z0 is the bottom surface of the stock: every output Z is {t:.3} mm below the top surface the tool first touches."
-                    ),
-                    None => "Z0 is the bottom surface of the stock: every output Z is measured from the underside, not the surface the tool first touches.".into(),
-                };
-                ui.strong(text);
-            }
-        }
-        ui.small("Set the machine's Z zero on this same surface and check it before the first cut: CAM cannot see how your machine touches off tools after M6.");
+        let setup = &self.document.as_ref().unwrap().job.setup;
+        crate::ui_widgets::stock_datum(
+            ui,
+            setup.stock.thickness_mm,
+            setup.clearance_above_stock_mm,
+            setup.work_zero.z == WorkZeroZ::StockBottom,
+        );
+        ui.small("Touch off the machine on the selected Z0 surface. Work zero changes output coordinates; simulation uses setup coordinates.");
+        crate::ui_widgets::section(ui, "Clearance & start", None);
         self.numbers(ui, ctx, &[7, 30, 31]);
         if button(ui, "Use default start XY", true).clicked() {
             self.edit_job(ctx, &[30, 31], |job| {
@@ -965,6 +900,49 @@ mod tests {
             assert!(present, "{label} missing from the setup tab");
         }
         assert!(help::explanation("Z datum").is_some_and(|s| s.len() > 30));
+        let labels = controls(&mut app, &ctx);
+        assert!(!labels.contains("Z: stock top"));
+        assert!(!labels.contains("Z: stock bottom"));
+        assert!(labels.contains("Stock datum diagram"));
+    }
+
+    #[test]
+    fn stock_number_rows_stay_compact_at_different_window_heights() {
+        for height in [800., 900., 1080.] {
+            let mut app = App {
+                document: Some(Document::new(artwork_job())),
+                inspector_tab: 1,
+                ..Default::default()
+            };
+            let ctx = egui::Context::default();
+            App::theme(&ctx);
+            for _ in 0..3 {
+                CONTROLS.with(|c| c.borrow_mut().clear());
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1280., height),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| app.inspector(ctx),
+                );
+            }
+            CONTROLS.with(|c| {
+                let controls = c.borrow();
+                let width = controls["Stock width"];
+                let length = controls["Stock length"];
+                let thickness = controls["Stock thickness"];
+                assert!(width[1] < 180., "first input pushed down: {width:?}");
+                for row in [width, length, thickness] {
+                    assert!(row[3] - row[1] <= 30., "unbounded input: {row:?}");
+                    assert!(row[0] >= 1280. - crate::ui_theme::INSPECTOR && row[2] < 1280.);
+                }
+                assert!((28.0..=40.).contains(&(length[1] - width[1])));
+                assert!((28.0..=40.).contains(&(thickness[1] - length[1])));
+            });
+        }
     }
 
     /// Every control label the last few rendered frames published.
