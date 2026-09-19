@@ -107,8 +107,8 @@ export async function gui4Scenario({control,edit,state,waitFor,send,evaluate,sle
   await waitFor(s=>!s.active&&s.job.machine,'applied machine configuration');
   await control('Save job');await waitFor(s=>s.status.includes('Download requested'),'portable job download');await sleep(700);
   const savedName=(await state()).job.name;
-  const saved=readdirSync(out).filter(n=>n.endsWith('.json')).map(n=>readFileSync(path.join(out,n),'utf8')).find(text=>{try{const j=JSON.parse(text);return j.schema_version===5&&j.name===savedName&&j.machine_configuration&&j.artwork.length>0;}catch{return false;}});
-  if(!saved)throw new Error('Portable job and machine configuration were not saved together');
-  revision=(await state()).revision;await drop(saved,'portable.job.json');await waitFor(s=>s.revision>revision&&!s.active&&s.job.machine&&s.job.name===savedName,'portable project reopens without separate resources');
+  const portableSaved=readdirSync(out).filter(n=>n.endsWith('.json')).map(n=>readFileSync(path.join(out,n),'utf8')).find(text=>{try{const j=JSON.parse(text);return j.schema_version===5&&j.name===savedName&&j.machine_configuration&&j.artwork.length>0;}catch{return false;}});
+  if(!portableSaved)throw new Error('Portable job and machine configuration were not saved together');
+  revision=(await state()).revision;await drop(portableSaved,'portable.job.json');await waitFor(s=>s.revision>revision&&!s.active&&s.job.machine&&s.job.name===savedName,'portable project reopens without separate resources');
   record('applied profile portable save and independent reopen',await state());
 }

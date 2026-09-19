@@ -689,7 +689,7 @@ mod tests {
             },
             Case {
                 kind: Some(Kind::Face),
-                operation_tab: 0,
+                operation_tab: 1,
                 noun: "Cutter",
                 change: "Change cutter tool",
                 profiles: "Face profiles",
@@ -697,7 +697,7 @@ mod tests {
             },
             Case {
                 kind: Some(Kind::Profile),
-                operation_tab: 0,
+                operation_tab: 1,
                 noun: "Cutter",
                 change: "Change cutter tool",
                 profiles: "Profile profiles",
@@ -705,7 +705,7 @@ mod tests {
             },
             Case {
                 kind: Some(Kind::DragKnife),
-                operation_tab: 0,
+                operation_tab: 1,
                 noun: "Knife",
                 change: "Change knife tool",
                 profiles: "Knife profiles",

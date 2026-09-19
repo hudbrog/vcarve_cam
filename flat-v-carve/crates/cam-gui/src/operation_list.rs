@@ -9,6 +9,26 @@ use crate::operation_authoring::{self, Action, Kind};
 use crate::session::GenerateScope;
 
 impl App {
+    /// Called whenever document adoption or selection changes the active ID.
+    /// Row positions never own presentation state, including through Undo.
+    pub(super) fn restore_operation_view(&mut self, previous: &str) {
+        let selected = self.operation_id();
+        if selected == previous {
+            return;
+        }
+        if !previous.is_empty() {
+            self.operation_views
+                .insert(previous.into(), (self.operation_tab, self.operation_scroll));
+        }
+        let (tab, scroll) = self
+            .operation_views
+            .get(&selected)
+            .copied()
+            .unwrap_or_default();
+        self.operation_tab = tab;
+        self.operation_scroll = scroll;
+        self.operation_ramp_draft = false;
+    }
     pub(super) fn operation_command(&mut self, action: Action, ctx: &egui::Context) {
         let job = self
             .document
@@ -27,10 +47,7 @@ impl App {
     /// Select the operation the inspector edits. Selection is workspace state:
     /// it never changes the document or the machining order.
     pub(super) fn select_operation(&mut self, id: &str, ctx: &egui::Context) {
-        let same = self
-            .document
-            .as_ref()
-            .is_some_and(|d| d.raw.operation == id);
+        let previous = self.operation_id();
         if self
             .document
             .as_mut()
@@ -38,10 +55,7 @@ impl App {
         {
             self.edit_group = None;
             self.search.clear();
-            if !same {
-                self.operation_scroll = [0.; 3];
-                self.operation_ramp_draft = false;
-            }
+            self.restore_operation_view(&previous);
             self.navigate(2);
             self.recovery.changed(ctx.input(|i| i.time));
         }
@@ -321,6 +335,7 @@ impl App {
             });
         let empty = next.job.operations.is_empty();
         self.document = Some(next);
+        self.restore_operation_view(&previous);
         self.edit_group = None;
         self.plan = None;
         self.plan_scope = None;

@@ -17,9 +17,7 @@ impl App {
             return;
         };
         let _ = settings;
-        ui.heading("Face");
-        ui.small("Source-free facing: stock, tool and cutting values only.");
-        ui.separator();
+        self.operation_tabs(ui, &["Area & heights", "Tool & passes"]);
         let _ = ctx;
     }
 
@@ -28,13 +26,24 @@ impl App {
         if id.is_empty() {
             return;
         }
-        ui.heading("Face");
-        ui.small("Faces the requested area with one endmill. Nothing is assumed: unset values stay unset and the planner reports what is still missing.");
-        ui.add_space(4.);
-        self.face_coverage(ui, ctx);
-        self.face_heights(ui, ctx);
-        self.face_tool(ui, ctx);
-        self.face_passes(ui, ctx);
+        if self.operation_section_visible(0) {
+            ui.small("Source-free facing · stock and setup coordinates");
+            if let Ok(Some(preview)) = cam_core::project::v5::inspection::face_entry_preview(
+                &self.document.as_ref().unwrap().job,
+                &id,
+            ) {
+                crate::operation_diagram::face(ui, &preview);
+            } else {
+                ui.small("The coverage diagram appears when area, cutter, heights and passes can be evaluated.");
+            }
+            self.face_coverage(ui, ctx);
+            self.face_heights(ui, ctx);
+        }
+        if self.operation_section_visible(1) {
+            self.face_tool(ui, ctx);
+            self.face_passes(ui, ctx);
+            self.face_travel(ui, ctx);
+        }
     }
 
     fn face_coverage(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -46,7 +55,6 @@ impl App {
             return;
         };
         let area = settings.area.clone();
-        let pattern = settings.pattern;
         let stock_xy = job.setup.stock.xy;
         self.operation_group(ui, "Coverage", true, |app, ui| {
             help::label(ui, "Requested face area");
@@ -81,11 +89,19 @@ impl App {
                 ui.small("Requested coverage rectangle in setup coordinates; margins expand it per side.");
                 app.operation_numbers(ui, ctx, &[82, 83, 84, 85]);
             }
-            ui.separator();
-            help::label(ui, "Coverage margins");
-            ui.small("Positive margins extend coverage outward; negative values would pull it inward and are rejected.");
+        });
+        self.operation_group(ui, "Coverage margins", false, |app, ui| {
+            ui.small("Positive margins extend the coverage on each side. Travel overrun is set separately under Tool & passes.");
             app.operation_numbers(ui, ctx, &[78, 79, 80, 81]);
-            ui.separator();
+        });
+    }
+
+    fn face_travel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let pattern =
+            crate::session::face(&self.document.as_ref().unwrap().job, &self.operation_id())
+                .unwrap()
+                .pattern;
+        self.operation_group(ui, "Direction & entry", true, |app, ui| {
             help::label(ui, "Travel overrun");
             ui.small("Entry/exit overrun is travel beyond the requested coverage. Overhang is allowed travel; it is not a claim that material outside the request is faced.");
             app.operation_numbers(ui, ctx, &[76, 77]);
@@ -127,7 +143,7 @@ impl App {
                 }
             });
             app.operation_numbers(ui, ctx, &[75]);
-            ui.small("Only 0° and 90° raster facing ships in this milestone; another angle is rejected with a located reason.");
+            ui.small("Raster facing supports 0° and 90°. Other angles require correction before generation.");
         });
     }
 
@@ -191,6 +207,7 @@ impl App {
             ui.small("Entry travel reaches past the coverage edge on the end every pass enters from; the exit travel trails the other end.");
         }
         if let Some(preview) = &preview {
+            crate::operation_diagram::face(ui, preview);
             if let Some(stock) = stock {
                 ui.small(format!(
                     "Passes run along {axis}; the stock spans {axis} {:.3} … {:.3}, and the clearance below is measured against that rectangle.",
@@ -347,28 +364,36 @@ impl App {
             });
             ui.small("The facing depth is the distance from the top reference down to the bottom reference. Enter the bottom offset (negative removes material) or pick stock bottom.");
             app.operation_numbers(ui, ctx, &[86, 87]);
-            ui.separator();
-            help::label(ui, "Depth per pass");
-            app.operation_numbers(ui, ctx, &[8, 88]);
-            ui.small("Stepdown is the pass depth; the planner never exceeds the tool's stepdown limit.");
         });
     }
 
     fn face_tool(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        self.operation_group(ui, "Tool & cutting", true, |app, ui| {
+        self.operation_group(ui, "Tool & cutting profile", true, |app, ui| {
             // The same cutter picker every operation uses.
             let operation = app.operation_id();
             let cutter = super::tool_picker::Cutter::milling(&operation, "Face");
             app.tool_picker(ui, ctx, &cutter);
-            ui.separator();
-            app.operation_numbers(ui, ctx, &[12, 13]);
-            ui.separator();
-            // Where the passes enter the cut: a face mill that cannot plunge
-            // needs entry clearance instead, and the planner refuses to
-            // descend through material without this answer (plan section 11).
-            app.operation_capabilities(ui, ctx, false);
-            ui.separator();
-            help::label(ui, "Feeds & speed");
+        });
+        let missing_geometry = authoring::tool_in(
+            &self.document.as_ref().unwrap().job,
+            &self.operation_id(),
+            false,
+        )
+        .is_none_or(|t| t.geometry.is_none());
+        self.operation_group(
+            ui,
+            "Geometry & capabilities",
+            missing_geometry,
+            |app, ui| {
+                app.operation_numbers(ui, ctx, &[12, 13]);
+                ui.separator();
+                // Where the passes enter the cut: a face mill that cannot plunge
+                // needs entry clearance instead, and the planner refuses to
+                // descend through material without this answer (plan section 11).
+                app.operation_capabilities(ui, ctx, false);
+            },
+        );
+        self.operation_group(ui, "Feeds & speed", true, |app, ui| {
             app.operation_numbers(ui, ctx, &[2, 10, 11]);
             let direction = crate::session::face(&app.document.as_ref().unwrap().job, &app.operation_id())
                 .and_then(|s| s.assignment.spindle_direction);
@@ -397,7 +422,8 @@ impl App {
         self.operation_group(ui, "Stepover & limits", true, |app, ui| {
             // The field names itself; applying a library tool & profile fills
             // it from the cutter's own stepover.
-            app.operation_numbers(ui, ctx, &[9]);
+            app.operation_numbers(ui, ctx, &[8, 88, 9]);
+            ui.small("Stepdown is the pass depth; the planner never exceeds the tool's stepdown limit.");
             ui.small("Stepover must be positive and no greater than the cutter diameter; a larger value is rejected with the allowed range.");
         });
     }
@@ -441,8 +467,16 @@ mod tests {
     fn face_editor_binds_its_own_fields_without_milling_assumptions() {
         let mut app = app();
         let ctx = egui::Context::default();
-        let controls = render(&mut app, &ctx);
-        // Face coverage controls (GUI7a/b).
+        let mut controls = render(&mut app, &ctx);
+        assert!(!controls.contains_key("Roughing feed"));
+        app.operation_tab = 1;
+        let cutting = render(&mut app, &ctx);
+        assert!(!cutting.contains_key("Entire stock"));
+        controls.extend(cutting);
+        app.search = "Face margin".into();
+        controls.extend(render(&mut app, &ctx));
+        app.search.clear();
+        // Both tabs retain the Face coverage and cutting controls.
         for label in [
             "Entire stock",
             "Rectangle",

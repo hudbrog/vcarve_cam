@@ -4,37 +4,7 @@ use cam_core::project::v5::StartSelectionV5;
 impl App {
     pub(super) fn knife_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         match self.inspector_tab {
-            0 => {
-                ui.heading("Knife artwork");
-                ui.small("Use stroked paths with fill=none. Open and closed chains are preserved; filled regions are not knife selections.");
-                self.numbers(ui, ctx, &[26, 27, 28, 29]);
-                ui.separator();
-                ui.label("Geometry selection");
-                ui.small("Which chains get cut belongs to the operation, not to the artwork. Select them under Cutting → Geometry to cut, or click them in the viewport. This panel keeps placement and source management only.");
-                if button(ui, "Open operation geometry", self.document.is_some()).clicked() {
-                    self.operation_tab = 0;
-                    self.navigate(2);
-                }
-                ui.separator();
-                if button(
-                    ui,
-                    "Replace knife SVG",
-                    self.active.is_none() && self.io.is_none(),
-                )
-                .clicked()
-                {
-                    self.open(IoKind::ReplaceSvg, ctx);
-                }
-                if button(ui, "Delete knife artwork", self.active.is_none()).clicked() {
-                    let active = self.document.as_ref().unwrap().raw.artwork_item.clone();
-                    self.artwork_command(
-                        engine::ArtworkCommand::Delete {
-                            item: cam_core::project::v5::ArtworkItemId(active),
-                        },
-                        ctx,
-                    );
-                }
-            }
+            0 => self.artwork_panel(ui, ctx),
             4 | 5 => {
                 ui.heading("Knife geometry");
                 self.numbers(ui, ctx, &[61, 62]);
@@ -43,118 +13,148 @@ impl App {
             }
             6 => self.view.knife_inspection_controls(ui),
             _ => {
-                self.knife_selection(ui, ctx);
-                ui.separator();
-                ui.heading("Tool & cutting profile");
-                self.knife_resources(ui, ctx);
-                self.numbers(ui, ctx, &[61, 62, 63, 64, 65, 66]);
-                self.knife_suggestions(ui, ctx);
-                ui.separator();
-                ui.heading("Depth & passes");
-                for bottom in [false, true] {
-                    let s = crate::knife::settings(&self.document.as_ref().unwrap().job).unwrap();
-                    let reference = if bottom {
-                        s.bottom.reference.clone()
-                    } else {
-                        s.top.reference.clone()
-                    };
-                    ui.label(if bottom {
-                        "Bottom reference"
-                    } else {
-                        "Top reference"
+                if self.operation_section_visible(0) {
+                    self.operation_group(ui, "Chain selection", true, |app, ui| {
+                        app.knife_selection(ui, ctx)
                     });
-                    for (name, r) in [
-                        ("Stock top", cam_core::project::HeightReference::StockTop),
-                        (
-                            "Stock bottom",
-                            cam_core::project::HeightReference::StockBottom,
-                        ),
-                        (
-                            "Operation top",
-                            cam_core::project::HeightReference::OperationTop,
-                        ),
-                    ] {
-                        if !bottom && matches!(r, cam_core::project::HeightReference::OperationTop)
-                        {
-                            continue;
-                        }
-                        let response = ui.selectable_label(reference == r, name);
-                        observe_control(
-                            &format!("Knife {} {name}", if bottom { "bottom" } else { "top" }),
-                            response.rect,
-                        );
-                        if response.clicked() {
-                            self.edit_job(ctx, &[], |job| {
-                                let OperationSettingsV5::DragKnife(s) =
-                                    &mut job.operations[0].settings
-                                else {
-                                    unreachable!()
-                                };
-                                if bottom {
-                                    s.bottom.reference = r;
-                                } else {
-                                    s.top.reference = r;
-                                }
-                                Ok(())
-                            });
-                        }
-                    }
                 }
-                self.numbers(ui, ctx, &[73, 74, 67, 68, 69, 70, 71, 72, 110]);
-                let settings =
-                    crate::knife::settings(&self.document.as_ref().unwrap().job).unwrap();
-                ui.label(match &settings.start {
-                    StartSelectionV5::Automatic => "Start: automatic source seam / endpoint".into(),
-                    StartSelectionV5::Anchor(a) => format!(
-                        "Start: {} / {} at {:.1}% of source length",
-                        a.geometry.artwork_item_id.0,
-                        a.geometry.local_geometry_id,
-                        a.fraction_along_source_contour * 100.
-                    ),
-                });
-                let selected = settings.chains.clone();
-                let chains = self.view.knife_chains();
-                let menu = ui.menu_button("Knife start", |ui| {
-                    if button(ui, "Automatic knife start", self.active.is_none()).clicked() {
+                if self.operation_section_visible(1) {
+                    self.operation_group(ui, "Tool & cutting profile", true, |app, ui| {
+                        app.knife_resources(ui, ctx);
+                        app.operation_numbers(ui, ctx, &[63, 64, 66]);
+                    });
+                    self.operation_group(ui, "Blade geometry", false, |app, ui| {
+                        app.operation_numbers(ui, ctx, &[61, 62]);
+                        ui.small("Blade offset is the pivot-to-tip distance; cutting depth is the blade's limit.");
+                    });
+                    self.operation_group(ui, "Depth & passes", true, |app, ui| {
+                        app.knife_heights(ui, ctx)
+                    });
+                    self.operation_group(ui, "Suggested values", false, |app, ui| {
+                        app.knife_suggestions(ui, ctx)
+                    });
+                }
+                if self.operation_section_visible(2) {
+                    self.operation_group(ui, "Corners & closure", true, |app, ui| {
+                        app.operation_numbers(ui, ctx, &[68, 65, 69, 71, 110]);
+                        ui.small("Near reversals and unsupported passive alignment remain rejected by the planner.");
+                    });
+                    self.operation_group(ui, "Start & blade alignment", true, |app, ui| {
+                        app.knife_start(ui, ctx)
+                    });
+                }
+            }
+        }
+    }
+
+    fn knife_heights(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        for bottom in [false, true] {
+            let s = crate::knife::settings(&self.document.as_ref().unwrap().job).unwrap();
+            let reference = if bottom {
+                s.bottom.reference.clone()
+            } else {
+                s.top.reference.clone()
+            };
+            ui.label(if bottom {
+                "Bottom reference"
+            } else {
+                "Top reference"
+            });
+            for (name, r) in [
+                ("Stock top", cam_core::project::HeightReference::StockTop),
+                (
+                    "Stock bottom",
+                    cam_core::project::HeightReference::StockBottom,
+                ),
+                (
+                    "Operation top",
+                    cam_core::project::HeightReference::OperationTop,
+                ),
+            ] {
+                if !bottom && matches!(r, cam_core::project::HeightReference::OperationTop) {
+                    continue;
+                }
+                let response = ui.selectable_label(reference == r, name);
+                observe_control(
+                    &format!("Knife {} {name}", if bottom { "bottom" } else { "top" }),
+                    response.rect,
+                );
+                if response.clicked() {
+                    self.edit_job(ctx, &[], |job| {
+                        let OperationSettingsV5::DragKnife(s) = &mut job.operations[0].settings
+                        else {
+                            unreachable!()
+                        };
+                        if bottom {
+                            s.bottom.reference = r;
+                        } else {
+                            s.top.reference = r;
+                        }
+                        Ok(())
+                    });
+                }
+            }
+        }
+        self.operation_numbers(ui, ctx, &[73, 74, 67, 70]);
+        ui.small(
+            "Offsets are signed: negative is downward. Pass stepdown cannot exceed the tool limit.",
+        );
+    }
+
+    fn knife_start(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let doc = self.document.as_ref().unwrap();
+        crate::operation_diagram::knife(ui, doc.field_value(72), doc.field_value(61));
+        self.operation_numbers(ui, ctx, &[72]);
+        let settings = crate::knife::settings(&self.document.as_ref().unwrap().job).unwrap();
+        ui.label(match &settings.start {
+            StartSelectionV5::Automatic => "Start: automatic source seam / endpoint".into(),
+            StartSelectionV5::Anchor(a) => format!(
+                "Start: {} / {} at {:.1}% of source length",
+                a.geometry.artwork_item_id.0,
+                a.geometry.local_geometry_id,
+                a.fraction_along_source_contour * 100.
+            ),
+        });
+        let selected = settings.chains.clone();
+        let chains = self.view.knife_chains();
+        let menu = ui.menu_button("Knife start", |ui| {
+            if button(ui, "Automatic knife start", self.active.is_none()).clicked() {
+                self.artwork_command(
+                    engine::ArtworkCommand::KnifeStart {
+                        reference: None,
+                        fraction: 0.,
+                    },
+                    ctx,
+                );
+                ui.close();
+            }
+            for chain in chains.iter().filter(|c| selected.contains(&c.reference)) {
+                for fraction in if chain.closed {
+                    &[0., 0.25, 0.5, 0.75][..]
+                } else {
+                    &[0.][..]
+                } {
+                    let label = format!(
+                        "{} / {} · {}%",
+                        chain.reference.artwork_item_id.0,
+                        chain.reference.local_geometry_id,
+                        fraction * 100.
+                    );
+                    if button(ui, &label, self.active.is_none()).clicked() {
                         self.artwork_command(
                             engine::ArtworkCommand::KnifeStart {
-                                reference: None,
-                                fraction: 0.,
+                                reference: Some(chain.reference.clone()),
+                                fraction: *fraction,
                             },
                             ctx,
                         );
                         ui.close();
                     }
-                    for chain in chains.iter().filter(|c| selected.contains(&c.reference)) {
-                        for fraction in if chain.closed {
-                            &[0., 0.25, 0.5, 0.75][..]
-                        } else {
-                            &[0.][..]
-                        } {
-                            let label = format!(
-                                "{} / {} · {}%",
-                                chain.reference.artwork_item_id.0,
-                                chain.reference.local_geometry_id,
-                                fraction * 100.
-                            );
-                            if button(ui, &label, self.active.is_none()).clicked() {
-                                self.artwork_command(
-                                    engine::ArtworkCommand::KnifeStart {
-                                        reference: Some(chain.reference.clone()),
-                                        fraction: *fraction,
-                                    },
-                                    ctx,
-                                );
-                                ui.close();
-                            }
-                        }
-                    }
-                });
-                observe_control("Knife start", menu.response.rect);
-                ui.small("Offsets are signed: negative is downward. Initial heading must match the physically aligned blade. Blank optional allowance/overlap values retain core semantics.");
-                ui.small("Near reversals and unsupported passive alignment remain rejected by the planner.");
+                }
             }
-        }
+        });
+        observe_control("Knife start", menu.response.rect);
+        ui.small("Initial heading must match the physically aligned blade. Heading points from pivot toward tip, counterclockwise from +X.");
     }
 
     fn knife_suggestions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -237,7 +237,7 @@ impl App {
                     selected = chosen;
                 }
             }
-            egui::ScrollArea::vertical()
+            let list = egui::ScrollArea::vertical()
                 .id_salt("knife-geometry-list")
                 .auto_shrink([false, true])
                 .max_height(180.)
@@ -294,6 +294,7 @@ impl App {
                         }
                     }
                 });
+            observe_control("Operation geometry viewport", list.inner_rect);
         }
         if selected
             .iter()

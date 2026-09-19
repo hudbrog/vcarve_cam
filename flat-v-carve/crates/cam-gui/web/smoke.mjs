@@ -107,12 +107,28 @@ const pressKey = async (key, code, modifiers = 0) => {
   }
 };
 
-const shapeFields=['Maximum depth','Wall allowance','Floor ridge','Top offset','Top: stock top','Top: stock bottom'];
+const shapeFields=['Endmill only','Combined','Maximum depth','Wall allowance','Floor ridge','Top offset','Top: stock top','Top: stock bottom'];
 const endmillFields=['Roughing feed','Plunge feed','Stepdown','Stepover','Spindle speed','Endmill diameter','Cutting length','Ramp angle','Ramp feed','Rough layer limit','Rough loop limit','Rough motion limit','Plunge entry','Ramp entry','Plunge yes','Plunge no','Ramp yes','Ramp no','Endmill CW','Endmill CCW','Depth-dependent clearing','Deepest-region clearing','Reset roughing overrides','Endmill assignment tool'];
 const vbitFields=['Finishing feed','Finish plunge','Finish stepdown','Finish stepover','Finish spindle','Detail residual','V-bit angle','Tip diameter','Cutting diameter','Cutting height','V-bit CW','V-bit CCW','V-bit plunge yes','V-bit plunge no','V-bit assignment tool','Reset finish overrides','Finish path limit','Finish motion limit','Curve segment limit','Depth pass limit','Cleanup iterations','Quality sample spacing','Quality sample limit','Reachability cell limit','Stock slices'];
 const operationTarget=label=>shapeFields.includes(label)?0:endmillFields.includes(label)||label.startsWith('Roughing ')?1:vbitFields.includes(label)||label.startsWith('Finish ')?2:null;
 // The operation's own geometry selection lives on its shape tab.
 const geometryTarget=label=>['Select all filled components','Clear component selection','Unresolved selections','Operation Geometry to carve'].includes(label)||label.startsWith('Carving component')||label.startsWith('Replace reference')||label.startsWith('Remove unresolved reference')?0:null;
+const authoringRoute=(current,label)=>{
+  if(current.workspace?.inspector!==2||['Operation Area & heights','Operation Tool & passes','Operation Geometry','Operation Cutting','Operation Tabs & entry','Operation Corners & start'].includes(label)||current.controls?.['Assignment picker'])return null;
+  if(current.controls?.['Operation Tool & passes']){
+    const area=/Entire stock|Rectangle|Face (area|margin|top|bottom)|^Top:|^Bottom:|Operation Coverage/.test(label);
+    return [['Operation Area & heights','Operation Tool & passes'],area?0:1];
+  }
+  if(current.controls?.['Operation Tabs & entry']){
+    const index=label==='Operation Geometry & capabilities'?1:/[Tt]ab|[Ss]tart|[Ee]ntry|Lead-|[Aa]nchor/.test(label)?2:/[Cc]ontour|[Gg]eometry|[Ss]election|^Profile side|^Profile traversal|^Cut |^Order:|reference/.test(label)?0:1;
+    return [['Operation Geometry','Operation Cutting','Operation Tabs & entry'],index];
+  }
+  if(current.controls?.['Operation Corners & start']){
+    const index=/[Ss]wivel|[Cc]orner|[Cc]losure|[Hh]eading|path tolerance|[Ss]tart/.test(label)?2:/[Cc]hain|[Ss]election|[Gg]eometry|[Oo]utline|reference/.test(label)?0:1;
+    return [['Operation Geometry','Operation Cutting','Operation Corners & start'],index];
+  }
+  return null;
+};
 const control = async label => {
   for(let attempt=0;attempt<12;attempt++) {
     const current=await state(); const rect=current.controls?.[label];
@@ -124,8 +140,14 @@ const control = async label => {
       'New knife profile':'Library profile actions','Capture knife assignment':'Library profile actions','New cutting profile':'Library profile actions','Duplicate cutting profile':'Library profile actions','Capture assignment as profile':'Library profile actions','Library profile context':'Library profile actions','Profile material':'Library profile context','Profile machine context':'Library profile context',
       'New machine profile':'New machine','New machine ID':'New machine','Capture applied machine':'New machine'
     };
-    const dropdown=['Library rotation','Library plunge','Library ramp','Copied plunge','Copied ramp','Work offset','Length compensation','Coolant','Path control','M6 return'].find(prefix=>label.startsWith(prefix+' '));
+    const dropdown=['Job work offset','Job compensation','Job coolant','Job path control','Library rotation','Library plunge','Library ramp','Copied plunge','Copied ramp','Work offset','Length compensation','Coolant','Path control','M6 return'].find(prefix=>label.startsWith(prefix+' '));
     if(!rect){
+      if(['Duplicate artwork','Delete artwork','Move row up','Move row down','Hide artwork','Lock artwork'].includes(label)&&current.controls?.['Source actions']){await control('Source actions');continue;}
+      const authoring=authoringRoute(current,label);
+      if(authoring&&current.workspace.operation_tab!==authoring[1]){await control(authoring[0][authoring[1]]);continue;}
+      if(authoring&&current.controls?.['Operation Geometry & capabilities']&&['Endmill diameter','Cutting length','Plunge yes','Plunge no','Ramp yes','Ramp no'].includes(label)){await control('Operation Geometry & capabilities');continue;}
+      if(current.controls?.['Operation Corners & start']&&['Blade offset','Blade cutting depth'].includes(label)){await control('Operation Blade geometry');continue;}
+      if(current.controls?.['Operation Corners & start']&&label==='Use suggested operation values'){await control('Operation Suggested values');continue;}
       if(current.resources?.open&&current.controls?.['Resource item chooser']&&(label==='Library search'||label==='New tool'||label==='New machine'||label.startsWith('Library tool ')||label.startsWith('Library machine '))){await control('Resource item chooser');continue;}
       if(current.resources?.open&&current.controls?.['Library profile chooser']&&label.startsWith('Library profile ')&&!label.includes('actions')){await control('Library profile chooser');continue;}
       if(['Setup','Machine','Job settings'].includes(label)&&current.controls?.['Setup pages']){await control('Setup pages');continue;}
@@ -136,7 +158,7 @@ const control = async label => {
       if(current.workspace?.inspector_collapsed&&label==='Filter fields'){await control('Toggle inspector');continue;}
       // A Face operation publishes its own inspector without the carving tabs,
       // so the carving-only tab routing must not run for it.
-      if(current.workspace?.inspector===2&&!current.resources?.open&&!current.resources?.jobsOpen&&!['face','profile'].includes(current.job?.kind)){
+      if(current.workspace?.inspector===2&&!current.resources?.open&&!current.resources?.jobsOpen&&current.controls?.['Operation Endmill']){
         const tab=operationTarget(label)??geometryTarget(label);
         if(tab!==null&&current.workspace.operation_tab!==tab){await control(['Operation Shape & depth','Operation Endmill','Operation V-bit'][tab]);continue;}
         if(['Depth-dependent clearing','Deepest-region clearing'].includes(label)){await control('Operation clearing strategy');continue;}
@@ -157,7 +179,7 @@ const control = async label => {
       const actions=Object.keys(actionProbes).find(prefix=>label===`Reset ${prefix.toLowerCase()} overrides`);
       if(actions&&current.controls?.[actionProbes[actions]]){await control(actionProbes[actions]);continue;}
       if(current.resources?.open&&libraryMenus[label]){await control(libraryMenus[label]);continue;}
-      if((current.resources?.open||current.resources?.jobsOpen)&&dropdown){await control(dropdown);continue;}
+      if((current.resources?.open||current.resources?.jobsOpen||dropdown?.startsWith('Job '))&&dropdown){await control(dropdown);continue;}
       if(current.resources?.open&&['Path control','Coolant','Configuration blend tolerance','Configuration naive CAM tolerance'].includes(label)){await control('Motion & coolant');continue;}
       if(current.resources?.open&&['Reapply reviewed profile','Reset assignment overrides'].includes(label)){await control('Applied job values');continue;}
       throw new Error(`Missing control ${label}`);
@@ -165,10 +187,18 @@ const control = async label => {
     const nav=label.startsWith('Artwork ')||label.startsWith('Operation row ')||label.startsWith('Operation enabled ')||label.startsWith('Operation actions')||['Add operation','Artwork','Cutting','+ Import artwork','Rename operation','Apply name','Cancel rename'].includes(label);
     const resource=!nav&&current.resources?.open,jobTools=!nav&&current.resources?.jobsOpen;
     const list=resource&&label!=='Library tool name'&&(label.startsWith('Library tool ')||label.startsWith('Library machine '));
-    const clip=current.controls?.[current.controls?.['Assignment picker']?'Assignment picker viewport':nav?'Navigator viewport':list?'Resource list viewport':resource?'Resource viewport':jobTools?'Job tools viewport':'Inspector viewport'];
+    let clip=current.controls?.[current.controls?.['Assignment picker']?'Assignment picker viewport':nav?'Navigator viewport':list?'Resource list viewport':resource?'Resource viewport':jobTools?'Job tools viewport':'Inspector viewport'];
+    const geometryClip=current.controls?.[label.startsWith('Mapping ')?'Machine mapping viewport':'Operation geometry viewport'];
+    if(geometryClip&&clip&&/^(Mapping |Knife chain |Carving component |Profile contour |Profile side |Profile traversal )/.test(label)){
+      const intersection=[Math.max(clip[0],geometryClip[0]),Math.max(clip[1],geometryClip[1]),Math.min(clip[2],geometryClip[2]),Math.min(clip[3],geometryClip[3])];
+      if(intersection[3]-intersection[1]>28)clip=intersection;
+    }
     const bottom=(clip?.[3]??await evaluate('innerHeight-65'))+1;
     const top=(clip?.[1]??150)-1;
-    const shellAction=(!nav&&rect[1]>=0&&rect[3]<=90)||['All enabled operations','Through selected operation','Setup','Machine','Job settings','Endmill tool','V-bit tool','Knife tool','Rename','Move earlier','Move later','Delete operation','Generate through operation','Tool geometry','Job tools','Tool library','Setup pages'].includes(label);
+    // Offscreen inspector controls can pass under the header while scrolling.
+    // Only named shell controls bypass the inspector clip; position alone
+    // would click an unrelated header button behind a clipped form control.
+    const shellAction=['Operation Area & heights','Operation Tool & passes','Operation Geometry','Operation Cutting','Operation Tabs & entry','Operation Corners & start','All enabled operations','Through selected operation','Setup','Machine','Job settings','Endmill tool','V-bit tool','Knife tool','Rename','Move earlier','Move later','Delete operation','Generate through operation','Tool geometry','Job tools','Tool library','Setup pages','Toggle navigator','Toggle inspector','Generation scope','Inspect result'].includes(label);
     if(shellAction||label.includes('library tool')||label.includes('library profile')||label.startsWith('Apply Roughing')||label.startsWith('Apply Finish')||['Endmill only','Combined','Operation Shape & depth','Operation Endmill','Operation V-bit','Generate operation'].includes(label)||rect[1]>=top && rect[3]<=bottom || !nav && !resource && !jobTools && rect[0]<(clip?.[0]??850) || libraryMenus[label] || dropdown && (resource||jobTools) || ['Cancel selection','Browse library…','Resource item chooser','Library profile chooser','Library profile actions','Library actions','Library search','New tool','New machine','Use machine','Use tool','Use tool & profile','Apply reviewed machine','Tools & profiles','Machines','Close library','Load library','Save library','Compare stored revision','Reload stored library','Overwrite reviewed revision','Import library','Export library','Import machine configuration','Close job tools','Roughing assignment','Finishing assignment','Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
       await click((rect[0]+rect[2])/2,(rect[1]+rect[3])/2); await sleep(120);return;
     }
@@ -180,8 +210,6 @@ const control = async label => {
   throw new Error(`Could not scroll to ${label}`);
 };
 const edit = async(label,text)=>{
-  const current=await state(),tab=operationTarget(label);
-  if(current.workspace?.inspector===2&&!['face','profile'].includes(current.job?.kind)&&tab!==null&&current.workspace.operation_tab!==tab)await control(['Operation Shape & depth','Operation Endmill','Operation V-bit'][tab]);
   await control('Filter fields');await pressKey('a','KeyA',2);await send('Input.insertText',{text:label});await sleep(160);
   await control(label);await pressKey('a','KeyA',2);
   if(text==='')await pressKey('Backspace','Backspace');else await send('Input.insertText',{text});await sleep(100);
@@ -206,7 +234,10 @@ try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
   if(process.argv.includes('--trace-io'))await evaluate(`(()=>{globalThis.GUI_IO_TRACE=[];const original=globalThis.CAM_GUI.receive_event;globalThis.CAM_GUI.receive_event=text=>{try{const event=JSON.parse(text);if(event.Io)globalThis.GUI_IO_TRACE.push(event.Io);}catch{}return original(text);};})()`);
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  if(process.argv.includes('--resources-review')) {
+  if(process.argv.includes('--machine-authoring')) {
+    const {machineAuthoringScenario}=await import('./machine-authoring-scenario.mjs');
+    await machineAuthoringScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey});
+  } else if(process.argv.includes('--resources-review')) {
     const {resourcesReviewScenario}=await import('./resources-review-scenario.mjs');
     await resourcesReviewScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,chooseFile,pressKey});
   } else if(process.argv.includes('--shell')) {

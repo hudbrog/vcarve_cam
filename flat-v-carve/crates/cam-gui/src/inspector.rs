@@ -3,6 +3,8 @@ use super::*;
 mod face_ui;
 #[path = "knife_ui.rs"]
 mod knife_ui;
+#[path = "machine_ui.rs"]
+mod machine_ui;
 #[path = "operation_ui.rs"]
 mod operation_ui;
 #[path = "profile_ui.rs"]
@@ -45,6 +47,11 @@ impl App {
             .and_then(|s| s.finish.clone())
             .or(cached_finish);
         doc.job = job;
+        if clear.iter().any(|field| matches!(field, 32 | 38)) {
+            doc.clear_mapping_drafts(false);
+        } else if clear.iter().any(|field| matches!(field, 33 | 39)) {
+            doc.clear_mapping_drafts(true);
+        }
         for &field in clear {
             doc.raw.raw.remove(&doc.raw.key(field));
         }
@@ -71,6 +78,26 @@ impl App {
                 20 if operation => "Stepdown",
                 46 if operation => "Stepover",
                 16 if operation => "Included angle",
+                22 if operation => "Spindle speed",
+                63 if operation => "Cutting feed",
+                64 if operation => "Plunge feed",
+                66 if operation => "Tool stepdown limit",
+                67 if operation => "Pass stepdown",
+                73 | 86 | 89 if operation => "Top offset",
+                74 | 87 | 90 if operation => "Bottom offset",
+                75 if operation => "Pass angle",
+                76 if operation => "Entry overrun",
+                77 if operation => "Exit overrun",
+                78 if operation => "Margin min X",
+                79 if operation => "Margin max X",
+                80 if operation => "Margin min Y",
+                81 if operation => "Margin max Y",
+                82 if operation => "Area min X",
+                83 if operation => "Area min Y",
+                84 if operation => "Area width",
+                85 if operation => "Area length",
+                109 if operation => "Entry at",
+                110 if operation => "Path tolerance",
                 32 => "Tool number (T)",
                 33 => "Length entry (H)",
                 38 => "V-bit tool (T)",
@@ -78,13 +105,13 @@ impl App {
                 _ => FIELDS[field],
             };
             let unit = match field {
-                2 | 3 | 10 | 21 | 51 | 63..=65 => "mm/min",
+                2 | 3 | 10 | 21 | 51 | 63..=65 | 92 | 99 | 101 | 105 => "mm/min",
                 11 | 22 => "RPM",
-                14 | 16 | 28 | 69 | 72 => "deg",
+                14 | 16 | 28 | 69 | 72 | 75 | 98 | 103 | 107 => "deg",
                 29 => "×",
                 34 | 37 => "s",
                 35 => "digits",
-                32 | 33 | 38 | 39 | 48..=50 | 52..=56 | 58..=60 => "",
+                32 | 33 | 38 | 39 | 48..=50 | 52..=56 | 58..=60 | 95 | 97 | 108 => "",
                 _ => "mm",
             };
             let response = crate::ui_widgets::number_row(
@@ -167,7 +194,7 @@ impl App {
             }
             let operation = self.inspector_tab == 2;
             let offset = if operation { self.operation_scroll[self.operation_tab] } else { self.scroll[self.inspector_tab] };
-            let area=egui::ScrollArea::vertical().min_scrolled_height(32.).id_salt(("inspector-scroll",self.inspector_tab,if operation {self.operation_tab} else {0})).auto_shrink([false,!operation]).max_height(if operation { (ui.available_height()-80.).max(48.) } else {ui.available_height()}).vertical_scroll_offset(offset).show(ui,|ui|{
+            let area=egui::ScrollArea::vertical().min_scrolled_height(16.).id_salt(("inspector-scroll",self.inspector_tab,if operation {self.operation_id()} else {String::new()},if operation {self.operation_tab} else {0})).auto_shrink([false,!operation]).max_height(if operation { (ui.available_height()-52.).max(16.) } else {ui.available_height()}).vertical_scroll_offset(offset).show(ui,|ui|{
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 if operation { ui.spacing_mut().interact_size.y = 22.; }
                 if self.document.is_none(){ui.label("Import an SVG or open a saved job to begin.");return;}
@@ -200,7 +227,7 @@ impl App {
             if operation {
                 self.operation_scroll[self.operation_tab]=area.state.offset.y;
                 ui.separator();
-                ui.small("Changes apply to this job");
+
                 ui.horizontal(|ui| {
                     let ready = !self.operation_ramp_draft && self.document.as_ref().is_some_and(|d| !d.pending() && !d.job.operations.is_empty());
                     let generate = ui.add_enabled(ready && self.active.is_none() && self.io.is_none(),egui::Button::new("Generate all"));
@@ -317,12 +344,17 @@ impl App {
     }
 
     fn artwork_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.heading("Artwork & placement");
+        use crate::{ui_icons::Icon, ui_widgets};
         for rejection in &self.artwork_rejections {
             ui.colored_label(Color32::from_rgb(176, 42, 35), rejection);
         }
         let item = self.document.as_ref().unwrap().active_artwork().cloned();
+        if let Some(item) = &item {
+            ui.heading(&item.name);
+            ui_widgets::scope(ui, "Artwork item · this job");
+        }
         let idle = self.active.is_none() && self.io.is_none();
+        ui_widgets::section(ui, "Source", Some(Icon::Artwork));
         ui.horizontal_wrapped(|ui| {
             if button(ui, "Add SVG", idle).clicked() {
                 self.open(IoKind::AddSvg, ctx);
@@ -330,40 +362,18 @@ impl App {
             if button(ui, "Replace SVG", idle && item.is_some()).clicked() {
                 self.open(IoKind::ReplaceSvg, ctx);
             }
-            if button(ui, "Delete artwork", idle && item.is_some()).clicked() {
-                self.artwork_command(
-                    engine::ArtworkCommand::Delete {
-                        item: item.as_ref().unwrap().id.clone(),
-                    },
-                    ctx,
-                );
-            }
         });
         if let Some(item) = item {
-            ui.horizontal_wrapped(|ui| {
-                let mut hidden = self.view.artwork.hidden.contains(&item.id.0);
-                let r = ui.checkbox(&mut hidden, "Hide artwork");
-                observe_control("Hide artwork", r.rect);
-                if r.changed() {
-                    if hidden {
-                        self.view.artwork.hidden.insert(item.id.0.clone());
-                    } else {
-                        self.view.artwork.hidden.remove(&item.id.0);
-                    }
+            let actions = ui.menu_button("Source actions", |ui| {
+                if button(ui, "Delete artwork", idle).clicked() {
+                    self.artwork_command(
+                        engine::ArtworkCommand::Delete {
+                            item: item.id.clone(),
+                        },
+                        ctx,
+                    );
+                    ui.close();
                 }
-                let mut locked = self.view.artwork.locked.contains(&item.id.0);
-                let r = ui.checkbox(&mut locked, "Lock artwork");
-                observe_control("Lock artwork", r.rect);
-                if r.changed() {
-                    if locked {
-                        self.view.artwork.locked.insert(item.id.0.clone());
-                    } else {
-                        self.view.artwork.locked.remove(&item.id.0);
-                    }
-                }
-            });
-            ui.small("Hide/Lock affect this workspace only. Assigned hidden artwork still cuts; numeric edits remain available when locked.");
-            ui.horizontal_wrapped(|ui| {
                 if button(ui, "Duplicate artwork", idle).clicked() {
                     self.artwork_command(
                         engine::ArtworkCommand::Duplicate {
@@ -371,6 +381,7 @@ impl App {
                         },
                         ctx,
                     );
+                    ui.close();
                 }
                 let ids: Vec<_> = self
                     .document
@@ -393,18 +404,94 @@ impl App {
                             engine::ArtworkCommand::Reorder { items: ordered },
                             ctx,
                         );
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                let mut hidden = self.view.artwork.hidden.contains(&item.id.0);
+                let r = ui.checkbox(&mut hidden, "Hide artwork");
+                observe_control("Hide artwork", r.rect);
+                if r.changed() {
+                    if hidden {
+                        self.view.artwork.hidden.insert(item.id.0.clone());
+                    } else {
+                        self.view.artwork.hidden.remove(&item.id.0);
+                    }
+                }
+                let mut locked = self.view.artwork.locked.contains(&item.id.0);
+                let r = ui.checkbox(&mut locked, "Lock artwork");
+                observe_control("Lock artwork", r.rect);
+                if r.changed() {
+                    if locked {
+                        self.view.artwork.locked.insert(item.id.0.clone());
+                    } else {
+                        self.view.artwork.locked.remove(&item.id.0);
                     }
                 }
             });
-            ui.label(format!("{} · {}", item.name, item.id.0));
-            ui.small("SVG units become mm. The page is flipped once about its physical height, so the page's top edge is the stock's maximum Y and the page's bottom-left corner is the setup origin; after that, placement = scale × rotate(artwork − origin).");
+            observe_control("Source actions", actions.response.rect);
+            ui.collapsing("SVG interpretation", |ui| {
+                ui.small("SVG units become mm. The page is flipped once about its physical height; placement = scale × rotate(artwork − origin).");
+                ui.small(format!("Import tolerance: {} mm", item.import_settings.geometry_tolerance_mm));
+                ui.small("Hide/Lock affect this workspace only. Assigned hidden artwork still cuts; numeric edits remain available when locked.");
+            });
+            ui_widgets::section(ui, "Placement", None);
             self.numbers(ui, ctx, &[26, 27, 28, 29]);
+            ui_widgets::section(ui, "Usage", None);
+            let usage = self
+                .document
+                .as_ref()
+                .unwrap()
+                .job
+                .operations
+                .iter()
+                .enumerate()
+                .filter_map(|(index, op)| {
+                    let count = match &op.settings {
+                        OperationSettingsV5::FlatVcarve(s) => s
+                            .components
+                            .iter()
+                            .filter(|r| r.artwork_item_id == item.id)
+                            .count(),
+                        OperationSettingsV5::Profile(s) => s
+                            .contours
+                            .iter()
+                            .filter(|r| r.geometry.artwork_item_id == item.id)
+                            .count(),
+                        OperationSettingsV5::DragKnife(s) => s
+                            .chains
+                            .iter()
+                            .filter(|r| r.artwork_item_id == item.id)
+                            .count(),
+                        OperationSettingsV5::Face(_) => 0,
+                    };
+                    (count > 0).then(|| {
+                        (
+                            op.id.clone(),
+                            format!(
+                                "{:02} {} · {} reference{}{}",
+                                index + 1,
+                                op.name,
+                                count,
+                                if count == 1 { "" } else { "s" },
+                                if op.enabled { "" } else { " · disabled" }
+                            ),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            if usage.is_empty() {
+                ui.small("No operation references this source yet.");
+            }
+            for (id, label) in usage {
+                if button(ui, &label, true).clicked() {
+                    self.select_operation(&id, ctx);
+                }
+            }
         } else {
             ui.label("Add an SVG to this project. Unresolved selections can be repaired after adding artwork or with Undo.");
         }
-        ui.separator();
-        ui.label("Geometry selection");
-        ui.small("Which geometry gets cut belongs to the operation, not to the artwork. Select filled components under Cutting → Geometry to carve, or click them in the viewport. This panel keeps placement, hide/lock and source management only.");
+        ui.small("References include selections awaiting source repair. Choose geometry in its operation or by clicking the viewport; Shift-click adds or removes a selection.");
         if button(ui, "Open operation geometry", self.document.is_some()).clicked() {
             self.operation_tab = 0;
             self.navigate(2);
@@ -590,8 +677,13 @@ impl App {
         }
     }
     fn job_settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.heading("Planning tolerances");
-        ui.small("Saved with this job and used by all its operations. Changing these values requires regenerating paths; they are independent of machine output precision.");
+        crate::ui_widgets::scope(ui, "All operations · this job");
+        crate::ui_widgets::section(
+            ui,
+            "Planning tolerances",
+            Some(crate::ui_icons::Icon::Settings),
+        );
+        ui.small("Changing these values requires regenerating paths. Machine output precision and display quality have separate controls.");
         self.numbers(ui, ctx, &[23, 25]);
         if button(ui, "Use default planning tolerances", true).clicked() {
             self.edit_job(ctx, &[23, 25], |job| {
@@ -705,7 +797,32 @@ impl App {
         }
     }
     fn machine_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.heading("Applied machine");
+        use crate::{ui_icons::Icon, ui_widgets};
+        let machine = self
+            .document
+            .as_ref()
+            .unwrap()
+            .job
+            .machine_configuration
+            .clone();
+        ui.heading(
+            machine
+                .as_ref()
+                .map(|m| m.origin.name.as_str())
+                .unwrap_or("Choose a machine"),
+        );
+        ui_widgets::scope(
+            ui,
+            if machine.is_some() {
+                "Applied snapshot · this job"
+            } else {
+                "This job"
+            },
+        );
+        if let Some(machine) = &machine {
+            ui.small(format!("Profile: {}", machine.origin.configuration_id));
+            ui.small("Library changes take effect only when you apply them to this job.");
+        }
         if button(ui, "Create or choose machine profile", true).clicked() {
             self.open_resource(ResourcePage::MachineLibrary);
             if !self.resources.ready {
@@ -715,6 +832,64 @@ impl App {
         let idle = self.active.is_none() && self.io.is_none();
         if button(ui, "Load machine profile", idle).clicked() {
             self.open(IoKind::Profile, ctx);
+        }
+        if let Some(machine) = &machine {
+            ui_widgets::section(ui, "Controller", Some(Icon::Machine));
+            self.applied_machine_options(ui, ctx, false);
+            let table =
+                machine.length_compensation == Some(cam_core::post::LengthCompensation::ToolTable);
+            ui_widgets::section(ui, "Tool mapping", Some(Icon::Endmill));
+            self.machine_mapping_table(ui, ctx);
+            if table && button(ui, "Use T numbers for H entries", true).clicked() {
+                let used = cam_core::project::v5::resources::assignment_statuses(
+                    &self.document.as_ref().unwrap().job,
+                )
+                .into_iter()
+                .map(|s| s.tool_id)
+                .collect::<Vec<_>>();
+                self.edit_job(ctx, &[], |job| {
+                    if let Some(m) = &mut job.machine_configuration {
+                        for row in &mut m.tools {
+                            if used.contains(&row.job_tool_id) {
+                                row.length_offset_number = row.tool_number;
+                            }
+                        }
+                    }
+                    Ok(())
+                });
+                for tool in used {
+                    self.document
+                        .as_mut()
+                        .unwrap()
+                        .clear_tool_mapping_draft(&tool, true);
+                }
+            }
+            if table {
+                ui.small("Use matching T/H only if your controller stores each tool's measured length at that same table number.");
+            }
+            ui_widgets::section(ui, "Output behavior", None);
+            self.applied_machine_options(ui, ctx, true);
+            self.numbers(ui, ctx, &[34, 35]);
+            if crate::authoring::active(&self.document.as_ref().unwrap().job, 36) {
+                self.numbers(ui, ctx, &[36]);
+            }
+            let advanced = egui::CollapsingHeader::new("Startup, clearance & machine assumptions")
+                .id_salt("applied-machine-advanced").open((!self.search.is_empty() || self.issue_focus.as_deref() == Some(FIELDS[7])).then_some(true))
+                .show(ui, |ui| {
+                    ui.small("Setup owns the work datum. Applying a machine keeps that datum; clearance is shared with Stock & work zero.");
+                    self.numbers(ui, ctx, &[7]);
+                    self.applied_machine_contract(ui, machine);
+                    if button(ui, "Reusable machine settings", true).clicked() {
+                        self.open_resource(ResourcePage::MachineLibrary);
+                        if !self.resources.ready { self.request_resources(ResourceIntent::Load, ctx); }
+                    }
+                });
+            observe_control("Machine advanced", advanced.header_response.rect);
+        } else {
+            ui.colored_label(
+                Color32::from_rgb(164, 83, 12),
+                "Create or choose a machine profile before checked export.",
+            );
         }
         let example = ui.collapsing("Example machine (review fixture)", |ui| {
             if button(ui, "Apply flower machine profile", idle).clicked() {
@@ -728,73 +903,6 @@ impl App {
             }
         });
         observe_control("Example machine", example.header_response.rect);
-        if let Some(machine) = &self.document.as_ref().unwrap().job.machine_configuration {
-            ui.label(&machine.origin.name);
-            ui.small(format!(
-                "Work offset: {}",
-                machine.work_offset.as_deref().unwrap_or("unset")
-            ));
-            ui.small("T = controller tool number. H = measured tool-length table entry, not a length in mm. A reusable machine profile may not yet map the cutters selected for this job.");
-            let table =
-                machine.length_compensation == Some(cam_core::post::LengthCompensation::ToolTable);
-            self.numbers(ui, ctx, &[7]);
-            let job = &self.document.as_ref().unwrap().job;
-            let operation_id = self
-                .document
-                .as_ref()
-                .map(|d| d.raw.operation.clone())
-                .unwrap_or_default();
-            // The mapping shown belongs to the selected operation's own tool,
-            // whatever kind that operation is.
-            let tool_id = crate::knife::settings_in(job, &operation_id)
-                .map(|s| &s.assignment.tool_id)
-                .or_else(|| {
-                    crate::authoring::tool_in(job, &operation_id, false).map(|tool| &tool.id)
-                });
-            ui.label(format!(
-                "Tool: {}",
-                tool_id
-                    .and_then(|id| job.tools.iter().find(|t| &t.id == id))
-                    .map(|t| format!("{} · {}", t.name, t.id))
-                    .unwrap_or_else(|| "no cutter assigned".into())
-            ));
-            self.numbers(ui, ctx, if table { &[32, 33] } else { &[32] });
-            if engine::carving(&self.document.as_ref().unwrap().job)
-                .is_some_and(|s| s.mode == FlatVcarveMode::Combined)
-            {
-                self.numbers(ui, ctx, if table { &[38, 39] } else { &[38] });
-            }
-            if table && button(ui, "Use T numbers for H entries", true).clicked() {
-                self.edit_job(ctx, &[33, 39], |job| {
-                    let used = cam_core::project::v5::resources::assignment_statuses(job)
-                        .into_iter()
-                        .map(|s| s.tool_id)
-                        .collect::<Vec<_>>();
-                    if let Some(m) = &mut job.machine_configuration {
-                        for row in &mut m.tools {
-                            if used.contains(&row.job_tool_id) {
-                                row.length_offset_number = row.tool_number;
-                            }
-                        }
-                    }
-                    Ok(())
-                });
-            }
-            if table {
-                ui.small("Use matching T/H only if your controller stores each tool's measured length at that same table number.");
-            }
-            ui.small("Setup owns the datum. Clearance is shared with Setup.");
-            self.applied_machine_options(ui, ctx);
-            self.numbers(ui, ctx, &[34, 35]);
-            if crate::authoring::active(&self.document.as_ref().unwrap().job, 36) {
-                self.numbers(ui, ctx, &[36]);
-            }
-        } else {
-            ui.colored_label(
-                Color32::from_rgb(164, 83, 12),
-                "Create or choose a machine profile before checked export.",
-            );
-        }
     }
 }
 

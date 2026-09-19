@@ -14,6 +14,7 @@ export async function knifeAuthoringScenario({control,edit,state,waitFor,send,ev
     if(shift)await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Shift',code:'ShiftLeft',modifiers:8,windowsVirtualKeyCode:16});
     await send('Input.dispatchMouseEvent',{type:'mouseMoved',...p,modifiers:shift?8:0});await sleep(80);
     for(const type of ['mousePressed','mouseReleased']){await send('Input.dispatchMouseEvent',{type,...p,button:'left',clickCount:1,modifiers:shift?8:0});await sleep(80);}
+    await waitFor(next=>!next.active&&next.revision>s.revision,'viewport selection processed before modifier release');
     if(shift)await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Shift',code:'ShiftLeft',windowsVirtualKeyCode:16});
   };
   await pick(10,22);await waitFor(s=>!s.active&&s.job.knife.chains.length===1,'viewport assigns open chain');

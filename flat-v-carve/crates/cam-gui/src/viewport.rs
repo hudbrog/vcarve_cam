@@ -2857,6 +2857,85 @@ mod tests {
         egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
     }
 
+    #[test]
+    fn knife_shift_click_extends_live_selection_while_the_scene_is_retained() {
+        let job = include_str!("../../../fixtures/gui6/knife.job.json").to_owned();
+        let scene = crate::session::execute(
+            &mut cam_service::retained::Retained::new(),
+            crate::session::Command::Preview { job },
+        )
+        .unwrap();
+        let mut view = Viewport::default();
+        view.load_scene(Ok(scene));
+        view.set_knife_selected(true);
+        view.artwork.enabled = true;
+        view.camera.set_tilt(0.);
+        view.camera.yaw = 0.;
+        let first = view
+            .knife_chains
+            .iter()
+            .find(|c| !c.closed)
+            .unwrap()
+            .reference
+            .clone();
+        let closed = view.knife_chains.iter().find(|c| c.closed).unwrap().clone();
+        // The retained preview selected both chains. Authoring has since
+        // selected just the first one without replacing that scene.
+        view.artwork.selected = vec![first.clone()];
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&mut view, &ctx, vec![]);
+        }
+        let rect = viewport_rect();
+        let a = closed.vertices[0];
+        let b = closed.vertices[1];
+        let point = crate::artwork_view::screen_point(
+            view.camera(rect),
+            view.scene.as_ref().unwrap().meta.bounds,
+            rect,
+            cam_core::geometry::Point::new((a[0] + b[0]) / 2., (a[1] + b[1]) / 2.),
+        );
+        let modifiers = egui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        for count in [2, 1] {
+            frame_with(
+                &mut view,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers,
+                    },
+                ],
+                modifiers,
+            );
+            frame_with(
+                &mut view,
+                &ctx,
+                vec![egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                }],
+                modifiers,
+            );
+            let events = view.take_artwork_events();
+            let Some(ArtworkEvent::KnifeSelection(selection)) = events.last() else {
+                panic!("Knife click did not emit a selection");
+            };
+            assert_eq!(selection.len(), count);
+            assert!(selection.contains(&first));
+            assert_eq!(selection.contains(&closed.reference), count == 2);
+            view.artwork.selected = selection.clone();
+        }
+    }
+
     fn pointer(position: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
         egui::Event::PointerButton {
             pos: position,

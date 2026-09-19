@@ -11,9 +11,8 @@ export async function gui8Scenario({control,edit,state,waitFor,send,evaluate,sle
     if(!(await state()).controls['Filter fields'])await control('Cutting');
     await control('Filter fields');await pressKey('a','KeyA',2);await pressKey('Backspace','Backspace');await sleep(150);
   };
-  // The profile inspector is one long scroll: the optional groups (tabs,
-  // finishing, start and entry) sit below the fold, so scroll the inspector to
-  // them before driving their controls.
+  // Scroll within the current task-focused tab; control() opens other tabs
+  // and scrolls to the actual visible control when needed.
   const scrollInspector=async(notches,direction=1)=>{
     const clip=(await state()).controls['Inspector viewport'];
     const x=(clip[0]+clip[2])/2,y=(clip[1]+clip[3])/2;
@@ -26,14 +25,16 @@ export async function gui8Scenario({control,edit,state,waitFor,send,evaluate,sle
     record('inspector scroll',(await state()).workspace.operation_scroll[0]);
   };
 
-  // The profile editor is one long inspector; give the page enough height that
-  // every group is on screen, so the tour drives the shipped layout instead of
-  // fighting its scroll area.
-  await send('Emulation.setDeviceMetricsOverride',{width:1280,height:4200,deviceScaleFactor:1,mobile:false});
+  await send('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
   await sleep(700);
 
   // --- GUI8a: a closed profile from an SVG. ---------------------------------
-  await control('File');await chooseFile('New profile job from SVG','fixtures/gui3/lettering.svg');
+  await control('File');await control('New job');
+  await waitFor(s=>s.job&&!s.active,'empty profile job');
+  await chooseFile('+ Import artwork','fixtures/gui3/lettering.svg');
+  await waitFor(s=>!s.active&&s.job?.artworks?.length===1,'profile artwork');
+  await control('Add operation');
+  await control(Object.keys((await state()).controls).find(k=>k.startsWith('Add Profile —')));
   await waitFor(s=>s.job?.kind==='profile'&&!s.active,'new profile job');
   const fresh=await state();
   if(fresh.job.contours!==0||fresh.job.stepdown!=null)
@@ -100,7 +101,7 @@ export async function gui8Scenario({control,edit,state,waitFor,send,evaluate,sle
   await screenshot('gui8-tabs-refused.png');
   // Removing the hole from the selection repairs it: the outer contours have
   // room for the tab.
-  await control('Profile contour artwork-1 / letter-o-0-hole-0');
+  await control(`Profile contour ${fresh.job.artworks[0].id} / letter-o-0-hole-0`);
   await waitFor(s=>s.job.contours===2&&!s.active,'hole removed from the tab selection');
   await control('Generate');
   const tabbed=await waitFor(s=>s.current&&!s.active&&s.motions>0&&s.exportReady,'regenerated with tabs',120);
@@ -239,6 +240,23 @@ export async function gui8Scenario({control,edit,state,waitFor,send,evaluate,sle
     throw new Error('The reopened profile lost its start anchor or ramp entry');
   await screenshot('gui8-profile-reopened.png');
   record('profile reopened with tabs, finishing and entry',reopened.job.contours);
+
+  await control('Cutting');await control('Manual anchors');await control('Add tab on');
+  await control('lettering.svg / letter-o-0-outer · 25%');
+  await waitFor(s=>!s.active&&s.job.tabs?.placement?.anchors?.length===1,'manual tab added');
+  await edit('Tab anchor fraction','0.4');await clearSearch();
+  await waitFor(s=>!s.active&&!s.pending&&s.job.tabs.placement.anchors[0].fraction_along_source_contour===0.4,'numeric manual anchor');
+  const startBefore=JSON.stringify((await state()).job.start);
+  await edit('Tab anchor fraction','-');await clearSearch();await control('Operation Geometry');
+  await waitFor(s=>!s.active&&s.pending,'partial anchor retained on another tab');
+  await sleep(1800);await send('Page.reload');await sleep(700);
+  await waitFor(s=>s.controls?.['Restore draft'],'anchor recovery offered');await control('Restore draft');
+  await waitFor(s=>!s.active&&s.job?.kind==='profile'&&s.pending,'partial anchor recovered');
+  await control('Undo');
+  await waitFor(s=>!s.active&&!s.pending&&s.job.tabs.placement.anchors[0].fraction_along_source_contour===0.4,'recovered anchor Undo');
+  if(JSON.stringify((await state()).job.start)!==startBefore)throw Error('Tab draft or Undo moved the independent start anchor');
+  await control('Operation Tabs & entry');await screenshot('gui8-manual-anchor-recovered.png');
+  record('manual tab fraction, independent start, tab navigation and recovered Undo',await state());
 
   await control('Cutting');await edit('Stepdown','-');
   await waitFor(s=>s.pending&&!s.current,'pending text invalidates the profile result');

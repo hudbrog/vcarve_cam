@@ -365,6 +365,12 @@ impl Document {
         }
     }
     pub fn text(&self, field: usize) -> String {
+        if matches!(field, 32 | 33 | 38 | 39)
+            && let Some(tool) =
+                crate::authoring::tool_in(&self.job, &self.raw.operation, field >= 38)
+        {
+            return self.mapping_text(&tool.id, matches!(field, 33 | 39));
+        }
         self.raw
             .raw
             .get(&self.raw.key(field))
@@ -387,6 +393,13 @@ impl Document {
         text: String,
         stock: StockEditContext,
     ) -> Result<(), String> {
+        if matches!(field, 32 | 33 | 38 | 39)
+            && let Some(tool) =
+                crate::authoring::tool_in(&self.job, &self.raw.operation, field >= 38)
+        {
+            let id = tool.id.clone();
+            return self.edit_mapping(&id, matches!(field, 33 | 39), text);
+        }
         let group = crate::authoring::group(field);
         let face_group = crate::face::group(field);
         let group = if group.is_empty() { face_group } else { group };
@@ -549,6 +562,28 @@ impl Document {
                 let Some(field) = FIELDS.iter().position(|name| *name == label) else {
                     return false;
                 };
+                if crate::state::is_mapping(scope, operation, field) {
+                    let active = self.job.tools.iter().any(|tool| tool.id == operation)
+                        && self.job.machine_configuration.as_ref().is_some_and(|m| {
+                            field == 32
+                                || m.length_compensation
+                                    == Some(cam_core::post::LengthCompensation::ToolTable)
+                        });
+                    return active
+                        && Draft::parse(text).ok()
+                            != Some(self.mapping_value(operation, field == 33));
+                }
+                if matches!(field, 32 | 33 | 38 | 39) {
+                    let length = matches!(field, 33 | 39);
+                    if let Some(tool) = self.legacy_mapping_tool(key, length) {
+                        return self.job.machine_configuration.as_ref().is_some_and(|m| {
+                            !length
+                                || m.length_compensation
+                                    == Some(cam_core::post::LengthCompensation::ToolTable)
+                        }) && Draft::parse(text).ok()
+                            != Some(self.mapping_value(tool, length));
+                    }
+                }
                 if !crate::state::is_anchor(field) {
                     return false;
                 }
@@ -611,6 +646,7 @@ pub struct App {
     operation_picker: Option<usize>,
     operation_rename: Option<(String, String)>,
     operation_scroll: [f32; 3],
+    operation_views: std::collections::BTreeMap<String, (usize, [f32; 3])>,
     operation_ramp_draft: bool,
     preview_dirty: bool,
     inspector_width: f32,
@@ -691,6 +727,7 @@ impl Default for App {
             operation_picker: None,
             operation_rename: None,
             operation_scroll: [0.; 3],
+            operation_views: Default::default(),
             operation_ramp_draft: false,
             preview_dirty: false,
             inspector_width: crate::ui_theme::INSPECTOR,
@@ -1235,6 +1272,9 @@ impl App {
                 self.remember();
                 if let Some(doc) = &mut self.document {
                     doc.job = job;
+                    if reply["clearMappings"] == true {
+                        doc.clear_mapping_drafts(false);
+                    }
                     if let Some(fields) = reply["clearFields"].as_array() {
                         for field in fields.iter().filter_map(Value::as_u64) {
                             doc.raw.raw.remove(&doc.raw.key(field as usize));
@@ -1398,6 +1438,7 @@ impl App {
                     Draft::for_job(&job)
                 };
                 if reply["kind"] == "profile" {
+                    raw.raw.retain(|key, _| !key.starts_with("mapping/"));
                     for field in [7, 32, 33, 34, 35, 36, 38, 39] {
                         raw.raw.remove(&raw.key(field));
                     }
@@ -1415,10 +1456,14 @@ impl App {
                     job,
                     raw,
                 });
+                if reply["kind"] == "profile" {
+                    self.document.as_mut().unwrap().clear_mapping_drafts(false);
+                }
                 self.changed(ctx);
                 if reply["kind"] != "profile" {
                     self.operation_tab = 0;
                     self.operation_scroll = [0.; 3];
+                    self.operation_views.clear();
                     self.operation_ramp_draft = false;
                     self.artwork_rejections.clear();
                     self.plan = None;
@@ -1692,20 +1737,24 @@ impl App {
     }
     fn undo(&mut self, ctx: &egui::Context) {
         if let Some(previous) = self.undo.pop() {
+            let previous_operation = self.operation_id();
             if let Some(current) = self.document.replace(previous) {
                 self.redo.push(current);
                 Self::trim_history(&mut self.redo);
             }
+            self.restore_operation_view(&previous_operation);
             self.edit_group = None;
             self.changed(ctx);
         }
     }
     fn redo(&mut self, ctx: &egui::Context) {
         if let Some(next) = self.redo.pop() {
+            let previous_operation = self.operation_id();
             if let Some(current) = self.document.replace(next) {
                 self.undo.push(current);
                 Self::trim_history(&mut self.undo);
             }
+            self.restore_operation_view(&previous_operation);
             self.edit_group = None;
             self.changed(ctx);
         }

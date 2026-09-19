@@ -8,7 +8,7 @@ The scope and acceptance criteria are in the [visual redesign plan](ui-visual-re
 | V1 visual foundation | Complete | Shared tokens/icons, bounded forms, Stock sections and live datum diagram; 167 tests |
 | V2 workspace shell | Complete | Compact header, one ordered row per operation, anchored job tools, scope/status, adaptive panels; 171 tests |
 | V3 resources | Complete | Full-width Library/Machines/Job tools, parameter-driven diagrams, contextual staged picker; native and browser resource acceptance |
-| V4 authoring | Pending | All four operations, artwork, machine, diagrams |
+| V4 authoring | Complete | Four operation editors, Artwork/Machine/Job settings, procedural diagrams, stable operation views, job-wide T/H drafts; native and browser acceptance |
 | V5 inspection | Pending | View controls, transport, timeline, result inspection |
 | V6 completion | Pending | Export, recovery, exceptional states, full visual/behavior audit |
 
@@ -145,3 +145,35 @@ Nonnumeric controls and their target ownership:
 | Recovery restore/keep/reload/clear, failed file retry | Exceptional status surfaces |
 
 Tests for routed controls must follow the new visible menus/tabs without directly changing application state. Keep observation probes tied to real visible widgets; do not publish imaginary rectangles to make old scenarios pass.
+
+## V4 — authoring panels
+
+All four operation editors now share a sticky ordinal/name/type/state header, compact tabs, flat collapsible sections, bounded numeric rows and the existing generation footer. Face uses Area & heights / Tool & passes; Profile uses Geometry / Cutting / Tabs & entry; Knife uses Geometry / Cutting / Corners & start. Flat V-carve retains Shape & depth / Endmill / V-bit, with carving mode in Shape & depth so it scrolls on short windows. Search reaches numeric fields across tabs; diagnostics select the corresponding tab. Collapsed section IDs include the operation identity. Tab and scroll state follow stable operation IDs through selection, reordering, document adoption and Undo, with backward-compatible recovery defaults.
+
+Artwork now groups Source/actions, Placement and Usage, including disabled operations and references awaiting repair. Knife uses the shared source-management surface. Job settings stays a short scoped tolerance form. Corrected numeric unit labels include Face angle, Profile entry/lead feeds and angles, tab count and anchor fractions; long units no longer wrap. Profile's duplicate tool stepdown limit control was removed from Feeds & speed; its single editor remains with pass depth. The procedural Face coverage/travel/entry and Knife heading diagrams are documented in the asset manifest.
+
+Acceptance exposed a pre-existing Knife Shift-click defect: it extended the retained scene's old selection. It now extends the live qualified artwork selection, like Profile. A real-widget regression test keeps the old scene while adding/removing a chain; browser coverage also verifies Shift selection and Undo.
+
+Machine now has applied identity/provenance, compact controller and output selectors, a bounded job-wide T/H table, and expandable startup/M6/rapid-rate/holder assumptions. Custom holder segment dimensions remain read-only. T/H raw text follows stable job-tool IDs, so shared cutters have one mapping independent of operation selection, including unused cutters and zero-operation jobs. Older operation-scoped drafts remain recoverable. Explicit profile application replaces mapping drafts; Undo restores them. Matching T to H affects assigned tools only, retaining unrelated unused-tool input. Changing the work offset or coolant preserves partial blend values. Applying a machine preserves work zero.
+
+Profile manual anchors use bounded shared field rows. Browser acceptance covers numeric manual anchors, independent start anchors, tab navigation, partial input, restart/recovery and recovered Undo. Existing source replacement, unresolved-reference repair, ordering, hide/lock, duplication and portable save/reopen remain reachable through the reorganized Artwork controls.
+
+Final validation: `cargo test -p cam-gui --locked --quiet` passed 251 tests (180 library plus 71 integration/binary tests), with one ignored test; `cargo clippy -p cam-gui --features ui-review --locked -- -D warnings`, formatting and diff checks passed. Native and WASM builds passed; all 111 numeric field IDs have explicit destinations. Tests cover stable operation view state, diagnostic routing, bounded forms, live Knife selection and job-wide mapping/recovery semantics.
+
+Browser runs passed with no console errors; paths below are relative to `flat-v-carve/artifacts/gui/browser-smoke/`:
+
+| Workflow | Run | Build | Checks |
+|---|---|---|---|
+| Artwork / Flat V-carve source repair, combined generation, exact checked bytes, portable save and Undo | `2026-09-19T10-06-41.211Z` | `b9919d1ce183` | 7 |
+| Source-free Face, ordered Face → carve/knife, playback, export and height-dependency repair | `2026-09-19T10-13-09.796Z` | `1ff0534ca2fe` | 6 |
+| Profile contours, tabs/finish/ramp, library apply/modify/reset, export, manual-anchor recovery | `2026-09-19T10-12-01.142Z` | `1ff0534ca2fe` | 18 |
+| Knife viewport Shift selection, blank-only suggestions, partial Undo, copied outlines, export/reopen | `2026-09-19T10-15-01.773Z` | `1ff0534ca2fe` | 3 |
+| Shared/unused T/H mappings, partial blend preservation, restart/Undo, machine application | `2026-09-19T10-17-21.667Z` | `1ff0534ca2fe` | 3 |
+
+The Artwork run predates only the final compact anchor row and unrelated Machine selector draft fix; the affected Profile and Machine workflows use the final build. A duplicate JavaScript declaration in the older GUI4 scenario was corrected before its passing run. Earlier development captures remain local and are not the final evidence.
+
+Representative reviewed captures: [Artwork](ui-redesign-evidence/v4/native-artwork.png), [Machine](ui-redesign-evidence/v4/native-machine.png), [Flat V-carve](ui-redesign-evidence/v4/native-carve-shape.png), [Face area](ui-redesign-evidence/v4/native-face-area.png), [Face cutting](ui-redesign-evidence/v4/native-face-cutting.png), [Profile cutting](ui-redesign-evidence/v4/native-profile-cutting.png), [recovered manual anchor](ui-redesign-evidence/v4/browser-profile-manual-anchor.png), [Knife](ui-redesign-evidence/v4/native-knife-corners.png), [Job settings](ui-redesign-evidence/v4/native-settings.png), and [640×400 logical at 2×](ui-redesign-evidence/v4/native-carve-compact.png). Refreshed native PNG/JSON pairs for all panels are in `flat-v-carve/artifacts/gui/visual-v4/`.
+
+The authoring footer and scroll body fit the compact window. The viewport toolbar still clips at reduced effective width; that is the V5 toolbar-overflow task. V5 inspection and V6 export/exception/full-matrix audit remain pending. This milestone does not claim those panels or the whole redesign are finished.
+
+The [expanded Machine summary](ui-redesign-evidence/v4/browser-machine-advanced.png) shows the retained startup, M6, rapid-rate and holder assumptions. Its capture scrolls the outer inspector after opening the real advanced section; the bounded mapping list keeps its own position.

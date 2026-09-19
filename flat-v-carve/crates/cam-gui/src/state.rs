@@ -133,6 +133,13 @@ pub fn is_anchor(field: usize) -> bool {
     ANCHOR_FIELDS.contains(&field)
 }
 
+pub fn is_mapping(scope: &str, identity: &str, field: usize) -> bool {
+    scope == "mapping"
+        && !identity.is_empty()
+        && cam_core::preview::valid_id(identity)
+        && matches!(field, 32 | 33)
+}
+
 /// Split a draft key into its scope, operation and field label. Every key the
 /// store writes has exactly this three-part shape.
 pub fn scope_of(key: &str) -> Option<(&str, &str, &str)> {
@@ -215,7 +222,11 @@ impl Draft {
             // Placement text belongs to one artwork item; anchor text belongs
             // to the qualified contour it parameterizes, whose owner must be a
             // live item; everything else is job-scoped.
-            let owner = if is_placement(field) {
+            let owner = if is_mapping(parts[0], parts[1], field) {
+                // Deleted tools may retain recoverable text, just as deleted
+                // operations do. It is inactive until the tool exists again.
+                Some(String::new())
+            } else if is_placement(field) {
                 Some(parts[0].to_string())
             } else if is_anchor(field) {
                 cam_core::project::v5::artwork::parse_wire_id(parts[0])
@@ -268,7 +279,8 @@ impl Draft {
             let Some(field) = FIELDS.iter().position(|name| *name == parts[2]) else {
                 return Err("Unsupported recovery field identity or text limit".into());
             };
-            let scoped = is_placement(field) || is_anchor(field);
+            let scoped =
+                is_placement(field) || is_anchor(field) || is_mapping(parts[0], parts[1], field);
             if (is_anchor(field)
                 && cam_core::project::v5::artwork::parse_wire_id(parts[0]).is_none())
                 || (!scoped && parts[0] != "job")

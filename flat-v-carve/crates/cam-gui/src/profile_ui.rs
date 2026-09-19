@@ -21,17 +21,7 @@ const SIDES: [(&str, ContourSide); 3] = [
 
 impl App {
     pub(super) fn profile_header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let name = self
-            .document
-            .as_ref()
-            .and_then(|d| d.active_operation())
-            .map(|op| op.name.clone())
-            .unwrap_or_else(|| "Profile".into());
-        ui.heading(name);
-        ui.small(
-            "Closed-contour milling: explicit sides, depth passes, tabs, finishing and entries.",
-        );
-        ui.separator();
+        self.operation_tabs(ui, &["Geometry", "Cutting", "Tabs & entry"]);
         let _ = ctx;
     }
 
@@ -42,17 +32,20 @@ impl App {
             5 => self.job_tool_panel(ui, ctx, true),
             6 => self.view.inspection_controls(ui),
             _ => {
-                ui.heading("Profile");
-                ui.small("Mills the selected closed contours. Nothing is assumed: unset values stay unset and the planner reports what is still missing.");
-                ui.add_space(4.);
-                self.profile_geometry(ui, ctx);
-                self.profile_tool(ui, ctx);
-                self.profile_heights(ui, ctx);
-                self.profile_order(ui, ctx);
-                self.profile_tabs(ui, ctx);
-                self.profile_finishing(ui, ctx);
-                self.profile_starts(ui, ctx);
-                self.profile_evidence(ui);
+                if self.operation_section_visible(0) {
+                    self.profile_geometry(ui, ctx);
+                    self.profile_order(ui, ctx);
+                }
+                if self.operation_section_visible(1) {
+                    self.profile_tool(ui, ctx);
+                    self.profile_heights(ui, ctx);
+                    self.profile_finishing(ui, ctx);
+                }
+                if self.operation_section_visible(2) {
+                    self.profile_tabs(ui, ctx);
+                    self.profile_starts(ui, ctx);
+                    self.profile_evidence(ui);
+                }
             }
         }
     }
@@ -119,7 +112,7 @@ impl App {
                             .collect();
                     }
                 }
-                egui::ScrollArea::vertical()
+                let list = egui::ScrollArea::vertical()
                     .id_salt("profile-geometry-list")
                     .auto_shrink([false, true])
                     .max_height(230.)
@@ -245,6 +238,7 @@ impl App {
                             }
                         }
                     });
+                observe_control("Operation geometry viewport", list.inner_rect);
             }
             let unresolved: Vec<usize> = rows
                 .iter()
@@ -390,36 +384,19 @@ impl App {
             return;
         };
         let mut text = document.anchor_text(scope, field, value);
-        let response = ui
-            .with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                let label = ui
-                    .horizontal_wrapped(|ui| {
-                        let response = ui.label(FIELDS[field]);
-                        help::icon(ui, FIELDS[field]);
-                        response
-                    })
-                    .inner;
-                ui.horizontal(|ui| {
-                    let response = ui
-                        .add(
-                            egui::TextEdit::singleline(&mut text)
-                                .id(egui::Id::new((
-                                    "carving-field",
-                                    scope,
-                                    &document.raw.operation,
-                                    field,
-                                )))
-                                .desired_width((ui.available_width() - 58.).clamp(65., 160.))
-                                .char_limit(128)
-                                .hint_text("Unset"),
-                        )
-                        .labelled_by(label.id);
-                    ui.small("share of the contour, 0 up to 1");
-                    response
-                })
-                .inner
-            })
-            .inner;
+        let response = crate::ui_widgets::number_row(
+            ui,
+            egui::Id::new(("carving-field", scope, &document.raw.operation, field)),
+            if field == 97 {
+                "Tab fraction"
+            } else {
+                "Start fraction"
+            },
+            &mut text,
+            "",
+            FIELDS[field],
+        );
+        ui.small("Fraction along source contour: 0 up to, but excluding, 1.");
         observe_control(FIELDS[field], response.rect);
         observe_control(&format!("Anchor {} {scope}", FIELDS[field]), response.rect);
         if self.issue_focus.as_deref() == Some(FIELDS[field]) {
@@ -464,16 +441,30 @@ impl App {
     }
 
     fn profile_tool(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        self.operation_group(ui, "Tool & cutting", true, |app, ui| {
+        self.operation_group(ui, "Tool & cutting profile", true, |app, ui| {
             // The same cutter picker every operation uses.
             let operation = app.operation_id();
             let cutter = super::tool_picker::Cutter::milling(&operation, "Profile");
             app.tool_picker(ui, ctx, &cutter);
-            ui.separator();
-            app.operation_numbers(ui, ctx, &[12, 13]);
-            ui.separator();
-            help::label(ui, "Feeds & speed");
-            app.operation_numbers(ui, ctx, &[2, 10, 11, 88]);
+        });
+        let missing_geometry = authoring::tool_in(
+            &self.document.as_ref().unwrap().job,
+            &self.operation_id(),
+            false,
+        )
+        .is_none_or(|t| t.geometry.is_none());
+        self.operation_group(
+            ui,
+            "Geometry & capabilities",
+            missing_geometry,
+            |app, ui| {
+                app.operation_numbers(ui, ctx, &[12, 13]);
+                app.operation_capabilities(ui, ctx, false);
+                ui.small("A ramp needs a ramp-capable tool; a plunge needs a plunge-capable tool.");
+            },
+        );
+        self.operation_group(ui, "Feeds & speed", true, |app, ui| {
+            app.operation_numbers(ui, ctx, &[2, 10, 11]);
             let direction = profile::settings_in(&app.document.as_ref().unwrap().job, &app.operation_id())
                 .and_then(|s| s.assignment.spindle_direction);
             ui.horizontal_wrapped(|ui| {
@@ -494,9 +485,6 @@ impl App {
                 }
             });
             ui.small("Spindle rotation is required before checked export and does not change the generated paths.");
-            ui.separator();
-            app.operation_capabilities(ui, ctx, false);
-            ui.small("A ramp entry needs a tool you mark ramp capable; a plunge entry needs one you mark plunge capable.");
         });
     }
 
@@ -1235,7 +1223,12 @@ mod tests {
     fn profile_editor_owns_its_contour_table_and_cut_fields() {
         let mut app = app();
         let ctx = egui::Context::default();
-        let controls = render(&mut app, &ctx);
+        let mut controls = render(&mut app, &ctx);
+        assert!(!controls.contains_key("Roughing feed"));
+        app.operation_tab = 1;
+        let cutting = render(&mut app, &ctx);
+        assert!(!cutting.contains_key("Select all profile contours"));
+        controls.extend(cutting);
         for label in [
             "Select all profile contours",
             "Clear profile selection",
@@ -1324,6 +1317,7 @@ mod tests {
     #[test]
     fn tab_controls_state_their_placement_mode_and_anchor_rows() {
         let mut app = app();
+        app.operation_tab = 2;
         let ctx = egui::Context::default();
         let doc = app.document.as_mut().unwrap();
         crate::profile::set_tabs_enabled(&mut doc.job, &doc.raw.operation, true).unwrap();
@@ -1452,6 +1446,7 @@ mod tests {
     #[test]
     fn the_tool_group_offers_the_job_tool_and_library_actions() {
         let mut app = app();
+        app.operation_tab = 1;
         let ctx = egui::Context::default();
         let controls = render(&mut app, &ctx);
         // The profile renders the same cutter picker the carving stages use:
@@ -1482,6 +1477,7 @@ mod tests {
     #[test]
     fn start_entry_and_lead_controls_state_their_supported_choices() {
         let mut app = app();
+        app.operation_tab = 2;
         let ctx = egui::Context::default();
         let controls = render(&mut app, &ctx);
         for label in [

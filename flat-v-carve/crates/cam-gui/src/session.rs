@@ -777,9 +777,13 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
         Command::Resource { job, action } => {
             let job = open(&job)?;
             let clear = action.clear_fields(&job);
+            let clear_mappings = matches!(
+                action.as_ref(),
+                crate::resources::ResourceCommand::Machine { .. }
+            );
             (
                 (*action).execute(&job)?,
-                json!({"kind":"resource","clearFields":clear}),
+                json!({"kind":"resource","clearFields":clear,"clearMappings":clear_mappings}),
             )
         }
         Command::Preview { job } => (open(&job)?, json!({"kind":"preview"})),

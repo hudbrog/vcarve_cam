@@ -31,6 +31,65 @@ pub(super) fn tab_for_control(label: &str) -> usize {
     }
 }
 
+/// Resolve diagnostics before drawing the operation's tabs. The field IDs and
+/// control probes are shared with the existing editor and remain unchanged.
+fn tab_for_operation_control(kind: Option<crate::session::OperationKind>, label: &str) -> usize {
+    use crate::session::OperationKind;
+    let field = FIELDS.iter().position(|f| *f == label);
+    match kind {
+        Some(OperationKind::Face) => match field {
+            Some(78..=87) => 0,
+            Some(_) => 1,
+            None if label.contains("Coverage")
+                || label.contains("stock")
+                || label.contains("Rectangle")
+                || label.starts_with("Top:")
+                || label.starts_with("Bottom:") =>
+            {
+                0
+            }
+            _ => 1,
+        },
+        Some(OperationKind::Profile) => match field {
+            Some(93..=108) => 2,
+            Some(_) => 1,
+            None if label.contains("tab")
+                || label.contains("Tab")
+                || label.contains("start")
+                || label.contains("Start")
+                || label.contains("Lead")
+                || label.contains("entry") =>
+            {
+                2
+            }
+            None if label.contains("contour")
+                || label.contains("Contour")
+                || label.contains("Geometry")
+                || label.starts_with("Order:")
+                || label.starts_with("Cut ")
+                || label.contains("reference") =>
+            {
+                0
+            }
+            _ => 1,
+        },
+        Some(OperationKind::DragKnife) => match field {
+            Some(65 | 68 | 69 | 71 | 72 | 110) => 2,
+            Some(_) => 1,
+            None if label.contains("start") || label.contains("Start") => 2,
+            None if label.contains("chain")
+                || label.contains("Chain")
+                || label.contains("Geometry")
+                || label.contains("reference") =>
+            {
+                0
+            }
+            _ => 1,
+        },
+        _ => tab_for_control(label),
+    }
+}
+
 impl App {
     /// The selected operation's Flat V-carve settings. Only called after the
     /// panel has established that the operation is a Flat V-carve.
@@ -44,35 +103,59 @@ impl App {
             ui.heading("No operations");
             return;
         }
+        let doc = self.document.as_ref().unwrap();
+        let op = doc.active_operation().unwrap();
+        let ordinal = doc
+            .job
+            .operations
+            .iter()
+            .position(|row| row.id == op.id)
+            .unwrap()
+            + 1;
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!("{ordinal:02}  {}", op.name))
+                    .size(18.)
+                    .strong(),
+            )
+            .truncate(),
+        )
+        .on_hover_text(&op.name);
+        if ui.ctx().content_rect().height() < 600. {
+            ui.small(format!(
+                "{} · {} · this job",
+                crate::session::kind_label(&doc.job, &op.id),
+                if op.enabled { "Enabled" } else { "Disabled" }
+            ));
+        } else {
+            ui.horizontal(|ui| {
+                crate::ui_widgets::scope(ui, crate::session::kind_label(&doc.job, &op.id));
+                ui.small(if op.enabled {
+                    "Enabled · this job"
+                } else {
+                    "Disabled · this job"
+                });
+            });
+        }
+        if let Some(label) = &self.issue_focus {
+            self.operation_tab = tab_for_operation_control(self.operation_kind(), label);
+        }
         match self.operation_kind() {
             Some(crate::session::OperationKind::Face) => return self.face_header(ui, ctx),
             Some(crate::session::OperationKind::Profile) => {
                 return self.profile_header(ui, ctx);
             }
             Some(crate::session::OperationKind::DragKnife) => {
-                let name = self
-                    .document
-                    .as_ref()
-                    .and_then(|d| d.active_operation())
-                    .map(|op| op.name.clone())
-                    .unwrap_or_else(|| "Drag knife".into());
-                ui.heading(name);
                 ui.small("Passive XYZ · spindle and coolant off");
-                ui.separator();
+                self.operation_tabs(ui, &["Geometry", "Cutting", "Corners & start"]);
                 return;
             }
             _ => {}
         }
-        if let Some(label) = &self.issue_focus {
-            self.operation_tab = tab_for_control(label);
-        }
-        let name = self
-            .document
-            .as_ref()
-            .and_then(|d| d.active_operation())
-            .map(|op| op.name.clone())
-            .unwrap_or_else(|| "Flat V-carve".into());
-        ui.heading(name);
+        self.operation_tabs(ui, &["Shape & depth", "Endmill", "V-bit"]);
+    }
+
+    fn carving_mode(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             for (label, mode) in [
                 ("Endmill only", FlatVcarveMode::EndmillOnly),
@@ -90,19 +173,23 @@ impl App {
             }
             help::icon(ui, "Carving mode");
         });
-        ui.add_space(4.);
-        ui.columns(3, |columns| {
-            for (index, label) in ["Shape & depth", "Endmill", "V-bit"].iter().enumerate() {
+    }
+
+    pub(super) fn operation_tabs(&mut self, ui: &mut egui::Ui, labels: &[&str]) {
+        self.operation_tab = self.operation_tab.min(labels.len() - 1);
+        ui.add_space(6.);
+        ui.columns(labels.len(), |columns| {
+            for (index, label) in labels.iter().enumerate() {
                 let selected = self.operation_tab == index;
                 let response = columns[index].add_sized(
-                    [columns[index].available_width(), 42.],
-                    egui::Button::new(*label).selected(selected),
+                    [columns[index].available_width(), 32.],
+                    egui::Button::new(RichText::new(*label).size(12.)).selected(selected),
                 );
                 observe_control(&format!("Operation {label}"), response.rect);
                 if selected {
                     columns[index].painter().line_segment(
                         [response.rect.left_bottom(), response.rect.right_bottom()],
-                        egui::Stroke::new(2., Color32::from_rgb(26, 169, 177)),
+                        egui::Stroke::new(2., crate::ui_theme::ACCENT),
                     );
                 }
                 if response.clicked() {
@@ -115,6 +202,10 @@ impl App {
         ui.separator();
     }
 
+    pub(super) fn operation_section_visible(&self, tab: usize) -> bool {
+        self.operation_tab == tab || !self.search.is_empty()
+    }
+
     pub(super) fn operation_group(
         &mut self,
         ui: &mut egui::Ui,
@@ -123,26 +214,21 @@ impl App {
         contents: impl FnOnce(&mut Self, &mut egui::Ui),
     ) {
         let forced = self.issue_focus.is_some().then_some(true);
-        egui::Frame::new()
-            .fill(Color32::from_rgb(249, 251, 252))
-            .stroke(egui::Stroke::new(1., Color32::from_rgb(209, 219, 225)))
-            .corner_radius(4)
-            .inner_margin(10.)
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                if !self.search.is_empty() {
-                    let title_response = ui.strong(title);
-                    observe_control(&format!("Operation {title}"), title_response.rect);
-                    contents(self, ui);
-                    return;
-                }
-                let response = egui::CollapsingHeader::new(RichText::new(title).strong().size(15.))
-                    .id_salt(("operation-group", self.operation_tab, title))
-                    .default_open(default_open)
-                    .open(forced)
-                    .show(ui, |ui| contents(self, ui));
-                observe_control(&format!("Operation {title}"), response.header_response.rect);
-            });
+        ui.push_id(("operation-sections", self.operation_id()), |ui| {
+            if !self.search.is_empty() {
+                let title_response = ui.strong(title);
+                observe_control(&format!("Operation {title}"), title_response.rect);
+                contents(self, ui);
+                return;
+            }
+            ui.separator();
+            let response = egui::CollapsingHeader::new(RichText::new(title).strong().size(14.))
+                .id_salt(("operation-group", self.operation_tab, title))
+                .default_open(default_open)
+                .open(forced)
+                .show(ui, |ui| contents(self, ui));
+            observe_control(&format!("Operation {title}"), response.header_response.rect);
+        });
         ui.add_space(4.);
     }
 
@@ -152,17 +238,7 @@ impl App {
         ctx: &egui::Context,
         fields: &[usize],
     ) {
-        if ui.available_width() >= 370. {
-            for row in fields.chunks(2) {
-                ui.columns(2, |columns| {
-                    for (index, field) in row.iter().enumerate() {
-                        self.numbers(&mut columns[index], ctx, &[*field]);
-                    }
-                });
-            }
-        } else {
-            self.numbers(ui, ctx, fields);
-        }
+        self.numbers(ui, ctx, fields);
     }
 
     pub(super) fn cutting_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -171,8 +247,19 @@ impl App {
             Some(crate::session::OperationKind::DragKnife) => return self.knife_panel(ui, ctx),
             _ => {}
         }
-        match self.operation_tab {
+        for tab in 0..3 {
+            if self.operation_section_visible(tab) {
+                ui.push_id(("flat-vcarve-tab", tab), |ui| {
+                    self.flat_vcarve_tab(ui, ctx, tab)
+                });
+            }
+        }
+    }
+
+    fn flat_vcarve_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, tab: usize) {
+        match tab {
             0 => {
+                self.carving_mode(ui, ctx);
                 self.carving_geometry(ui, ctx);
                 self.operation_group(ui, "Height & depth", true, |app, ui| {
                     help::label(ui, "Operation top");
@@ -335,19 +422,17 @@ impl App {
         let idle = self.active.is_none();
         let mut next = selected.clone();
         self.operation_group(ui, "Geometry to carve", true, |app, ui| {
-            ui.small(format!(
-                "{} of {} filled components selected. Cyan = selected; source colours = excluded.",
-                selected.len(),
-                components.len()
-            ));
-            ui.small("Click a filled region in the viewport to assign it to this operation; Shift-click adds or removes one.");
+            ui.small(format!("{} selected · {} filled components", selected.len(), components.len()))
+                .on_hover_text("Cyan = selected; source colours = excluded. Click a filled region in the viewport to assign it; Shift-click adds or removes one.");
             ui.horizontal_wrapped(|ui| {
-                if button(ui, "Select all filled components", idle && !components.is_empty())
-                    .clicked()
-                {
+                let all = ui.add_enabled(idle && !components.is_empty(), egui::Button::new("Select all"));
+                observe_control("Select all filled components", all.rect);
+                if all.clicked() {
                     next = components.iter().map(|c| c.reference.clone()).collect();
                 }
-                if button(ui, "Clear component selection", idle && !selected.is_empty()).clicked() {
+                let clear = ui.add_enabled(idle && !selected.is_empty(), egui::Button::new("Clear"));
+                observe_control("Clear component selection", clear.rect);
+                if clear.clicked() {
                     next.clear();
                 }
             });
@@ -369,7 +454,7 @@ impl App {
             if components.is_empty() {
                 ui.label("This artwork has no filled components to carve: nothing in the drawing is filled. Stroked paths and the outlines of filled shapes are knife and profile geometry, not carving regions.");
             } else {
-                egui::ScrollArea::vertical()
+                let list = egui::ScrollArea::vertical()
                     .id_salt("carving-geometry-list")
                     .auto_shrink([false, true])
                     .max_height(180.)
@@ -429,6 +514,7 @@ impl App {
                             }
                         }
                     });
+                observe_control("Operation geometry viewport", list.inner_rect);
             }
             if !unresolved.is_empty() {
                 let response = ui.colored_label(
@@ -812,6 +898,72 @@ mod tests {
         }
         assert_eq!(tab_for_control("Roughing feed"), 1);
         assert_eq!(tab_for_control("Finishing feed"), 2);
+    }
+
+    #[test]
+    fn switching_and_reordering_operations_keeps_their_own_view_state_and_raw_text() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let doc = app.document.as_mut().unwrap();
+        let original = doc.raw.operation.clone();
+        doc.edit(2, "-".into()).unwrap_err();
+        doc.job = crate::operation_authoring::apply(
+            &doc.job,
+            crate::operation_authoring::add(crate::operation_authoring::Kind::Face, &doc.job),
+        )
+        .unwrap();
+        let face = doc.job.operations.last().unwrap().id.clone();
+        app.operation_tab = 2;
+        app.operation_scroll = [12., 80., 140.];
+        app.select_operation(&face, &ctx);
+        assert_eq!(app.operation_tab, 0);
+        assert_eq!(app.operation_scroll, [0.; 3]);
+        app.operation_tab = 1;
+        app.operation_scroll = [25., 100., 0.];
+        app.document.as_mut().unwrap().job.operations.reverse();
+        app.select_operation(&original, &ctx);
+        assert_eq!(app.operation_tab, 2);
+        assert_eq!(app.operation_scroll, [12., 80., 140.]);
+        assert_eq!(app.document.as_ref().unwrap().text(2), "-");
+        app.select_operation(&face, &ctx);
+        assert_eq!(app.operation_tab, 1);
+        assert_eq!(app.operation_scroll, [25., 100., 0.]);
+        let workspace = app.workspace();
+        workspace.validate().unwrap();
+        let restored: crate::recovery::Workspace =
+            serde_json::from_str(&serde_json::to_string(&workspace).unwrap()).unwrap();
+        assert_eq!(restored.operation_views, app.operation_views);
+    }
+
+    #[test]
+    fn numeric_diagnostics_open_the_corresponding_operation_tab() {
+        use crate::session::OperationKind;
+        for (kind, field, expected) in [
+            (OperationKind::Face, 86, 0),
+            (OperationKind::Face, 8, 1),
+            (OperationKind::Face, 109, 1),
+            (OperationKind::Profile, 90, 1),
+            (OperationKind::Profile, 97, 2),
+            (OperationKind::Profile, 108, 2),
+            (OperationKind::DragKnife, 63, 1),
+            (OperationKind::DragKnife, 72, 2),
+            (OperationKind::DragKnife, 110, 2),
+        ] {
+            assert_eq!(
+                tab_for_operation_control(Some(kind), FIELDS[field]),
+                expected,
+                "{}",
+                FIELDS[field]
+            );
+        }
+        let mut app = app();
+        app.operation_tab = 0;
+        app.search = "Roughing feed".into();
+        assert!(render(&mut app, &egui::Context::default()).contains_key("Roughing feed"));
+        assert_eq!(
+            app.operation_tab, 0,
+            "Search reaches fields across tabs without changing tab state"
+        );
     }
 
     #[test]

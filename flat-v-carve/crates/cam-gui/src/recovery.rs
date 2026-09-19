@@ -11,6 +11,8 @@ pub struct Workspace {
     #[serde(default)]
     pub operation_scroll: [f32; 3],
     #[serde(default)]
+    pub operation_views: std::collections::BTreeMap<String, (usize, [f32; 3])>,
+    #[serde(default)]
     pub operation_ramp_draft: bool,
     pub inspector_width: f32,
     #[serde(default = "default_navigator_width")]
@@ -59,6 +61,7 @@ impl Default for Workspace {
             inspector: 2,
             operation_tab: 0,
             operation_scroll: [0.; 3],
+            operation_views: Default::default(),
             operation_ramp_draft: false,
             inspector_width: crate::ui_theme::INSPECTOR,
             navigator_width: default_navigator_width(),
@@ -81,6 +84,14 @@ impl Workspace {
     pub fn validate(&self) -> Result<(), String> {
         if self.inspector > 7
             || self.operation_tab > 2
+            || self.operation_views.len() > 10000
+            || self.operation_views.iter().any(|(id, (tab, scroll))| {
+                !cam_core::preview::valid_id(id)
+                    || *tab > 2
+                    || scroll
+                        .iter()
+                        .any(|n| !n.is_finite() || *n < 0. || *n > 100000.)
+            })
             || self
                 .operation_scroll
                 .iter()

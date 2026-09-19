@@ -11,6 +11,7 @@ pub mod knife;
 pub mod knife_defaults;
 pub mod knife_outlines;
 pub mod operation_authoring;
+pub mod operation_diagram;
 pub mod overlay;
 pub mod pages;
 pub mod paging;

@@ -72,6 +72,11 @@ pub fn run(args: &[OsString]) -> eframe::Result {
                 _ => 2,
             };
             app.simulate = panel == "simulation";
+            app.operation_tab = match panel.as_str() {
+                "operation-cutting" => 1,
+                "operation-last" => 2,
+                _ => 0,
+            };
             app.resources.ready = true;
             app.resources.draft = crate::resources::Catalog::decode(include_str!(
                 "../../../fixtures/gui5/library.json"

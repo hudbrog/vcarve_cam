@@ -44,6 +44,7 @@ impl App {
             inspector: self.inspector_tab,
             operation_tab: self.operation_tab,
             operation_scroll: self.operation_scroll,
+            operation_views: self.operation_views.clone(),
             operation_ramp_draft: self.operation_ramp_draft,
             inspector_width: self.inspector_width,
             navigator_width: self.navigator_width,
@@ -125,6 +126,7 @@ impl App {
         self.inspector_tab = workspace.inspector;
         self.operation_tab = workspace.operation_tab;
         self.operation_scroll = workspace.operation_scroll;
+        self.operation_views = workspace.operation_views;
         self.operation_ramp_draft = workspace.operation_ramp_draft;
         self.inspector_width = workspace.inspector_width;
         self.navigator_width = workspace.navigator_width;

@@ -76,6 +76,10 @@ fn field_label(label: &str) -> &str {
         "Configuration spinup seconds" => "Spindle spin-up (s)",
         "Configuration blend tolerance" => "Blend tolerance · G64 P (mm)",
         "Configuration naive CAM tolerance" => "Line simplification · G64 Q (mm)",
+        "Job work offset" => "Work offset",
+        "Job compensation" => "Compensation",
+        "Job coolant" => "Coolant",
+        "Job path control" => "Path control",
         _ => short,
     }
 }
@@ -667,23 +671,6 @@ impl App {
     }
 }
 
-fn choice<T: PartialEq + Clone>(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut T,
-    options: &[(&str, T)],
-) -> bool {
-    let before = value.clone();
-    ui.horizontal_wrapped(|ui| {
-        ui.label(label);
-        help::icon(ui, label);
-        for (name, v) in options {
-            let r = ui.selectable_value(value, v.clone(), *name);
-            observe_control(&format!("{label} {name}"), r.rect);
-        }
-    });
-    before != *value
-}
 fn machine_form(
     ui: &mut egui::Ui,
     m: &mut cam_core::post::sequence::SequenceProfile,
@@ -1096,7 +1083,12 @@ impl App {
 }
 
 impl App {
-    pub(super) fn applied_machine_options(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    pub(super) fn applied_machine_options(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        output: bool,
+    ) {
         use cam_core::post::{Coolant, LengthCompensation, PathControl};
         let Some(mut machine) = self
             .document
@@ -1106,87 +1098,90 @@ impl App {
             return;
         };
         let before = machine.clone();
-        choice(
-            ui,
-            "Job work offset",
-            &mut machine.work_offset,
-            &[
-                ("Unset", None),
-                ("G54", Some("G54".into())),
-                ("G55", Some("G55".into())),
-                ("G56", Some("G56".into())),
-                ("G57", Some("G57".into())),
-                ("G58", Some("G58".into())),
-                ("G59", Some("G59".into())),
-                ("G59.1", Some("G59.1".into())),
-                ("G59.2", Some("G59.2".into())),
-                ("G59.3", Some("G59.3".into())),
-            ],
-        );
-        choice(
-            ui,
-            "Job compensation",
-            &mut machine.length_compensation,
-            &[
-                ("Unset", None),
-                ("Macro managed", Some(LengthCompensation::MacroManaged)),
-                ("Tool table", Some(LengthCompensation::ToolTable)),
-            ],
-        );
-        choice(
-            ui,
-            "Job coolant",
-            &mut machine.coolant,
-            &[
-                ("Unset", None),
-                ("Off", Some(Coolant::Off)),
-                ("Flood", Some(Coolant::Flood)),
-                ("Mist", Some(Coolant::Mist)),
-            ],
-        );
-        let mut blend = matches!(machine.path_control, Some(PathControl::Blend { .. }));
-        if choice(
-            ui,
-            "Job path control",
-            &mut blend,
-            &[("Exact path", false), ("Blend", true)],
-        ) {
-            machine.path_control = Some(if blend {
-                PathControl::Blend {
-                    tolerance_mm: 0.,
-                    naive_cam_tolerance_mm: None,
-                }
-            } else {
-                PathControl::ExactPath
-            });
+        if !output {
+            select(
+                ui,
+                "Job work offset",
+                &mut machine.work_offset,
+                &[
+                    ("Unset", None),
+                    ("G54", Some("G54".into())),
+                    ("G55", Some("G55".into())),
+                    ("G56", Some("G56".into())),
+                    ("G57", Some("G57".into())),
+                    ("G58", Some("G58".into())),
+                    ("G59", Some("G59".into())),
+                    ("G59.1", Some("G59.1".into())),
+                    ("G59.2", Some("G59.2".into())),
+                    ("G59.3", Some("G59.3".into())),
+                ],
+            );
+            select(
+                ui,
+                "Job compensation",
+                &mut machine.length_compensation,
+                &[
+                    ("Unset", None),
+                    ("Macro managed", Some(LengthCompensation::MacroManaged)),
+                    ("Tool table", Some(LengthCompensation::ToolTable)),
+                ],
+            );
+        } else {
+            select(
+                ui,
+                "Job coolant",
+                &mut machine.coolant,
+                &[
+                    ("Unset", None),
+                    ("Off", Some(Coolant::Off)),
+                    ("Flood", Some(Coolant::Flood)),
+                    ("Mist", Some(Coolant::Mist)),
+                ],
+            );
+            let mut blend = machine
+                .path_control
+                .as_ref()
+                .map(|mode| matches!(mode, PathControl::Blend { .. }));
+            if select(
+                ui,
+                "Job path control",
+                &mut blend,
+                &[
+                    ("Unset", None),
+                    ("Exact path", Some(false)),
+                    ("Blend", Some(true)),
+                ],
+            ) {
+                machine.path_control = blend.map(|blend| {
+                    if blend {
+                        PathControl::Blend {
+                            tolerance_mm: 0.,
+                            naive_cam_tolerance_mm: None,
+                        }
+                    } else {
+                        PathControl::ExactPath
+                    }
+                });
+            }
         }
         if machine != before {
             let compensation_changed = machine.length_compensation != before.length_compensation;
+            let mut clear = Vec::new();
+            if machine.path_control != before.path_control {
+                clear.push(36);
+            }
             if compensation_changed
                 && machine.length_compensation == Some(LengthCompensation::MacroManaged)
             {
+                clear.extend([33, 39]);
                 for row in &mut machine.tools {
                     row.length_offset_number = None;
                 }
             }
-            self.edit_job(
-                ctx,
-                if compensation_changed {
-                    &[33, 39, 36]
-                } else {
-                    &[36]
-                },
-                |job| {
-                    job.machine_configuration = Some(machine);
-                    Ok(())
-                },
-            );
-        }
-        if button(ui, "Reusable machine settings", true).clicked() {
-            self.open_resource(ResourcePage::MachineLibrary);
-            if !self.resources.ready {
-                self.request_resources(ResourceIntent::Load, ctx);
-            }
+            self.edit_job(ctx, &clear, |job| {
+                job.machine_configuration = Some(machine);
+                Ok(())
+            });
         }
     }
 }

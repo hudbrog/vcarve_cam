@@ -13,7 +13,10 @@ export async function gui7Scenario({control,edit,state,waitFor,send,evaluate,sle
   };
 
   // --- GUI7a: a source-free face job, created with nothing invented. -------
-  await control('File');await control('New face job');
+  await control('File');await control('New job');
+  await waitFor(s=>s.job&&!s.active,'empty job');
+  await control('Add operation');
+  await control(Object.keys((await state()).controls).find(k=>k.startsWith('Add Face —')));
   await waitFor(s=>s.job?.kind==='face'&&!s.active,'new source-free face job');
   const fresh=await state();
   // Unset optional values are omitted from the document, not zeroed.

@@ -207,10 +207,17 @@ impl Viewport {
                         }
                     }
                     if let Some(reference) = nearest {
-                        let mut selected: Vec<GeometryRef> = serde_json::from_value(
-                            scene.meta.report["gui2"]["knifeSelection"].clone(),
-                        )
-                        .unwrap_or_default();
+                        // Authoring selection can change while the scene is
+                        // retained. Read the live qualified references just
+                        // as Profile does, never the old preview's selection.
+                        let known = self.available_references();
+                        let mut selected: Vec<GeometryRef> = self
+                            .artwork
+                            .selected
+                            .iter()
+                            .filter(|r| known.contains(r))
+                            .cloned()
+                            .collect();
                         if ui.input(|i| i.modifiers.shift) {
                             if selected.contains(&reference) {
                                 selected.retain(|r| r != &reference);

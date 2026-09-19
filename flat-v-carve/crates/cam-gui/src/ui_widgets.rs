@@ -49,22 +49,23 @@ pub fn number_row(
             )
             .labelled_by(label_id);
         ui.add_sized(
-            [42., theme::ROW],
-            egui::Label::new(RichText::new(unit).size(12.).color(theme::MUTED)),
+            [52., theme::ROW],
+            egui::Label::new(RichText::new(unit).size(12.).color(theme::MUTED))
+                .wrap_mode(egui::TextWrapMode::Extend),
         );
         crate::app::help::icon(ui, help);
         response
     };
     if narrow {
         let label = ui.label(label);
-        ui.horizontal(|ui| edit(ui, label.id, (ui.available_width() - 82.).max(48.), text))
+        ui.horizontal(|ui| edit(ui, label.id, (ui.available_width() - 92.).max(48.), text))
             .inner
     } else {
         ui.horizontal(|ui| {
             ui.set_min_height(theme::ROW);
             let label_width = (ui.available_width() * 0.42).clamp(104., 154.);
             let response = ui.add_sized([label_width, theme::ROW], egui::Label::new(label).wrap());
-            edit(ui, response.id, (ui.available_width() - 82.).max(56.), text)
+            edit(ui, response.id, (ui.available_width() - 92.).max(56.), text)
         })
         .inner
     }
