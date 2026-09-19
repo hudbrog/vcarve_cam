@@ -3,6 +3,7 @@ use cam_core::project::v5::inspection::{PlanInspection, StageInspection};
 
 #[derive(Default)]
 pub(super) struct Inspection {
+    pub tab: usize,
     pub point: Option<[f64; 2]>,
     /// Axis the section plot cuts along through `point`.
     pub axis: SectionAxis,
@@ -126,6 +127,23 @@ fn cell_depth(meta: &PreviewMeta, cells: &[u8], col: usize, row: usize) -> Optio
 }
 
 impl Viewport {
+    pub fn inspection_tabs(&mut self, ui: &mut egui::Ui) -> bool {
+        let before = self.inspection.tab;
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - 16.) / 3.;
+            for (index, label) in ["Summary", "Section", "Warnings"].iter().enumerate() {
+                let response = ui.add_sized(
+                    [width, 32.],
+                    egui::Button::new(*label).selected(self.inspection.tab == index),
+                );
+                crate::app::observe_control(&format!("Inspect {label}"), response.rect);
+                if response.clicked() {
+                    self.inspection.tab = index;
+                }
+            }
+        });
+        before != self.inspection.tab
+    }
     pub fn reset_inspection(&mut self) {
         self.inspection = Inspection::default();
     }
@@ -246,7 +264,7 @@ impl Viewport {
         );
         crate::app::observe_control("Section plot", rect);
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 2., Color32::from_rgb(20, 22, 26));
+        painter.rect_filled(rect, 2., crate::ui_theme::SURFACE);
         let count = section.depths.len();
         if count == 0 {
             return;
@@ -278,7 +296,7 @@ impl Viewport {
                 egui::pos2(rect.left() + 3., top),
                 egui::pos2(rect.right() - 3., top),
             ],
-            egui::Stroke::new(1., Color32::from_rgb(70, 76, 86)),
+            egui::Stroke::new(1., crate::ui_theme::DIVIDER),
         );
         let points: Vec<egui::Pos2> = section
             .depths
@@ -294,13 +312,13 @@ impl Viewport {
                     egui::pos2(pair[1].x, top),
                     egui::pos2(pair[0].x, top),
                 ],
-                Color32::from_rgb(52, 84, 120),
+                crate::ui_theme::SELECTION,
                 egui::Stroke::NONE,
             ));
         }
         painter.add(egui::Shape::line(
             points.clone(),
-            egui::Stroke::new(1.4, Color32::from_rgb(150, 200, 255)),
+            egui::Stroke::new(1.4, crate::ui_theme::ACCENT),
         ));
         // The inspected point and the width of one display cell.
         let at = section.at.min(count - 1);
@@ -310,13 +328,13 @@ impl Viewport {
                 egui::pos2(marker.x, rect.top() + 3.),
                 egui::pos2(marker.x, rect.bottom() - 3.),
             ],
-            egui::Stroke::new(1., Color32::from_rgb(255, 210, 90)),
+            egui::Stroke::new(1., crate::ui_theme::WARNING),
         );
         let cell_px = (width / count.max(1) as f32).max(1.);
         let bar_y = rect.bottom() - 8.;
         painter.line_segment(
             [egui::pos2(left, bar_y), egui::pos2(left + cell_px, bar_y)],
-            egui::Stroke::new(3., Color32::from_rgb(220, 220, 220)),
+            egui::Stroke::new(3., crate::ui_theme::TEXT),
         );
         let cut = section.depths.iter().filter(|depth| **depth > 0.).count();
         ui.small(format!(
@@ -449,8 +467,15 @@ impl Viewport {
         });
     }
     pub fn inspection_controls(&mut self, ui: &mut egui::Ui) {
+        if self.inspection.tab == 2 {
+            self.warning_controls(ui);
+            return;
+        }
         let Some(plan) = self.plan_inspection() else {
-            ui.label("Generate a carving to inspect its stages and stock depth.");
+            ui.label("Generate enabled operations to inspect their stages and stock depth.");
+            if self.knife_selected {
+                self.knife_inspection_controls(ui);
+            }
             return;
         };
         if !self.export_ready() {
@@ -504,40 +529,66 @@ impl Viewport {
                 }
             }
         });
-        // Calculated machine time per operation: every move timed by its own
-        // programmed feed, rapids by the machine's (or assumed) rapid rate —
-        // the same rule the playback transport uses.
-        ui.horizontal_wrapped(|ui| {
-            ui.strong("Calculated time");
-            let total: f64 = plan.operations.iter().map(|o| o.estimated_seconds).sum();
-            for operation in &plan.operations {
-                let label = format!(
-                    "{} {}",
-                    operation.operation_id,
-                    format_program_time(operation.estimated_seconds)
-                );
-                let response = ui.label(label);
-                crate::app::observe_control(
-                    &format!("Operation time {}", operation.operation_id),
-                    response.rect,
-                );
+        if self.inspection.tab == 0 {
+            if let Some(operation) = stage.and_then(|stage| {
+                plan.operations
+                    .iter()
+                    .find(|op| op.operation_id == stage.operation_id)
+            }) {
+                ui.separator();
+                ui.strong("Resolved plan");
+                if let Some(heights) = operation.heights {
+                    ui.label(format!("Top Z {:.3} mm", heights.top_z_mm));
+                    if let Some(bottom) = heights.bottom_z_mm {
+                        ui.label(format!("Bottom Z {bottom:.3} mm"));
+                    }
+                }
+                if let Some(face) = operation.face {
+                    ui.label(format!("Published face Z {:.3} mm", face.z_mm));
+                }
+                ui.small(format!(
+                    "{} stage(s) · {} generated tab placement(s)",
+                    operation.stage_ids.len(),
+                    operation.tab_placements.len()
+                ));
+                ui.small("Resolved setup coordinates from the retained plan.");
             }
-            let response = ui.strong(format!("Total {}", format_program_time(total)));
-            crate::app::observe_control("Total program time", response.rect);
-        });
-        ui.small(if plan.rapid_rate_mm_min
-            == cam_core::project::v5::inspection::ASSUMED_RAPID_RATE_MM_MIN
-        {
-            format!(
-                "Rapids timed at the assumed {} mm/min; apply a machine configuration to time them at the machine's own rate.",
-                plan.rapid_rate_mm_min as u64
-            )
-        } else {
-            format!(
-                "Rapids timed at the machine's {} mm/min.",
-                plan.rapid_rate_mm_min as u64
-            )
-        });
+            // Calculated machine time per operation: every move timed by its own
+            // programmed feed, rapids by the machine's (or assumed) rapid rate —
+            // the same rule the playback transport uses.
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Calculated time");
+                let total: f64 = plan.operations.iter().map(|o| o.estimated_seconds).sum();
+                for operation in &plan.operations {
+                    let label = format!(
+                        "{} {}",
+                        operation.operation_id,
+                        format_program_time(operation.estimated_seconds)
+                    );
+                    let response = ui.label(label);
+                    crate::app::observe_control(
+                        &format!("Operation time {}", operation.operation_id),
+                        response.rect,
+                    );
+                }
+                let response = ui.strong(format!("Total {}", format_program_time(total)));
+                crate::app::observe_control("Total program time", response.rect);
+            });
+            let assumed = self
+                .stock
+                .as_ref()
+                .and_then(|stock| stock.clock.as_ref())
+                .map(|clock| clock.time().assumes_rapid_rate());
+            ui.small(format!(
+                "Rapid timing: {}{:.0} mm/min.",
+                if assumed == Some(true) {
+                    "assumed "
+                } else {
+                    ""
+                },
+                plan.rapid_rate_mm_min
+            ));
+        }
         ui.horizontal(|ui| {
             let b = self.scene.as_ref().unwrap().meta.bounds;
             let mut xy = self
@@ -590,8 +641,12 @@ impl Viewport {
         } else {
             ui.label("Point is outside the displayed stock.");
         }
-        self.section_controls(ui);
-        self.renderer_diagnostics(ui);
+        if self.inspection.tab == 1 {
+            self.section_controls(ui);
+        }
+        if self.inspection.tab == 0 {
+            self.renderer_diagnostics(ui);
+        }
         if let Some(pinned) = &self.inspection.pinned {
             let matched = self.comparison_prefix() == Some(self.stock_prefix)
                 && !self.stock_loading
@@ -638,6 +693,9 @@ impl Viewport {
                     end[2] as f64 * scale
                 ));
             }
+        }
+        if self.inspection.tab == 0 && self.knife_selected {
+            self.knife_inspection_controls(ui);
         }
     }
     pub(super) fn inspection_marker(&self, ui: &egui::Ui, rect: egui::Rect) {

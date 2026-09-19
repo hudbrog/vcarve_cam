@@ -111,7 +111,7 @@ impl Viewport {
         if !self.artwork.enabled {
             return;
         }
-        ui.horizontal_wrapped(|ui| {
+        ui.vertical(|ui| {
             for (label, mode) in [
                 ("Select artwork", GestureMode::Select),
                 ("Move artwork", GestureMode::Move),
@@ -127,6 +127,9 @@ impl Viewport {
                 };
                 let response = ui.selectable_value(&mut self.artwork.mode, mode, label);
                 crate::app::observe_control(label, response.rect);
+                if response.clicked() {
+                    ui.close();
+                }
             }
             if self.artwork.candidates.len() > 1 {
                 let r = ui.button("Next overlap");

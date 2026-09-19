@@ -56,7 +56,7 @@ pub fn run(args: &[OsString]) -> eframe::Result {
             let opened = engine::run(Command::Open { json: job.clone() })?;
             app.accept(1, Ok(opened), &cc.egui_ctx);
             app.active = Some((2, app.revision));
-            let scene = engine::run(if panel == "simulation" {
+            let scene = engine::run(if panel.starts_with("simulation") {
                 Command::generate(job)
             } else {
                 Command::Preview { job }
@@ -67,11 +67,23 @@ pub fn run(args: &[OsString]) -> eframe::Result {
                 "artwork" => 0,
                 "stock" | "stock-zero" => 1,
                 "machine" => 3,
-                "simulation" => 6,
+                "simulation" | "simulation-section" | "simulation-warnings" => 6,
                 "settings" => 7,
                 _ => 2,
             };
-            app.simulate = panel == "simulation";
+            app.simulate = panel.starts_with("simulation");
+            if app.simulate {
+                let mut settings = app.view.settings();
+                settings.inspection_tab = match panel.as_str() {
+                    "simulation-section" => 1,
+                    "simulation-warnings" => 2,
+                    _ => 0,
+                };
+                app.view.restore_settings(&settings);
+                // Review generation runs synchronously in this thread; there
+                // is no worker-owned execution to rebuild for the same preset.
+                app.view.take_preset_request();
+            }
             app.operation_tab = match panel.as_str() {
                 "operation-cutting" => 1,
                 "operation-last" => 2,

@@ -348,6 +348,11 @@ export async function gui10Scenario({control,state,waitFor,send,evaluate,sleep,r
     count: stillThere.count,
     atStart: stillThere.entries[0],
   });
+  await control('Warning marker 0');
+  const marked = await waitFor(s => !s.active && simulation(s).prefix === assembly.motion, 'timeline warning marker', 300);
+  if (simulation(marked).playing) throw new Error('warning marker did not pause playback');
+  record('timeline marker seeks the reported warning motion', simulation(marked));
+  await screenshot('gui10-warning-marker.png');
 
   // Every problem is listed — one row per problem, not one per motion — and the
   // raster every claim rests on travels with the list. egui paints to a canvas,

@@ -299,6 +299,7 @@ impl App {
                 self.plan = None;
                 self.plan_scope = None;
                 self.prepared = None;
+                self.view.cancel_stock_requests();
                 self.status = "Export cancelled. Generate again before exporting.".into();
             }
             self.export_dialog = None;

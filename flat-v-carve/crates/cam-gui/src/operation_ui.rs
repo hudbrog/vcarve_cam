@@ -403,6 +403,11 @@ impl App {
     /// each operation, so nothing here reads or writes an artwork-level
     /// assignment; the viewport assigns through the same command.
     fn carving_geometry(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // Field search must not trap scrolling inside a large component list
+        // before the matching numeric field can be reached.
+        if !self.search.is_empty() {
+            return;
+        }
         let job = &self.document.as_ref().unwrap().job;
         let operation_id = self.document.as_ref().unwrap().raw.operation.clone();
         let selected = engine::settings_in(job, &operation_id)
@@ -959,7 +964,12 @@ mod tests {
         let mut app = app();
         app.operation_tab = 0;
         app.search = "Roughing feed".into();
-        assert!(render(&mut app, &egui::Context::default()).contains_key("Roughing feed"));
+        let controls = render(&mut app, &egui::Context::default());
+        assert!(controls.contains_key("Roughing feed"));
+        assert!(
+            !controls.contains_key("Operation geometry viewport"),
+            "Field search must not capture scrolling in an unrelated component list"
+        );
         assert_eq!(
             app.operation_tab, 0,
             "Search reaches fields across tabs without changing tab state"

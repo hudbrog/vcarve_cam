@@ -11,7 +11,7 @@ impl App {
                 ui.small("Blade offset is pivot-to-tip distance. Heading points from pivot toward tip, counterclockwise from +X.");
                 self.knife_resources(ui, ctx);
             }
-            6 => self.view.knife_inspection_controls(ui),
+            6 => self.view.inspection_controls(ui),
             _ => {
                 if self.operation_section_visible(0) {
                     self.operation_group(ui, "Chain selection", true, |app, ui| {

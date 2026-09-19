@@ -401,7 +401,7 @@ pub(crate) fn sim_motion(
     }
 }
 
-fn role_color(role: StageRole) -> [f32; 4] {
+pub(crate) fn role_color(role: StageRole) -> [f32; 4] {
     match role {
         StageRole::Face => [0.16, 0.68, 0.38, 1.],
         StageRole::VcarveRough => [0.19, 0.72, 0.81, 1.],

@@ -13,6 +13,8 @@ use egui::Color32;
 use std::sync::Arc;
 #[path = "viewport_artwork.rs"]
 mod artwork;
+#[path = "viewport_controls.rs"]
+mod controls;
 #[path = "viewport_face.rs"]
 mod face;
 #[path = "viewport_inspection.rs"]
@@ -21,6 +23,8 @@ mod inspection;
 mod knife;
 #[path = "viewport_profile.rs"]
 mod profile;
+#[path = "viewport_transport.rs"]
+mod transport;
 pub use artwork::{ArtworkEvent, ArtworkInteraction};
 pub use profile::{ProfileAnchor, ProfileAnchorEvent};
 
@@ -151,6 +155,10 @@ pub struct ViewSettings {
     pub prefix: usize,
     #[serde(default)]
     pub inspection_xy: Option<[f64; 2]>,
+    #[serde(default)]
+    pub inspection_tab: usize,
+    #[serde(default)]
+    pub section_y: bool,
     /// Display resolution preset. Older saved views fall back to the preset
     /// every review before GUI9 used.
     #[serde(default)]
@@ -169,6 +177,8 @@ impl Default for ViewSettings {
             stock: true,
             prefix: 0,
             inspection_xy: None,
+            inspection_tab: 0,
+            section_y: false,
             preset: crate::stock_preview::DisplayPreset::Standard,
         }
     }
@@ -199,6 +209,7 @@ impl ViewSettings {
                 .chain(self.stock_style.overrides.values().flatten())
                 .all(|v| v.is_finite())
             || self.stage > crate::session::MAX_DISPLAY_GROUPS
+            || self.inspection_tab > 2
             || self.prefix > crate::session::MOTION_LIMIT
         {
             return Err("Invalid saved viewport".into());
@@ -257,6 +268,9 @@ pub struct Viewport {
     /// lands: a scrub to a program time inside one long move needs the exact
     /// prefix from the compute process first, then the partial window locally.
     requested_fraction: f64,
+    /// Position carried by the submitted seek, separate from a newer scrub
+    /// queued while that response is in flight.
+    inflight_stock: Option<(usize, f64)>,
     /// Display resolution the user asked for, waiting for the current command
     /// to finish before the application submits it.
     requested_preset: Option<crate::stock_preview::DisplayPreset>,
@@ -307,6 +321,7 @@ pub struct Viewport {
     playback_speed: f64,
     /// Play the whole program in [`FIT_SECONDS`] instead of at `playback_speed`.
     playback_fit: bool,
+    transport_details: bool,
     /// Sub-motion progress of the fallback clock, used when a plan's timing
     /// cannot be derived (a linear feed with no rate): playback then steps whole
     /// motions exactly as it did before the clock existed.
@@ -384,6 +399,7 @@ impl Default for Viewport {
             requested_stock: None,
             requested_prefix: None,
             requested_fraction: 0.,
+            inflight_stock: None,
             requested_preset: None,
             status: "Open a job to begin.".into(),
             scene: None,
@@ -404,6 +420,7 @@ impl Default for Viewport {
             playing: false,
             playback_speed: 1.,
             playback_fit: false,
+            transport_details: false,
             playback_progress: 0.,
             stage: 0,
             stage_window: 0,
@@ -476,6 +493,8 @@ impl Viewport {
             stock: self.show_stock,
             prefix: self.stock_prefix,
             inspection_xy: self.inspection.point,
+            inspection_tab: self.inspection.tab,
+            section_y: self.inspection.axis == inspection::SectionAxis::Y,
             // Persist the user's chosen resolution, not just what happens to be
             // displayed: a saved context that has not generated yet must keep
             // the choice it was made with.
@@ -484,6 +503,12 @@ impl Viewport {
     }
     pub fn restore_settings(&mut self, settings: &ViewSettings) {
         self.inspection.point = settings.inspection_xy;
+        self.inspection.tab = settings.inspection_tab;
+        self.inspection.axis = if settings.section_y {
+            inspection::SectionAxis::Y
+        } else {
+            inspection::SectionAxis::X
+        };
         // A view saved before free rotation carries only the isometric flag.
         let tilt = settings
             .tilt_deg
@@ -509,6 +534,8 @@ impl Viewport {
         self.playing = false;
         self.requested_stock = None;
         self.requested_prefix = None;
+        self.inflight_stock = None;
+        self.requested_fraction = 0.;
         // A restored view keeps its resolution: the stored preset is requested
         // once the application is idle, exactly like a user's own choice.
         self.requested_preset = Some(settings.preset);
@@ -618,6 +645,9 @@ impl Viewport {
         self.playhead = scene.motion_count();
         self.stock_prefix = scene.motion_count();
         self.requested_prefix = None;
+        self.requested_stock = None;
+        self.inflight_stock = None;
+        self.requested_fraction = 0.;
         self.stage_window = 0;
         self.timeline_rows = 0;
         self.selection = None;
@@ -821,122 +851,7 @@ impl Viewport {
     }
     fn viewport(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                // Presets set the elevation only. The azimuth, the elevation
-                // and the pan stay free afterwards, from the pointer or from
-                // these controls.
-                for (label, tilt) in [("Top", 0.), ("Isometric", camera::ISO_TILT)] {
-                    let selected = (self.camera.tilt - tilt).abs() < 1e-3;
-                    let response = ui.selectable_label(selected, label);
-                    crate::app::observe_control(label, response.rect);
-                    if response.clicked() {
-                        self.camera.set_tilt(tilt);
-                    }
-                }
-                // True elevations set both angles: the view faces a stock face
-                // exactly, which the stock pass then renders as a section.
-                for (label, yaw) in camera::ELEVATIONS {
-                    let selected =
-                        self.camera.is_elevation() && (self.camera.yaw - yaw).abs() < 1e-3;
-                    let response = ui.selectable_label(selected, label);
-                    crate::app::observe_control(label, response.rect);
-                    if response.clicked() {
-                        self.camera.yaw = yaw;
-                        self.camera.set_tilt(camera::TILT_LIMIT);
-                    }
-                }
-                let fit = ui.button("Fit");
-                crate::app::observe_control("Fit", fit.rect);
-                if fit.clicked() {
-                    self.fit();
-                }
-                let mut tilt_deg = self.camera.tilt.to_degrees();
-                let view = ui.add(
-                    egui::Slider::new(&mut tilt_deg, -85.0..=85.0)
-                        .suffix("°")
-                        .text("View"),
-                );
-                crate::app::observe_control("View", view.rect);
-                if view.changed() {
-                    self.camera.set_tilt(tilt_deg.to_radians());
-                }
-                let mut zoom = self.camera.zoom;
-                let zoom_control = ui.add(
-                    egui::Slider::new(&mut zoom, camera::MIN_ZOOM..=camera::MAX_ZOOM)
-                        .logarithmic(true)
-                        .text("Zoom"),
-                );
-                crate::app::observe_control("Zoom", zoom_control.rect);
-                if zoom_control.changed() {
-                    self.camera.set_zoom(zoom);
-                }
-                if self.stock.is_some() {
-                    ui.checkbox(&mut self.show_stock, "Stock preview");
-                }
-                crate::app::help::icon(ui, "View controls");
-            });
-            // Display-only stock appearance: colour mode, appearance and the
-            // layer toggles. None of it reaches the job.
-            ui.horizontal(|ui| {
-                let mut surface = self.stock_style.surface;
-                egui::ComboBox::from_id_salt("stock-color-mode")
-                    .selected_text(surface.label())
-                    .show_ui(ui, |ui| {
-                        for mode in stock_style::ColorMode::ALL {
-                            ui.selectable_value(&mut surface, mode, mode.label());
-                        }
-                    });
-                if surface != self.stock_style.surface {
-                    self.stock_style.surface = surface;
-                    self.palette = None;
-                }
-                let mut appearance = self.stock_style.appearance;
-                let solid =
-                    ui.selectable_value(&mut appearance, stock_style::Appearance::Opaque, "Solid");
-                crate::app::observe_control("Solid stock", solid.rect);
-                let xray =
-                    ui.selectable_value(&mut appearance, stock_style::Appearance::XRay, "X-ray");
-                crate::app::observe_control("X-ray stock", xray.rect);
-                if appearance != self.stock_style.appearance {
-                    self.stock_style.appearance = appearance;
-                }
-                if self.stock_style.appearance == stock_style::Appearance::XRay {
-                    let mut opacity = self.stock_style.xray_opacity;
-                    if ui
-                        .add(egui::Slider::new(&mut opacity, 0.05..=1.).text("Opacity"))
-                        .changed()
-                    {
-                        self.stock_style.xray_opacity = opacity;
-                    }
-                }
-                let mut walls = self.stock_style.walls;
-                egui::ComboBox::from_id_salt("stock-wall-mode")
-                    .selected_text(walls.label())
-                    .show_ui(ui, |ui| {
-                        for mode in stock_style::WallMode::ALL {
-                            ui.selectable_value(&mut walls, mode, mode.label());
-                        }
-                    });
-                if walls != self.stock_style.walls {
-                    self.stock_style.walls = walls;
-                }
-                if ui
-                    .checkbox(&mut self.stock_style.show_artwork, "Artwork")
-                    .changed()
-                {
-                    self.overlay_signature = None;
-                }
-                ui.checkbox(&mut self.stock_style.show_cutting, "Cutting");
-                ui.checkbox(&mut self.stock_style.show_travel, "Travel");
-                ui.checkbox(&mut self.stock_style.show_edges, "Edges");
-            });
-            self.artwork_toolbar(ui);
-            ui.label(
-                self.scene
-                    .as_ref()
-                    .map(|scene| scene.meta.name.as_str())
-                    .unwrap_or("Import an SVG to start your carving"),
-            );
+            self.view_toolbar(ui);
             let (rect, response) =
                 ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
             crate::app::observe_control("Artwork viewport", rect);
@@ -1163,13 +1078,19 @@ impl Viewport {
                     )
                 })
                 .unwrap_or_default();
-            ui.painter().text(
-                rect.left_bottom() + egui::vec2(12., -12.),
-                egui::Align2::LEFT_BOTTOM,
+            let readout = ui.painter().layout(
                 format!("{} motions{}", self.motion_count(), pick),
                 egui::FontId::monospace(11.),
-                Color32::GRAY,
+                crate::ui_theme::MUTED,
+                (rect.width() - 24.).max(1.),
             );
+            let origin = rect.left_bottom() + egui::vec2(12., -12. - readout.size().y);
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(origin, readout.size()).expand(3.),
+                2.,
+                crate::ui_theme::SURFACE,
+            );
+            ui.painter().galley(origin, readout, crate::ui_theme::MUTED);
         });
     }
 
@@ -1181,253 +1102,9 @@ impl Viewport {
     pub fn show(&mut self, ctx: &egui::Context, simulate: bool) {
         self.fingerprint_pages();
         if simulate {
-            egui::TopBottomPanel::bottom("gui2-playback").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let play=ui.button(if self.playing {"Pause"} else {"Play"});crate::app::observe_control(if self.playing {"Pause"} else {"Play"},play.rect);if play.clicked() { self.playing = !self.playing; if self.playing && self.stock_prefix==self.motion_count(){self.stock_seek(0);} }
-                let start=ui.button("Start");crate::app::observe_control("Start",start.rect);if start.clicked() {self.playing=false;self.stock_seek(0);}
-                // Playback rate. 1x is the machine's own time: the animation
-                // runs the program's feeds, so a pass and a plunge differ by the
-                // time the machine will take. Fit maps the whole program into a
-                // fixed wall-clock window for jobs far too long to watch.
-                ui.label("Speed");
-                for (label, speed) in [
-                    ("0.5x", 0.5),
-                    ("1x", 1.),
-                    ("2x", 2.),
-                    ("4x", 4.),
-                    ("10x", 10.),
-                    ("15x", 15.),
-                    ("60x", 60.),
-                    ("300x", 300.),
-                    ("1000x", 1000.),
-                ] {
-                    let selected =
-                        !self.playback_fit && (self.playback_speed - speed).abs() < 1e-9;
-                    let response = ui.selectable_label(selected, label);
-                    crate::app::observe_control(&format!("Playback {label}"), response.rect);
-                    if response.clicked() {
-                        self.playback_speed = speed;
-                        self.playback_fit = false;
-                    }
-                }
-                let fit = ui.selectable_label(self.playback_fit, "Fit");
-                crate::app::observe_control("Playback Fit", fit.rect);
-                if fit.clicked() {
-                    self.playback_fit = !self.playback_fit;
-                }
-                let groups = self.groups.clone();
-                let (first, last) = self.timeline_window(groups.len());
-                self.timeline_rows = 0;
-                if first > 0 {
-                    let earlier = ui.button(format!("◀ {first} earlier stages"));
-                    crate::app::observe_control("Earlier stages", earlier.rect);
-                    if earlier.clicked() {
-                        self.stage_window = first.saturating_sub(TIMELINE_WINDOW);
-                    }
-                }
-                for group in &groups[first..last] {
-                    let target = group.end;
-                    let response = ui.button(&group.jump);
-                    crate::app::observe_control(&group.jump, response.rect);
-                    self.timeline_rows += 1;
-                    if response.clicked() {
-                        self.playing = false;
-                        self.stock_seek(target);
-                    }
-                }
-                if last < groups.len() {
-                    let later = ui.button(format!("{} later stages ▶", groups.len() - last));
-                    crate::app::observe_control("Later stages", later.rect);
-                    if later.clicked() {
-                        self.stage_window = last.min(groups.len().saturating_sub(1));
-                    }
-                }
-                if self.knife_selected {
-                    ui.label("Knife traces keep the preceding stock; pivot paths are paged.");
-                }
-                let selected = groups
-                    .get(self.stage.wrapping_sub(1))
-                    .map(|group| group.label.clone())
-                    .unwrap_or_else(|| "All paths".into());
-                egui::ComboBox::from_id_salt("visible-path-stage")
-                    .selected_text(selected)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.stage, 0, "All paths");
-                        for (index, group) in groups.iter().enumerate() {
-                            ui.selectable_value(&mut self.stage, index + 1, &group.label);
-                        }
-                    });
-                // Display resolution. It changes only the raster the simulator
-                // shows; the plan, its motions and every machining value stay.
-                let current = self.display_preset();
-                let combo = egui::ComboBox::from_id_salt("display-resolution")
-                    .selected_text(format!("Display: {}", current.label()))
-                    .show_ui(ui, |ui| {
-                        for preset in crate::stock_preview::DisplayPreset::ALL {
-                            let response = ui.selectable_label(
-                                preset == current,
-                                format!("{} · {}", preset.label(), preset.summary()),
-                            );
-                            crate::app::observe_control(
-                                &format!("Display resolution {}", preset.label()),
-                                response.rect,
-                            );
-                            if response.clicked() {
-                                self.set_display_preset(preset);
-                            }
-                        }
-                    });
-                crate::app::observe_control("Display resolution", combo.response.rect);
-            });
-            ui.horizontal(|ui| {
-                ui.spacing_mut().slider_width=(ui.available_width()-160.).max(80.);
-                let mut prefix=self.stock_prefix;
-                let slider=ui.add(egui::Slider::new(&mut prefix,0..=self.motion_count()).text("Stock motion"));crate::app::observe_control("Stock motion",slider.rect);if slider.changed(){self.playing=false;self.stock_seek(prefix);}
-            });
-            // Program time. Motions are the exact state the display keeps, but
-            // time is what a machine view is reasoned about: the same slider
-            // moves the clock inside a single long pass.
-            if let Some((seconds, total)) = self.program_time() {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().slider_width = (ui.available_width() - 160.).max(80.);
-                    let mut target = seconds;
-                    let slider = ui.add(
-                        egui::Slider::new(&mut target, 0.0..=total.max(1e-9))
-                            .text("Program time")
-                            .custom_formatter(|value, _| format_program_time(value)),
-                    );
-                    crate::app::observe_control("Program time", slider.rect);
-                    if slider.changed() {
-                        self.playing = false;
-                        self.seek_seconds(target);
-                    }
-                });
-            }
-            if let Some(stock)=&self.stock {
-                ui.label(format!("Display simulation · {:.4} mm cells (reference {:.4}) · {} / {} motions · {:.2} mm³ removed",stock.meta.cell_mm,stock.meta.reference_cell_mm,stock.prefix,self.motion_count(),stock.stats.removed_volume_mm3));
-                // Machine time of the displayed position. The ratio between a
-                // long pass and a short plunge is the plan's own ratio of length
-                // to feed; a machine that states no rapid rate says so instead
-                // of presenting the display's fallback as machine truth.
-                if let Some(clock) = stock.clock.as_ref() {
-                    let (prefix, fraction) = clock.position();
-                    let in_move = if fraction > 0. {
-                        format!(" · {:.0}% into motion {prefix}", fraction * 100.)
-                    } else {
-                        String::new()
-                    };
-                    let feed = clock
-                        .tip()
-                        .and_then(|(_, motion)| motion.feed_mm_min)
-                        .map(|feed| format!(" · feed {feed:.0} mm/min"))
-                        .unwrap_or_default();
-                    let assumed = if clock.time().assumes_rapid_rate() {
-                        format!(
-                            " · rapids timed at {:.0} mm/min (the machine states no rapid rate)",
-                            clock.time().rapid_rate_mm_min()
-                        )
-                    } else {
-                        String::new()
-                    };
-                    // Which tool and stage the clock is in, so the animation is
-                    // read against the operation it belongs to rather than the
-                    // job as a whole.
-                    let current = clock
-                        .motion()
-                        .and_then(|motion| self.stages.get(motion.stage as usize))
-                        .map(|stage| {
-                            let role = if stage.role.is_empty() {
-                                String::new()
-                            } else {
-                                format!(" {}", stage.role)
-                            };
-                            format!(" · tool {}{role}", stage.tool_id)
-                        })
-                        .unwrap_or_default();
-                    ui.label(format!(
-                        "Program time · {} / {} modeled motion{in_move}{feed}{current}{assumed}",
-                        format_program_time(clock.seconds()),
-                        format_program_time(clock.total_seconds())
-                    ));
-                } else if self.motion_count() > 0 {
-                    ui.label(
-                        "Program time · unavailable (a feed motion carries no feed rate); playback steps whole motions.",
-                    );
-                }
-                if let Some(transport)=self.scene.as_ref().map(|scene|&scene.meta.transport) {
-                    let (bytes,replayed)=self.last_stock_transfer();
-                    let checkpoints=stock.meta.ladder_frames.max(transport.stock_checkpoints);
-                    ui.label(format!("Display transfer · scene {:.1} MiB · {} motion pages · {} checkpoints ({:.1} MiB retained) · last stock update {:.0} KiB after replaying {} motions",transport.payload_bytes as f64/1048576.,transport.motion_pages,checkpoints,stock.meta.retained_bytes as f64/1048576.,bytes as f64/1024.,replayed));
-                }
-                // A path page the resident budget refused is not drawn. Say so
-                // instead of letting a partial scene look complete.
-                if let Ok(stats) = self.render_stats.lock()
-                    && stats.budget_omitted > 0
-                {
-                    let omitted = stats.budget_omitted;
-                    let response = ui.colored_label(
-                        Color32::from_rgb(164, 83, 12),
-                        format!(
-                            "{omitted} requested path page(s) are outside the resident budget and are not drawn; the stock field and the timeline are unaffected."
-                        ),
-                    );
-                    crate::app::observe_control("Path pages omitted", response.rect);
-                }
-                if let Some(target)=self.requested_prefix {
-                    ui.label(format!("Requested stock motion {target} of {} — still showing motion {}.", self.motion_count(), self.stock_prefix));
-                }
-                if stock.meta.dropped_stage_marks > 0 {
-                    let response = ui.colored_label(Color32::from_rgb(164,83,12), format!("{} stage boundaries are beyond the display checkpoint budget; the timeline still seeks them by replaying from the nearest earlier checkpoint.", stock.meta.dropped_stage_marks));
-                    crate::app::observe_control("Dropped stage boundaries", response.rect);
-                }
-            }
-            // Machine warnings: display estimates over the check raster, each
-            // one seekable. The header names the raster so a coarse estimate is
-            // never read as an exact one, and nothing here refuses a job.
-            if !self.warnings.is_empty() {
-                let cell = self.warning_cell_mm;
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!(
-                        "Machine checks · {} warning(s) on a {cell:.2} mm raster · display estimates, not a machining verdict",
-                        self.warnings.len()
-                    ));
-                });
-                let warnings = self.warnings.clone();
-                for warning in warnings.iter().take(WARNING_ROWS) {
-                    ui.horizontal_wrapped(|ui| {
-                        let where_ = match self.stock.as_ref().and_then(|stock| stock.clock.as_ref())
-                        {
-                            Some(clock) => format!(
-                                "at {}",
-                                format_program_time(clock.time().seconds_at_prefix(warning.motion))
-                            ),
-                            None => format!("at motion {}", warning.motion),
-                        };
-                        let text = format!(
-                            "{} · from motion {} {where_} · {:.2} mm here, up to {:.2} mm",
-                            warning.kind.label(),
-                            warning.motion,
-                            warning.depth_mm,
-                            warning.max_depth_mm
-                        );
-                        let response = ui.colored_label(Color32::from_rgb(164, 83, 12), text);
-                        crate::app::observe_control("Machine warning", response.rect);
-                        let go = ui.small_button("Show");
-                        crate::app::observe_control("Show warning", go.rect);
-                        if go.clicked() {
-                            self.playing = false;
-                            self.seek_motion(warning.motion);
-                        }
-                    });
-                }
-                if self.warnings.len() > WARNING_ROWS {
-                    ui.label(format!(
-                        "… and {} more",
-                        self.warnings.len() - WARNING_ROWS
-                    ));
-                }
-            }
-        });
+            let panel =
+                egui::TopBottomPanel::bottom("gui2-playback").show(ctx, |ui| self.transport(ui));
+            crate::app::observe_control("Simulation transport", panel.response.rect);
         } else {
             self.playing = false;
         }
@@ -1609,7 +1286,9 @@ impl Viewport {
         self.requested_prefix
     }
     pub fn take_stock_request(&mut self) -> Option<usize> {
-        self.requested_stock.take()
+        let prefix = self.requested_stock.take()?;
+        self.inflight_stock = Some((prefix, self.requested_fraction));
+        Some(prefix)
     }
     /// Whether a stock seek is still waiting for the application to submit it.
     pub fn stock_request_pending(&self) -> bool {
@@ -1657,7 +1336,10 @@ impl Viewport {
         let stats = frame.stats.clone();
         let key = preview.identity();
         let retained_bytes = preview.retained_bytes;
-        let fraction = self.requested_fraction;
+        let fraction = self
+            .inflight_stock
+            .filter(|(target, _)| *target == prefix)
+            .map_or(self.requested_fraction, |(_, fraction)| fraction);
         let stock = self.stock.as_mut().ok_or("No displayed stock")?;
         stock.local = Some(Arc::new(cells));
         stock.cell_versions = Arc::new(versions);
@@ -1682,8 +1364,7 @@ impl Viewport {
         }
         self.stock_prefix = prefix;
         self.playhead = prefix;
-        self.requested_prefix = None;
-        self.requested_fraction = 0.;
+        self.requested_prefix = self.requested_stock;
         self.stock_loading = false;
         // A scrub to a time inside a move: the exact prefix is here now, so the
         // partial window is applied locally instead of asking again.
@@ -1703,10 +1384,21 @@ impl Viewport {
     /// failed seek cannot leave "requested" pointing at a position the display
     /// is no longer going to reach.
     pub fn finish_stock_request(&mut self) {
-        self.requested_prefix = None;
+        self.inflight_stock = None;
         // A seek that failed or was refused must not leave a fraction behind for
         // the next response to apply to a position nobody asked for.
-        self.requested_fraction = 0.;
+        if self.requested_stock.is_none() {
+            self.requested_prefix = None;
+            self.requested_fraction = 0.;
+        }
+    }
+    /// The worker execution was discarded; neither the submitted seek nor a
+    /// queued successor can complete against that execution anymore.
+    pub fn cancel_stock_requests(&mut self) {
+        self.requested_stock = None;
+        self.finish_stock_request();
+        self.stock_loading = false;
+        self.playing = false;
     }
     /// Bytes carried by the last stock response, for the display's own
     /// transfer accounting.
@@ -2047,7 +1739,7 @@ impl Viewport {
 
     fn stock_seek(&mut self, target: usize) {
         let target = target.min(self.motion_count());
-        if target != self.stock_prefix {
+        if target != self.stock_prefix || self.requested_prefix.is_some() {
             self.requested_stock = Some(target);
             self.requested_prefix = Some(target);
             self.requested_fraction = 0.;
@@ -2215,6 +1907,15 @@ impl Viewport {
         else {
             return;
         };
+        if self.inflight_stock.is_some() {
+            self.requested_stock = Some(prefix);
+            self.requested_prefix = Some(prefix);
+            self.requested_fraction = fraction;
+            return;
+        }
+        self.requested_stock = None;
+        self.requested_prefix = None;
+        self.requested_fraction = 0.;
         let advance = match self.stock.as_mut().and_then(|stock| stock.clock.as_mut()) {
             Some(clock) => clock.move_to_position(prefix, fraction, LOCAL_ADVANCE_LIMIT),
             None => return,

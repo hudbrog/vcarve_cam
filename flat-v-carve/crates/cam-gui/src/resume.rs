@@ -235,6 +235,8 @@ mod tests {
             stock: true,
             prefix: 123,
             inspection_xy: Some([9., 23.]),
+            inspection_tab: 1,
+            section_y: true,
             preset: crate::stock_preview::DisplayPreset::Fine,
         });
         app.plan = Some(("do-not-restore".into(), 0));
@@ -274,6 +276,8 @@ mod tests {
                 stock: true,
                 prefix: 0,
                 inspection_xy: Some([9., 23.]),
+                inspection_tab: 1,
+                section_y: true,
                 preset: crate::stock_preview::DisplayPreset::Fine,
             }
         );

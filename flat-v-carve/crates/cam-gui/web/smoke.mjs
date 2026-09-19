@@ -18,6 +18,8 @@ const chrome = edge
 const base = process.argv.find(argument => argument.startsWith('--url='))?.slice('--url='.length)
   ?? 'http://127.0.0.1:5182/web/index.html';
 const port = Number(process.argv.find(argument=>argument.startsWith('--port='))?.slice(7)??9335);
+// Record the build being opened, not a later rebuild made while a long test runs.
+const offlineBuild=readFileSync('crates/cam-gui/web/offline-manifest.js','utf8').match(/"version":"([a-f0-9]+)"/)?.[1];
 const profile = mkdtempSync(path.join(tmpdir(), 'gui2-smoke-'));
 const browser = spawn(chrome, [
   `--remote-debugging-port=${port}`,
@@ -105,6 +107,9 @@ const pressKey = async (key, code, modifiers = 0) => {
     const keyCode=({Escape:27,Backspace:8,Enter:13,Tab:9})[key]??key.toUpperCase().charCodeAt(0);
     await send('Input.dispatchKeyEvent', {type, key, code, windowsVirtualKeyCode:keyCode, nativeVirtualKeyCode:keyCode, modifiers});
   }
+  // The canvas probe describes the last painted frame. Let it consume key-up
+  // (especially Escape) before using a rectangle from a dismissed popup.
+  await sleep(120);
 };
 
 const shapeFields=['Endmill only','Combined','Maximum depth','Wall allowance','Floor ridge','Top offset','Top: stock top','Top: stock bottom'];
@@ -142,6 +147,19 @@ const control = async label => {
     };
     const dropdown=['Job work offset','Job compensation','Job coolant','Job path control','Library rotation','Library plunge','Library ramp','Copied plunge','Copied ramp','Work offset','Length compensation','Coolant','Path control','M6 return'].find(prefix=>label.startsWith(prefix+' '));
     if(!rect){
+      if(label.startsWith('After ')||['Earlier stages','Later stages'].includes(label)){await control(current.controls?.['Stage jumps']?'Stage jumps':'Playback options');continue;}
+      if(/^Playback (?:[\d.]+x|Fit)$/.test(label)){await control('Playback speed');continue;}
+      if(['Display resolution','Path stage','Transport details'].includes(label)){await control('Playback options');continue;}
+      if(label.startsWith('Display resolution ')){await control('Display resolution');continue;}
+      if(label==='All paths'||label.startsWith('Paths ')){await control('Path stage');continue;}
+      if(label==='Stock motion'){await control('Transport details');await pressKey('Escape','Escape');continue;}
+      if(['Section X','Section Y','Section plot'].includes(label)){if(!current.controls?.['Inspect Section'])await control('Inspect result');await control('Inspect Section');continue;}
+      if(label.startsWith('Show warning')||label==='Machine warning'){if(!current.controls?.['Inspect Warnings'])await control('Inspect result');await control('Inspect Warnings');continue;}
+      if(['Renderer diagnostics','Total program time'].includes(label)&&current.controls?.['Inspect Summary']){await control('Inspect Summary');continue;}
+      if(['Top','Isometric','Front','Back','Left','Right','View','Zoom','Artwork tools'].includes(label)&&current.controls?.['View menu']){await control('View menu');continue;}
+      if(['Select artwork','Select knife paths','Select profile contours','Move artwork','Rotate artwork','Scale artwork','Next overlap'].includes(label)){await control(current.controls?.['Artwork tools']?'Artwork tools':'View menu');continue;}
+      if(['Solid stock','X-ray stock','Stock opacity'].includes(label)||label.startsWith('Stock color ')||label.startsWith('Stock walls ')){await control('Display menu');continue;}
+      if(label==='Stock preview'||label.startsWith('Layer ')){await control(current.controls?.['Layers menu']?'Layers menu':'Display menu');continue;}
       if(['Duplicate artwork','Delete artwork','Move row up','Move row down','Hide artwork','Lock artwork'].includes(label)&&current.controls?.['Source actions']){await control('Source actions');continue;}
       const authoring=authoringRoute(current,label);
       if(authoring&&current.workspace.operation_tab!==authoring[1]){await control(authoring[0][authoring[1]]);continue;}
@@ -184,6 +202,12 @@ const control = async label => {
       if(current.resources?.open&&['Reapply reviewed profile','Reset assignment overrides'].includes(label)){await control('Applied job values');continue;}
       throw new Error(`Missing control ${label}`);
     }
+    const popupClip=current.controls?.['Viewport options viewport'];
+    if(popupClip&&/^(Display resolution|Path stage|Paths |All paths|Stock color |Stock walls |Stock opacity|Layer |View key|After |Earlier stages|Later stages|Transport details)/.test(label)&&(rect[1]<popupClip[1]||rect[3]>popupClip[3])){
+      const x=(popupClip[0]+popupClip[2])/2,y=(popupClip[1]+popupClip[3])/2;
+      await send('Input.dispatchMouseEvent',{type:'mouseMoved',x,y});
+      await send('Input.dispatchMouseEvent',{type:'mouseWheel',x,y,deltaX:0,deltaY:rect[1]<popupClip[1]?-120:120});await sleep(250);continue;
+    }
     const nav=label.startsWith('Artwork ')||label.startsWith('Operation row ')||label.startsWith('Operation enabled ')||label.startsWith('Operation actions')||['Add operation','Artwork','Cutting','+ Import artwork','Rename operation','Apply name','Cancel rename'].includes(label);
     const resource=!nav&&current.resources?.open,jobTools=!nav&&current.resources?.jobsOpen;
     const list=resource&&label!=='Library tool name'&&(label.startsWith('Library tool ')||label.startsWith('Library machine '));
@@ -198,7 +222,7 @@ const control = async label => {
     // Offscreen inspector controls can pass under the header while scrolling.
     // Only named shell controls bypass the inspector clip; position alone
     // would click an unrelated header button behind a clipped form control.
-    const shellAction=['Operation Area & heights','Operation Tool & passes','Operation Geometry','Operation Cutting','Operation Tabs & entry','Operation Corners & start','All enabled operations','Through selected operation','Setup','Machine','Job settings','Endmill tool','V-bit tool','Knife tool','Rename','Move earlier','Move later','Delete operation','Generate through operation','Tool geometry','Job tools','Tool library','Setup pages','Toggle navigator','Toggle inspector','Generation scope','Inspect result'].includes(label);
+    const shellAction=/^(Display resolution|Path stage|Paths |All paths|Playback |Stock color |Stock walls |Layer )/.test(label)||['Inspect Summary','Inspect Section','Inspect Warnings','Operation Area & heights','Operation Tool & passes','Operation Geometry','Operation Cutting','Operation Tabs & entry','Operation Corners & start','All enabled operations','Through selected operation','Setup','Machine','Job settings','Endmill tool','V-bit tool','Knife tool','Rename','Move earlier','Move later','Delete operation','Generate through operation','Tool geometry','Job tools','Tool library','Setup pages','Toggle navigator','Toggle inspector','Generation scope','Inspect result'].includes(label);
     if(shellAction||label.includes('library tool')||label.includes('library profile')||label.startsWith('Apply Roughing')||label.startsWith('Apply Finish')||['Endmill only','Combined','Operation Shape & depth','Operation Endmill','Operation V-bit','Generate operation'].includes(label)||rect[1]>=top && rect[3]<=bottom || !nav && !resource && !jobTools && rect[0]<(clip?.[0]??850) || libraryMenus[label] || dropdown && (resource||jobTools) || ['Cancel selection','Browse library…','Resource item chooser','Library profile chooser','Library profile actions','Library actions','Library search','New tool','New machine','Use machine','Use tool','Use tool & profile','Apply reviewed machine','Tools & profiles','Machines','Close library','Load library','Save library','Compare stored revision','Reload stored library','Overwrite reviewed revision','Import library','Export library','Import machine configuration','Close job tools','Roughing assignment','Finishing assignment','Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
       await click((rect[0]+rect[2])/2,(rect[1]+rect[3])/2); await sleep(120);return;
     }
@@ -234,7 +258,10 @@ try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
   if(process.argv.includes('--trace-io'))await evaluate(`(()=>{globalThis.GUI_IO_TRACE=[];const original=globalThis.CAM_GUI.receive_event;globalThis.CAM_GUI.receive_event=text=>{try{const event=JSON.parse(text);if(event.Io)globalThis.GUI_IO_TRACE.push(event.Io);}catch{}return original(text);};})()`);
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  if(process.argv.includes('--machine-authoring')) {
+  if(process.argv.includes('--inspection-review')) {
+    const {inspectionReviewScenario}=await import('./inspection-review-scenario.mjs');
+    await inspectionReviewScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey});
+  } else if(process.argv.includes('--machine-authoring')) {
     const {machineAuthoringScenario}=await import('./machine-authoring-scenario.mjs');
     await machineAuthoringScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey});
   } else if(process.argv.includes('--resources-review')) {
@@ -333,7 +360,6 @@ try {
   if(problems.length)throw new Error('Browser errors: '+problems.join('\n'));
   const browserVersion=await send('Browser.getVersion');
   const gpuResult=await send('Runtime.evaluate',{expression:'(async()=>{const a=await navigator.gpu.requestAdapter();return a?{vendor:a.info.vendor,architecture:a.info.architecture,device:a.info.device,description:a.info.description}:null})()',awaitPromise:true,returnByValue:true});
-  const offlineBuild=readFileSync('crates/cam-gui/web/offline-manifest.js','utf8').match(/"version":"([a-f0-9]+)"/)?.[1];
   writeFileSync(path.join(out,'evidence.json'),JSON.stringify({url:base,browserVersion,gpu:gpuResult.result?.value,offlineBuild,checks,consoleErrors:problems,note:'Real Chromium/WebGPU UI and WASM Worker. Checks list the exercised workflow; saved download bytes are verified where recorded. Browser terminate does not measure stopped CPU latency.'},null,2));
   console.log((process.argv.includes('--gui9')?'GUI9':process.argv.includes('--gui8')?'GUI8':process.argv.includes('--gui7')?'GUI7':process.argv.includes('--gui6')?'GUI6':process.argv.includes('--gui5')?'GUI5':process.argv.includes('--gui4')?'GUI4':process.argv.includes('--gui3')?'GUI3':'GUI2')+' browser workflow passed');
 } catch(error) {const screenshot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(path.join(out,'failure.png'),Buffer.from(screenshot.data,'base64'));writeFileSync(path.join(out,'failure-state.json'),JSON.stringify(await state(),null,2));if(process.argv.includes('--trace-io'))writeFileSync(path.join(out,'io-trace.json'),JSON.stringify(await evaluate('globalThis.GUI_IO_TRACE'),null,2));console.error(error);console.error(await state());console.error(problems);process.exitCode=1;}

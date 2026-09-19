@@ -982,6 +982,7 @@ impl App {
             ),
             None => "Compute cancelled. Draft retained.".into(),
         };
+        self.view.cancel_stock_requests();
     }
 
     /// what is happening, so a queued action is never a silent deferral.
@@ -1222,9 +1223,6 @@ impl App {
         }
         self.active = None;
         self.busy = None;
-        // The submitted command is finished, whatever its outcome: a pending
-        // "requested" playhead must not outlive the request that asked for it.
-        self.view.finish_stock_request();
         let exporting = self
             .export_dialog
             .as_ref()
@@ -1233,6 +1231,7 @@ impl App {
             self.export_dialog.as_mut().unwrap().request = None;
         }
         if revision != self.revision {
+            self.view.finish_stock_request();
             self.status =
                 "Discarded a result for an older edit; generate the current draft.".into();
             if exporting {
@@ -1243,6 +1242,7 @@ impl App {
         let (meta, payload) = match result {
             Ok(v) => v,
             Err(error) => {
+                self.view.finish_stock_request();
                 if exporting {
                     self.export_dialog.as_mut().unwrap().error = Some(error.clone());
                 }
@@ -1252,6 +1252,7 @@ impl App {
         };
         let reply = &meta.report["gui2"];
         if meta.report["protocol"] != engine::PROTOCOL {
+            self.view.finish_stock_request();
             self.status = "GUI2 UI/worker version mismatch; reload matching assets.".into();
             if exporting {
                 self.export_dialog.as_mut().unwrap().error = Some(self.status.clone());
@@ -1259,6 +1260,9 @@ impl App {
             self.plan = None;
             self.plan_scope = None;
             return;
+        }
+        if reply["kind"] != "seek" {
+            self.view.finish_stock_request();
         }
         match reply["kind"].as_str() {
             Some("resource") => {
@@ -1395,10 +1399,13 @@ impl App {
                 self.status =
                     "Artwork preview updated. Generate to calculate cutting motions.".into();
             }
-            Some("seek") => match self.view.accept_stock(meta, payload) {
-                Ok(()) => self.status = "Stock position loaded from retained execution.".into(),
-                Err(e) => self.status = e,
-            },
+            Some("seek") => {
+                match self.view.accept_stock(meta, payload) {
+                    Ok(()) => self.status = "Stock position loaded from retained execution.".into(),
+                    Err(e) => self.status = e,
+                }
+                self.view.finish_stock_request();
+            }
             Some("preset") => {
                 // The rebuilt raster belongs to the plan we asked about. A
                 // response for another execution is refused instead of being
@@ -1978,8 +1985,8 @@ impl App {
         }
         if self.active.is_none()
             && self.export_dialog.is_none()
-            && let Some(prefix) = self.view.take_stock_request()
             && let Some((handle, _)) = &self.plan
+            && let Some(prefix) = self.view.take_stock_request()
         {
             self.submit(
                 Command::Seek {
@@ -1988,6 +1995,10 @@ impl App {
                 },
                 ctx,
             );
+        }
+        if self.plan.is_none() && self.active.is_none() && self.view.stock_request_pending() {
+            self.view.cancel_stock_requests();
+            self.status = "The retained execution is unavailable. Generate again to restore another stock position.".into();
         }
         // A display resolution change re-derives the raster from the retained
         // execution. It waits for the same idle point a seek does, so a slow
@@ -2267,6 +2278,65 @@ mod tests {
     /// user has already moved past. A completion for another request id is
     /// ignored rather than shown.
     #[test]
+    fn accepting_a_stock_reply_keeps_the_fraction_requested_by_the_time_track() {
+        let mut app = app_with_document();
+        let ctx = egui::Context::default();
+        let (meta, payload) = engine::run(Command::generate(include_str!(
+            "../../../fixtures/gui4/lettering.job.json"
+        )))
+        .unwrap();
+        let handle = meta.report["gui2"]["handle"].as_str().unwrap().to_owned();
+        app.view.load_scene(Ok((meta, payload)));
+        let total = app.view.program_time().unwrap().1;
+        let frame = |app: &mut App, events| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000., 700.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.view.show(ctx, true),
+            );
+        };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        for (id, fraction) in [(1, 0.73), (2, 0.21)] {
+            let rect = control_rect("Program time").unwrap();
+            let point = egui::pos2(
+                rect[0] + 6. + (rect[2] - rect[0] - 12.) * fraction,
+                (rect[1] + rect[3]) / 2.,
+            );
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(point),
+                        egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            if let Some(prefix) = app.view.take_stock_request() {
+                let result = engine::run(Command::Seek {
+                    handle: handle.clone(),
+                    prefix,
+                });
+                app.active = Some((id, app.revision));
+                app.accept(id, result, &ctx);
+            }
+            assert!((app.view.program_time().unwrap().0 - total * fraction as f64).abs() < 0.001);
+            assert_eq!(app.view.requested_stock_prefix(), None);
+        }
+    }
+
+    #[test]
     fn display_requests_coalesce_and_late_answers_are_ignored() {
         let mut app = app_with_document();
         app.view.set_scene(scene_with_motions(2_000));
@@ -2315,9 +2385,15 @@ mod tests {
         app.active = Some((9, 3));
         app.busy = Some("Generating toolpaths…".into());
         app.pending = Some(Pending::Generate(GenerateScope::AllEnabled));
+        app.view.set_scene(scene_with_motions(200));
+        app.view.seek(50);
+        assert_eq!(app.view.take_stock_request(), Some(50));
+        app.view.seek(80);
         app.cancel_compute();
         assert!(app.active.is_none());
         assert!(app.busy.is_none());
+        assert_eq!(app.view.requested_stock_prefix(), None);
+        assert!(!app.view.stock_request_pending());
         assert!(
             app.plan.is_none(),
             "the retained execution died with the worker"
@@ -2379,6 +2455,8 @@ mod tests {
             stock: true,
             prefix: 123,
             inspection_xy: Some([9., 23.]),
+            inspection_tab: 1,
+            section_y: true,
             preset: crate::stock_preview::DisplayPreset::Fine,
         });
         app.view.inject_renderer_failure();

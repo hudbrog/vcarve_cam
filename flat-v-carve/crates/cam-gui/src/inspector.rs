@@ -188,6 +188,7 @@ impl App {
                 ui.separator();
             }
             if self.inspector_tab == 2 && self.document.is_some() { self.operation_header(ui,ctx); }
+            if self.inspector_tab == 6 && self.view.inspection_tabs(ui) { self.scroll[6] = 0.; }
             if self.inspector_tab != 6 {
             let r=ui.add(egui::TextEdit::singleline(&mut self.search).id(egui::Id::new("gui2-search")).char_limit(512).hint_text("Filter fields"));observe_control("Filter fields",r.rect);
             if r.changed(){self.scroll[self.inspector_tab]=0.;if self.inspector_tab==2 {self.operation_scroll[self.operation_tab]=0.;}}

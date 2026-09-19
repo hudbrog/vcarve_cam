@@ -83,6 +83,7 @@ export async function gui9Scenario({control,edit,state,waitFor,send,evaluate,sle
   // stage row: six carvings give twelve stages, so eight rows plus scroll
   // controls — never twelve rows.
   await control('Simulate');
+  await control('Stage jumps');
   const timeline = await waitFor(s => s.timelineRows === 8, 'bounded stage row', 60);
   await control('Start');
   await waitFor(s => !s.active && s.stockPrefix === 0, 'stock restored to the start', 300);
@@ -149,6 +150,7 @@ export async function gui9Scenario({control,edit,state,waitFor,send,evaluate,sle
     await send('Input.insertText', {text});
     await sleep(200);
   };
+  await control('Inspect Section');
   await setInspection('Inspect X', '310');
   await setInspection('Inspect Y', '105');
   const section = await waitFor(
@@ -238,14 +240,13 @@ export async function gui9Scenario({control,edit,state,waitFor,send,evaluate,sle
   await screenshot('gui9c-recovered.png');
 
   // --- GUI9c: sustained scrubbing, and an idle display that copies nothing ---
-  // Alternate between the start and the first stage end without waiting for
+  // Alternate between the start and a point on the time track without waiting for
   // each seek: the display coalesces the requests and the UI keeps drawing.
-  // The stage window has moved during the tour, so pick whichever stage jump
-  // is laid out right now instead of assuming an index.
   const laidOut = (await state()).controls;
-  const stageLabel = Object.keys(laidOut).find(key => key.startsWith('After endmill'));
-  if (!stageLabel) throw new Error('no stage jump button is laid out');
-  const stage = laidOut[stageLabel];
+  const track = laidOut['Simulation timeline'];
+  if (!track) throw new Error('no time track is laid out');
+  const targetX = track[0] + (track[2] - track[0]) * 0.3;
+  const stage = [targetX, track[1], targetX, track[3]];
   const start = (await state()).controls['Start'];
   if (!start) throw new Error('the Start button is not laid out');
   const press = async rect => {
