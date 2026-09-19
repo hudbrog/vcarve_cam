@@ -13,6 +13,18 @@ use std::collections::BTreeSet;
 
 pub const MAX_BYTES: usize = 8_000_000;
 
+/// Shared compatibility rule for assignment pickers and the library's Use action.
+pub(crate) fn library_fits(geometry: &LibraryGeometry, role: AssignmentRole) -> bool {
+    match role {
+        AssignmentRole::Endmill | AssignmentRole::Milling => {
+            matches!(geometry, LibraryGeometry::Endmill(_))
+        }
+        AssignmentRole::Vbit => matches!(geometry, LibraryGeometry::Vbit(_)),
+        AssignmentRole::Knife => matches!(geometry, LibraryGeometry::DragKnife(_)),
+        AssignmentRole::Drill => matches!(geometry, LibraryGeometry::Drill(_)),
+    }
+}
+
 /// Explain missing machine guarantees without relaxing the checked-output contract.
 pub fn machine_problems(machine: &SequenceProfile) -> Vec<String> {
     let mut issues = Vec::new();
@@ -227,6 +239,35 @@ impl ResourceCommand {
         }
         if job.operations.is_empty() {
             return vec![];
+        }
+        // Drill geometry has its own three-field draft. Resolve by the
+        // command's assignment, even when a knife or carving operation comes
+        // first in a mixed job.
+        match self {
+            Self::SelectLibraryTool { catalog, tool, operation, role: AssignmentRole::Drill } => {
+                return core::add_library_tool(job, &catalog.library, &catalog.id, tool)
+                    .map(|(added, id)| Self::UseTool {
+                        operation: operation.clone(), role: AssignmentRole::Drill, tool: id,
+                    }.clear_fields(&added.job))
+                    .unwrap_or_default();
+            }
+            Self::UseTool { operation, role: AssignmentRole::Drill, tool } => {
+                if crate::session::drill(job, operation).is_some_and(|s| &s.assignment.tool_id == tool) {
+                    return vec![];
+                }
+                return vec![2, 10, 11, 12, 13, 120, 121, 122];
+            }
+            Self::ApplyToolProfile { role: AssignmentRole::Drill, .. } => {
+                return vec![2, 10, 11, 12, 13, 120, 121, 122];
+            }
+            Self::Apply { role: AssignmentRole::Drill, .. }
+            | Self::Reset { role: AssignmentRole::Drill, .. }
+            | Self::Reapply { role: AssignmentRole::Drill, .. }
+            | Self::Clear { role: AssignmentRole::Drill, .. } => return vec![2, 10, 11],
+            Self::EditTool { tool } if job.operations.iter().any(|operation| {
+                matches!(&operation.settings, v5::OperationSettingsV5::Drill(s) if s.assignment.tool_id == tool.id)
+            }) => return vec![12, 13, 120, 121, 122],
+            _ => {}
         }
         if let Some(s) = crate::knife::settings(job) {
             return match self {
@@ -717,10 +758,10 @@ pub struct Editor {
     pub error: Option<String>,
     pub new_machine_id: String,
     pub picker_loaded: bool,
-    /// One selection per assignment role (endmill, V-bit, milling, knife).
-    pub picker_tools: [String; 4],
-    pub picker_job_tools: [String; 4],
-    pub picker_profiles: [String; 4],
+    /// One selection per assignment role (endmill, V-bit, milling, knife, drill).
+    pub picker_tools: [String; 5],
+    pub picker_job_tools: [String; 5],
+    pub picker_profiles: [String; 5],
     pub base: Option<StoredCatalog>,
     pub draft: Catalog,
     pub ready: bool,

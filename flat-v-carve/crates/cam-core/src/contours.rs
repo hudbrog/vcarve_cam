@@ -413,7 +413,7 @@ impl ContourCatalogue {
                 group: marker.group.clone(),
                 paint: marker.paint,
                 center: forward(marker.center),
-                diameter_mm: 2. * marker.radius_x_mm.max(marker.radius_y_mm),
+                diameter_mm: 2. * marker.radius_x_mm.max(marker.radius_y_mm) * placement.scale,
                 exact: true,
                 source_fingerprint: fingerprint(std::slice::from_ref(&marker.center)),
             });

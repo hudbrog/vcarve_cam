@@ -594,3 +594,147 @@ fn v5_job() -> v5::CamJobV5 {
         machine_configuration: None,
     }
 }
+
+#[test]
+fn an_offset_cannot_authorize_rapid_entry_into_untouched_stock() {
+    for (retract, code) in [
+        (-2., "DRILL_RETRACT_BELOW_SURFACE"),
+        (2., "DRILL_TOP_BELOW_SURFACE"),
+    ] {
+        let mut settings = drill_settings(&["a-point"]);
+        settings.top.offset_mm = -4.;
+        settings.retract_height.offset_mm = retract;
+        let plan = OperationPlan::plan_job(&job(settings), &PlanLimits::default()).unwrap();
+        assert_eq!(
+            plan.operation_results[0].generation_status,
+            cam_core::sequence::GenerationStatus::Incomplete
+        );
+        assert!(plan.motions.is_empty());
+        assert!(plan.generation_diagnostics.iter().any(|d| d.code == code));
+        assert_ne!(check_plan(&plan).unwrap().status, CheckStatus::Passed);
+    }
+}
+
+#[test]
+fn below_stock_retract_requires_a_face_covering_the_entire_drill() {
+    use cam_core::project::{EndmillGeometry, FaceArea, FaceMargins, FaceSettings, JobTool};
+    for (point, width, ready) in [
+        ("a-point", 10., true),
+        ("b-point", 10., false),
+        ("a-point", 6., false),
+    ] {
+        let mut settings = drill_settings(&[point]);
+        settings.top = HeightRef {
+            reference: HeightReference::FaceResult {
+                operation_id: "face".into(),
+            },
+            offset_mm: 0.,
+        };
+        settings.retract_height.offset_mm = -2.;
+        let mut base = job(settings);
+        base.tolerances.motion_tolerance_mm = Some(0.01);
+        base.tools.push(JobTool {
+            id: "endmill".into(),
+            name: "Face cutter".into(),
+            geometry: Some(ToolGeometry::Endmill(EndmillGeometry {
+                diameter_mm: 4.,
+                cutting_length_mm: 20.,
+            })),
+            capabilities: ToolCapabilities {
+                plunge_capable: Some(true),
+                ramp_capable: None,
+            },
+        });
+        let mut assignment = drill_assignment();
+        assignment.tool_id = "endmill".into();
+        assignment.cutting_feed_mm_min = Some(600.);
+        assignment.max_stepdown_mm = Some(2.);
+        assignment.stepover_mm = Some(2.);
+        base.operations.insert(
+            0,
+            Operation {
+                id: "face".into(),
+                name: "Face".into(),
+                enabled: true,
+                settings: OperationSettings::Face(FaceSettings {
+                    area: FaceArea::Rectangle {
+                        rect: RectXY {
+                            min_x_mm: 5.,
+                            min_y_mm: 10.,
+                            width_mm: width,
+                            length_mm: 10.,
+                        },
+                    },
+                    margins: FaceMargins::default(),
+                    entry: Default::default(),
+                    entry_overrun_mm: Some(2.),
+                    exit_overrun_mm: Some(2.),
+                    top: HeightRef {
+                        reference: HeightReference::StockTop,
+                        offset_mm: 0.,
+                    },
+                    bottom: HeightRef {
+                        reference: HeightReference::StockTop,
+                        offset_mm: -4.,
+                    },
+                    stepdown_mm: Some(2.),
+                    stepover_mm: Some(2.),
+                    pass_angle_deg: Some(0.),
+                    pattern: Default::default(),
+                    assignment,
+                }),
+            },
+        );
+        let plan = OperationPlan::plan_job(&base, &PlanLimits::default()).unwrap();
+        assert_eq!(
+            plan.operation_results[0].generation_status,
+            cam_core::sequence::GenerationStatus::Complete,
+            "{:?}",
+            plan.generation_diagnostics
+        );
+        assert_eq!(
+            plan.operation_results[1].generation_status
+                == cam_core::sequence::GenerationStatus::Complete,
+            ready,
+            "{:?}",
+            plan.generation_diagnostics
+        );
+        if ready {
+            assert_eq!(check_plan(&plan).unwrap().status, CheckStatus::Passed);
+        } else {
+            assert!(
+                plan.generation_diagnostics
+                    .iter()
+                    .any(|d| d.code == "DRILL_RETRACT_BELOW_SURFACE")
+            );
+        }
+    }
+}
+
+#[test]
+fn pathological_peck_settings_fail_without_expanding_unbounded_motions() {
+    for (depth, reduction, minimum, code) in [
+        (1., 1., 1e-20, "DRILL_PECK_PROGRESS"),
+        (1e-6, 0., 1e-6, "PROJECT_RESOURCE_LIMIT"),
+    ] {
+        let mut settings = drill_settings(&["a-point"]);
+        settings.peck = Some(DrillPeckSettings {
+            mode: DrillPeckMode::FullRetract,
+            depth_mm: depth,
+            reduction_mm: reduction,
+            min_depth_mm: minimum,
+            retract_mm: None,
+        });
+        let plan = OperationPlan::plan_job(&job(settings), &PlanLimits::default()).unwrap();
+        assert!(plan.motions.is_empty());
+        assert_eq!(
+            plan.operation_results[0].generation_status,
+            cam_core::sequence::GenerationStatus::Incomplete
+        );
+        assert!(
+            plan.generation_diagnostics.iter().any(|d| d.code == code),
+            "{:?}",
+            plan.generation_diagnostics
+        );
+    }
+}

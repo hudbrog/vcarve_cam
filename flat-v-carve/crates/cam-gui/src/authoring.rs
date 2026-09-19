@@ -370,7 +370,8 @@ pub const FIELDS: &[usize] = &[
     29, 30, 31, 32, 33, 38, 39, 40, 41, 42, 43, 44, 45, 46, 14, 47, 48, 49, 50, 51, 52, 53, 54, 55,
     56, 57, 58, 59, 60, 34, 35, 36, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76,
     77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99,
-    100, 101, 102, 103, 104, 105, 106, 107, 108,
+    100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118,
+    119, 120, 121, 122,
 ];
 
 /// Face-editor field IDs (GUI7a/b). Reused IDs 2/8/9/10/11 are the operation's
@@ -394,6 +395,7 @@ pub fn active_in(job: &CamJobV5, operation_id: &str, field: usize) -> bool {
         }
         Some(crate::session::OperationKind::Face) => return crate::face::active(field),
         Some(crate::session::OperationKind::Profile) => return crate::profile::active(field),
+        Some(crate::session::OperationKind::Drill) => return crate::drill::active(field),
         _ => {}
     }
     if field >= 61 {
@@ -744,6 +746,7 @@ pub fn group(field: usize) -> &'static [usize] {
         16..=19 => &[16, 17, 18, 19],
         30 | 31 => &[30, 31],
         40..=43 => &[40, 41, 42, 43],
+        120..=122 => &[120, 121, 122],
         _ => &[],
     }
 }
@@ -783,6 +786,7 @@ pub fn set_group_in(
                 max_cut_depth_mm: values[1],
             }));
         }
+        120..=122 => crate::drill::set_geometry(job, operation_id, values)?,
         14 | 51 => {
             settings_mut_in(job, operation_id)
                 .ok_or("This operation is not a Flat V-carve")?

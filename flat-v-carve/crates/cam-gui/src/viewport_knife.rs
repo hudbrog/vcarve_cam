@@ -15,6 +15,10 @@ impl Viewport {
     pub fn profile_contours(&self) -> Arc<Vec<crate::profile::Contour>> {
         self.profile_contours.clone()
     }
+    /// The drillable marker points, for direct viewport picking.
+    pub fn drill_points(&self) -> Arc<Vec<crate::scene::ScenePoint>> {
+        self.drill_points.clone()
+    }
     /// The operation being edited is a drag knife. Picking follows the
     /// selected operation, so a mixed Face → knife sequence still assigns
     /// filled regions to the face and knife chains to the knife.
@@ -34,6 +38,16 @@ impl Viewport {
     pub fn set_profile_selected(&mut self, profile: bool) {
         if self.profile_selected != profile {
             self.profile_selected = profile;
+            self.overlay_signature = None;
+        }
+    }
+    /// The operation being edited is a drill.
+    pub fn is_drill(&self) -> bool {
+        self.drill_selected
+    }
+    pub fn set_drill_selected(&mut self, drill: bool) {
+        if self.drill_selected != drill {
+            self.drill_selected = drill;
             self.overlay_signature = None;
         }
     }

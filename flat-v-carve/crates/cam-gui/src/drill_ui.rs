@@ -39,12 +39,15 @@ impl App {
         }
     }
 
-    /// The catalogue's marker points, refreshed when the document revision
-    /// moves. Points come from the same import the other readings do, so the
-    /// panel never re-parses anything the reference inspection did not.
+    /// The catalogue's marker points, refreshed on the first panel frame and
+    /// again whenever the document revision moves (an untouched document
+    /// still sits at revision 0, which the revision counter alone cannot
+    /// distinguish from "never looked"). Points come from the same import
+    /// the other readings do, so the panel never re-parses anything the
+    /// reference inspection did not.
     fn refresh_points(&mut self) {
         let Some(doc) = &self.document else { return };
-        if self.points_revision == self.revision {
+        if self.points_seen && self.points_revision == self.revision {
             return;
         }
         self.points = v5::artwork::inspect_artwork(&doc.job)
@@ -57,6 +60,7 @@ impl App {
             })
             .unwrap_or_default();
         self.points_revision = self.revision;
+        self.points_seen = true;
     }
 
     fn drill_points(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -459,7 +463,7 @@ impl App {
             "Geometry & capabilities",
             missing_geometry,
             |app, ui| {
-                app.operation_numbers(ui, ctx, &[12, 13]);
+                app.operation_numbers(ui, ctx, &[120, 121, 122]);
                 ui.separator();
                 app.operation_capabilities(ui, ctx, false);
             },
@@ -518,6 +522,116 @@ mod tests {
         );
     }
 
+    #[test]
+    fn drill_dimensions_commit_together_and_preserve_drill_geometry() {
+        let mut doc = Document::new(drill_workspace());
+        let id = doc.raw.operation.clone();
+        assert!(doc.edit(120, "6".into()).is_err());
+        assert!(
+            doc.pending(),
+            "partial drill dimensions must block generation"
+        );
+        assert!(doc.edit(121, "25".into()).is_err());
+        doc.edit(122, "135".into()).unwrap();
+        assert!(!doc.pending());
+        doc.edit(120, "8".into()).unwrap();
+        let Some(cam_core::project::ToolGeometry::Drill(geometry)) =
+            &crate::authoring::tool_in(&doc.job, &id, false)
+                .unwrap()
+                .geometry
+        else {
+            panic!("editing drill dimensions must not create an endmill");
+        };
+        assert_eq!(geometry.diameter_mm, 8.);
+        assert_eq!(geometry.cutting_length_mm, 25.);
+        assert_eq!(geometry.tip_angle_deg, 135.);
+        let before = doc.job.clone();
+        assert!(doc.edit(122, "180".into()).is_err());
+        assert_eq!(
+            doc.job, before,
+            "invalid angle must preserve the last valid tool"
+        );
+        assert!(doc.pending());
+        doc.edit(122, "118".into()).unwrap();
+        assert!(!doc.pending());
+    }
+
+    #[test]
+    fn drill_geometry_panel_displays_drill_dimensions_and_plunge_capability() {
+        let mut doc = Document::new(drill_workspace());
+        doc.edit(120, "5".into()).unwrap_err();
+        doc.edit(121, "30".into()).unwrap_err();
+        doc.edit(122, "118".into()).unwrap();
+        let id = doc.raw.operation.clone();
+        crate::authoring::tool_mut_in(&mut doc.job, &id, false)
+            .unwrap()
+            .capabilities
+            .plunge_capable = Some(true);
+        let mut app = App {
+            document: Some(doc),
+            inspector_tab: 2,
+            operation_tab: 2,
+            search: "drill".into(),
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            CONTROLS.with(|c| c.borrow_mut().clear());
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 900.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| app.inspector(ctx),
+            );
+        }
+        for label in [
+            "Drill bit diameter",
+            "Drill bit cutting length",
+            "Drill point angle",
+            "Help Drill bit can plunge",
+            "Plunge yes",
+        ] {
+            assert!(control_rect(label).is_some(), "missing {label}");
+        }
+        assert!(control_rect("Endmill diameter").is_none());
+        assert!(control_rect("Help Endmill can plunge").is_none());
+        assert!(control_rect("Ramp unset").is_none());
+        let doc = app.document.as_ref().unwrap();
+        assert_eq!(
+            (doc.text(120), doc.text(121), doc.text(122)),
+            ("5".into(), "30".into(), "118".into())
+        );
+    }
+
+    #[test]
+    fn viewport_marker_cache_follows_the_loaded_scene() {
+        let mut app = App::default();
+        let preview = crate::session::execute(
+            &mut cam_service::retained::Retained::new(),
+            crate::session::Command::Preview {
+                job: drill_workspace().to_json().unwrap(),
+            },
+        );
+        app.view.load_scene(preview);
+        app.view.set_drill_selected(true);
+        assert!(app.view.is_drill());
+        assert_eq!(app.view.drill_points().len(), 2);
+        let empty = crate::operation_authoring::empty_job();
+        app.view.load_scene(crate::session::execute(
+            &mut cam_service::retained::Retained::new(),
+            crate::session::Command::Preview {
+                job: empty.to_json().unwrap(),
+            },
+        ));
+        assert!(app.view.drill_points().is_empty());
+        app.view.set_drill_selected(false);
+        assert!(!app.view.is_drill());
+    }
+
     /// The full worker path a clicked marker row drives: the document goes
     /// through the gate, the DrillSelection command binds the catalogue's
     /// point references, and the reply carries the updated selection.
@@ -544,5 +658,88 @@ mod tests {
             .points
             .clone();
         assert_eq!(points.len(), 2, "both markers selected: {points:?}");
+    }
+
+    /// Render the panel, click one marker's checkbox, and let the app's event
+    /// loop adopt the service reply through the in-process test transport.
+    #[test]
+    fn clicking_a_marker_row_selects_the_point_through_the_worker() {
+        let job = drill_workspace();
+        let operation_id = job.operations[0].id.clone();
+        let mut app = App {
+            document: Some(Document::new(job)),
+            inspector_tab: 2,
+            operation_tab: 0,
+            ..Default::default()
+        };
+        app.port.use_inline_compute();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 900.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.inspector(ctx),
+            );
+        };
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let rect = crate::app::control_rect("Drill point artwork-1 / a-point")
+            .expect("the marker row is rendered and observed");
+        let center = egui::pos2((rect[0] + rect[2]) / 2., (rect[1] + rect[3]) / 2.);
+        frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(center),
+                egui::Event::PointerButton {
+                    pos: center,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: center,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        // The click submitted an artwork command; pump the app's event loop
+        // until the worker reply is adopted.
+        let selected = |app: &App| {
+            crate::session::drill(&app.document.as_ref().unwrap().job, &operation_id)
+                .map(|s| s.points.len())
+                .unwrap_or(0)
+        };
+        let mut count = selected(&app);
+        for _ in 0..200 {
+            if count == 1 && app.active.is_none() {
+                break;
+            }
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 900.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| app.ui(ctx),
+            );
+            count = selected(&app);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            count, 1,
+            "the clicked marker must be selected; status: {}",
+            app.status
+        );
     }
 }

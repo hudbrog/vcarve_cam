@@ -646,16 +646,7 @@ impl App {
                             .any(|p| p.id == self.resources.preset)
                 });
                 let fits = tool.is_some_and(|t| {
-                    matches!(
-                        (&t.geometry, self.resources.role),
-                        (LibraryGeometry::Endmill(_), Role::Endmill)
-                            | (LibraryGeometry::Vbit(_), Role::Vbit)
-                            // A Face/Profile operation's milling assignment is
-                            // cut with an endmill; a V-bit would be refused by
-                            // the planner, so it is not offered here either.
-                            | (LibraryGeometry::Endmill(_), Role::Milling)
-                            | (LibraryGeometry::DragKnife(_), Role::Knife)
-                    )
+                    crate::resources::library_fits(&t.geometry, self.resources.role)
                 });
                 let selected = if machines {
                     self.resources
@@ -857,5 +848,127 @@ impl App {
                 self.resources.error = Some(e.to_string());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_library_use_action_accepts_a_drill_for_a_drill_operation() {
+        let empty = crate::operation_authoring::empty_job();
+        let job = crate::operation_authoring::apply(
+            &empty,
+            crate::operation_authoring::add(crate::operation_authoring::Kind::Drill, &empty),
+        )
+        .unwrap();
+        let operation = job.operations[0].id.clone();
+        let mut app = App {
+            document: Some(Document::new(job)),
+            ..Default::default()
+        };
+        app.port.use_inline_compute();
+        // An unfinished geometry edit must not mask a newly applied library tool.
+        assert!(
+            app.document
+                .as_mut()
+                .unwrap()
+                .edit(120, String::new())
+                .is_err()
+        );
+        app.library_new_tool("Drill", Role::Drill);
+        app.resources.draft.library.tools[0].geometry =
+            LibraryGeometry::Drill(cam_core::model::DrillSpec {
+                diameter_mm: 5.,
+                tip_angle_deg: 118.,
+                cutting_length_mm: 30.,
+            });
+        let stored =
+            crate::resources::StoredCatalog::next(None, app.resources.draft.clone()).unwrap();
+        app.resources.draft = stored.snapshot.clone();
+        app.resources.base = Some(stored);
+        app.resources.ready = true;
+        app.resources.dirty = false;
+        let ctx = egui::Context::default();
+        let frame = |app: &mut App, events| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 900.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.resource_windows(ctx);
+                    egui::CentralPanel::default().show(ctx, |ui| app.library_footer(ui, ctx));
+                },
+            );
+        };
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        assert_eq!(app.resources.role, Role::Drill);
+        let [x0, y0, x1, y1] = control_rect("Use tool").unwrap();
+        let pos = egui::pos2((x0 + x1) / 2., (y0 + y1) / 2.);
+        frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        assert!(
+            app.active.is_some(),
+            "Use tool must submit the drill assignment command"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.active.is_some() && std::time::Instant::now() < deadline {
+            let _ = ctx.run(Default::default(), |ctx| app.ui(ctx));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.active.is_none(), "{}", app.status);
+        let job = &app.document.as_ref().unwrap().job;
+        let assigned = &crate::session::drill(job, &operation)
+            .unwrap()
+            .assignment
+            .tool_id;
+        assert!(
+            job.tools.iter().any(|tool| &tool.id == assigned
+                && matches!(
+                    tool.geometry,
+                    Some(cam_core::project::ToolGeometry::Drill(_))
+                )),
+            "{}",
+            app.status
+        );
+        let doc = app.document.as_ref().unwrap();
+        assert_eq!(doc.text(120), "5");
+        assert_eq!(doc.text(121), "30");
+        assert_eq!(doc.text(122), "118");
+        assert_eq!(
+            crate::authoring::tool_in(&doc.job, &operation, false)
+                .unwrap()
+                .capabilities
+                .plunge_capable,
+            Some(true)
+        );
+        assert!(
+            !doc.pending(),
+            "library geometry must replace partial geometry drafts"
+        );
     }
 }

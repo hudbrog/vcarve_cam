@@ -241,6 +241,8 @@ pub struct Viewport {
     /// Closed catalogue contours a profile operation can select, in document
     /// order. Display/candidate data only; the document owns the selection.
     profile_contours: Arc<Vec<crate::profile::Contour>>,
+    /// Drill markers projected from the scene's artwork catalogue.
+    drill_points: Arc<Vec<crate::scene::ScenePoint>>,
     /// One timeline entry per executed stage (or operation), in plan order.
     groups: Arc<Vec<DisplayGroup>>,
     /// Whether the operation the user is editing is a drag knife. Picking
@@ -249,6 +251,7 @@ pub struct Viewport {
     /// Whether the operation being edited is a profile: viewport selection
     /// then addresses closed contours with their advisory sides.
     profile_selected: bool,
+    drill_selected: bool,
     /// Candidate anchors of the selected profile operation (document-derived
     /// display state) and their drag gesture.
     profile_anchors: Vec<profile::ProfileAnchor>,
@@ -385,9 +388,11 @@ impl Default for Viewport {
         Self {
             knife_chains: Arc::new(Vec::new()),
             profile_contours: Arc::new(Vec::new()),
+            drill_points: Arc::new(Vec::new()),
             groups: Arc::new(Vec::new()),
             knife_selected: false,
             profile_selected: false,
+            drill_selected: false,
             profile_anchors: Vec::new(),
             profile_anchor_signature: 0,
             anchor_drag: None,
@@ -559,6 +564,10 @@ impl Viewport {
         );
         self.profile_contours = Arc::new(
             serde_json::from_value(scene.meta.report["gui2"]["profileContours"].clone())
+                .unwrap_or_default(),
+        );
+        self.drill_points = Arc::new(
+            serde_json::from_value(scene.meta.report["gui2"]["drillPoints"].clone())
                 .unwrap_or_default(),
         );
         self.groups = Arc::new(

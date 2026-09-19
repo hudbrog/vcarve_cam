@@ -39,6 +39,8 @@ const FULL_RETRACT_REENTRY_MM: f64 = 0.254;
 const CHIP_BREAK_RETRACT_MM: f64 = 0.254;
 /// Two selected markers closer than this are the same spot.
 const COINCIDENT_POINT_MM: f64 = 1e-3;
+/// Bound a single operation before expanding its holes and pecks into moves.
+const MAX_DRILL_MOTIONS: usize = 100_000;
 
 fn issue(code: &str, message: impl Into<String>, operation_id: &str) -> PlanIssue {
     PlanIssue {
@@ -311,6 +313,77 @@ pub(crate) fn plan(
             }
         }
     }
+    // An offset or a face reference alone does not prove that the stock was
+    // cleared at a hole. A preceding face must cover the whole drill footprint
+    // before its plane can lower the material surface from the original Z=0.
+    let radius = drill.radius().mm();
+    for (center, _, id) in &points {
+        let surface = published_faces
+            .values()
+            .filter(|face| {
+                let rect = face.covered;
+                center.x - radius >= rect.min_x_mm - RESERVE_MM
+                    && center.y - radius >= rect.min_y_mm - RESERVE_MM
+                    && center.x + radius <= rect.min_x_mm + rect.width_mm + RESERVE_MM
+                    && center.y + radius <= rect.min_y_mm + rect.length_mm + RESERVE_MM
+            })
+            .fold(0.0_f64, |z, face| z.min(face.z_mm));
+        let problem = if retract_z <= surface + RESERVE_MM {
+            Some((
+                "DRILL_RETRACT_BELOW_SURFACE",
+                "retract height must be above the established material surface",
+            ))
+        } else if heights.top_z < surface - RESERVE_MM {
+            Some((
+                "DRILL_TOP_BELOW_SURFACE",
+                "top height must not be below the established material surface",
+            ))
+        } else {
+            None
+        };
+        if let Some((code, message)) = problem {
+            return Ok(incomplete(
+                operation_id,
+                vec![issue(
+                    code,
+                    format!(
+                        "drill point '{id}': {message} ({surface:.4} mm); a preceding face must cover the entire drill footprint to establish a lower surface"
+                    ),
+                    operation_id,
+                )],
+            ));
+        }
+    }
+
+    // Reserve an upper bound for every hole before expanding any motions.
+    // Three moves per peck covers full retracts; four more cover travel and
+    // approach, plus an optional bottom dwell. The schedule is shared by holes.
+    let budget_per_hole = MAX_DRILL_MOTIONS / points.len();
+    let overhead = 4 + usize::from(settings.dwell_at_bottom_s.is_some());
+    let levels = if let Some(peck) = &settings.peck {
+        match peck.schedule(cut_depth, budget_per_hole.saturating_sub(overhead) / 3) {
+            Ok(levels) => levels,
+            Err(d) => {
+                return Ok(incomplete(
+                    operation_id,
+                    vec![issue(&d.code, d.message, operation_id)],
+                ));
+            }
+        }
+    } else {
+        if budget_per_hole < overhead + 3 {
+            return Ok(incomplete(
+                operation_id,
+                vec![issue(
+                    "PROJECT_RESOURCE_LIMIT",
+                    "drill holes exceed the motion budget",
+                    operation_id,
+                )],
+            ));
+        }
+        vec![]
+    };
+
     // Non-blocking advisories: coincident markers drill the same hole twice,
     // and (opt-in) a drill wider than the drawn marker circle.
     let mut advisories = vec![];
@@ -462,7 +535,6 @@ pub(crate) fn plan(
                 ));
             }
             Some((peck, chip_retract)) => {
-                let levels = peck.schedule(cut_depth);
                 let mut previous_level_z: Option<f64> = None;
                 for (index, &reached) in levels.iter().enumerate() {
                     let level_z = heights.top_z - reached;

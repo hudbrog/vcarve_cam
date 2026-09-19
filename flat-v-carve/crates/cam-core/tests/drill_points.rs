@@ -93,9 +93,12 @@ fn placement_moves_points_like_every_other_reading() {
     let a = placed.point("a-point").unwrap();
     // setup = 2·R90°(page − origin): (10,15) − (1,2) = (9,13) → (−13,9) → (−26,18).
     assert_eq!(a.center, Point::new(-26., 18.));
+    assert_eq!(a.diameter_mm, 10.);
     let dot = placed.point("dot-0-outer-center").unwrap();
     // (6,4) − (1,2) = (5,2) → (−2,5) → (−4,10); centroids follow the same map.
     assert_eq!(dot.center, Point::new(-4., 10.));
+    let original = catalogue(MARKERS);
+    assert!((dot.diameter_mm - 2. * original.point(&dot.id).unwrap().diameter_mm).abs() < 1e-9);
 }
 
 #[test]

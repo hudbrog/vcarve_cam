@@ -508,11 +508,15 @@ impl App {
     pub(super) fn resource_windows(&mut self, ctx: &egui::Context) {
         match self.operation_kind() {
             Some(OperationKind::DragKnife) => self.resources.role = Role::Knife,
+            Some(OperationKind::Drill) => self.resources.role = Role::Drill,
             Some(OperationKind::Face | OperationKind::Profile) => {
                 self.resources.role = Role::Milling
             }
             Some(OperationKind::FlatVcarve)
-                if matches!(self.resources.role, Role::Knife | Role::Milling) =>
+                if matches!(
+                    self.resources.role,
+                    Role::Knife | Role::Milling | Role::Drill
+                ) =>
             {
                 self.resources.role = Role::Endmill
             }

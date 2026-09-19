@@ -11,7 +11,7 @@ use cam_core::project::{
 
 /// Fields this editor binds for a Drill operation.
 pub fn active(field: usize) -> bool {
-    matches!(field, 2 | 6 | 10 | 11 | 12 | 13 | 111..=119)
+    matches!(field, 2 | 6 | 7 | 10 | 11 | 23 | 25..=36 | 40..=45 | 111..=122)
 }
 
 pub fn value(job: &CamJobV5, operation_id: &str, field: usize) -> Option<f64> {
@@ -19,6 +19,14 @@ pub fn value(job: &CamJobV5, operation_id: &str, field: usize) -> Option<f64> {
     match field {
         2 | 10 => s?.assignment.plunge_feed_mm_min,
         11 => s?.assignment.spindle_rpm,
+        120..=122 => match &crate::authoring::tool_in(job, operation_id, false)?.geometry {
+            Some(cam_core::project::ToolGeometry::Drill(g)) => Some(match field {
+                120 => g.diameter_mm,
+                121 => g.cutting_length_mm,
+                _ => g.tip_angle_deg,
+            }),
+            _ => None,
+        },
         111 => Some(s?.top.offset_mm),
         112 => Some(s?.bottom.offset_mm),
         113 => Some(s?.retract_height.offset_mm),
@@ -81,6 +89,23 @@ pub fn drill_mut<'a>(job: &'a mut CamJobV5, operation_id: &str) -> Option<&'a mu
         cam_core::project::v5::OperationSettingsV5::Drill(settings) => Some(settings),
         _ => None,
     }
+}
+
+/// Commit all drill dimensions together so partial input cannot replace the
+/// tool with another geometry kind or silently invent a point angle.
+pub fn set_geometry(job: &mut CamJobV5, operation_id: &str, values: &[f64]) -> Result<(), String> {
+    let [diameter_mm, cutting_length_mm, tip_angle_deg] = values else {
+        return Err("Complete the drill bit diameter, cutting length and point angle".into());
+    };
+    crate::session::drill(job, operation_id).ok_or("Expected a Drill operation")?;
+    crate::authoring::tool_mut_in(job, operation_id, false)?.geometry = Some(
+        cam_core::project::ToolGeometry::Drill(cam_core::model::DrillSpec {
+            diameter_mm: *diameter_mm,
+            cutting_length_mm: *cutting_length_mm,
+            tip_angle_deg: *tip_angle_deg,
+        }),
+    );
+    Ok(())
 }
 
 /// Height reference selection for the top, bottom or retract plane.

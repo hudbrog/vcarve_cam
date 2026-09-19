@@ -71,6 +71,12 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
         "plunge" | "Endmill can plunge" | "V-bit can plunge" => {
             "Can this cutter feed straight down into material? Choose Yes only for a cutter designed for it (for example a center-cutting endmill). This capability is copied with library geometry; the operation still chooses plunge or ramp entry."
         }
+        "Drill bit can plunge" => {
+            "Whether the drill bit can feed straight down into material. This capability is copied from the tool library; ordinary drill bits support plunging."
+        }
+        "Drilling feed" => {
+            "Speed at which the drill bit feeds down the hole, in mm/min. Use the drilling feed recommended for the bit, stock material and spindle speed."
+        }
         "ramp" | "Endmill can ramp" => {
             "Can this tool cut while moving sideways and down together? This is a cutter capability. Ramp angle and ramp feed are separate operation settings."
         }
@@ -193,7 +199,7 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
     })
 }
 
-const FIELD_HELP: [&str; 120] = [
+const FIELD_HELP: [&str; 123] = [
     "Total carving depth below the operation top, in millimeters. Stepdown controls how much is removed in each pass.",
     "Material left on walls by roughing, in millimeters, for a later finishing pass. Zero requests no extra allowance.",
     "Endmill cutting speed along the path, in mm/min. Choose for your cutter, material and machine; it is not spindle RPM.",
@@ -314,6 +320,9 @@ const FIELD_HELP: [&str; 120] = [
     "Removed from the peck depth after every peck, in millimeters, so deep holes take progressively smaller bites. Zero keeps every peck at the full depth.",
     "The smallest peck depth the reduction may leave, in millimeters. It must not exceed the peck depth.",
     "The chip-break retract distance inside the hole, in millimeters. LinuxCNC's fixed G73 retract is 0.254 mm; full-retract pecking ignores this value.",
+    "Drill bit cutting diameter in millimeters. This sets the hole diameter; artwork markers only choose its position.",
+    "Usable flute length of the drill bit in millimeters. It must accommodate the planned drilling depth, including any breakthrough or point extension.",
+    "Included angle of the drill's conical point in degrees, for example 118. Used to calculate the extra tip depth for full-diameter holes.",
 ];
 
 #[cfg(test)]

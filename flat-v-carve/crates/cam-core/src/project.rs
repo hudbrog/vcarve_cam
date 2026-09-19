@@ -922,17 +922,33 @@ impl DrillPeckSettings {
         Ok(())
     }
     /// The depths each successive peck reaches below the top, ending exactly
-    /// at the final depth. Deterministic and finite by validation.
-    pub(crate) fn schedule(&self, total_depth_mm: f64) -> Vec<f64> {
+    /// at the final depth. Stop before allocating beyond the caller's budget,
+    /// or if floating-point addition cannot advance the next peck.
+    pub(crate) fn schedule(&self, total_depth_mm: f64, max_pecks: usize) -> Result<Vec<f64>> {
+        self.validate()?;
+        number(Some(total_depth_mm), "drill.total_depth_mm", true)?;
         let mut reached = vec![];
         let mut depth = self.depth_mm.min(total_depth_mm);
         let mut level = 0.;
-        while level < total_depth_mm - f64::EPSILON * total_depth_mm.abs().max(1.) {
-            level = (level + depth).min(total_depth_mm);
+        while level < total_depth_mm {
+            if reached.len() >= max_pecks {
+                return Err(error(
+                    "PROJECT_RESOURCE_LIMIT",
+                    "drill pecks exceed the motion budget",
+                ));
+            }
+            let next = (level + depth).min(total_depth_mm);
+            if next <= level {
+                return Err(error(
+                    "DRILL_PECK_PROGRESS",
+                    "peck depth is too small to advance at this depth",
+                ));
+            }
+            level = next;
             reached.push(level);
             depth = (depth - self.reduction_mm).max(self.min_depth_mm);
         }
-        reached
+        Ok(reached)
     }
 }
 

@@ -164,11 +164,12 @@ impl ToolSpec {
 /// (`cam_core::toolpath::Interpolation`) and its checks require a positive feed
 /// on every linear feed and forbid one on a rapid, so the clock can time each
 /// motion from the plan's own numbers instead of guessing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Interpolation {
     Rapid,
     Feed,
+    Dwell { seconds: f64 },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Motion {
@@ -232,6 +233,15 @@ impl Motion {
     pub fn duration_seconds(&self, rapid_rate_mm_min: f64) -> Result<f64, String> {
         let length = self.length_mm();
         match self.interpolation {
+            Interpolation::Dwell { seconds } => {
+                if !seconds.is_finite() || seconds < 0. || length != 0. {
+                    return Err(
+                        "Simulator dwell must hold position for a finite nonnegative duration"
+                            .into(),
+                    );
+                }
+                Ok(seconds)
+            }
             Interpolation::Rapid => {
                 if !rapid_rate_mm_min.is_finite() || rapid_rate_mm_min <= 0. {
                     return Err("Simulator needs a positive rapid rate".into());
@@ -1066,7 +1076,7 @@ impl Playback {
 /// Binary motion stream. `Motion` is field tuples and a tool index, so the
 /// display process can rebuild the exact replay input without parsing a JSON
 /// array of positions.
-/// kind u8 | stage u16 | interpolation u8 | tool u32 | feed f64 |
+/// kind u8 | stage u16 | interpolation u8 | tool u32 | feed or dwell seconds f64 |
 /// arc centre x f64 | arc centre y f64 | arc flags u8 | pad 7 |
 /// six f64 coordinates.
 pub const MOTION_BYTES: usize = 88;
@@ -1075,12 +1085,14 @@ pub fn interpolation_code(interpolation: Interpolation) -> u8 {
     match interpolation {
         Interpolation::Rapid => 0,
         Interpolation::Feed => 1,
+        Interpolation::Dwell { .. } => 2,
     }
 }
 
-pub fn code_interpolation(code: u8) -> Interpolation {
+pub fn code_interpolation(code: u8, parameter: f64) -> Interpolation {
     match code {
         1 => Interpolation::Feed,
+        2 => Interpolation::Dwell { seconds: parameter },
         _ => Interpolation::Rapid,
     }
 }
@@ -1110,7 +1122,13 @@ pub fn encode_motions(motions: &[Motion]) -> Vec<u8> {
         out.extend_from_slice(&motion.stage.to_le_bytes());
         out.push(interpolation_code(motion.interpolation));
         out.extend_from_slice(&(motion.tool as u32).to_le_bytes());
-        out.extend_from_slice(&motion.feed_mm_min.unwrap_or(f64::NAN).to_le_bytes());
+        // Dwell blocks carry a duration instead of a feed. The interpolation
+        // tag distinguishes them without changing the existing record size.
+        let parameter = match motion.interpolation {
+            Interpolation::Dwell { seconds } => seconds,
+            _ => motion.feed_mm_min.unwrap_or(f64::NAN),
+        };
+        out.extend_from_slice(&parameter.to_le_bytes());
         // A programmed arc travels with its move: the centre and the direction
         // here, the endpoints in the coordinates below.
         let (center_x, center_y) = motion
@@ -1141,9 +1159,9 @@ pub fn decode_motions(bytes: &[u8], tools: usize) -> Result<Vec<Motion>, String>
     for record in bytes.chunks_exact(MOTION_BYTES) {
         let kind = code_kind(record[0]).to_string();
         let stage = u16::from_le_bytes(record[1..3].try_into().unwrap());
-        let interpolation = code_interpolation(record[3]);
         let tool = u32::from_le_bytes(record[4..8].try_into().unwrap()) as usize;
         let feed = f64::from_le_bytes(record[8..16].try_into().unwrap());
+        let interpolation = code_interpolation(record[3], feed);
         let center_x = f64::from_le_bytes(record[16..24].try_into().unwrap());
         let center_y = f64::from_le_bytes(record[24..32].try_into().unwrap());
         let arc_flags = record[32];
@@ -1166,7 +1184,9 @@ pub fn decode_motions(bytes: &[u8], tools: usize) -> Result<Vec<Motion>, String>
             // A rapid carries no feed, and the stream writes NaN for it. A feed
             // motion without one is kept as it is: the clock refuses to time it
             // rather than the display refusing to show the plan at all.
-            feed_mm_min: feed.is_finite().then_some(feed),
+            feed_mm_min: (!matches!(interpolation, Interpolation::Dwell { .. })
+                && feed.is_finite())
+            .then_some(feed),
             arc: match arc_flags {
                 1 | 2 if center_x.is_finite() && center_y.is_finite() => {
                     Some(cam_core::toolpath::ArcMove {

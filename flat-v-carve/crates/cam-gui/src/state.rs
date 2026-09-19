@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const FIELDS: [&str; 120] = [
+pub const FIELDS: [&str; 123] = [
     "Maximum depth",
     "Wall allowance",
     "Roughing feed",
@@ -129,6 +129,9 @@ pub const FIELDS: [&str; 120] = [
     "Peck depth reduction",
     "Minimum peck depth",
     "Peck retract",
+    "Drill bit diameter",
+    "Drill bit cutting length",
+    "Drill point angle",
 ];
 
 /// Fields whose raw text belongs to one qualified geometry reference rather

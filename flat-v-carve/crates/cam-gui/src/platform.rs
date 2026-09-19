@@ -61,6 +61,8 @@ mod native {
         rx: mpsc::Receiver<Event>,
         product: Option<crate::worker::Session>,
         stopped: Vec<crate::worker::Session>,
+        #[cfg(test)]
+        test_service: Option<cam_service::retained::Retained>,
     }
     impl Default for Port {
         fn default() -> Self {
@@ -70,6 +72,8 @@ mod native {
                 rx,
                 product: None,
                 stopped: Vec::new(),
+                #[cfg(test)]
+                test_service: None,
             }
         }
     }
@@ -79,6 +83,12 @@ mod native {
         }
     }
     impl Port {
+        /// Exercise command submission and event adoption in widget tests
+        /// without launching the libtest executable as a native worker.
+        #[cfg(test)]
+        pub(crate) fn use_inline_compute(&mut self) {
+            self.test_service = Some(cam_service::retained::Retained::new());
+        }
         pub fn poll(&self) -> Option<Event> {
             self.rx.try_recv().ok()
         }
@@ -89,6 +99,20 @@ mod native {
             }
         }
         pub fn start(&mut self, id: u64, request: Request, ctx: egui::Context) {
+            #[cfg(test)]
+            if let Some(service) = &mut self.test_service {
+                let result = match request {
+                    Request::Gui2(command) => crate::session::execute(service, *command),
+                    Request::Busy => Err("Busy probe requires the native worker".into()),
+                };
+                let _ = self.tx.send(Event::Computed {
+                    id,
+                    elapsed_ms: 0.,
+                    result,
+                });
+                ctx.request_repaint();
+                return;
+            }
             self.stopped.retain(|s| !s.finished());
             if self.product.as_ref().is_some_and(|s| s.finished()) {
                 self.product = None;

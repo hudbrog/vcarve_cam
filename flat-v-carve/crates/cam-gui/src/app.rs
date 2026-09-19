@@ -651,6 +651,10 @@ pub struct App {
     /// revision (the same freshness contract as `components`).
     points: Vec<cam_core::project::v5::artwork::PointEntry>,
     points_revision: u64,
+    /// Whether the point cache has been filled at least once; a document
+    /// still at revision 0 cannot be distinguished from "never looked" by
+    /// the revision counter alone.
+    points_seen: bool,
     inspector_tab: usize,
     operation_tab: usize,
     operation_picker: Option<usize>,
@@ -734,6 +738,7 @@ impl Default for App {
             components: vec![],
             points: vec![],
             points_revision: 0,
+            points_seen: false,
             inspector_tab: 2,
             operation_tab: 0,
             operation_picker: None,
@@ -1312,6 +1317,7 @@ impl App {
             Some(
                 "artwork"
                 | "carve_selection"
+                | "drill_selection"
                 | "knife_start"
                 | "knife_selection"
                 | "knife_outlines"
@@ -1349,7 +1355,7 @@ impl App {
                 }
                 self.simulate = false;
                 self.status = match reply["kind"].as_str() {
-                    Some("carve_selection" | "knife_selection" | "profile_selection") => {
+                    Some("carve_selection" | "drill_selection" | "knife_selection" | "profile_selection") => {
                         "Operation geometry updated. Undo restores the previous selection."
                     }
                     Some(
@@ -1879,6 +1885,8 @@ impl App {
             .set_knife_selected(self.operation_kind() == Some(OperationKind::DragKnife));
         self.view
             .set_profile_selected(self.operation_kind() == Some(OperationKind::Profile));
+        self.view
+            .set_drill_selected(self.operation_kind() == Some(OperationKind::Drill));
         let candidates = self.profile_candidates();
         self.view.set_profile_anchors(candidates);
         if let Some(doc) = &self.document {

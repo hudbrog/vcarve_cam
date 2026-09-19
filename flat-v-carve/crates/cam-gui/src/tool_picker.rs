@@ -12,7 +12,7 @@
 //! library tool or cutting profile, resetting to the copied baseline, clearing
 //! the copied values, or opening the library editor for this assignment.
 use super::*;
-use crate::resources::ResourceCommand as R;
+use crate::resources::{ResourceCommand as R, library_fits};
 use cam_core::project::ToolGeometry;
 use cam_core::project::v5::resources::{self as core, AssignmentRole as Role, ProfileStatus};
 use cam_core::tool_library::LibraryGeometry;
@@ -114,15 +114,6 @@ fn geometry_fits(geometry: &ToolGeometry, role: Role) -> bool {
         Role::Milling => matches!(geometry, ToolGeometry::Endmill(_)),
         Role::Knife => matches!(geometry, ToolGeometry::DragKnife(_)),
         Role::Drill => matches!(geometry, ToolGeometry::Drill(_)),
-    }
-}
-
-fn library_fits(geometry: &LibraryGeometry, role: Role) -> bool {
-    match role {
-        Role::Endmill | Role::Milling => matches!(geometry, LibraryGeometry::Endmill(_)),
-        Role::Vbit => matches!(geometry, LibraryGeometry::Vbit(_)),
-        Role::Knife => matches!(geometry, LibraryGeometry::DragKnife(_)),
-        Role::Drill => matches!(geometry, LibraryGeometry::Drill(_)),
     }
 }
 
@@ -576,9 +567,16 @@ mod tests {
             role_index(Role::Vbit),
             role_index(Role::Milling),
             role_index(Role::Knife),
+            role_index(Role::Drill),
         ];
         let unique: std::collections::BTreeSet<_> = slots.iter().collect();
         assert_eq!(unique.len(), slots.len(), "one slot per role: {slots:?}");
+        let editor = crate::resources::Editor::default();
+        for slot in slots {
+            assert!(slot < editor.picker_tools.len());
+            assert!(slot < editor.picker_job_tools.len());
+            assert!(slot < editor.picker_profiles.len());
+        }
     }
 
     #[test]
@@ -727,6 +725,14 @@ mod tests {
                 change: "Change knife tool",
                 profiles: "Knife profiles",
                 assignment: "Knife assignment tool",
+            },
+            Case {
+                kind: Some(Kind::Drill),
+                operation_tab: 2,
+                noun: "Drill",
+                change: "Change drill tool",
+                profiles: "Drilling profiles",
+                assignment: "Drilling assignment tool",
             },
         ];
         for Case {

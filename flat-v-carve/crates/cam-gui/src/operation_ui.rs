@@ -656,11 +656,14 @@ impl App {
         ctx: &egui::Context,
         finish: bool,
     ) {
+        let drill = self.operation_kind() == Some(crate::session::OperationKind::Drill);
         for ramp in [false, true] {
-            if finish && ramp {
+            if (finish || drill) && ramp {
                 continue;
             }
-            let label = if ramp {
+            let label = if drill {
+                "Drill bit can plunge"
+            } else if ramp {
                 "Endmill can ramp"
             } else if finish {
                 "V-bit can plunge"

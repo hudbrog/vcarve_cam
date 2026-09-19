@@ -74,7 +74,9 @@ impl App {
             };
             let mut text = doc.text(field);
             let operation = self.inspector_tab == 2;
+            let drill = self.operation_kind() == Some(OperationKind::Drill);
             let name = match field {
+                10 if drill => "Drilling feed",
                 2 | 3 if operation => "Cutting feed",
                 21 if operation => "Plunge feed",
                 20 if operation => "Stepdown",
@@ -109,9 +111,9 @@ impl App {
             let unit = match field {
                 2 | 3 | 10 | 21 | 51 | 63..=65 | 92 | 99 | 101 | 105 => "mm/min",
                 11 | 22 => "RPM",
-                14 | 16 | 28 | 69 | 72 | 75 | 98 | 103 | 107 => "deg",
+                14 | 16 | 28 | 69 | 72 | 75 | 98 | 103 | 107 | 122 => "deg",
                 29 => "×",
-                34 | 37 => "s",
+                34 | 37 | 115 => "s",
                 35 => "digits",
                 32 | 33 | 38 | 39 | 48..=50 | 52..=56 | 58..=60 | 95 | 97 | 108 => "",
                 _ => "mm",
@@ -127,7 +129,11 @@ impl App {
                 name,
                 &mut text,
                 unit,
-                FIELDS[field],
+                if drill && field == 10 {
+                    "Drilling feed"
+                } else {
+                    FIELDS[field]
+                },
             );
             observe_control(FIELDS[field], response.rect);
             if self.issue_focus.as_deref() == Some(FIELDS[field]) {

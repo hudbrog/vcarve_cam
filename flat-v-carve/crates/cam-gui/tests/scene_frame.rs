@@ -390,6 +390,7 @@ fn the_facing_job_is_timed_by_its_own_feeds() {
             cam_gui_runtime::sim::Interpolation::Feed => {
                 motion.length_mm() / motion.feed_mm_min.expect("a linear feed carries one") * 60.
             }
+            cam_gui_runtime::sim::Interpolation::Dwell { seconds } => seconds,
         };
         assert!(
             (table.duration_of(index) - expected).abs() < 1e-9,

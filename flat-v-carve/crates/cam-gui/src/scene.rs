@@ -27,6 +27,19 @@ pub struct StageSpan {
     pub end: usize,
 }
 
+/// One drillable marker point, projected once per scene so the viewport can
+/// hit-test and highlight hole positions without re-importing the artwork.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ScenePoint {
+    pub reference: v5::GeometryRef,
+    pub center: [f64; 2],
+    pub diameter_mm: f64,
+    /// The colour the source element is drawn in, for identity only.
+    pub paint: Option<cam_core::svg::SourcePaint>,
+    /// Whether the diameter is the source circle's exact measure.
+    pub exact: bool,
+}
+
 impl StageSpan {
     fn role_word(&self) -> &'static str {
         match self.role {
@@ -399,8 +412,10 @@ pub(crate) fn sim_motion(
         interpolation: match motion.interpolation {
             cam_core::toolpath::Interpolation::Rapid => crate::sim::Interpolation::Rapid,
             cam_core::toolpath::Interpolation::LinearFeed
-            | cam_core::toolpath::Interpolation::ArcFeed(_)
-            | cam_core::toolpath::Interpolation::Dwell { .. } => crate::sim::Interpolation::Feed,
+            | cam_core::toolpath::Interpolation::ArcFeed(_) => crate::sim::Interpolation::Feed,
+            cam_core::toolpath::Interpolation::Dwell { seconds } => {
+                crate::sim::Interpolation::Dwell { seconds }
+            }
         },
         feed_mm_min: motion.feed_mm_min,
         arc,
@@ -473,6 +488,21 @@ pub fn build_with_preset(
     // sides. This is the same catalogue the planner resolves against, projected
     // once per scene so the editor never imports the SVG on the frame thread.
     let profile_contours = crate::profile::contours(job)?;
+    // Drillable marker points, from the same catalogue: hole positions the
+    // viewport can pick directly.
+    let drill_points: Vec<ScenePoint> = catalogue
+        .items
+        .iter()
+        .flat_map(|item| {
+            item.point_entries.iter().map(|point| ScenePoint {
+                reference: point.reference.clone(),
+                center: [point.center.x, point.center.y],
+                diameter_mm: point.diameter_mm,
+                paint: point.paint,
+                exact: point.exact,
+            })
+        })
+        .collect();
     let mut bounds = job
         .setup
         .stock
@@ -499,6 +529,12 @@ pub fn build_with_preset(
             bounds[2] = bounds[2].max(point[0]);
             bounds[3] = bounds[3].max(point[1]);
         }
+    }
+    for point in &drill_points {
+        bounds[0] = bounds[0].min(point.center[0]);
+        bounds[1] = bounds[1].min(point.center[1]);
+        bounds[2] = bounds[2].max(point.center[0]);
+        bounds[3] = bounds[3].max(point.center[1]);
     }
     // Artwork and knife-chain points stay in setup coordinates until the
     // display frame is final below: the frame also carries the generated
@@ -543,9 +579,21 @@ pub fn build_with_preset(
             contour_points.len()
         ]));
     }
+    // Drill markers draw as small crosses at the hole positions: large enough
+    // to pick at any zoom, never wider than the marker they stand for.
+    for point in &drill_points {
+        let color = artwork_color(selected.contains(&point.reference), point.paint);
+        let r = (point.diameter_mm / 2.).clamp(0.4, 1.5);
+        let [x, y] = point.center;
+        for (a, b) in [([x - r, y], [x + r, y]), ([x, y - r], [x, y + r])] {
+            contour_points.push(([a[0], a[1], 0.02], color));
+            contour_points.push(([b[0], b[1], 0.02], color));
+        }
+    }
     report["components"] = json!(components);
     report["chains"] = json!(chains);
     report["profileContours"] = json!(profile_contours);
+    report["drillPoints"] = json!(drill_points);
     report["artworkSpans"] = json!(spans);
     if let Some(xy) = job.setup.stock.xy {
         report["stockRect"] = json!([
@@ -927,6 +975,45 @@ pub fn build_with_preset(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drill_dwell_survives_scene_transport_and_playback_timing() {
+        use cam_core::{
+            motion::Position,
+            toolpath::{Interpolation, MotionEffect, MotionPurpose, PlannedMotion},
+        };
+        let at = Position::new(cam_core::geometry::Point::new(10., 15.), -8.);
+        let motion = PlannedMotion {
+            id: 0,
+            operation_id: "holes".into(),
+            stage_id: "holes-drill".into(),
+            tool_id: "drill".into(),
+            contour_id: None,
+            pass_id: 0,
+            layer: 0,
+            interpolation: Interpolation::Dwell { seconds: 0.5 },
+            purpose: MotionPurpose::Entry,
+            effect: MotionEffect::None,
+            start: at,
+            end: at,
+            feed_mm_min: None,
+            blade_heading_deg: None,
+        };
+        let display = sim_motion(&motion, 0, 0, "rapid");
+        let decoded =
+            crate::sim::decode_motions(&crate::sim::encode_motions(&[display]), 1).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].feed_mm_min, None);
+        assert_eq!(
+            decoded[0].interpolation,
+            crate::sim::Interpolation::Dwell { seconds: 0.5 }
+        );
+        let time = crate::sim::TimeTable::build(&decoded, Some(5000.))
+            .ok()
+            .unwrap();
+        assert_eq!(time.total_seconds(), 0.5);
+        assert_eq!(decoded[0].point_at(0.5), [10., 15., -8.]);
+    }
 
     /// `scene.wgsl` tells travel from cutting moves by alpha: a travel vertex is
     /// translucent, a cutting one opaque. The path filters depend on that
