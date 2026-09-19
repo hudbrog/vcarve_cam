@@ -411,6 +411,12 @@ impl App {
                                 t.cutting_presets.len()
                             ),
                             LibraryGeometry::DragKnife(_) => "Drag knife".into(),
+                            LibraryGeometry::Drill(g) => format!(
+                                "Drill · {} mm · {}° · {} profiles",
+                                g.diameter_mm,
+                                g.tip_angle_deg,
+                                t.cutting_presets.len()
+                            ),
                         }
                     };
                     (t.id.clone(), t.name.clone(), summary)

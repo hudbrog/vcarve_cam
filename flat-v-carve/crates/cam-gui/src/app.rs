@@ -172,6 +172,7 @@ fn kind_name(kind: OperationKind) -> &'static str {
         OperationKind::Face => "face",
         OperationKind::Profile => "profile",
         OperationKind::DragKnife => "drag_knife",
+        OperationKind::Drill => "drill",
     }
 }
 
@@ -191,6 +192,7 @@ pub fn value(job: &CamJobV5, operation_id: &str, field: usize) -> Option<f64> {
         Some(OperationKind::Face) => crate::face::value(job, operation_id, field),
         Some(OperationKind::Profile) => crate::profile::value(job, operation_id, field),
         Some(OperationKind::DragKnife) => crate::knife::value_in(job, operation_id, field),
+        Some(OperationKind::Drill) => crate::drill::value(job, operation_id, field),
         Some(OperationKind::FlatVcarve) => {
             let s = engine::settings_in(job, operation_id)?;
             match field {
@@ -234,6 +236,9 @@ pub fn set_value(
         Some(OperationKind::Profile) => crate::profile::set(&mut job, operation_id, field, value)?,
         Some(OperationKind::DragKnife) => {
             crate::knife::set_in(&mut job, operation_id, field, value)?;
+        }
+        Some(OperationKind::Drill) => {
+            crate::drill::set(&mut job, operation_id, field, value)?;
         }
         Some(OperationKind::FlatVcarve) => {
             if field == 6 {
@@ -641,6 +646,10 @@ pub struct App {
     ime: bool,
     focus: Option<egui::Id>,
     components: Vec<crate::authoring::Component>,
+    /// Drillable marker points of the current artwork, cached per document
+    /// revision (the same freshness contract as `components`).
+    points: Vec<cam_core::project::v5::artwork::PointEntry>,
+    points_revision: u64,
     inspector_tab: usize,
     operation_tab: usize,
     operation_picker: Option<usize>,
@@ -722,6 +731,8 @@ impl Default for App {
             ime: false,
             focus: None,
             components: vec![],
+            points: vec![],
+            points_revision: 0,
             inspector_tab: 2,
             operation_tab: 0,
             operation_picker: None,

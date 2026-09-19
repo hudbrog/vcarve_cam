@@ -7,7 +7,7 @@
 use crate::{
     geometry::{Diagnostic, Result},
     job::{ToolGeometry, ToolSettings, VcarveInput},
-    model::{EndmillSpec, VBitSpec},
+    model::{Drill, DrillSpec, EndmillSpec, VBitSpec},
     preview::valid_id,
     project::{CamJob, DragKnifeSpec, OperationSettings},
 };
@@ -78,6 +78,7 @@ pub enum LibraryGeometry {
     Endmill(EndmillSpec),
     Vbit(VBitSpec),
     DragKnife(DragKnifeSpec),
+    Drill(DrillSpec),
 }
 impl From<ToolGeometry> for LibraryGeometry {
     fn from(geometry: ToolGeometry) -> Self {
@@ -253,12 +254,19 @@ impl LibraryTool {
         let geometry = match &self.geometry {
             LibraryGeometry::Endmill(spec) => ToolGeometry::Endmill(spec.clone()),
             LibraryGeometry::Vbit(spec) => ToolGeometry::Vbit(spec.clone()),
-            // A knife tool has no legacy representation and never enters a
-            // engine input slot; apply_to_job rejects it before this runs.
+            // A knife or drill tool has no legacy representation and never
+            // enters an engine input slot; the dedicated apply paths and the
+            // collection resource commands reject it before this runs.
             LibraryGeometry::DragKnife(_) => {
                 return Err(error(
                     "LIBRARY_TOOL_KIND",
                     "knife tools cannot be applied to a V-carve engine input",
+                ));
+            }
+            LibraryGeometry::Drill(_) => {
+                return Err(error(
+                    "LIBRARY_TOOL_KIND",
+                    "drill tools cannot be applied to a V-carve engine input",
                 ));
             }
         };
@@ -291,6 +299,17 @@ impl LibraryTool {
                 return Err(error(
                     "LIBRARY_TOOL_KIND",
                     "knife tools carry knife cutting presets, not milling presets",
+                ));
+            }
+        } else if let LibraryGeometry::Drill(spec) = &self.geometry {
+            // A drill is a milling tool without a legacy engine
+            // representation: validate its typed geometry directly and keep
+            // the generic milling presets.
+            Drill::try_from(spec.clone())?;
+            if !self.knife_cutting_presets.is_empty() {
+                return Err(error(
+                    "LIBRARY_TOOL_KIND",
+                    "drill tools carry milling presets, not knife presets",
                 ));
             }
         } else {

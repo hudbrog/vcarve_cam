@@ -431,6 +431,7 @@ pub fn apply_legacy_profile(profile: &LinuxCncProfile, job: &CamJob) -> Result<C
             OperationSettings::Face(settings) => assignments.push(&mut settings.assignment),
             OperationSettings::Profile(settings) => assignments.push(&mut settings.assignment),
             OperationSettings::DragKnife(_) => {}
+            OperationSettings::Drill(settings) => assignments.push(&mut settings.assignment),
         }
         for assignment in assignments {
             if let Some(mapping) = profile
@@ -1021,6 +1022,11 @@ impl PreparedExecution {
                     Interpolation::LinearFeed => {
                         lines.push(format!("G1 {}{}", xyz(end, places), feed))
                     }
+                    // Display round-trips f64 exactly, so the readback
+                    // compares the written duration as-is.
+                    Interpolation::Dwell { seconds } => {
+                        lines.push(format!("G4 P{}", seconds));
+                    }
                     Interpolation::ArcFeed(arc) => {
                         // G2/G3 with the centre as I/J offsets from the start
                         // point, which is what the controller needs and what
@@ -1416,7 +1422,14 @@ fn decode_program(
                                 "G4 requires a finite nonnegative P".into(),
                             ));
                         };
-                        let _ = rest;
+                        // A dwell with an established position is a motion of
+                        // its own: the axes hold while the spindle turns. The
+                        // stage preamble's spin-up dwell runs before any
+                        // position exists and stays a non-motion block.
+                        if position.is_some() {
+                            motion = Some(Interpolation::Dwell { seconds: rest });
+                            coordinates = position;
+                        }
                     }
                     "17" => plane_xy = Some(true),
                     "18" | "19" => plane_xy = Some(false),
@@ -1679,28 +1692,31 @@ fn decode_program(
         };
         if words != 7 {
             // Only the writer's Z-only bridge form may carry fewer than all
-            // three axes, and only where a bridge is expected.
-            let slot = tool_changes.len().checked_sub(1).ok_or_else(|| {
-                reject(
-                    line_number,
-                    "POST_SEQUENCE_MISMATCH",
-                    "motion before any tool change".into(),
-                )
-            })?;
-            let expected = expected_bridges.get(slot).map_or(&[][..], Vec::as_slice);
-            let is_z_bridge = words == 4
-                && !stage_started
-                && bridges_seen < expected.len()
-                && matches!(
-                    expected[bridges_seen],
-                    BridgeBlock::ZOnly(z) if end.z == z
-                );
-            if !is_z_bridge {
-                return Err(reject(
-                    line_number,
-                    "POST_GCODE_SUBSET",
-                    "partial-coordinate motion block".into(),
-                ));
+            // three axes, and only where a bridge is expected. A dwell block
+            // carries no axes at all: it holds the established position.
+            if !matches!(motion, Some(Interpolation::Dwell { .. })) {
+                let slot = tool_changes.len().checked_sub(1).ok_or_else(|| {
+                    reject(
+                        line_number,
+                        "POST_SEQUENCE_MISMATCH",
+                        "motion before any tool change".into(),
+                    )
+                })?;
+                let expected = expected_bridges.get(slot).map_or(&[][..], Vec::as_slice);
+                let is_z_bridge = words == 4
+                    && !stage_started
+                    && bridges_seen < expected.len()
+                    && matches!(
+                        expected[bridges_seen],
+                        BridgeBlock::ZOnly(z) if end.z == z
+                    );
+                if !is_z_bridge {
+                    return Err(reject(
+                        line_number,
+                        "POST_GCODE_SUBSET",
+                        "partial-coordinate motion block".into(),
+                    ));
+                }
             }
         }
         // Every modal group a motion depends on must already be established
@@ -2092,6 +2108,7 @@ fn role_name(role: StageRole) -> &'static str {
         StageRole::VcarveRough => "vcarve_rough",
         StageRole::VcarveFinish => "vcarve_finish",
         StageRole::Knife => "knife",
+        StageRole::Drill => "drill",
     }
 }
 
@@ -2161,15 +2178,17 @@ fn scalar(v: f64) -> Result<String> {
 
 fn motions_preserved(plan: &dyn SequencePlan, places: usize) -> bool {
     plan.motions().iter().all(|m| {
+        // A dwell is not a move: it holds position, and its content — the P
+        // duration — survives formatting at every precision.
+        if matches!(m.interpolation, Interpolation::Dwell { .. }) {
+            return true;
+        }
         let a = rounded_position(m.start, places);
         let b = rounded_position(m.end, places);
         // A motion must survive formatting as a real move; pure-Z and pure-XY
-        // moves only need their changing axis to survive.
+        // moves only need their changing axis to survive. A zero-length
+        // formatted block cannot be distinguished from collapse, so distinct
+        // rounded endpoints are required of every motion.
         a != b
-    }) && plan.motions().windows(2).all(|w| {
-        // A zero-length formatted block cannot be distinguished from collapse;
-        // require distinct endpoints for every motion at this precision.
-        rounded_position(w[0].start, places) != rounded_position(w[0].end, places)
-            && rounded_position(w[1].start, places) != rounded_position(w[1].end, places)
     })
 }

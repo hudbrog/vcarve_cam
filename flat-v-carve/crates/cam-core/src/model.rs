@@ -278,3 +278,80 @@ impl VBit {
         })
     }
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DrillSpec {
+    pub diameter_mm: f64,
+    /// Included tip angle of the conical point; 118° is the common default.
+    pub tip_angle_deg: f64,
+    pub cutting_length_mm: f64,
+}
+
+/// A twist drill: a cylinder of the given diameter ending in a cone of the
+/// included tip angle. The cone's axial height is how far the tip travels
+/// before the hole reaches its full diameter, so a through hole measured to
+/// the lip must over-drill the tip by exactly that amount.
+#[derive(Clone, Debug, Serialize)]
+pub struct Drill {
+    radius: Length,
+    angle: IncludedAngle,
+    cutting_length: Length,
+    tip_length: Length,
+}
+impl TryFrom<DrillSpec> for Drill {
+    type Error = Diagnostic;
+    fn try_from(spec: DrillSpec) -> Result<Self> {
+        if !spec.diameter_mm.is_finite()
+            || spec.diameter_mm <= 0.0
+            || !spec.cutting_length_mm.is_finite()
+            || spec.cutting_length_mm <= 0.0
+        {
+            return Err(invalid(
+                "INVALID_DRILL",
+                "drill diameter and cutting length must be finite and positive",
+            ));
+        }
+        let angle = IncludedAngle::new(spec.tip_angle_deg)?;
+        let radius = Length::new(spec.diameter_mm / 2.0)?;
+        if radius.mm() == 0.0 {
+            return Err(invalid("INVALID_DRILL", "drill radius underflows"));
+        }
+        let tip_length = Length::new(radius.mm() / angle.slope()).map_err(|_| {
+            invalid(
+                "INCONSISTENT_DRILL",
+                "drill tip angle is too acute to yield a usable tip length",
+            )
+        })?;
+        Ok(Self {
+            radius,
+            angle,
+            cutting_length: Length::new(spec.cutting_length_mm)?,
+            tip_length,
+        })
+    }
+}
+impl Drill {
+    pub fn radius(&self) -> Length {
+        self.radius
+    }
+    pub fn angle(&self) -> IncludedAngle {
+        self.angle
+    }
+    pub fn cutting_length(&self) -> Length {
+        self.cutting_length
+    }
+    /// Axial distance from the tip point to the full cutting diameter.
+    pub fn tip_length(&self) -> Length {
+        self.tip_length
+    }
+    pub fn validate_depth(&self, depth: Depth) -> Result<()> {
+        if depth.mm() > self.cutting_length.mm() {
+            return Err(invalid(
+                "DRILL_CUTTING_LENGTH",
+                "requested depth exceeds the drill cutting length",
+            ));
+        }
+        Ok(())
+    }
+}

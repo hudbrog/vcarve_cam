@@ -10,6 +10,7 @@ use crate::{
 
 pub mod arc_fit;
 pub mod drag_knife;
+pub mod drill;
 pub mod face;
 pub mod flat_vcarve;
 pub mod profile;
@@ -168,6 +169,13 @@ pub(crate) fn plan_operation(
             settings,
             published_faces,
             prior_motions,
+            &PlannerGeometry::SourceJob(job),
+        ),
+        crate::project::OperationSettings::Drill(settings) => drill::plan(
+            &ctx,
+            &operation.id,
+            settings,
+            published_faces,
             &PlannerGeometry::SourceJob(job),
         ),
     }

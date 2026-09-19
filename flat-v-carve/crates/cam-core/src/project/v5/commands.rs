@@ -77,6 +77,7 @@ fn kind_name(kind: GeometryRefKind) -> &'static str {
         GeometryRefKind::FilledComponent => "filled component",
         GeometryRefKind::ClosedContour => "closed contour",
         GeometryRefKind::Centerline => "centerline chain",
+        GeometryRefKind::Point => "marker point",
     }
 }
 
@@ -187,6 +188,11 @@ fn reserved_item_ids(job: &CamJobV5) -> BTreeSet<String> {
                 }
                 if let StartSelectionV5::Anchor(a) = &s.start {
                     reserve(&a.geometry);
+                }
+            }
+            OperationSettingsV5::Drill(s) => {
+                for r in &s.points {
+                    reserve(r);
                 }
             }
             OperationSettingsV5::Face(_) => {}
@@ -621,6 +627,84 @@ pub fn set_chain_selection(
     )
 }
 
+/// Replace one drill operation's marker-point selection wholesale. The picks
+/// bind the owning items' current source revisions, so a later content change
+/// leaves them dangling until explicitly repaired — the same contract as the
+/// component, contour and chain selections.
+pub fn set_point_selection(
+    job: &CamJobV5,
+    operation_id: &str,
+    points: &[artwork::GeometryPick],
+) -> Result<CommandOutcome> {
+    let catalogue = artwork::inspect_artwork(job)?;
+    let mut bound = Vec::with_capacity(points.len());
+    for (index, pick) in points.iter().enumerate() {
+        if pick.kind != GeometryRefKind::Point {
+            return Err(command_error(format!(
+                "operation '{operation_id}' points[{index}] must be a marker point; '{}' in item '{}' is a {}",
+                pick.local_geometry_id,
+                pick.artwork_item_id.0,
+                kind_name(pick.kind)
+            )));
+        }
+        bound.push(
+            bind_point_pick(
+                &catalogue,
+                pick,
+                &format!("operation '{operation_id}' points[{index}]"),
+            )?
+            .0,
+        );
+    }
+    let index = operation_index(job, operation_id)?;
+    let mut candidate = job.clone();
+    match &mut candidate.operations[index].settings {
+        OperationSettingsV5::Drill(settings) => settings.points = bound,
+        _ => {
+            return Err(command_error(format!(
+                "operation '{operation_id}' is not a drill operation"
+            )));
+        }
+    }
+    CommandOutcome::commit(
+        candidate,
+        vec![AffectedEntity::Operation(operation_id.into())],
+    )
+}
+
+/// Resolve one point pick against the combined catalogue, binding the item's
+/// current source revision. Points live in their own entry list, so the
+/// shared contour/chain [`bind_pick`] cannot address them.
+fn bind_point_pick(
+    catalogue: &artwork::CombinedCatalogue,
+    pick: &artwork::GeometryPick,
+    context: &str,
+) -> Result<(GeometryRef, String)> {
+    let item = catalogue.item(&pick.artwork_item_id).ok_or_else(|| {
+        command_error(format!(
+            "{context} addresses unknown artwork item '{}'",
+            pick.artwork_item_id.0
+        ))
+    })?;
+    if let Some(detail) = &item.import_error {
+        return Err(command_error(format!(
+            "{context} addresses artwork item '{}' whose content failed to import: {detail}",
+            pick.artwork_item_id.0
+        )));
+    }
+    let entry = item
+        .point_entries
+        .iter()
+        .find(|entry| entry.reference.local_geometry_id == pick.local_geometry_id)
+        .ok_or_else(|| {
+            command_error(format!(
+                "{context} addresses unknown marker point '{}' in artwork item '{}'",
+                pick.local_geometry_id, pick.artwork_item_id.0
+            ))
+        })?;
+    Ok((entry.reference.clone(), entry.source_fingerprint.clone()))
+}
+
 /// Which anchor of an operation a [`reattach_anchor`] call addresses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnchorTarget {
@@ -628,7 +712,6 @@ pub enum AnchorTarget {
     /// The n-th manual tab anchor of a profile operation.
     Tab(usize),
 }
-
 /// Reattach one existing anchor onto explicitly picked geometry: the command
 /// binds the item's current source revision and the geometry's current
 /// fingerprint, keeping the stored fraction unless a replacement in `[0,1)`
@@ -1013,6 +1096,7 @@ pub enum NewOperationKind {
     Face,
     Profile,
     DragKnife,
+    Drill,
 }
 
 impl NewOperationKind {
@@ -1022,6 +1106,7 @@ impl NewOperationKind {
             Self::Face => "Face",
             Self::Profile => "Profile",
             Self::DragKnife => "Drag knife",
+            Self::Drill => "Drill",
         }
     }
 }
@@ -1178,6 +1263,33 @@ pub fn add_operation(
                 closure_overlap_mm: None,
                 alignment: Default::default(),
                 path_simplification_mm: None,
+            })
+        }
+        NewOperationKind::Drill => {
+            let tool = push_job_tool(&mut candidate, "drill", "Drill");
+            affected.push(AffectedEntity::JobTool(tool.clone()));
+            // A fresh drill reads as a through hole (bottom at the stock
+            // bottom, tip-referenced) that retracts 2 mm above the stock top;
+            // feeds, the peck strategy and the point selection stay unset
+            // until edited.
+            OperationSettingsV5::Drill(super::DrillSettingsV5 {
+                points: vec![],
+                assignment: new_milling_assignment(tool),
+                top: zero_top.clone(),
+                bottom: crate::project::HeightRef {
+                    reference: crate::project::HeightReference::StockBottom,
+                    offset_mm: 0.,
+                },
+                retract_height: crate::project::HeightRef {
+                    reference: crate::project::HeightReference::StockTop,
+                    offset_mm: 2.,
+                },
+                depth_reference: Default::default(),
+                breakthrough_extra_mm: None,
+                peck: None,
+                dwell_at_bottom_s: None,
+                hole_order: Default::default(),
+                warn_drill_exceeds_marker: false,
             })
         }
     };

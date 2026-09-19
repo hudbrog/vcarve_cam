@@ -22,9 +22,15 @@ fn main() {
         let mut job = CamJobV5::from_json(&text).expect("parse schema-5 job");
         let catalogue = v5::artwork::inspect_artwork(&job).expect("resolve artwork");
         let live = |reference: &GeometryRef| -> Option<GeometryRef> {
-            catalogue
-                .item(&reference.artwork_item_id)?
-                .entries
+            let item = catalogue.item(&reference.artwork_item_id)?;
+            if reference.kind == v5::GeometryRefKind::Point {
+                return item
+                    .point_entries
+                    .iter()
+                    .find(|entry| entry.reference.local_geometry_id == reference.local_geometry_id)
+                    .map(|entry| entry.reference.clone());
+            }
+            item.entries
                 .iter()
                 .find(|entry| {
                     entry.kind == reference.kind
@@ -55,6 +61,11 @@ fn main() {
                 }
                 OperationSettingsV5::DragKnife(settings) => {
                     for reference in &mut settings.chains {
+                        bind(reference);
+                    }
+                }
+                OperationSettingsV5::Drill(settings) => {
+                    for reference in &mut settings.points {
                         bind(reference);
                     }
                 }

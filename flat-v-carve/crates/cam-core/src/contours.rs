@@ -174,6 +174,34 @@ pub struct ResolvedAnchor {
     pub tangent: Point,
 }
 
+/// One drillable marker point: the analytic center of a `<circle>`/`<ellipse>`
+/// element, or the area centroid derived from a closed contour whose element
+/// carried no analytic center (a filled dot, a stroke-to-path circle). A point
+/// is a positional marker — the drill bit cuts the actual hole — and its
+/// diameter describes the marker, exactly measured for analytic points and
+/// area-equivalent for derived ones.
+#[derive(Clone, Debug)]
+pub struct CataloguePoint {
+    pub id: String,
+    pub source_id: String,
+    /// The element's own `inkscape:label`, when the editor recorded one.
+    pub label: Option<String>,
+    /// The nearest enclosing named layer or group.
+    pub group: Option<String>,
+    /// The colour the source element is drawn in, for identity only.
+    pub paint: Option<crate::svg::SourcePaint>,
+    /// Setup-space marker center.
+    pub center: Point,
+    /// Marker diameter: exact for analytic markers, area-equivalent
+    /// (`2·sqrt(area/π)`) for centroid-derived ones.
+    pub diameter_mm: f64,
+    /// Whether `diameter_mm` measures the source circle exactly.
+    pub exact: bool,
+    /// Placement-independent fingerprint of the source geometry (page-space
+    /// quantized at `FINGERPRINT_STEP_MM`).
+    pub source_fingerprint: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct ContourCatalogue {
     pub contours: Vec<Contour>,
@@ -181,6 +209,9 @@ pub struct ContourCatalogue {
     /// closed per the source subpath, in document and subpath order. Knife
     /// operations select these by ID; they never union.
     pub open_chains: Vec<Contour>,
+    /// Drillable marker points: analytic circle/ellipse centers plus derived
+    /// contour centroids, in document order. Drilling selects these by ID.
+    pub points: Vec<CataloguePoint>,
 }
 
 impl ContourCatalogue {
@@ -364,9 +395,65 @@ impl ContourCatalogue {
                 placement: placement.clone(),
             });
         }
+        // Drillable marker points. Analytic circle/ellipse centers come first
+        // in document order; every closed contour of an element without an
+        // analytic center contributes its area centroid instead, so a marker
+        // drawn as a filled dot or a stroke-to-path ring still resolves to one
+        // point in the middle of the blob. Rings of one component that share
+        // a center (a ring and its own hole) collapse to the first.
+        let mut analytic_elements = std::collections::BTreeSet::new();
+        let mut points = vec![];
+        let forward = forward_space(&placement);
+        for marker in &geometry.points {
+            analytic_elements.insert(marker.source_id.as_str());
+            points.push(CataloguePoint {
+                id: normalize_id(&marker.id),
+                source_id: marker.source_id.clone(),
+                label: marker.label.clone(),
+                group: marker.group.clone(),
+                paint: marker.paint,
+                center: forward(marker.center),
+                diameter_mm: 2. * marker.radius_x_mm.max(marker.radius_y_mm),
+                exact: true,
+                source_fingerprint: fingerprint(std::slice::from_ref(&marker.center)),
+            });
+        }
+        let mut derived_centers = std::collections::BTreeSet::new();
+        for contour in &contours {
+            if analytic_elements.contains(contour.source_id.as_str()) {
+                continue;
+            }
+            let Some((centroid, area)) = ring_centroid(&contour.vertices) else {
+                continue;
+            };
+            if !derived_centers.insert((contour.component_id.clone(), bucket(centroid))) {
+                continue;
+            }
+            let page_center = page_space(&placement)(centroid);
+            points.push(CataloguePoint {
+                id: format!("{}-center", contour.id),
+                source_id: contour.source_id.clone(),
+                label: contour.label.clone(),
+                group: contour.group.clone(),
+                paint: contour.paint,
+                center: centroid,
+                diameter_mm: 2. * (area / std::f64::consts::PI).sqrt(),
+                exact: false,
+                source_fingerprint: fingerprint(std::slice::from_ref(&page_center)),
+            });
+        }
+        let unique_points: std::collections::BTreeSet<&str> =
+            points.iter().map(|p| p.id.as_str()).collect();
+        if unique_points.len() != points.len() {
+            return Err(error(
+                "CONTOUR_ID_COLLISION",
+                "source marker IDs normalize to colliding point IDs; rename them in the SVG",
+            ));
+        }
         Ok(Self {
             contours,
             open_chains,
+            points,
         })
     }
 
@@ -376,6 +463,10 @@ impl ContourCatalogue {
 
     pub fn chain(&self, id: &str) -> Option<&Contour> {
         self.open_chains.iter().find(|c| c.id == id)
+    }
+
+    pub fn point(&self, id: &str) -> Option<&CataloguePoint> {
+        self.points.iter().find(|p| p.id == id)
     }
 
     /// Resolve explicit contour references. Exactly the requested contours
@@ -501,6 +592,29 @@ fn segments(points: &[Point]) -> impl Iterator<Item = (Point, Point)> + '_ {
 
 fn twice_signed_area(points: &[Point]) -> f64 {
     segments(points).map(|(a, b)| a.x * b.y - b.x * a.y).sum()
+}
+
+/// Area centroid of a closed ring and its area, `None` for a degenerate ring.
+/// Winding-independent: canonical CCW rings and source-order rings both work.
+fn ring_centroid(points: &[Point]) -> Option<(Point, f64)> {
+    if points.len() < 3 {
+        return None;
+    }
+    let twice = twice_signed_area(points);
+    if !twice.is_finite() || twice.abs() < f64::EPSILON {
+        return None;
+    }
+    let mut x = 0.;
+    let mut y = 0.;
+    for (a, b) in segments(points) {
+        let cross = a.x * b.y - b.x * a.y;
+        x += (a.x + b.x) * cross;
+        y += (a.y + b.y) * cross;
+    }
+    Some((
+        Point::new(x / (3. * twice), y / (3. * twice)),
+        twice.abs() / 2.,
+    ))
 }
 
 fn perimeter(points: &[Point]) -> f64 {

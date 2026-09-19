@@ -14,7 +14,7 @@
 use crate::{
     geometry::{Diagnostic, Point, Result},
     job::{PlanningTolerances, SourceSnapshot},
-    model::{VBit, VBitSpec},
+    model::{Drill, DrillSpec, VBit, VBitSpec},
     pocket::{ClearingStrategy, EntryStrategy},
     preview,
     svg::ImportOptions,
@@ -287,6 +287,7 @@ pub enum ToolGeometry {
     Endmill(EndmillGeometry),
     Vbit(VBitSpec),
     DragKnife(DragKnifeSpec),
+    Drill(DrillSpec),
 }
 impl ToolGeometry {
     fn validate(&self) -> Result<()> {
@@ -294,6 +295,7 @@ impl ToolGeometry {
             Self::Endmill(g) => g.validate(),
             Self::Vbit(spec) => VBit::try_from(spec.clone()).map(|_| ()),
             Self::DragKnife(spec) => spec.validate(),
+            Self::Drill(spec) => Drill::try_from(spec.clone()).map(|_| ()),
         }
     }
     fn kind_name(&self) -> &'static str {
@@ -301,6 +303,7 @@ impl ToolGeometry {
             Self::Endmill(_) => "endmill",
             Self::Vbit(_) => "vbit",
             Self::DragKnife(_) => "drag_knife",
+            Self::Drill(_) => "drill",
         }
     }
 }
@@ -873,6 +876,119 @@ pub struct DragKnifeSettings {
     pub path_simplification_mm: Option<f64>,
 }
 
+/// How one drilling pass retracts between peck bites. Drilling output is
+/// expanded to explicit linear moves, so these describe behavior, not which
+/// canned cycle a controller would see.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DrillPeckMode {
+    /// A small in-hole retract that merely breaks the chip (G73 semantics).
+    ChipBreak,
+    /// A full retract to the retract height so chips leave the flutes
+    /// (G83 deep-drilling semantics).
+    FullRetract,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DrillPeckSettings {
+    pub mode: DrillPeckMode,
+    /// The first peck's depth, in mm.
+    pub depth_mm: f64,
+    /// Removed from the peck depth after every peck, so deep holes take
+    /// progressively smaller bites; the peck never shrinks below
+    /// `min_depth_mm`. Zero keeps every peck at `depth_mm`.
+    #[serde(default)]
+    pub reduction_mm: f64,
+    /// The smallest peck depth a reduction may leave.
+    pub min_depth_mm: f64,
+    /// The chip-break in-hole retract distance; ignored for full retracts.
+    /// (LinuxCNC's fixed G73 retract is 0.254 mm.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retract_mm: Option<f64>,
+}
+impl DrillPeckSettings {
+    pub(crate) fn validate(&self) -> Result<()> {
+        number(Some(self.depth_mm), "drill.peck.depth_mm", true)?;
+        number(Some(self.reduction_mm), "drill.peck.reduction_mm", false)?;
+        number(Some(self.min_depth_mm), "drill.peck.min_depth_mm", true)?;
+        if self.min_depth_mm > self.depth_mm {
+            return Err(error(
+                "PROJECT_PARAMETER",
+                "drill.peck.min_depth_mm may not exceed drill.peck.depth_mm",
+            ));
+        }
+        number(self.retract_mm, "drill.peck.retract_mm", true)?;
+        Ok(())
+    }
+    /// The depths each successive peck reaches below the top, ending exactly
+    /// at the final depth. Deterministic and finite by validation.
+    pub(crate) fn schedule(&self, total_depth_mm: f64) -> Vec<f64> {
+        let mut reached = vec![];
+        let mut depth = self.depth_mm.min(total_depth_mm);
+        let mut level = 0.;
+        while level < total_depth_mm - f64::EPSILON * total_depth_mm.abs().max(1.) {
+            level = (level + depth).min(total_depth_mm);
+            reached.push(level);
+            depth = (depth - self.reduction_mm).max(self.min_depth_mm);
+        }
+        reached
+    }
+}
+
+/// What the resolved bottom height describes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DrillDepthReference {
+    /// Where the drill's tip point lands.
+    #[default]
+    Tip,
+    /// Where the drill's full diameter arrives: the tip over-drills by its
+    /// extension `(D/2)/tan(θ/2)` so the cutting lips break through.
+    FullDiameter,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DrillHoleOrder {
+    /// X first, then Y — deterministic regardless of selection order.
+    #[default]
+    XThenY,
+    /// The document order of the selected points.
+    AsSelected,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DrillSettings {
+    /// Selected marker points as catalogue point IDs. May be empty while the
+    /// operation is incomplete.
+    pub points: Vec<String>,
+    pub assignment: MillingAssignment,
+    pub top: HeightRef,
+    pub bottom: HeightRef,
+    /// The R-plane: where the feeding entry starts and peck retracts return.
+    /// Travel between holes stays at the job clearance plane like every other
+    /// operation.
+    pub retract_height: HeightRef,
+    #[serde(default)]
+    pub depth_reference: DrillDepthReference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breakthrough_extra_mm: Option<f64>,
+    /// `None` drills the whole hole in one plunge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peck: Option<DrillPeckSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dwell_at_bottom_s: Option<f64>,
+    #[serde(default)]
+    pub hole_order: DrillHoleOrder,
+    /// Warn when the drill is wider than a selected marker circle. Markers
+    /// are positional by default — a small dot drilled by a wider bit is a
+    /// legitimate drawing style — so the warning is opt-in.
+    #[serde(default)]
+    pub warn_drill_exceeds_marker: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -885,6 +1001,7 @@ pub enum OperationSettings {
     Face(FaceSettings),
     Profile(ProfileSettings),
     DragKnife(DragKnifeSettings),
+    Drill(DrillSettings),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1164,6 +1281,43 @@ fn validate_drag_knife(
     Ok(())
 }
 
+fn validate_drill(settings: &DrillSettings, ctx: &OperationContext, id: &str) -> Result<()> {
+    for point in &settings.points {
+        if point.is_empty() || point.len() > 256 {
+            return Err(error(
+                "PROJECT_PARAMETER",
+                "drill point IDs must be nonempty and at most 256 bytes",
+            ));
+        }
+    }
+    number(
+        settings.breakthrough_extra_mm,
+        "drill.breakthrough_extra_mm",
+        false,
+    )?;
+    if let Some(peck) = &settings.peck {
+        peck.validate()?;
+    }
+    if settings
+        .dwell_at_bottom_s
+        .is_some_and(|v| !v.is_finite() || v < 0.)
+    {
+        return Err(error(
+            "PROJECT_PARAMETER",
+            "drill.dwell_at_bottom_s must be finite and nonnegative",
+        ));
+    }
+    settings.assignment.validate("drill.assignment")?;
+    ctx.require_tool(&settings.assignment.tool_id, id, "drill")?;
+    ctx.require_geometry_kind(&settings.assignment.tool_id, "drill", id, "drill")?;
+    settings.top.validate("drill.top", false)?;
+    settings.bottom.validate("drill.bottom", true)?;
+    settings
+        .retract_height
+        .validate("drill.retract_height", false)?;
+    Ok(())
+}
+
 fn validate_flat_vcarve(
     settings: &FlatVcarveSettings,
     ctx: &OperationContext,
@@ -1327,6 +1481,10 @@ impl CamJob {
                 }
                 OperationSettings::DragKnife(settings) => {
                     validate_drag_knife(settings, &ctx, id)?;
+                    (Some(&settings.top), Some(&settings.bottom))
+                }
+                OperationSettings::Drill(settings) => {
+                    validate_drill(settings, &ctx, id)?;
                     (Some(&settings.top), Some(&settings.bottom))
                 }
             };

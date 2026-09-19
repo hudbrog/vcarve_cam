@@ -204,6 +204,15 @@ pub fn tool_in<'a>(
                 .assignment
                 .tool_id
         }
+        crate::session::OperationKind::Drill => {
+            if finishing {
+                return None;
+            }
+            match &crate::session::operation(job, operation_id)?.settings {
+                OperationSettingsV5::Drill(s) => &s.assignment.tool_id,
+                _ => return None,
+            }
+        }
     };
     job.tools.iter().find(|tool| &tool.id == id)
 }

@@ -36,6 +36,7 @@ impl StageSpan {
             StageRole::ProfileRough => "Profile rough",
             StageRole::ProfileFinish => "Profile finish",
             StageRole::Knife => "Knife",
+            StageRole::Drill => "Drill",
         }
     }
 }
@@ -201,6 +202,9 @@ fn selected_references(job: &CamJobV5) -> Vec<v5::GeometryRef> {
             OperationSettingsV5::DragKnife(settings) => {
                 out.extend(settings.chains.iter().cloned());
             }
+            OperationSettingsV5::Drill(settings) => {
+                out.extend(settings.points.iter().cloned());
+            }
             OperationSettingsV5::Face(_) => {}
         }
     }
@@ -237,6 +241,13 @@ fn sim_tool(job: &CamJobV5, tool_id: &str) -> Result<ToolSpec, String> {
         Some(ToolGeometry::DragKnife(knife)) => Ok(ToolSpec::Knife {
             offset: knife.blade_offset_mm,
             max_cut_depth: knife.max_cut_depth_mm,
+        }),
+        // The simulation draws the drill as its swept cylinder (the conical
+        // point is not modelled yet — same v1 approximation as the stock
+        // history's drill cutter).
+        Some(ToolGeometry::Drill(geometry)) => Ok(ToolSpec::Endmill {
+            diameter: geometry.diameter_mm,
+            cutting_length: geometry.cutting_length_mm,
         }),
         None => Err(format!(
             "Generate requires the geometry of every used tool; '{}' has none",
@@ -388,7 +399,8 @@ pub(crate) fn sim_motion(
         interpolation: match motion.interpolation {
             cam_core::toolpath::Interpolation::Rapid => crate::sim::Interpolation::Rapid,
             cam_core::toolpath::Interpolation::LinearFeed
-            | cam_core::toolpath::Interpolation::ArcFeed(_) => crate::sim::Interpolation::Feed,
+            | cam_core::toolpath::Interpolation::ArcFeed(_)
+            | cam_core::toolpath::Interpolation::Dwell { .. } => crate::sim::Interpolation::Feed,
         },
         feed_mm_min: motion.feed_mm_min,
         arc,
@@ -409,6 +421,7 @@ pub(crate) fn role_color(role: StageRole) -> [f32; 4] {
         StageRole::ProfileRough => [0.45, 0.42, 0.86, 1.],
         StageRole::ProfileFinish => [0.85, 0.36, 0.68, 1.],
         StageRole::Knife => [1., 0.62, 0.2, 1.],
+        StageRole::Drill => [0.3, 0.5, 0.75, 1.],
     }
 }
 

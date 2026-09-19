@@ -234,6 +234,24 @@ pub struct SourceChain {
     pub closed: bool,
     pub points: Vec<Point>,
 }
+/// An analytic marker point captured from a `<circle>` or `<ellipse>`
+/// element: the exact center and radii, in page millimetres, before
+/// flattening discards them. Drilling reads these as hole positions; other
+/// operations ignore them.
+#[derive(Clone, Debug, Serialize)]
+pub struct SourcePoint {
+    pub id: String,
+    pub source_id: String,
+    pub label: Option<String>,
+    pub group: Option<String>,
+    pub paint: Option<SourcePaint>,
+    /// The transformed element center, in page space.
+    pub center: Point,
+    /// Transformed conjugate radii: the element's own X/Y half-axis vectors
+    /// mapped through its transform. For an unrotated circle both equal `r`.
+    pub radius_x_mm: f64,
+    pub radius_y_mm: f64,
+}
 #[derive(Clone, Debug, Serialize)]
 pub struct MappedComponent {
     pub geometry: Region,
@@ -252,6 +270,9 @@ pub struct NormalizedGeometry {
     /// Every subpath as drawn, one per subpath, in document and subpath order.
     /// A knife cuts these; a profile may cut the closed ones as contours.
     pub chains: Vec<SourceChain>,
+    /// Analytic circle/ellipse marker centers, one per element, in document
+    /// order. Page space like the chains, so placement applies later.
+    pub points: Vec<SourcePoint>,
     pub selected_region_ids: Vec<String>,
     pub selected: Region,
     pub components: Vec<MappedComponent>,
@@ -275,9 +296,19 @@ struct RawChain {
     closed: bool,
     points: Vec<Point>,
 }
+struct RawPoint {
+    id: String,
+    label: Option<String>,
+    group: Option<String>,
+    paint: Option<SourcePaint>,
+    center: Point,
+    radius_x_mm: f64,
+    radius_y_mm: f64,
+}
 struct Reader {
     shapes: Vec<RawShape>,
     chains: Vec<RawChain>,
+    points: Vec<RawPoint>,
     diagnostics: Vec<Diagnostic>,
     vertices: usize,
     serial: usize,
@@ -397,6 +428,7 @@ pub fn import_svg(
     let mut reader = Reader {
         shapes: vec![],
         chains: vec![],
+        points: vec![],
         diagnostics: vec![],
         vertices: 0,
         serial: 0,
@@ -508,6 +540,22 @@ pub fn import_svg(
             points: chain.points,
         });
     }
+    // Analytic marker points: one per circle/ellipse element, page space, in
+    // document order. They never interact with region resolution.
+    let points: Vec<_> = reader
+        .points
+        .into_iter()
+        .map(|point| SourcePoint {
+            id: format!("{}::point", point.id),
+            source_id: point.id,
+            label: point.label,
+            group: point.group,
+            paint: point.paint,
+            center: point.center,
+            radius_x_mm: point.radius_x_mm,
+            radius_y_mm: point.radius_y_mm,
+        })
+        .collect();
     if sources.is_empty() && chains.is_empty() {
         return Err(error(
             "SVG_NO_REGIONS",
@@ -581,6 +629,7 @@ pub fn import_svg(
         grid,
         sources,
         chains,
+        points,
         selected_region_ids: selection,
         selected,
         components,
@@ -901,6 +950,28 @@ impl Reader {
             ));
         }
         let label = node.attribute((INKSCAPE_NS, "label")).map(str::to_owned);
+        // A circle/ellipse element is its own analytic marker: capture the
+        // exact center and radii in page space before flattening discards
+        // them. Drilling selects these; other operations ignore them.
+        if matches!(tag, "circle" | "ellipse") {
+            let (local_center, rx, ry) = ellipse_parameters(node)?;
+            let center = transform.apply(local_center);
+            let radius_x_mm = transform
+                .apply(Point::new(local_center.x + rx, local_center.y))
+                .distance(center);
+            let radius_y_mm = transform
+                .apply(Point::new(local_center.x, local_center.y + ry))
+                .distance(center);
+            self.points.push(RawPoint {
+                id: id.clone(),
+                label: label.clone(),
+                group: group.map(str::to_owned),
+                paint,
+                center,
+                radius_x_mm,
+                radius_y_mm,
+            });
+        }
         // The centreline reading: every subpath as drawn, open or closed. It
         // is what a drag knife follows and what a stroke means; a filled
         // element reads the same way, because its path is the boundary the
@@ -1072,39 +1143,12 @@ impl Reader {
 
     /// The closed outline of a basic shape, as one chain.
     fn shape(&self, node: Node<'_, '_>, matrix: Matrix) -> Result<Vec<ChainPoints>> {
-        let length = |name: &str, default: f64| {
-            node.attribute(name)
-                .map(user_length)
-                .transpose()
-                .map(|x| x.unwrap_or(default))
-        };
-        let positive = |v: f64| {
-            if v > 0. {
-                Ok(v)
-            } else {
-                Err(error(
-                    "SVG_DIMENSION",
-                    "visible basic shapes require positive dimensions",
-                ))
-            }
-        };
+        let length = |name: &str, default: f64| attribute_length(node, name, default);
+        let positive = |v: f64| positive_length(v);
         let flattener = Flattener::new(matrix, self.tolerance);
         match node.tag_name().name() {
             "circle" | "ellipse" => {
-                let c = Point::new(length("cx", 0.)?, length("cy", 0.)?);
-                let rx = positive(length(
-                    if node.tag_name().name() == "circle" {
-                        "r"
-                    } else {
-                        "rx"
-                    },
-                    0.,
-                )?)?;
-                let ry = if node.tag_name().name() == "circle" {
-                    rx
-                } else {
-                    positive(length("ry", 0.)?)?
-                };
+                let (c, rx, ry) = ellipse_parameters(node)?;
                 let mut f = flattener;
                 let first = matrix.apply(Point::new(c.x + rx, c.y));
                 f.push(first)?;
@@ -1170,4 +1214,41 @@ impl Reader {
             _ => unreachable!(),
         }
     }
+}
+
+/// A present length attribute parsed in user units, or the default.
+fn attribute_length(node: Node<'_, '_>, name: &str, default: f64) -> Result<f64> {
+    node.attribute(name)
+        .map(user_length)
+        .transpose()
+        .map(|x| x.unwrap_or(default))
+}
+
+fn positive_length(value: f64) -> Result<f64> {
+    if value > 0. {
+        Ok(value)
+    } else {
+        Err(error(
+            "SVG_DIMENSION",
+            "visible basic shapes require positive dimensions",
+        ))
+    }
+}
+
+/// The local-space center and radii of a `<circle>`/`<ellipse>` element: the
+/// single authority both the flattener and the analytic marker capture read,
+/// before flattening discards the exact values.
+fn ellipse_parameters(node: Node<'_, '_>) -> Result<(Point, f64, f64)> {
+    let circle = node.tag_name().name() == "circle";
+    let center = Point::new(
+        attribute_length(node, "cx", 0.)?,
+        attribute_length(node, "cy", 0.)?,
+    );
+    let rx = positive_length(attribute_length(node, if circle { "r" } else { "rx" }, 0.)?)?;
+    let ry = if circle {
+        rx
+    } else {
+        positive_length(attribute_length(node, "ry", 0.)?)?
+    };
+    Ok((center, rx, ry))
 }

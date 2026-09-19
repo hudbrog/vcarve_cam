@@ -86,6 +86,30 @@ fn tab_for_operation_control(kind: Option<crate::session::OperationKind>, label:
             }
             _ => 1,
         },
+        Some(OperationKind::Drill) => match field {
+            Some(111..=114) => 1,
+            Some(115..=119) => 2,
+            Some(_) => 2,
+            None if label.contains("Holes")
+                || label.contains("marker")
+                || label.contains("Marker")
+                || label.contains("point")
+                || label.contains("reference") =>
+            {
+                0
+            }
+            None if label.contains("Height")
+                || label.contains("height")
+                || label.contains("Top")
+                || label.contains("Bottom")
+                || label.contains("Retract")
+                || label.contains("Depth reference")
+                || label.contains("Breakthrough") =>
+            {
+                1
+            }
+            _ => 2,
+        },
         _ => tab_for_control(label),
     }
 }
@@ -150,6 +174,7 @@ impl App {
                 self.operation_tabs(ui, &["Geometry", "Cutting", "Corners & start"]);
                 return;
             }
+            Some(crate::session::OperationKind::Drill) => return self.drill_header(ui, ctx),
             _ => {}
         }
         self.operation_tabs(ui, &["Shape & depth", "Endmill", "V-bit"]);
@@ -245,6 +270,7 @@ impl App {
         match self.operation_kind() {
             Some(crate::session::OperationKind::Face) => return self.face_panel(ui, ctx),
             Some(crate::session::OperationKind::DragKnife) => return self.knife_panel(ui, ctx),
+            Some(crate::session::OperationKind::Drill) => return self.drill_panel(ui, ctx),
             _ => {}
         }
         for tab in 0..3 {

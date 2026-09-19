@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const FIELDS: [&str; 111] = [
+pub const FIELDS: [&str; 120] = [
     "Maximum depth",
     "Wall allowance",
     "Roughing feed",
@@ -117,6 +117,18 @@ pub const FIELDS: [&str; 111] = [
     // uses the planner's declared share of the motion tolerance; 0 follows the
     // resolved polyline exactly.
     "Knife path tolerance",
+    // 111–119: drill fields. The assignment's shared ids (2 = cutting feed,
+    // 10 = plunge feed, 11 = spindle speed) are reused unchanged; a drill's
+    // cutting feed is its plunge feed.
+    "Drill top offset",
+    "Drill bottom offset",
+    "Retract height offset",
+    "Breakthrough extra",
+    "Bottom dwell",
+    "Peck depth",
+    "Peck depth reduction",
+    "Minimum peck depth",
+    "Peck retract",
 ];
 
 /// Fields whose raw text belongs to one qualified geometry reference rather

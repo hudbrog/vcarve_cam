@@ -95,6 +95,15 @@ fn resolve_geometry_ref<'a>(
     let Some(catalogue) = &item.catalogue else {
         return RefOutcome::Unimported;
     };
+    // Points are positional markers, not contours: resolution only confirms
+    // the local ID exists in the item's point catalogue.
+    if reference.kind == GeometryRefKind::Point {
+        return if catalogue.point(&reference.local_geometry_id).is_some() {
+            RefOutcome::Resolved { contour: None }
+        } else {
+            RefOutcome::UnknownGeometry
+        };
+    }
     let contour = match reference.kind {
         GeometryRefKind::FilledComponent => {
             // Filled components are selected by the importer's component ID;
@@ -106,6 +115,7 @@ fn resolve_geometry_ref<'a>(
         }
         GeometryRefKind::ClosedContour => catalogue.contour(&reference.local_geometry_id),
         GeometryRefKind::Centerline => catalogue.chain(&reference.local_geometry_id),
+        GeometryRefKind::Point => unreachable!("points resolve above"),
     };
     if contour.is_none() {
         return RefOutcome::UnknownGeometry;
@@ -159,6 +169,7 @@ fn geometry_issue(
                     GeometryRefKind::FilledComponent => "filled component",
                     GeometryRefKind::ClosedContour => "closed contour",
                     GeometryRefKind::Centerline => "centerline chain",
+                    GeometryRefKind::Point => "marker point",
                 },
                 reference.local_geometry_id,
                 reference.artwork_item_id.0
@@ -296,6 +307,7 @@ fn operation_reference_issues(
             "knife" => "drag_knife",
             "endmill" => "endmill",
             "V-bit" => "vbit",
+            "drill" => "drill",
             _ => return,
         };
         if kind != expected {
@@ -421,6 +433,29 @@ fn operation_reference_issues(
                 &mut issues,
             );
         }
+        OperationSettingsV5::Drill(settings) => {
+            require_tool(
+                &mut issues,
+                &settings.assignment.tool_id,
+                "drill",
+                "assignment.tool_id",
+            );
+            for (index, point) in settings.points.iter().enumerate() {
+                let field = format!("points[{index}]");
+                let outcome = resolve_geometry_ref(point, items);
+                if let Some(issue) = geometry_issue(point, &outcome, id, &field) {
+                    issues.push(issue);
+                }
+            }
+            check_heights(
+                job,
+                operation,
+                &settings.top,
+                Some(&settings.bottom),
+                require_enabled_preceding_face,
+                &mut issues,
+            );
+        }
     }
     issues
 }
@@ -430,6 +465,7 @@ fn geometry_kind_name(geometry: &crate::project::ToolGeometry) -> &'static str {
         crate::project::ToolGeometry::Endmill(_) => "endmill",
         crate::project::ToolGeometry::Vbit(_) => "vbit",
         crate::project::ToolGeometry::DragKnife(_) => "drag_knife",
+        crate::project::ToolGeometry::Drill(_) => "drill",
     }
 }
 

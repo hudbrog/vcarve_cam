@@ -246,6 +246,29 @@ fn tool_form(
                 e,
             );
         }
+        LibraryGeometry::Drill(g) => {
+            required(
+                &mut cols[0],
+                &format!("{prefix} diameter"),
+                &format!("{key}/diameter"),
+                &mut g.diameter_mm,
+                e,
+            );
+            required(
+                &mut cols[1],
+                &format!("{prefix} tip angle"),
+                &format!("{key}/angle"),
+                &mut g.tip_angle_deg,
+                e,
+            );
+            required(
+                &mut cols[0],
+                &format!("{prefix} cutting length"),
+                &format!("{key}/length"),
+                &mut g.cutting_length_mm,
+                e,
+            );
+        }
     });
     // How the cutter is held: the shaft above it and how far it sticks out of
     // the holder. Both optional — the simulation draws what a tool states and

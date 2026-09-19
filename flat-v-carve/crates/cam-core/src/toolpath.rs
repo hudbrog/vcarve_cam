@@ -124,6 +124,11 @@ pub enum Interpolation {
     LinearFeed,
     /// Circular feed: the machine runs `G2`/`G3` for this motion.
     ArcFeed(ArcMove),
+    /// The axes halt with the spindle turning (`G4 P`), in seconds. A dwell
+    /// motion has no movement: `start` and `end` are the same position.
+    Dwell {
+        seconds: f64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

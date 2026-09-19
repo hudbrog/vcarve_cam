@@ -93,12 +93,14 @@ pub struct GeometryPick {
 const COMPONENT_TAG: &str = "component";
 const CONTOUR_TAG: &str = "contour";
 const CHAIN_TAG: &str = "chain";
+const POINT_TAG: &str = "point";
 
 fn kind_tag(kind: GeometryRefKind) -> &'static str {
     match kind {
         GeometryRefKind::FilledComponent => COMPONENT_TAG,
         GeometryRefKind::ClosedContour => CONTOUR_TAG,
         GeometryRefKind::Centerline => CHAIN_TAG,
+        GeometryRefKind::Point => POINT_TAG,
     }
 }
 
@@ -107,6 +109,7 @@ fn kind_from_tag(tag: &str) -> Option<GeometryRefKind> {
         COMPONENT_TAG => Some(GeometryRefKind::FilledComponent),
         CONTOUR_TAG => Some(GeometryRefKind::ClosedContour),
         CHAIN_TAG => Some(GeometryRefKind::Centerline),
+        POINT_TAG => Some(GeometryRefKind::Point),
         _ => None,
     }
 }
@@ -163,6 +166,26 @@ pub struct CatalogueEntry {
     pub vertices: usize,
 }
 
+/// One user-facing drillable marker: display metadata, the setup-space
+/// center and the marker diameter. Analytic circle markers measure exactly;
+/// derived centroid markers carry the area-equivalent diameter. The diameter
+/// describes the marker drawing, never the hole — the drill bit cuts that.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PointEntry {
+    pub wire_id: String,
+    /// Canonical reference at the item's current source revision.
+    pub reference: GeometryRef,
+    pub label: Option<String>,
+    pub group: Option<String>,
+    pub paint: Option<crate::svg::SourcePaint>,
+    /// Setup-space marker center.
+    pub center: Point,
+    pub diameter_mm: f64,
+    /// Whether `diameter_mm` is the source circle's exact measure.
+    pub exact: bool,
+    pub source_fingerprint: String,
+}
+
 /// One item's resolved state: current revision, the imported catalogue when
 /// the content imports cleanly, and owner-qualified entries.
 #[derive(Clone, Debug)]
@@ -175,6 +198,8 @@ pub struct ItemCatalogue {
     pub catalogue: Option<ContourCatalogue>,
     pub import_error: Option<String>,
     pub entries: Vec<CatalogueEntry>,
+    /// Drillable marker points, in catalogue document order.
+    pub point_entries: Vec<PointEntry>,
 }
 
 fn entry(
@@ -217,6 +242,7 @@ pub fn resolve_artwork_item(item: &ArtworkItem) -> Result<ItemCatalogue> {
         Err(e) => (None, Some(e.message)),
     };
     let mut entries = vec![];
+    let mut point_entries = vec![];
     if let Some(catalogue) = &catalogue {
         let id = &item.id;
         for contour in &catalogue.contours {
@@ -249,6 +275,24 @@ pub fn resolve_artwork_item(item: &ArtworkItem) -> Result<ItemCatalogue> {
                 ));
             }
         }
+        for point in &catalogue.points {
+            point_entries.push(PointEntry {
+                wire_id: wire_id(id, GeometryRefKind::Point, &point.id),
+                reference: GeometryRef {
+                    artwork_item_id: id.clone(),
+                    kind: GeometryRefKind::Point,
+                    local_geometry_id: point.id.clone(),
+                    source_revision: revision.clone(),
+                },
+                label: point.label.clone(),
+                group: point.group.clone(),
+                paint: point.paint,
+                center: point.center,
+                diameter_mm: point.diameter_mm,
+                exact: point.exact,
+                source_fingerprint: point.source_fingerprint.clone(),
+            });
+        }
     }
     Ok(ItemCatalogue {
         id: item.id.clone(),
@@ -257,6 +301,7 @@ pub fn resolve_artwork_item(item: &ArtworkItem) -> Result<ItemCatalogue> {
         catalogue,
         import_error,
         entries,
+        point_entries,
     })
 }
 
@@ -278,6 +323,14 @@ impl CombinedCatalogue {
         self.items
             .iter()
             .flat_map(|item| item.entries.iter())
+            .find(|entry| entry.wire_id == wire)
+    }
+
+    /// The owner-qualified point entry behind a point wire ID.
+    pub fn point_entry(&self, wire: &str) -> Option<&PointEntry> {
+        self.items
+            .iter()
+            .flat_map(|item| item.point_entries.iter())
             .find(|entry| entry.wire_id == wire)
     }
 
@@ -319,10 +372,18 @@ pub fn inspect_artwork(job: &CamJobV5) -> Result<CombinedCatalogue> {
     }
     // Wire IDs are unique by construction: item IDs are unique in the
     // document, local geometry IDs are unique inside one item's catalogue
-    // (and across its contour/chain halves), and the kind tag separates the
-    // remaining spaces. The check stays as a build-time guarantee.
+    // (and across its contour/chain/point halves), and the kind tag separates
+    // the remaining spaces. The check stays as a build-time guarantee.
     let mut wire_ids = BTreeSet::new();
     for entry in items.iter().flat_map(|item| item.entries.iter()) {
+        if !wire_ids.insert(entry.wire_id.as_str()) {
+            return Err(error(
+                "CONTOUR_ID_COLLISION",
+                format!("catalogue entries collide on wire ID '{}'", entry.wire_id),
+            ));
+        }
+    }
+    for entry in items.iter().flat_map(|item| item.point_entries.iter()) {
         if !wire_ids.insert(entry.wire_id.as_str()) {
             return Err(error(
                 "CONTOUR_ID_COLLISION",

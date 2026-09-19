@@ -197,6 +197,10 @@ pub enum ArtworkCommand {
     CarveSelection {
         references: Vec<v5::GeometryRef>,
     },
+    /// Replace the drill operation's own marker-point selection.
+    DrillSelection {
+        references: Vec<v5::GeometryRef>,
+    },
     KnifeOutlines {
         item: v5::ArtworkItemId,
     },
@@ -299,6 +303,33 @@ fn artwork_command(
             return Ok((
                 open(&outcome.job.to_json().map_err(|e| e.to_string())?)?,
                 json!({"kind":"carve_selection","issues":outcome.issues}),
+            ));
+        }
+        ArtworkCommand::DrillSelection { references } => {
+            if crate::session::drill(job, &target).is_none() {
+                return Err("Select a drill operation before selecting its holes".into());
+            }
+            // Only the displayed catalogue's exact point references are
+            // accepted, exactly as the component selection insists.
+            let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
+            let available = catalogue
+                .items
+                .iter()
+                .flat_map(|item| item.point_entries.iter())
+                .map(|entry| entry.reference.clone())
+                .collect::<Vec<_>>();
+            if references
+                .iter()
+                .any(|reference| !available.contains(reference))
+            {
+                return Err("Selected markers changed; select the drill points again".into());
+            }
+            let outcome =
+                commands::set_point_selection(job, &target, &crate::authoring::picks(&references))
+                    .map_err(|e| e.to_string())?;
+            return Ok((
+                open(&outcome.job.to_json().map_err(|e| e.to_string())?)?,
+                json!({"kind":"drill_selection","issues":outcome.issues}),
             ));
         }
         ArtworkCommand::KnifeOutlines { item } => {
@@ -540,6 +571,7 @@ pub fn kind(job: &CamJobV5, id: &str) -> Option<OperationKind> {
         OperationSettingsV5::Face(_) => OperationKind::Face,
         OperationSettingsV5::Profile(_) => OperationKind::Profile,
         OperationSettingsV5::DragKnife(_) => OperationKind::DragKnife,
+        OperationSettingsV5::Drill(_) => OperationKind::Drill,
     })
 }
 
@@ -549,6 +581,7 @@ pub enum OperationKind {
     Face,
     Profile,
     DragKnife,
+    Drill,
 }
 
 /// Display name of one operation's kind.
@@ -558,6 +591,7 @@ pub fn kind_label(job: &CamJobV5, id: &str) -> &'static str {
         Some(OperationKind::FlatVcarve) => "Flat V-carve",
         Some(OperationKind::DragKnife) => "Drag knife",
         Some(OperationKind::Profile) => "Profile",
+        Some(OperationKind::Drill) => "Drill",
         None => "Operation",
     }
 }
@@ -572,6 +606,13 @@ pub fn face<'a>(job: &'a CamJobV5, id: &str) -> Option<&'a v5::FaceSettingsV5> {
 pub fn face_mut<'a>(job: &'a mut CamJobV5, id: &str) -> Option<&'a mut v5::FaceSettingsV5> {
     match &mut operation_mut(job, id)?.settings {
         OperationSettingsV5::Face(settings) => Some(settings),
+        _ => None,
+    }
+}
+
+pub fn drill<'a>(job: &'a CamJobV5, id: &str) -> Option<&'a v5::DrillSettingsV5> {
+    match &operation(job, id)?.settings {
+        OperationSettingsV5::Drill(settings) => Some(settings),
         _ => None,
     }
 }

@@ -250,6 +250,7 @@ impl ResourceCommand {
                 // face operation's stepover comes from the profile too.
                 AssignmentRole::Milling => vec![2, 9, 10, 11, 88, 12, 13],
                 AssignmentRole::Knife => vec![],
+                AssignmentRole::Drill => vec![2, 10, 11],
             };
         }
         if let Self::Clear { role, .. } = self {
@@ -258,6 +259,7 @@ impl ResourceCommand {
                 AssignmentRole::Vbit => vec![3, 20, 21, 22, 46],
                 AssignmentRole::Milling => vec![2, 9, 10, 11, 88],
                 AssignmentRole::Knife => vec![63, 64, 65, 66],
+                AssignmentRole::Drill => vec![2, 10, 11],
             };
         }
         if let Self::SelectLibraryTool {
@@ -514,6 +516,7 @@ pub fn capture_tool(tool: &v5::JobToolV5, id: String, name: String) -> Result<Li
         }),
         ToolGeometry::Vbit(g) => LibraryGeometry::Vbit(g),
         ToolGeometry::DragKnife(g) => LibraryGeometry::DragKnife(g),
+        ToolGeometry::Drill(g) => LibraryGeometry::Drill(g),
     };
     let result = LibraryTool {
         spindle_direction: None,
@@ -669,6 +672,7 @@ pub fn role_word(role: AssignmentRole) -> &'static str {
         AssignmentRole::Vbit => "V-bit",
         AssignmentRole::Milling => "cutter",
         AssignmentRole::Knife => "knife",
+        AssignmentRole::Drill => "drill",
     }
 }
 

@@ -4,6 +4,7 @@ pub mod authoring;
 pub mod camera;
 pub mod clock;
 pub mod compute;
+pub mod drill;
 pub mod face;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod file_io;

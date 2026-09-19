@@ -190,7 +190,7 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
     })
 }
 
-const FIELD_HELP: [&str; 111] = [
+const FIELD_HELP: [&str; 120] = [
     "Total carving depth below the operation top, in millimeters. Stepdown controls how much is removed in each pass.",
     "Material left on walls by roughing, in millimeters, for a later finishing pass. Zero requests no extra allowance.",
     "Endmill cutting speed along the path, in mm/min. Choose for your cutter, material and machine; it is not spindle RPM.",
@@ -302,6 +302,15 @@ const FIELD_HELP: [&str; 111] = [
     "Position of the cut start as a fraction from 0 up to 1 along the selected contour's canonical start. It is the numeric equivalent of dragging the start.",
     "The exact position the pass starts at, along the pass direction, in setup coordinates. Used by the 'Start at…' entry choice: it replaces the entry travel, so the panel shows the travel this position implies. It must be at or beyond the pass's own span, or the strip behind it would go unswept. Negative values are ordinary.",
     "How far a knife tip merge may move the resolved polyline, in millimeters. Unset lets the planner spend the motion tolerance it already promises; 0 follows the resolved polyline exactly. It is a path-shape budget, not a machining feed.",
+    "Signed offset from the drilling top reference, positive upward. The top is where the hole starts: usually the stock top, or a plane an earlier face operation published.",
+    "Signed offset from the drilling bottom reference, positive upward. The default reference is the stock bottom, which reads as a through hole.",
+    "Signed offset from the retract height reference, positive upward. The retract (R) plane is where feeding starts and peck retracts return; travel between holes stays at the job clearance plane.",
+    "Extra drilling beyond the resolved bottom, in millimeters, so the hole fully breaks through uneven stock or a spoil-board gap. Added on top of the depth-reference choice.",
+    "Seconds the spindle keeps cutting at the hole bottom before retracting (G82-style). Zero or empty disables the dwell.",
+    "Depth of the first peck, in millimeters. Later pecks shrink by the reduction until the minimum. A peck never lands past the hole's final depth.",
+    "Removed from the peck depth after every peck, in millimeters, so deep holes take progressively smaller bites. Zero keeps every peck at the full depth.",
+    "The smallest peck depth the reduction may leave, in millimeters. It must not exceed the peck depth.",
+    "The chip-break retract distance inside the hole, in millimeters. LinuxCNC's fixed G73 retract is 0.254 mm; full-retract pecking ignores this value.",
 ];
 
 #[cfg(test)]

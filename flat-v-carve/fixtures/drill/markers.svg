@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="80mm" height="50mm" viewBox="0 0 80 50">
+  <!-- Drill marker styles: exact circles, a drawn dot, a stroke-to-path ring. -->
+  <g inkscape:label="Holes" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape">
+    <circle id="hole-a" cx="12" cy="12" r="2.5" fill="#000000"/>
+    <circle id="hole-b" cx="40" cy="12" r="2.5" fill="#000000"/>
+    <circle id="hole-c" cx="68" cy="12" r="2.5" fill="#000000"/>
+    <circle id="large" cx="40" cy="38" r="6" fill="none" stroke="#000000" stroke-width="0.4"/>
+  </g>
+  <!-- A dot drawn as a filled path: its area centroid becomes the hole. -->
+  <path id="dot" fill="#000000" d="M8 38 h4 v4 h-4 Z"/>
+</svg>

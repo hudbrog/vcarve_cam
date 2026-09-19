@@ -36,6 +36,8 @@ pub enum AssignmentRole {
     Milling,
     /// The knife assignment of a Drag Knife operation.
     Knife,
+    /// The single assignment of a Drill operation.
+    Drill,
 }
 
 impl AssignmentRole {
@@ -45,6 +47,7 @@ impl AssignmentRole {
             Self::Vbit => "vbit",
             Self::Milling => "milling",
             Self::Knife => "knife",
+            Self::Drill => "drill",
         }
     }
 }
@@ -83,6 +86,10 @@ fn assignment_mut<'a>(
         OperationSettingsV5::DragKnife(settings) => match role {
             AssignmentRole::Knife => AssignmentRef::Knife(&mut settings.assignment),
             _ => return Err(mismatch("drag_knife")),
+        },
+        OperationSettingsV5::Drill(settings) => match role {
+            AssignmentRole::Drill => AssignmentRef::Milling(&mut settings.assignment),
+            _ => return Err(mismatch("drill")),
         },
     })
 }
@@ -505,6 +512,14 @@ fn assignment_ref_of<'a>(
                 ));
             }
         },
+        OperationSettingsV5::Drill(settings) => match role {
+            AssignmentRole::Drill => AssignmentRead::Milling(&settings.assignment),
+            _ => {
+                return Err(resource_error(
+                    "assignment role does not match the operation",
+                ));
+            }
+        },
     })
 }
 
@@ -521,6 +536,7 @@ fn job_geometry(geometry: &LibraryGeometry) -> crate::project::ToolGeometry {
         }
         LibraryGeometry::Vbit(spec) => crate::project::ToolGeometry::Vbit(spec.clone()),
         LibraryGeometry::DragKnife(spec) => crate::project::ToolGeometry::DragKnife(spec.clone()),
+        LibraryGeometry::Drill(spec) => crate::project::ToolGeometry::Drill(spec.clone()),
     }
 }
 
@@ -534,6 +550,12 @@ fn library_capabilities(tool: &crate::tool_library::LibraryTool) -> ToolCapabili
         },
         LibraryGeometry::Vbit(_) => ToolCapabilities {
             plunge_capable: tool.plunge_capable,
+            ramp_capable: tool.ramp_capable,
+        },
+        // A twist drill enters material axially by design; an unset library
+        // value defaults to plunge-capable, like the endmill spec's own flag.
+        LibraryGeometry::Drill(_) => ToolCapabilities {
+            plunge_capable: tool.plunge_capable.or(Some(true)),
             ramp_capable: tool.ramp_capable,
         },
     }
@@ -720,6 +742,7 @@ pub fn use_job_tool(
             crate::project::ToolGeometry::Endmill(_) | crate::project::ToolGeometry::Vbit(_)
         ),
         AssignmentRole::Knife => matches!(geometry, crate::project::ToolGeometry::DragKnife(_)),
+        AssignmentRole::Drill => matches!(geometry, crate::project::ToolGeometry::Drill(_)),
     };
     if tool
         .geometry
@@ -780,6 +803,9 @@ pub fn assignments_of(job: &CamJobV5) -> Vec<(String, AssignmentRole)> {
             }
             OperationSettingsV5::DragKnife(_) => {
                 out.push((operation.id.clone(), AssignmentRole::Knife));
+            }
+            OperationSettingsV5::Drill(_) => {
+                out.push((operation.id.clone(), AssignmentRole::Drill));
             }
         }
     }

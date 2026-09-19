@@ -20,6 +20,7 @@ pub enum Kind {
     FlatVcarve,
     Profile,
     DragKnife,
+    Drill,
 }
 
 impl Kind {
@@ -29,6 +30,7 @@ impl Kind {
             Self::FlatVcarve => v5::commands::NewOperationKind::FlatVcarve,
             Self::Profile => v5::commands::NewOperationKind::Profile,
             Self::DragKnife => v5::commands::NewOperationKind::DragKnife,
+            Self::Drill => v5::commands::NewOperationKind::Drill,
         }
     }
     pub fn id_prefix(self) -> &'static str {
@@ -37,6 +39,7 @@ impl Kind {
             Self::FlatVcarve => "carving",
             Self::Profile => "profile",
             Self::DragKnife => "knife",
+            Self::Drill => "drill",
         }
     }
     pub fn default_name(self) -> &'static str {

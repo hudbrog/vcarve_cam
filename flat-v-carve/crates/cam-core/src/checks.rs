@@ -188,6 +188,11 @@ impl CutterSafety {
             // stage role is exempt from this pass; unknown geometry cannot
             // prove anything about clearance.
             Some(ToolGeometry::DragKnife(_)) | None => (None, None, None),
+            // A drill's widest point is its cylindrical body; for clearance it
+            // behaves like an endmill of the same diameter.
+            Some(ToolGeometry::Drill(g)) => {
+                (Some(g.diameter_mm / 2.), Some(0.), Some(g.diameter_mm / 2.))
+            }
         };
         Self {
             tip_radius_mm,
@@ -613,6 +618,41 @@ fn check_assembly(
                     failed = true;
                 }
             }
+            Interpolation::Dwell { seconds } => {
+                if !seconds.is_finite() || seconds < 0. {
+                    let mut f = finding(
+                        "PLAN_MOTION_NUMERIC",
+                        format!(
+                            "dwell motion {} has a non-finite or negative duration",
+                            motion.id
+                        ),
+                    );
+                    f.operation_id = Some(motion.operation_id.clone());
+                    findings.push(f);
+                    failed = true;
+                }
+                if motion.feed_mm_min.is_some() {
+                    let mut f = finding(
+                        "PLAN_FEED_INVALID",
+                        format!("dwell motion {} carries a feed", motion.id),
+                    );
+                    f.operation_id = Some(motion.operation_id.clone());
+                    findings.push(f);
+                    failed = true;
+                }
+                if (motion.start.x - motion.end.x).abs() > 1e-9
+                    || (motion.start.y - motion.end.y).abs() > 1e-9
+                    || (motion.start.z - motion.end.z).abs() > 1e-9
+                {
+                    let mut f = finding(
+                        "PLAN_MOTION_NUMERIC",
+                        format!("dwell motion {} moves; a dwell holds position", motion.id),
+                    );
+                    f.operation_id = Some(motion.operation_id.clone());
+                    findings.push(f);
+                    failed = true;
+                }
+            }
         }
         let role = stage_role(stages, &motion.stage_id);
         let knife_stage = role == Some(StageRole::Knife);
@@ -625,6 +665,7 @@ fn check_assembly(
                         | StageRole::Face
                         | StageRole::ProfileRough
                         | StageRole::ProfileFinish
+                        | StageRole::Drill
                 )
             )
         {

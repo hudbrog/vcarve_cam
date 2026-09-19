@@ -626,20 +626,33 @@ fn machining_identity_separates_display_from_machining_changes() {
 /// (the same binding the H2 assignment commands produce).
 fn rebind_live(job: &mut v5::CamJobV5) {
     let combined = inspect_artwork(job).unwrap();
-    let lookup = |item: &ArtworkItemId, kind: GeometryRefKind| -> Option<GeometryRef> {
-        combined
-            .item(item)?
-            .entries
-            .iter()
-            .find(|entry| entry.kind == kind)
-            .map(|entry| entry.reference.clone())
-    };
+    let lookup =
+        |item: &ArtworkItemId, kind: GeometryRefKind, local: &str| -> Option<GeometryRef> {
+            if kind == GeometryRefKind::Point {
+                return combined
+                    .item(item)?
+                    .point_entries
+                    .iter()
+                    .find(|entry| entry.reference.local_geometry_id == local)
+                    .map(|entry| entry.reference.clone());
+            }
+            combined
+                .item(item)?
+                .entries
+                .iter()
+                .find(|entry| entry.kind == kind)
+                .map(|entry| entry.reference.clone())
+        };
     for operation in &mut job.operations {
         match &mut operation.settings {
             OperationSettingsV5::FlatVcarve(s) => {
                 for component in &mut s.components {
-                    *component = lookup(&component.artwork_item_id.clone(), component.kind)
-                        .expect("referenced item resolves");
+                    *component = lookup(
+                        &component.artwork_item_id.clone(),
+                        component.kind,
+                        &component.local_geometry_id.clone(),
+                    )
+                    .expect("referenced item resolves");
                 }
             }
             OperationSettingsV5::Profile(s) => {
@@ -647,14 +660,29 @@ fn rebind_live(job: &mut v5::CamJobV5) {
                     contour.geometry = lookup(
                         &contour.geometry.artwork_item_id.clone(),
                         contour.geometry.kind,
+                        &contour.geometry.local_geometry_id.clone(),
                     )
                     .expect("referenced item resolves");
                 }
             }
             OperationSettingsV5::DragKnife(s) => {
                 for chain in &mut s.chains {
-                    *chain = lookup(&chain.artwork_item_id.clone(), chain.kind)
-                        .expect("referenced item resolves");
+                    *chain = lookup(
+                        &chain.artwork_item_id.clone(),
+                        chain.kind,
+                        &chain.local_geometry_id.clone(),
+                    )
+                    .expect("referenced item resolves");
+                }
+            }
+            OperationSettingsV5::Drill(s) => {
+                for point in &mut s.points {
+                    *point = lookup(
+                        &point.artwork_item_id.clone(),
+                        point.kind,
+                        &point.local_geometry_id.clone(),
+                    )
+                    .expect("referenced item resolves");
                 }
             }
             OperationSettingsV5::Face(_) => {}

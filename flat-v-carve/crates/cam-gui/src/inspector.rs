@@ -1,4 +1,6 @@
 use super::*;
+#[path = "drill_ui.rs"]
+mod drill_ui;
 #[path = "face_ui.rs"]
 mod face_ui;
 #[path = "knife_ui.rs"]
@@ -471,6 +473,11 @@ impl App {
                             .count(),
                         OperationSettingsV5::DragKnife(s) => s
                             .chains
+                            .iter()
+                            .filter(|r| r.artwork_item_id == item.id)
+                            .count(),
+                        OperationSettingsV5::Drill(s) => s
+                            .points
                             .iter()
                             .filter(|r| r.artwork_item_id == item.id)
                             .count(),

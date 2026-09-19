@@ -20,6 +20,9 @@ fn geometry(tool: &cam_core::project::v5::JobToolV5) -> String {
             g.included_angle_deg, g.max_cutting_diameter_mm
         ),
         Some(ToolGeometry::DragKnife(g)) => format!("Knife · {} mm offset", g.blade_offset_mm),
+        Some(ToolGeometry::Drill(g)) => {
+            format!("Drill · Ø {} mm · {}°", g.diameter_mm, g.tip_angle_deg)
+        }
         None => "Never configured".into(),
     }
 }
@@ -39,6 +42,7 @@ fn cutting_values(job: &CamJobV5, operation: &str, role: Role) -> (String, Strin
         }
         OperationSettingsV5::Face(s) => &s.assignment,
         OperationSettingsV5::Profile(s) => &s.assignment,
+        OperationSettingsV5::Drill(s) => &s.assignment,
         OperationSettingsV5::DragKnife(s) => {
             return (number(s.assignment.cutting_feed_mm_min), "Off".into());
         }
@@ -401,6 +405,7 @@ impl App {
                         }
                         LibraryGeometry::Vbit(g) => ToolGeometry::Vbit(g),
                         LibraryGeometry::DragKnife(g) => ToolGeometry::DragKnife(g),
+                        LibraryGeometry::Drill(g) => ToolGeometry::Drill(g),
                     });
                     self.resource_command(R::EditTool { tool: target }, ctx);
                 }

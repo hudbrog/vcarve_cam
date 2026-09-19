@@ -249,6 +249,9 @@ pub enum GeometryRefKind {
     ClosedContour,
     /// A centerline chain from the item's centerline import (knife).
     Centerline,
+    /// A drillable marker point: an analytic circle/ellipse center or a
+    /// derived contour centroid (drilling selection).
+    Point,
 }
 
 /// The canonical document representation of one selected geometry (plan
@@ -860,6 +863,57 @@ pub struct DragKnifeSettingsV5 {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DrillSettingsV5 {
+    /// Selected marker points as qualified references; may be empty while
+    /// incomplete.
+    pub points: Vec<GeometryRef>,
+    pub assignment: MillingAssignmentV5,
+    /// Where drilling starts: the original stock top by default, or a plane
+    /// published by a preceding face operation.
+    #[serde(default)]
+    pub top: crate::project::HeightRef,
+    /// Where the hole ends: the stock bottom by default (a through hole).
+    #[serde(default = "drill_bottom_default")]
+    pub bottom: crate::project::HeightRef,
+    /// The R-plane: where the feeding entry starts and peck retracts return.
+    /// Travel between holes stays at the job clearance plane like every other
+    /// operation. Defaults to 2 mm above the stock top.
+    #[serde(default = "drill_retract_default")]
+    pub retract_height: crate::project::HeightRef,
+    #[serde(default)]
+    pub depth_reference: crate::project::DrillDepthReference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breakthrough_extra_mm: Option<f64>,
+    /// `None` drills the whole hole in one plunge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peck: Option<crate::project::DrillPeckSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dwell_at_bottom_s: Option<f64>,
+    #[serde(default)]
+    pub hole_order: crate::project::DrillHoleOrder,
+    /// Warn when the drill is wider than a selected marker circle. Markers
+    /// are positional by default — a small dot drilled by a wider bit is a
+    /// legitimate drawing style — so the warning is opt-in.
+    #[serde(default)]
+    pub warn_drill_exceeds_marker: bool,
+}
+
+fn drill_bottom_default() -> crate::project::HeightRef {
+    crate::project::HeightRef {
+        reference: crate::project::HeightReference::StockBottom,
+        offset_mm: 0.,
+    }
+}
+
+fn drill_retract_default() -> crate::project::HeightRef {
+    crate::project::HeightRef {
+        reference: crate::project::HeightReference::StockTop,
+        offset_mm: 2.,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "settings",
@@ -871,6 +925,7 @@ pub enum OperationSettingsV5 {
     Face(FaceSettingsV5),
     Profile(ProfileSettingsV5),
     DragKnife(DragKnifeSettingsV5),
+    Drill(DrillSettingsV5),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1089,6 +1144,34 @@ fn validate_drag_knife(settings: &DragKnifeSettingsV5) -> Result<()> {
     Ok(())
 }
 
+fn validate_drill(settings: &DrillSettingsV5) -> Result<()> {
+    for point in &settings.points {
+        point.validate()?;
+    }
+    number(
+        settings.breakthrough_extra_mm,
+        "drill.breakthrough_extra_mm",
+        false,
+    )?;
+    if let Some(peck) = &settings.peck {
+        peck.validate()?;
+    }
+    if settings
+        .dwell_at_bottom_s
+        .is_some_and(|v| !v.is_finite() || v < 0.)
+    {
+        return Err(error(
+            "PROJECT_PARAMETER",
+            "drill.dwell_at_bottom_s must be finite and nonnegative",
+        ));
+    }
+    settings.assignment.validate("drill.assignment")?;
+    settings
+        .retract_height
+        .validate("drill.retract_height", false)?;
+    Ok(())
+}
+
 impl CamJobV5 {
     /// Structural document integrity (plan section 22.5): the save/open
     /// gate. Everything about *where* referenced entities live is reference
@@ -1152,6 +1235,10 @@ impl CamJobV5 {
                 }
                 OperationSettingsV5::DragKnife(settings) => {
                     validate_drag_knife(settings)?;
+                    (Some(&settings.top), Some(&settings.bottom))
+                }
+                OperationSettingsV5::Drill(settings) => {
+                    validate_drill(settings)?;
                     (Some(&settings.top), Some(&settings.bottom))
                 }
             };

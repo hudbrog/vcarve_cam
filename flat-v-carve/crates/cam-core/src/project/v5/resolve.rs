@@ -16,7 +16,7 @@
 //! references); they are never serialized and never flatten a collection
 //! document.
 use super::{
-    ArtworkItem, CamJobV5, CombinedCatalogue, DragKnifeSettingsV5, FaceSettingsV5,
+    ArtworkItem, CamJobV5, CombinedCatalogue, DragKnifeSettingsV5, DrillSettingsV5, FaceSettingsV5,
     FlatVcarveSettingsV5, GeometryRef, GeometryRefKind, MillingAssignmentV5, OperationSettingsV5,
     OperationV5, ProfileSettingsV5, artwork::wire_id,
 };
@@ -69,6 +69,7 @@ fn resolve_reference(
         GeometryRefKind::FilledComponent => "filled component",
         GeometryRefKind::ClosedContour => "closed contour",
         GeometryRefKind::Centerline => "centerline chain",
+        GeometryRefKind::Point => "marker point",
     };
     let Some(item) = combined.item(&reference.artwork_item_id) else {
         return RefResolution::Issue(located(
@@ -104,6 +105,7 @@ fn resolve_reference(
             .any(|c| c.role == ContourRole::Outer && c.component_id == reference.local_geometry_id),
         GeometryRefKind::ClosedContour => catalogue.contour(&reference.local_geometry_id).is_some(),
         GeometryRefKind::Centerline => catalogue.chain(&reference.local_geometry_id).is_some(),
+        GeometryRefKind::Point => catalogue.point(&reference.local_geometry_id).is_some(),
     };
     if !exists {
         return RefResolution::Issue(located(
@@ -124,6 +126,7 @@ fn resolve_reference(
 pub fn assembled_catalogue(combined: &CombinedCatalogue) -> Result<ContourCatalogue> {
     let mut contours = vec![];
     let mut open_chains = vec![];
+    let mut points = vec![];
     for item in &combined.items {
         let Some(catalogue) = &item.catalogue else {
             // Items that fail to import contribute no entries; the operations
@@ -135,6 +138,9 @@ pub fn assembled_catalogue(combined: &CombinedCatalogue) -> Result<ContourCatalo
         }
         for chain in &catalogue.open_chains {
             open_chains.push(qualified(chain, &item.id, GeometryRefKind::Centerline));
+        }
+        for point in &catalogue.points {
+            points.push(qualified_point(point, &item.id));
         }
     }
     let unique = contours
@@ -148,15 +154,35 @@ pub fn assembled_catalogue(combined: &CombinedCatalogue) -> Result<ContourCatalo
             "assembled catalogue entries collide on a wire ID",
         ));
     }
+    let unique_points = points
+        .iter()
+        .map(|p| p.id.as_str())
+        .collect::<BTreeSet<_>>();
+    if unique_points.len() != points.len() {
+        return Err(super::error(
+            "CONTOUR_ID_COLLISION",
+            "assembled catalogue points collide on a wire ID",
+        ));
+    }
     Ok(ContourCatalogue {
         contours,
         open_chains,
+        points,
     })
 }
 
 fn qualified(contour: &Contour, item: &super::ArtworkItemId, kind: GeometryRefKind) -> Contour {
     let mut remapped = contour.clone();
     remapped.id = wire_id(item, kind, &contour.id);
+    remapped
+}
+
+fn qualified_point(
+    point: &crate::contours::CataloguePoint,
+    item: &super::ArtworkItemId,
+) -> crate::contours::CataloguePoint {
+    let mut remapped = point.clone();
+    remapped.id = wire_id(item, GeometryRefKind::Point, &point.id);
     remapped
 }
 
@@ -458,6 +484,32 @@ pub(crate) fn to_knife_settings(settings: &DragKnifeSettingsV5) -> project::Drag
     }
 }
 
+pub(crate) fn to_drill_settings(settings: &DrillSettingsV5) -> project::DrillSettings {
+    project::DrillSettings {
+        points: settings
+            .points
+            .iter()
+            .map(|r| {
+                wire_id(
+                    &r.artwork_item_id,
+                    GeometryRefKind::Point,
+                    &r.local_geometry_id,
+                )
+            })
+            .collect(),
+        assignment: to_milling_assignment(&settings.assignment),
+        top: settings.top.clone(),
+        bottom: settings.bottom.clone(),
+        retract_height: settings.retract_height.clone(),
+        depth_reference: settings.depth_reference,
+        breakthrough_extra_mm: settings.breakthrough_extra_mm,
+        peck: settings.peck.clone(),
+        dwell_at_bottom_s: settings.dwell_at_bottom_s,
+        hole_order: settings.hole_order,
+        warn_drill_exceeds_marker: settings.warn_drill_exceeds_marker,
+    }
+}
+
 /// Dispatch one enabled collection operation through the same planner bodies
 /// the schema-4 path uses (plan section 22.4: both paths call the same
 /// machining algorithms). Cross-source resolution failures are generation
@@ -502,6 +554,13 @@ pub(crate) fn plan_operation_v5(
             &to_knife_settings(settings),
             published_faces,
             prior_motions,
+            &PlannerGeometry::Catalogue(catalogue),
+        ),
+        OperationSettingsV5::Drill(settings) => crate::operations::drill::plan(
+            ctx,
+            &operation.id,
+            &to_drill_settings(settings),
+            published_faces,
             &PlannerGeometry::Catalogue(catalogue),
         ),
     }

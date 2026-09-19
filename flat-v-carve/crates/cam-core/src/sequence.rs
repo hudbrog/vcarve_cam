@@ -156,6 +156,7 @@ pub enum StageRole {
     VcarveRough,
     VcarveFinish,
     Knife,
+    Drill,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -675,6 +676,7 @@ impl OperationPlan {
                     | OperationSettings::Face(_)
                     | OperationSettings::Profile(_)
                     | OperationSettings::DragKnife(_)
+                    | OperationSettings::Drill(_)
             )
         }) {
             return Err(error(
@@ -896,6 +898,7 @@ pub(crate) fn kind_name(settings: &OperationSettings) -> &'static str {
         OperationSettings::Face(_) => "face",
         OperationSettings::Profile(_) => "profile",
         OperationSettings::DragKnife(_) => "drag_knife",
+        OperationSettings::Drill(_) => "drill",
     }
 }
 
@@ -943,6 +946,7 @@ fn tool_ids_of(settings: &OperationSettings) -> Vec<&str> {
         OperationSettings::Face(s) => vec![s.assignment.tool_id.as_str()],
         OperationSettings::Profile(s) => vec![s.assignment.tool_id.as_str()],
         OperationSettings::DragKnife(s) => vec![s.assignment.tool_id.as_str()],
+        OperationSettings::Drill(s) => vec![s.assignment.tool_id.as_str()],
     }
 }
 
@@ -1006,6 +1010,14 @@ fn compose_stock_history(
             }
             crate::project::ToolGeometry::Vbit(spec) => {
                 Some(crate::stock::history::SweepCutter::VBit { spec: spec.clone() })
+            }
+            // v1 drilling stock model: the swept cylinder of the drill body.
+            // The conical tip below the lip is not modeled (the flat-floor
+            // approximation matches how a through hole actually reads).
+            crate::project::ToolGeometry::Drill(g) => {
+                Some(crate::stock::history::SweepCutter::FlatEndmill {
+                    radius_mm: g.diameter_mm / 2.,
+                })
             }
             _ => None,
         });
@@ -1109,6 +1121,7 @@ pub(crate) fn tool_ids_of_v5(settings: &OperationSettingsV5) -> Vec<&str> {
         OperationSettingsV5::Face(s) => vec![s.assignment.tool_id.as_str()],
         OperationSettingsV5::Profile(s) => vec![s.assignment.tool_id.as_str()],
         OperationSettingsV5::DragKnife(s) => vec![s.assignment.tool_id.as_str()],
+        OperationSettingsV5::Drill(s) => vec![s.assignment.tool_id.as_str()],
     }
 }
 
@@ -1148,6 +1161,7 @@ fn referenced_item_ids(settings: &OperationSettingsV5) -> Vec<&v5::ArtworkItemId
             .map(|r| &r.artwork_item_id)
             .chain(anchors(&s.start).into_iter().map(|r| &r.artwork_item_id))
             .collect(),
+        OperationSettingsV5::Drill(s) => s.points.iter().map(|r| &r.artwork_item_id).collect(),
     }
 }
 
@@ -1246,6 +1260,19 @@ fn semantic_settings(settings: &OperationSettingsV5) -> OperationSettingsV5 {
                 path_simplification_mm: s.path_simplification_mm,
             })
         }
+        OperationSettingsV5::Drill(s) => OperationSettingsV5::Drill(v5::DrillSettingsV5 {
+            points: s.points.clone(),
+            assignment: semantic_milling(&s.assignment),
+            top: s.top.clone(),
+            bottom: s.bottom.clone(),
+            retract_height: s.retract_height.clone(),
+            depth_reference: s.depth_reference,
+            breakthrough_extra_mm: s.breakthrough_extra_mm,
+            peck: s.peck.clone(),
+            dwell_at_bottom_s: s.dwell_at_bottom_s,
+            hole_order: s.hole_order,
+            warn_drill_exceeds_marker: s.warn_drill_exceeds_marker,
+        }),
     }
 }
 

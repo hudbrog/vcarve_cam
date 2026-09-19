@@ -68,6 +68,14 @@ pub fn show(ui: &mut egui::Ui, tool: &LibraryTool) {
             (g.max_cutting_diameter_mm - g.tip_diameter_mm)
                 / (2. * (g.included_angle_deg.to_radians() / 2.).tan()),
         ),
+        // A drill is its cylinder down to the conical point: the taper is the
+        // tip extension (D/2)/tan(θ/2).
+        LibraryGeometry::Drill(g) => (
+            g.diameter_mm,
+            g.cutting_length_mm,
+            0.,
+            g.diameter_mm / (2. * (g.tip_angle_deg.to_radians() / 2.).tan()),
+        ),
         LibraryGeometry::DragKnife(_) => unreachable!(),
     };
     if !diameter.is_finite()

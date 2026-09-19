@@ -79,6 +79,7 @@ fn prepared_summary(
                 cam_core::sequence::StageRole::VcarveRough => "Endmill roughing",
                 cam_core::sequence::StageRole::VcarveFinish => "V-bit finishing",
                 cam_core::sequence::StageRole::Knife => "Drag knife",
+                cam_core::sequence::StageRole::Drill => "Drilling",
             };
             let row = ui.label(format!(
                 "{:02} · {} · {}",

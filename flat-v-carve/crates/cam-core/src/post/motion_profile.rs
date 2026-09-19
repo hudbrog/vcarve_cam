@@ -119,6 +119,9 @@ impl MotionLengthProfile {
             profile.xy_travel_mm += length;
             match motion.interpolation {
                 Interpolation::Rapid => profile.rapid_motions += 1,
+                // A dwell halts the axes; it is timed by its duration, not by
+                // any travel, and is neither a rapid nor a feed motion.
+                Interpolation::Dwell { .. } => {}
                 Interpolation::ArcFeed(_) => {
                     profile.feed_motions += 1;
                     profile.arc_feed_motions += 1;

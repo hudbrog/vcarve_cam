@@ -199,6 +199,27 @@ pub fn face_entry_preview(
     )
 }
 
+/// Drill editor diagnostics: the drill planner's required-but-unset fields for
+/// one operation (point selection, the drill assignment and its feed).
+pub fn inspect_drill_fields(
+    job: &CamJobV5,
+    operation_id: &str,
+) -> Result<Vec<crate::operations::LocatedDiagnostic>> {
+    let operation = job
+        .operations
+        .iter()
+        .find(|op| op.id == operation_id)
+        .ok_or_else(|| super::error("OPERATION_NOT_FOUND", "Unknown operation"))?;
+    let OperationSettingsV5::Drill(settings) = &operation.settings else {
+        return Err(super::error("OPERATION_KIND", "Expected Drill"));
+    };
+    Ok(crate::operations::drill::missing_fields_ctx(
+        &crate::operations::PlanContext::from_v5(job),
+        operation_id,
+        &super::resolve::to_drill_settings(settings),
+    ))
+}
+
 /// Profile editor diagnostics: the profile planner's required-but-unset fields
 /// for one operation (contour selection with explicit sides, stepdown,
 /// direction, the milling assignment, and whichever tab/entry/lead values the
@@ -240,6 +261,7 @@ pub fn inspect_operation_fields(
         OperationSettingsV5::Face(_) => inspect_face_fields(job, operation_id),
         OperationSettingsV5::DragKnife(_) => inspect_knife_fields(job, operation_id),
         OperationSettingsV5::Profile(_) => inspect_profile_fields(job, operation_id),
+        OperationSettingsV5::Drill(_) => inspect_drill_fields(job, operation_id),
     }
 }
 
@@ -249,6 +271,7 @@ fn operation_kind(settings: &OperationSettingsV5) -> &'static str {
         OperationSettingsV5::Face(_) => "face",
         OperationSettingsV5::Profile(_) => "profile",
         OperationSettingsV5::DragKnife(_) => "drag_knife",
+        OperationSettingsV5::Drill(_) => "drill",
     }
 }
 
@@ -284,6 +307,7 @@ fn geometry_refs(settings: &OperationSettingsV5) -> Vec<&GeometryRef> {
             .chain(tab_anchors(&s.tabs))
             .collect(),
         OperationSettingsV5::DragKnife(s) => s.chains.iter().chain(start(&s.start)).collect(),
+        OperationSettingsV5::Drill(s) => s.points.iter().collect(),
     }
 }
 
@@ -532,6 +556,7 @@ fn motion_seconds(motion: &crate::toolpath::PlannedMotion, rapid_rate_mm_min: f6
     };
     let rate = match motion.interpolation {
         crate::toolpath::Interpolation::Rapid => rapid_rate_mm_min,
+        crate::toolpath::Interpolation::Dwell { seconds } => return seconds,
         crate::toolpath::Interpolation::LinearFeed | crate::toolpath::Interpolation::ArcFeed(_) => {
             match motion.feed_mm_min {
                 Some(feed) if feed.is_finite() && feed > 0. => feed,
@@ -689,6 +714,14 @@ fn resolve_settings_heights(
                 })
         }
         OperationSettingsV5::DragKnife(s) => {
+            crate::setup::resolve_heights_values(thickness, &s.top, &s.bottom, published)
+                .ok()
+                .map(|heights| ResolvedHeightsDto {
+                    top_z_mm: heights.top_z,
+                    bottom_z_mm: Some(heights.bottom_z),
+                })
+        }
+        OperationSettingsV5::Drill(s) => {
             crate::setup::resolve_heights_values(thickness, &s.top, &s.bottom, published)
                 .ok()
                 .map(|heights| ResolvedHeightsDto {

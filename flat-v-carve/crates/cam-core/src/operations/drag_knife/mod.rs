@@ -221,6 +221,7 @@ fn knife_geometry(
                     ToolGeometry::Endmill(_) => "endmill",
                     ToolGeometry::Vbit(_) => "vbit",
                     ToolGeometry::DragKnife(_) => "drag_knife",
+                    ToolGeometry::Drill(_) => "drill",
                 }
             ),
         )),

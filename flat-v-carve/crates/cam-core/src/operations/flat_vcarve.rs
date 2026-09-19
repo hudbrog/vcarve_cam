@@ -254,6 +254,12 @@ fn engine_tool(
                 "drag-knife geometry has no V-carve engine representation",
             ));
         }
+        ToolGeometry::Drill(_) => {
+            return Err(error(
+                "ENGINE_TOOL_KIND",
+                "drill geometry has no V-carve engine representation",
+            ));
+        }
     };
     // The endmill spec already carries the authoritative plunge value; the
     // slot field is only meaningful for V-bit tools.

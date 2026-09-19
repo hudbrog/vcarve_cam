@@ -88,6 +88,11 @@ impl Cutter {
     pub(super) fn knife(operation: &str) -> Self {
         Self::new(operation, Role::Knife, "Knife", "Knife")
     }
+
+    /// A drill operation's single assignment.
+    pub(super) fn drill(operation: &str) -> Self {
+        Self::new(operation, Role::Drill, "Drilling", "Drill")
+    }
 }
 
 /// A stable slot per role for the picker's own selection state and for the
@@ -98,6 +103,7 @@ pub(super) fn role_index(role: Role) -> usize {
         Role::Vbit => 1,
         Role::Milling => 2,
         Role::Knife => 3,
+        Role::Drill => 4,
     }
 }
 
@@ -107,6 +113,7 @@ fn geometry_fits(geometry: &ToolGeometry, role: Role) -> bool {
         Role::Vbit => matches!(geometry, ToolGeometry::Vbit(_)),
         Role::Milling => matches!(geometry, ToolGeometry::Endmill(_)),
         Role::Knife => matches!(geometry, ToolGeometry::DragKnife(_)),
+        Role::Drill => matches!(geometry, ToolGeometry::Drill(_)),
     }
 }
 
@@ -115,6 +122,7 @@ fn library_fits(geometry: &LibraryGeometry, role: Role) -> bool {
         Role::Endmill | Role::Milling => matches!(geometry, LibraryGeometry::Endmill(_)),
         Role::Vbit => matches!(geometry, LibraryGeometry::Vbit(_)),
         Role::Knife => matches!(geometry, LibraryGeometry::DragKnife(_)),
+        Role::Drill => matches!(geometry, LibraryGeometry::Drill(_)),
     }
 }
 
@@ -292,6 +300,10 @@ impl App {
                     "Knife · {} mm offset · {} mm cut depth",
                     g.blade_offset_mm, g.max_cut_depth_mm
                 ),
+                Some(ToolGeometry::Drill(g)) => format!(
+                    "Drill · Ø {} mm · {}° point · {} mm flutes",
+                    g.diameter_mm, g.tip_angle_deg, g.cutting_length_mm
+                ),
                 None => "Never configured".into(),
             });
         }
@@ -404,6 +416,10 @@ impl App {
             LibraryGeometry::DragKnife(g) => format!(
                 "Knife · {} mm offset · {} mm cut depth",
                 g.blade_offset_mm, g.max_cut_depth_mm
+            ),
+            LibraryGeometry::Drill(g) => format!(
+                "Drill · Ø {} mm · {}° point · {} mm flutes",
+                g.diameter_mm, g.tip_angle_deg, g.cutting_length_mm
             ),
         });
         if self.resources.dirty || !self.resources.invalid.is_empty() {
@@ -628,6 +644,7 @@ mod tests {
                 }
                 Some(Kind::Face) | Some(Kind::Profile) => role_index(Role::Milling),
                 Some(Kind::DragKnife) => role_index(Role::Knife),
+                Some(Kind::Drill) => role_index(Role::Drill),
             };
             (
                 App {
