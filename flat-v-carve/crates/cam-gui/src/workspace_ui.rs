@@ -333,8 +333,16 @@ impl App {
                 });
                 ui.spacing_mut().interact_size.y = row_height;
                 if self.recovery.offered.is_some() || self.recovery.failed || self.retry {
+                    ui.separator();
                     ui.horizontal_wrapped(|ui| {
-                        ui.small(&self.recovery.status);
+                        if self.recovery.offered.is_some() || self.recovery.failed {
+                            ui.colored_label(theme::WARNING, &self.recovery.status);
+                        } else if self.retry {
+                            ui.colored_label(
+                                theme::WARNING,
+                                "Save did not finish · file contents retained",
+                            );
+                        }
                         if self.recovery.offered.is_some() {
                             if button(ui, "Restore draft", true).clicked() {
                                 let snapshot = self.recovery.offered.take().unwrap().snapshot;

@@ -1,4 +1,101 @@
 use super::*;
+use crate::{ui_theme as theme, ui_widgets};
+
+/// The manifest, not current selection or enabled operations, owns output scope.
+fn prepared_stage_ids(prepared: &Value) -> Vec<&str> {
+    prepared["bundle"]["manifest"]["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|file| file["stageIds"].as_array().into_iter().flatten())
+        .filter_map(Value::as_str)
+        .collect()
+}
+
+fn prepared_summary(
+    ui: &mut egui::Ui,
+    prepared: &Value,
+    job: Option<&CamJobV5>,
+    plan: Option<&cam_core::project::v5::inspection::PlanInspection>,
+) {
+    let manifest = &prepared["bundle"]["manifest"];
+    let ids = prepared_stage_ids(prepared);
+    let plan = plan.filter(|p| {
+        Some(p.execution_fingerprint.as_str()) == manifest["executionFingerprint"].as_str()
+    });
+    let through = manifest["files"]
+        .as_array()
+        .and_then(|files| files.last())
+        .and_then(|file| file["stockThroughOperation"].as_str());
+    let scope = through
+        .map(|id| {
+            job.and_then(|j| j.operations.iter().enumerate().find(|(_, o)| o.id == id))
+                .map(|(i, o)| format!("Through {:02} · {}", i + 1, o.name))
+                .unwrap_or_else(|| format!("Through {id}"))
+        })
+        .unwrap_or_else(|| "Prepared program".into());
+    ui_widgets::scope(
+        ui,
+        &format!(
+            "{scope} · {} {}",
+            ids.len(),
+            if ids.len() == 1 { "stage" } else { "stages" }
+        ),
+    );
+    if let Some(machine) = job.and_then(|j| j.machine_configuration.as_ref()) {
+        ui.label(format!(
+            "{} · {}",
+            machine.origin.name,
+            machine
+                .work_offset
+                .as_deref()
+                .unwrap_or("Work offset unset")
+        ));
+        ui.small(match machine.length_compensation {
+            Some(cam_core::post::LengthCompensation::ToolTable) => {
+                "Length compensation: tool table"
+            }
+            Some(cam_core::post::LengthCompensation::MacroManaged) => {
+                "Length compensation: macro managed"
+            }
+            None => "Length compensation: unset",
+        });
+    }
+    ui.add_space(4.);
+    ui.strong("Included stages · execution order");
+    for (index, id) in ids.iter().enumerate() {
+        let stage = plan.and_then(|p| p.stages.iter().find(|s| s.stage_id == *id));
+        if let (Some(stage), Some(job)) = (stage, job) {
+            let operation = job.operations.iter().find(|o| o.id == stage.operation_id);
+            let tool = job.tools.iter().find(|t| t.id == stage.tool_id);
+            let mapping = job
+                .machine_configuration
+                .as_ref()
+                .and_then(|m| m.tools.iter().find(|t| t.job_tool_id == stage.tool_id));
+            let role = match stage.role {
+                cam_core::sequence::StageRole::Face => "Face",
+                cam_core::sequence::StageRole::ProfileRough => "Profile roughing",
+                cam_core::sequence::StageRole::ProfileFinish => "Profile finishing",
+                cam_core::sequence::StageRole::VcarveRough => "Endmill roughing",
+                cam_core::sequence::StageRole::VcarveFinish => "V-bit finishing",
+                cam_core::sequence::StageRole::Knife => "Drag knife",
+            };
+            let row = ui.label(format!(
+                "{:02} · {} · {}",
+                index + 1,
+                operation
+                    .map(|o| o.name.as_str())
+                    .unwrap_or(&stage.operation_id),
+                role
+            ));
+            observe_control(&format!("Export stage {id}"), row.rect);
+            ui.small(format!("{} · T{} / H{}", tool.map(|t| t.name.as_str()).unwrap_or(&stage.tool_id), mapping.and_then(|m| m.tool_number).map(|n| n.to_string()).unwrap_or_else(|| "—".into()), mapping.and_then(|m| m.length_offset_number).map(|n| n.to_string()).unwrap_or_else(|| "—".into()))).on_hover_text(format!("Stage: {id}\nJob tool: {}\nRead-only applied mapping; H is used only with tool-table compensation.", stage.tool_id));
+        } else {
+            ui.label(format!("{:02} · {id}", index + 1));
+        }
+    }
+    ui.separator();
+}
 
 /// Feed moves this short are inside the machine's noise floor: it cannot reach
 /// the programmed feed and stop again within one. The report calls them out by
@@ -194,6 +291,7 @@ impl App {
         let preparing = dialog.request.is_some();
         let saving = dialog.saving;
         let prepared = self.prepared.as_ref().filter(|(_, r)| *r == self.revision);
+        let inspection = self.view.plan_inspection();
         let mut close = false;
         let mut save = false;
         let response = egui::Modal::new(egui::Id::new("export-gcode")).show(ctx, |ui| {
@@ -212,13 +310,14 @@ impl App {
                         ui.label("Checking the toolpath and machine settings, generating G-code, and reading it back to verify the output.");
                         ui.small("When validation finishes, choose Save as… to select a destination.");
                     } else if let Some((prepared, _)) = prepared {
-                        ui.colored_label(Color32::from_rgb(27, 112, 77), RichText::new("Ready to save").size(20.).strong());
+                        ui.colored_label(theme::SUCCESS, RichText::new("Ready to save").size(20.).strong());
                         ui.label(format!(
                             "{} · {} bytes",
                             prepared["file"]["filename"].as_str().unwrap_or("G-code program"),
                             prepared["file"]["byteLength"],
                         ));
                         ui.add_space(8.);
+                        prepared_summary(ui, prepared, self.document.as_ref().map(|d| &d.job), inspection.as_ref());
                         ui.strong("Validation results");
                         for label in ["Toolpath checks passed", "Machine and tool settings accepted", "Generated G-code readback passed"] {
                             ui.horizontal(|ui| {
@@ -254,12 +353,12 @@ impl App {
                             ui.add(egui::Label::new(RichText::new(serde_json::to_string_pretty(report).unwrap()).monospace()).wrap());
                         });
                     } else {
-                        ui.colored_label(Color32::from_rgb(164, 55, 38), RichText::new("Export needs attention").size(20.).strong());
+                        ui.colored_label(theme::ERROR, RichText::new("Export needs attention").size(20.).strong());
                         ui.label("No file was saved. Resolve the issue below, then try Export again.");
                     }
                     if let Some(error) = &dialog.error {
                         ui.add_space(8.);
-                        ui.colored_label(Color32::from_rgb(164, 55, 38), error);
+                        ui.colored_label(theme::ERROR, error);
                         if prepared.is_some() {
                             ui.label("Your validated program is still ready. Choose Save as… to try another destination.");
                         }
@@ -282,7 +381,7 @@ impl App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let response = ui.add_enabled(
                         !preparing && !saving && prepared.is_some() && self.io.is_none() && self.active.is_none(),
-                        egui::Button::new("Save as…").fill(Color32::from_rgb(49, 190, 195)),
+                        egui::Button::new("Save as…").fill(theme::PRIMARY),
                     );
                     observe_control("Save as…", response.rect);
                     save = response.clicked();

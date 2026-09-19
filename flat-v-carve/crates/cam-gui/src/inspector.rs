@@ -198,7 +198,17 @@ impl App {
             let area=egui::ScrollArea::vertical().min_scrolled_height(16.).id_salt(("inspector-scroll",self.inspector_tab,if operation {self.operation_id()} else {String::new()},if operation {self.operation_tab} else {0})).auto_shrink([false,!operation]).max_height(if operation { (ui.available_height()-52.).max(16.) } else {ui.available_height()}).vertical_scroll_offset(offset).show(ui,|ui|{
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 if operation { ui.spacing_mut().interact_size.y = 22.; }
-                if self.document.is_none(){ui.label("Import an SVG or open a saved job to begin.");return;}
+                if self.document.is_none(){
+                    ui.heading("Start a job");
+                    ui.label("Set up stock and operations, or open a saved job. Face milling can start without artwork.");
+                    let idle = self.active.is_none() && self.io.is_none();
+                    if button(ui, "Start blank job", idle).clicked() {
+                        self.submit(Command::Open { json: crate::operation_authoring::empty_job().to_json().unwrap() }, ctx);
+                    }
+                    if button(ui, "Open saved job", idle).clicked() { self.open(IoKind::Open, ctx); }
+                    ui.small("Import SVG artwork from the navigator, or drop an SVG or job file into the workspace.");
+                    return;
+                }
                 if self.document.as_ref().unwrap().job.operations.is_empty() {
                     match self.inspector_tab {
                         0 => self.artwork_panel(ui,ctx),

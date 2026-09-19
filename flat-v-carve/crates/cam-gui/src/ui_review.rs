@@ -56,13 +56,30 @@ pub fn run(args: &[OsString]) -> eframe::Result {
             let opened = engine::run(Command::Open { json: job.clone() })?;
             app.accept(1, Ok(opened), &cc.egui_ctx);
             app.active = Some((2, app.revision));
-            let scene = engine::run(if panel.starts_with("simulation") {
-                Command::generate(job)
-            } else {
-                Command::Preview { job }
-            })?;
+            let scene = engine::run(
+                if panel.starts_with("simulation") || panel.starts_with("export") {
+                    Command::generate(job.clone())
+                } else {
+                    Command::Preview { job: job.clone() }
+                },
+            )?;
             app.accept(2, Ok(scene), &cc.egui_ctx);
             app.preview_dirty = false;
+            if panel.starts_with("export") {
+                let handle = app
+                    .plan
+                    .as_ref()
+                    .ok_or_else(|| failure("Export review needs a generated plan"))?
+                    .0
+                    .clone();
+                app.active = Some((3, app.revision));
+                app.export_dialog = Some(export_ui::ExportDialog {
+                    request: Some(3),
+                    ..Default::default()
+                });
+                let prepared = engine::run(Command::Prepare { job, handle });
+                app.accept(3, prepared, &cc.egui_ctx);
+            }
             app.inspector_tab = match panel.as_str() {
                 "artwork" => 0,
                 "stock" | "stock-zero" => 1,

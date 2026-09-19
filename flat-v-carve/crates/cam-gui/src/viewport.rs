@@ -945,8 +945,19 @@ impl Viewport {
                     egui::Align2::CENTER_CENTER,
                     "Injected renderer failure\nDraft and prior result retained",
                     egui::FontId::proportional(18.),
-                    Color32::LIGHT_RED,
+                    crate::ui_theme::ERROR,
                 );
+                let recover = ui.put(
+                    egui::Rect::from_center_size(
+                        rect.center() + egui::vec2(0., 58.),
+                        egui::vec2(200., 28.),
+                    ),
+                    egui::Button::new("Restore viewport"),
+                );
+                crate::app::observe_control("Restore viewport", recover.rect);
+                if recover.clicked() {
+                    self.rebuild_renderer_resources();
+                }
             } else if self.gpu
                 && let Some(scene) = &self.scene
             {

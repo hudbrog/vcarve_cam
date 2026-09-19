@@ -311,6 +311,8 @@ Separate optional backlog: Center on stock; new resource management commands mis
 
 ## Verification and definition of done
 
+Implementation status: V0–V6 are complete. See the [milestone log](ui-redesign-progress.md) for individual commits' validation and the [19-area completion audit](ui-redesign-completion-audit.md) for panel coverage, reviewed evidence and qualified platform limits. The criteria below are retained as the original review contract.
+
 Capture deterministic native and Chromium/WebGPU screens at 1280×800, 1440×900 and 1920×1080, with 100% and 150% DPI coverage and a 200% effective-width check. Include one long filename, duplicate operation names, twelve operations and dense component lists. Use frozen playheads for image comparisons. Compare real screenshots side-by-side with the concept; use golden diffs for accidental change, not pixel similarity to AI imagery.
 
 Fixture matrix: multi-source artwork; source-free Face; combined and Endmill-only flower; Face→carve height reference; Profile with tabs/leads/finish; Drag knife with open/closed chains; shared cutter across operations; custom/modified library profile; unmapped machine; prefix-generated output; tight holder warning; stale/partial/recovery/failure states.

@@ -76,6 +76,8 @@ socket.addEventListener('message', event => {
 });
 await send('Runtime.enable');
 await send('Page.enable');
+const reviewScale = Number(process.argv.find(argument=>argument.startsWith('--scale='))?.slice(8)??1);
+if(process.argv.includes('--completion-review'))await send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:reviewScale,mobile:false});
 await send('Page.navigate', {url: base});
 
 const evaluate = async expression => {
@@ -222,7 +224,7 @@ const control = async label => {
     // Offscreen inspector controls can pass under the header while scrolling.
     // Only named shell controls bypass the inspector clip; position alone
     // would click an unrelated header button behind a clipped form control.
-    const shellAction=/^(Display resolution|Path stage|Paths |All paths|Playback |Stock color |Stock walls |Layer )/.test(label)||['Inspect Summary','Inspect Section','Inspect Warnings','Operation Area & heights','Operation Tool & passes','Operation Geometry','Operation Cutting','Operation Tabs & entry','Operation Corners & start','All enabled operations','Through selected operation','Setup','Machine','Job settings','Endmill tool','V-bit tool','Knife tool','Rename','Move earlier','Move later','Delete operation','Generate through operation','Tool geometry','Job tools','Tool library','Setup pages','Toggle navigator','Toggle inspector','Generation scope','Inspect result'].includes(label);
+    const shellAction=/^(Display resolution|Path stage|Paths |All paths|Playback |Stock color |Stock walls |Layer )/.test(label)||['Save as…','Close export','Restore viewport','Inspect Summary','Inspect Section','Inspect Warnings','Operation Area & heights','Operation Tool & passes','Operation Geometry','Operation Cutting','Operation Tabs & entry','Operation Corners & start','All enabled operations','Through selected operation','Setup','Machine','Job settings','Endmill tool','V-bit tool','Knife tool','Rename','Move earlier','Move later','Delete operation','Generate through operation','Tool geometry','Job tools','Tool library','Setup pages','Toggle navigator','Toggle inspector','Generation scope','Inspect result'].includes(label);
     if(shellAction||label.includes('library tool')||label.includes('library profile')||label.startsWith('Apply Roughing')||label.startsWith('Apply Finish')||['Endmill only','Combined','Operation Shape & depth','Operation Endmill','Operation V-bit','Generate operation'].includes(label)||rect[1]>=top && rect[3]<=bottom || !nav && !resource && !jobTools && rect[0]<(clip?.[0]??850) || libraryMenus[label] || dropdown && (resource||jobTools) || ['Cancel selection','Browse library…','Resource item chooser','Library profile chooser','Library profile actions','Library actions','Library search','New tool','New machine','Use machine','Use tool','Use tool & profile','Apply reviewed machine','Tools & profiles','Machines','Close library','Load library','Save library','Compare stored revision','Reload stored library','Overwrite reviewed revision','Import library','Export library','Import machine configuration','Close job tools','Roughing assignment','Finishing assignment','Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
       await click((rect[0]+rect[2])/2,(rect[1]+rect[3])/2); await sleep(120);return;
     }
@@ -258,7 +260,13 @@ try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
   if(process.argv.includes('--trace-io'))await evaluate(`(()=>{globalThis.GUI_IO_TRACE=[];const original=globalThis.CAM_GUI.receive_event;globalThis.CAM_GUI.receive_event=text=>{try{const event=JSON.parse(text);if(event.Io)globalThis.GUI_IO_TRACE.push(event.Io);}catch{}return original(text);};})()`);
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  if(process.argv.includes('--inspection-review')) {
+  if(process.argv.includes('--exception-review')) {
+    const {exceptionReviewScenario}=await import('./completion-review-scenario.mjs');
+    await exceptionReviewScenario({control,state,waitFor,evaluate,sleep,record,screenshot,readFileSync,pressKey,send,chooseFile});
+  } else if(process.argv.includes('--completion-review')) {
+    const {completionReviewScenario}=await import('./completion-review-scenario.mjs');
+    await completionReviewScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,path,out,scale:reviewScale});
+  } else if(process.argv.includes('--inspection-review')) {
     const {inspectionReviewScenario}=await import('./inspection-review-scenario.mjs');
     await inspectionReviewScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey});
   } else if(process.argv.includes('--machine-authoring')) {

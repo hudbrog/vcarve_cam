@@ -1,7 +1,12 @@
 use super::*;
 
 /// Exact typed field paths emitted by the core, never message matching.
+#[cfg(test)]
 fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
+    target_in(job, path, None)
+}
+
+fn target_in(job: &CamJobV5, path: &str, owner: Option<&str>) -> Option<(usize, String)> {
     if let Some(label) = path.strip_prefix("editor.fields.") {
         let field = FIELDS.iter().position(|f| *f == label)?;
         let tab = match field {
@@ -18,7 +23,10 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
         .operations
         .iter()
         .map(|o| o.id.as_str())
-        .find(|id| path.starts_with(&format!("operations[{id}].")))
+        .find(|id| {
+            path.starts_with(&format!("operations[{id}].")) || path == format!("operations[{id}]")
+        })
+        .or(owner)
         .or_else(|| job.operations.first().map(|o| o.id.as_str()))
         .unwrap_or("");
     let local = path
@@ -179,36 +187,92 @@ fn target(job: &CamJobV5, path: &str) -> Option<(usize, String)> {
 }
 
 impl App {
+    fn open_issue(
+        &mut self,
+        issue: &cam_core::operations::LocatedDiagnostic,
+        tab: usize,
+        label: String,
+        ctx: &egui::Context,
+    ) {
+        let owner = issue.operation_id.clone().or_else(|| {
+            let path = issue.field_path.as_deref()?;
+            self.document
+                .as_ref()?
+                .job
+                .operations
+                .iter()
+                .find(|o| path.starts_with(&format!("operations[{}]", o.id)))
+                .map(|o| o.id.clone())
+        });
+        if let Some(owner) = owner {
+            self.select_operation(&owner, ctx);
+        }
+        self.navigate(tab);
+        self.search.clear();
+        self.issue_focus = Some(label);
+    }
+
     pub(super) fn issue_panel(&mut self, ctx: &egui::Context) {
         if self.issues.is_empty() {
             return;
         }
         egui::TopBottomPanel::bottom("machining-issues").show(ctx, |ui| {
-            ui.strong("Settings need attention");
+            ui.colored_label(
+                crate::ui_theme::WARNING,
+                RichText::new(format!("Settings need attention · {}", self.issues.len())).strong(),
+            );
             egui::ScrollArea::vertical()
                 .max_height(100.)
                 .show(ui, |ui| {
                     for (index, issue) in self.issues.clone().iter().enumerate() {
+                        let owner = issue
+                            .operation_id
+                            .as_ref()
+                            .map(|id| {
+                                self.document
+                                    .as_ref()
+                                    .and_then(|d| {
+                                        d.job
+                                            .operations
+                                            .iter()
+                                            .enumerate()
+                                            .find(|(_, o)| &o.id == id)
+                                    })
+                                    .map(|(i, o)| format!("{:02} · {}", i + 1, o.name))
+                                    .unwrap_or_else(|| id.clone())
+                            })
+                            .unwrap_or_else(|| "Job".into());
                         let destination = self.document.as_ref().and_then(|d| {
-                            issue.field_path.as_deref().and_then(|p| target(&d.job, p))
+                            issue
+                                .field_path
+                                .as_deref()
+                                .and_then(|p| target_in(&d.job, p, issue.operation_id.as_deref()))
                         });
                         if let Some((tab, label)) = destination {
-                            let r = ui.add(
-                                egui::Label::new(
-                                    RichText::new(format!("{label}: {}", issue.message))
+                            let r = ui
+                                .add(
+                                    egui::Label::new(
+                                        RichText::new(format!(
+                                            "{owner} · {label}: {} · Go to field",
+                                            issue.message
+                                        ))
                                         .color(ui.visuals().hyperlink_color),
+                                    )
+                                    .wrap()
+                                    .sense(egui::Sense::click()),
                                 )
-                                .wrap()
-                                .sense(egui::Sense::click()),
-                            );
+                                .on_hover_text(format!(
+                                    "{}\n{}",
+                                    issue.code,
+                                    issue.field_path.as_deref().unwrap_or("")
+                                ));
                             observe_control(&format!("Issue {index}"), r.rect);
                             if r.clicked() {
-                                self.navigate(tab);
-                                self.search.clear();
-                                self.issue_focus = Some(label);
+                                self.open_issue(issue, tab, label, ctx);
                             }
                         } else {
-                            ui.label(&issue.message);
+                            ui.label(format!("{owner} · {}", issue.message))
+                                .on_hover_text(&issue.code);
                         }
                     }
                 });
@@ -219,6 +283,64 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_selects_its_owner_before_focusing_and_preserves_drafts() {
+        let empty = crate::operation_authoring::empty_job();
+        let first = crate::operation_authoring::apply(
+            &empty,
+            crate::operation_authoring::add(crate::operation_authoring::Kind::FlatVcarve, &empty),
+        )
+        .unwrap();
+        let job = crate::operation_authoring::apply(
+            &first,
+            crate::operation_authoring::add(crate::operation_authoring::Kind::Face, &first),
+        )
+        .unwrap();
+        let owner = job.operations[1].id.clone();
+        let mut app = App {
+            document: Some(Document::new(job)),
+            search: "unrelated".into(),
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let first_id = app.document.as_ref().unwrap().job.operations[0].id.clone();
+        app.select_operation(&first_id, &ctx);
+        app.operation_tab = 1;
+        let revision = app.revision;
+        let issue = cam_core::operations::LocatedDiagnostic::missing(
+            &owner,
+            &format!("operations[{owner}].stepdown_mm"),
+            "Missing depth",
+        );
+        app.open_issue(&issue, 2, "Stepdown".into(), &ctx);
+        assert_eq!(app.operation_id(), owner);
+        assert_eq!(
+            target_in(
+                &app.document.as_ref().unwrap().job,
+                "pass_angle_deg",
+                Some(&owner)
+            ),
+            Some((2, "Face pass angle".into()))
+        );
+        assert_eq!(
+            target_in(
+                &app.document.as_ref().unwrap().job,
+                &format!("operations[{owner}]"),
+                None
+            ),
+            Some((1, "Stock width".into()))
+        );
+        assert!(app.search.is_empty());
+        assert_eq!(app.issue_focus.as_deref(), Some("Stepdown"));
+        assert_eq!(app.revision, revision);
+        app.select_operation(&first_id, &ctx);
+        assert_eq!(app.operation_tab, 1);
+        let mut path_only = issue;
+        path_only.operation_id = None;
+        app.open_issue(&path_only, 2, "Stepdown".into(), &ctx);
+        assert_eq!(app.operation_id(), owner);
+    }
 
     /// Imported artwork plus the Flat V-carve operation the user adds to cut
     /// it with; the import itself never creates one.
