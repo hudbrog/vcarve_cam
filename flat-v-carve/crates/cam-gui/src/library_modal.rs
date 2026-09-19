@@ -351,6 +351,7 @@ impl App {
                     ("New endmill", Role::Endmill),
                     ("New V-bit", Role::Vbit),
                     ("New drag knife", Role::Knife),
+                    ("New drill", Role::Drill),
                 ] {
                     if button(ui, label, count < 1000).clicked() {
                         self.library_new_tool(label, role);
@@ -763,6 +764,15 @@ impl App {
                 tip_diameter_mm: 0.,
                 max_cutting_diameter_mm: 0.,
                 cutting_height_mm: 0.,
+            })
+        } else if role == Role::Drill {
+            // Zeroed like the others: the editor shows "Needs setup" until
+            // the diameter, tip angle and flute length are entered. The tip
+            // angle stays the common 118° suggestion in its help text.
+            LibraryGeometry::Drill(cam_core::model::DrillSpec {
+                diameter_mm: 0.,
+                tip_angle_deg: 0.,
+                cutting_length_mm: 0.,
             })
         } else {
             LibraryGeometry::Endmill(cam_core::model::EndmillSpec {

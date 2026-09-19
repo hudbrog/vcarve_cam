@@ -65,6 +65,9 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
         "tip diameter" => FIELD_HELP[17],
         "cutting diameter" => FIELD_HELP[18],
         "cutting height" => FIELD_HELP[19],
+        "tip angle" => {
+            "Included angle of the drill's conical point, in degrees; 118° is the common general-purpose default. A full-diameter hole bottom over-drills the tip by the cone height this angle and the diameter imply."
+        }
         "plunge" | "Endmill can plunge" | "V-bit can plunge" => {
             "Can this cutter feed straight down into material? Choose Yes only for a cutter designed for it (for example a center-cutting endmill). This capability is copied with library geometry; the operation still chooses plunge or ramp entry."
         }
