@@ -486,6 +486,93 @@ impl Viewport {
     }
 }
 
+impl Viewport {
+    fn transport_diagnostics(&mut self, ui: &mut egui::Ui) {
+        if let Some(stock) = &self.stock {
+            ui.label(format!("Display simulation · {:.4} mm cells (reference {:.4}) · {} / {} motions · {:.2} mm³ removed",stock.meta.cell_mm,stock.meta.reference_cell_mm,stock.prefix,self.motion_count(),stock.stats.removed_volume_mm3));
+            // Machine time of the displayed position. The ratio between a
+            // long pass and a short plunge is the plan's own ratio of length
+            // to feed; a machine that states no rapid rate says so instead
+            // of presenting the display's fallback as machine truth.
+            if let Some(clock) = stock.clock.as_ref() {
+                let (prefix, fraction) = clock.position();
+                let in_move = if fraction > 0. {
+                    format!(" · {:.0}% into motion {prefix}", fraction * 100.)
+                } else {
+                    String::new()
+                };
+                let feed = clock
+                    .tip()
+                    .and_then(|(_, motion)| motion.feed_mm_min)
+                    .map(|feed| format!(" · feed {feed:.0} mm/min"))
+                    .unwrap_or_default();
+                let assumed = if clock.time().assumes_rapid_rate() {
+                    format!(
+                        " · rapids timed at {:.0} mm/min (the machine states no rapid rate)",
+                        clock.time().rapid_rate_mm_min()
+                    )
+                } else {
+                    String::new()
+                };
+                // Which tool and stage the clock is in, so the animation is
+                // read against the operation it belongs to rather than the
+                // job as a whole.
+                let current = clock
+                    .motion()
+                    .and_then(|motion| self.stages.get(motion.stage as usize))
+                    .map(|stage| {
+                        let role = if stage.role.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" {}", stage.role)
+                        };
+                        format!(" · tool {}{role}", stage.tool_id)
+                    })
+                    .unwrap_or_default();
+                ui.label(format!(
+                    "Program time · {} / {} modeled motion{in_move}{feed}{current}{assumed}",
+                    format_program_time(clock.seconds()),
+                    format_program_time(clock.total_seconds())
+                ));
+            } else if self.motion_count() > 0 {
+                ui.label(
+                        "Program time · unavailable (a feed motion carries no feed rate); playback steps whole motions.",
+                    );
+            }
+            if let Some(transport) = self.scene.as_ref().map(|scene| &scene.meta.transport) {
+                let (bytes, replayed) = self.last_stock_transfer();
+                let checkpoints = stock.meta.ladder_frames.max(transport.stock_checkpoints);
+                ui.label(format!("Display transfer · scene {:.1} MiB · {} motion pages · {} checkpoints ({:.1} MiB retained) · last stock update {:.0} KiB after replaying {} motions",transport.payload_bytes as f64/1048576.,transport.motion_pages,checkpoints,stock.meta.retained_bytes as f64/1048576.,bytes as f64/1024.,replayed));
+            }
+            // A path page the resident budget refused is not drawn. Say so
+            // instead of letting a partial scene look complete.
+            if let Ok(stats) = self.render_stats.lock()
+                && stats.budget_omitted > 0
+            {
+                let omitted = stats.budget_omitted;
+                let response = ui.colored_label(
+                        Color32::from_rgb(164, 83, 12),
+                        format!(
+                            "{omitted} requested path page(s) are outside the resident budget and are not drawn; the stock field and the timeline are unaffected."
+                        ),
+                    );
+                crate::app::observe_control("Path pages omitted", response.rect);
+            }
+            if let Some(target) = self.requested_prefix {
+                ui.label(format!(
+                    "Requested stock motion {target} of {} — still showing motion {}.",
+                    self.motion_count(),
+                    self.stock_prefix
+                ));
+            }
+            if stock.meta.dropped_stage_marks > 0 {
+                let response = ui.colored_label(Color32::from_rgb(164,83,12), format!("{} stage boundaries are beyond the display checkpoint budget; the timeline still seeks them by replaying from the nearest earlier checkpoint.", stock.meta.dropped_stage_marks));
+                crate::app::observe_control("Dropped stage boundaries", response.rect);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -677,93 +764,6 @@ mod tests {
                         );
                     },
                 );
-            }
-        }
-    }
-}
-
-impl Viewport {
-    fn transport_diagnostics(&mut self, ui: &mut egui::Ui) {
-        if let Some(stock) = &self.stock {
-            ui.label(format!("Display simulation · {:.4} mm cells (reference {:.4}) · {} / {} motions · {:.2} mm³ removed",stock.meta.cell_mm,stock.meta.reference_cell_mm,stock.prefix,self.motion_count(),stock.stats.removed_volume_mm3));
-            // Machine time of the displayed position. The ratio between a
-            // long pass and a short plunge is the plan's own ratio of length
-            // to feed; a machine that states no rapid rate says so instead
-            // of presenting the display's fallback as machine truth.
-            if let Some(clock) = stock.clock.as_ref() {
-                let (prefix, fraction) = clock.position();
-                let in_move = if fraction > 0. {
-                    format!(" · {:.0}% into motion {prefix}", fraction * 100.)
-                } else {
-                    String::new()
-                };
-                let feed = clock
-                    .tip()
-                    .and_then(|(_, motion)| motion.feed_mm_min)
-                    .map(|feed| format!(" · feed {feed:.0} mm/min"))
-                    .unwrap_or_default();
-                let assumed = if clock.time().assumes_rapid_rate() {
-                    format!(
-                        " · rapids timed at {:.0} mm/min (the machine states no rapid rate)",
-                        clock.time().rapid_rate_mm_min()
-                    )
-                } else {
-                    String::new()
-                };
-                // Which tool and stage the clock is in, so the animation is
-                // read against the operation it belongs to rather than the
-                // job as a whole.
-                let current = clock
-                    .motion()
-                    .and_then(|motion| self.stages.get(motion.stage as usize))
-                    .map(|stage| {
-                        let role = if stage.role.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" {}", stage.role)
-                        };
-                        format!(" · tool {}{role}", stage.tool_id)
-                    })
-                    .unwrap_or_default();
-                ui.label(format!(
-                    "Program time · {} / {} modeled motion{in_move}{feed}{current}{assumed}",
-                    format_program_time(clock.seconds()),
-                    format_program_time(clock.total_seconds())
-                ));
-            } else if self.motion_count() > 0 {
-                ui.label(
-                        "Program time · unavailable (a feed motion carries no feed rate); playback steps whole motions.",
-                    );
-            }
-            if let Some(transport) = self.scene.as_ref().map(|scene| &scene.meta.transport) {
-                let (bytes, replayed) = self.last_stock_transfer();
-                let checkpoints = stock.meta.ladder_frames.max(transport.stock_checkpoints);
-                ui.label(format!("Display transfer · scene {:.1} MiB · {} motion pages · {} checkpoints ({:.1} MiB retained) · last stock update {:.0} KiB after replaying {} motions",transport.payload_bytes as f64/1048576.,transport.motion_pages,checkpoints,stock.meta.retained_bytes as f64/1048576.,bytes as f64/1024.,replayed));
-            }
-            // A path page the resident budget refused is not drawn. Say so
-            // instead of letting a partial scene look complete.
-            if let Ok(stats) = self.render_stats.lock()
-                && stats.budget_omitted > 0
-            {
-                let omitted = stats.budget_omitted;
-                let response = ui.colored_label(
-                        Color32::from_rgb(164, 83, 12),
-                        format!(
-                            "{omitted} requested path page(s) are outside the resident budget and are not drawn; the stock field and the timeline are unaffected."
-                        ),
-                    );
-                crate::app::observe_control("Path pages omitted", response.rect);
-            }
-            if let Some(target) = self.requested_prefix {
-                ui.label(format!(
-                    "Requested stock motion {target} of {} — still showing motion {}.",
-                    self.motion_count(),
-                    self.stock_prefix
-                ));
-            }
-            if stock.meta.dropped_stage_marks > 0 {
-                let response = ui.colored_label(Color32::from_rgb(164,83,12), format!("{} stage boundaries are beyond the display checkpoint budget; the timeline still seeks them by replaying from the nearest earlier checkpoint.", stock.meta.dropped_stage_marks));
-                crate::app::observe_control("Dropped stage boundaries", response.rect);
             }
         }
     }

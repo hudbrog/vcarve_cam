@@ -8,6 +8,29 @@ pub(super) enum ResourcePage {
     JobTools,
 }
 
+impl App {
+    pub(super) fn open_resource(&mut self, page: ResourcePage) {
+        self.view.pause();
+        self.operation_picker = None;
+        self.resource_page = Some(page);
+    }
+
+    pub(super) fn close_resource(&mut self) {
+        self.resource_page = None;
+    }
+
+    pub(super) fn library_open(&self) -> bool {
+        matches!(
+            self.resource_page,
+            Some(ResourcePage::ToolLibrary | ResourcePage::MachineLibrary)
+        )
+    }
+
+    pub(super) fn machines_open(&self) -> bool {
+        self.resource_page == Some(ResourcePage::MachineLibrary)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -16,11 +39,15 @@ mod tests {
     fn library_footer_stays_visible_at_small_effective_sizes() {
         for (width, height) in [(640., 400.), (853., 533.), (1280., 800.), (1440., 900.)] {
             for page in [ResourcePage::ToolLibrary, ResourcePage::MachineLibrary] {
-                let mut app = App::default();
-                app.document = Some(Document::new(
-                    CamJobV5::from_json(include_str!("../../../fixtures/gui4/lettering.job.json"))
+                let mut app = App {
+                    document: Some(Document::new(
+                        CamJobV5::from_json(include_str!(
+                            "../../../fixtures/gui4/lettering.job.json"
+                        ))
                         .unwrap(),
-                ));
+                    )),
+                    ..Default::default()
+                };
                 app.resources.ready = true;
                 app.resources.draft = crate::resources::Catalog::decode(include_str!(
                     "../../../fixtures/gui5/library.json"
@@ -109,28 +136,5 @@ mod tests {
         app.navigate(1);
         assert!(app.resource_page.is_none());
         assert_eq!(app.document.as_ref().unwrap().raw, raw);
-    }
-}
-
-impl App {
-    pub(super) fn open_resource(&mut self, page: ResourcePage) {
-        self.view.pause();
-        self.operation_picker = None;
-        self.resource_page = Some(page);
-    }
-
-    pub(super) fn close_resource(&mut self) {
-        self.resource_page = None;
-    }
-
-    pub(super) fn library_open(&self) -> bool {
-        matches!(
-            self.resource_page,
-            Some(ResourcePage::ToolLibrary | ResourcePage::MachineLibrary)
-        )
-    }
-
-    pub(super) fn machines_open(&self) -> bool {
-        self.resource_page == Some(ResourcePage::MachineLibrary)
     }
 }

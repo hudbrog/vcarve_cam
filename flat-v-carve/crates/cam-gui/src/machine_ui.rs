@@ -6,119 +6,6 @@ fn mapping_key(tool: &str, length: bool) -> String {
     format!("mapping/{tool}/{}", FIELDS[if length { 33 } else { 32 }])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn document() -> Document {
-        let mut job =
-            CamJobV5::from_json(include_str!("../../../fixtures/gui4/lettering.job.json")).unwrap();
-        let mut second = job.operations[0].clone();
-        second.id = "second-carve".into();
-        job.operations.push(second);
-        let profile =
-            cam_core::post::sequence::SequenceProfile::from_json(engine::PROFILE).unwrap();
-        job =
-            cam_core::project::v5::machine::apply_machine_configuration(&job, &profile, "Workshop")
-                .unwrap()
-                .job;
-        job.machine_configuration
-            .as_mut()
-            .unwrap()
-            .length_compensation = Some(cam_core::post::LengthCompensation::ToolTable);
-        Document::new(job)
-    }
-
-    #[test]
-    fn mapping_drafts_follow_shared_tools_and_recover_without_an_operation() {
-        let mut doc = document();
-        doc.edit_mapping("endmill", false, "7".into()).unwrap();
-        assert!(doc.edit_mapping("endmill", true, "-".into()).is_err());
-        doc.raw.operation = "second-carve".into();
-        assert_eq!(doc.text(32), "7");
-        assert_eq!(doc.text(33), "-");
-        assert_eq!(doc.mapping_value("vbit", false), Some(2.));
-        assert!(doc.pending());
-        doc.job.operations.clear();
-        doc.raw.operation.clear();
-        let snapshot = doc.snapshot();
-        snapshot.validate().unwrap();
-        let draft = Draft::recover(&serde_json::to_string(&snapshot.draft).unwrap()).unwrap();
-        draft.validate_job(&doc.job).unwrap();
-        doc.raw = draft;
-        assert_eq!(doc.mapping_text("endmill", true), "-");
-        assert!(doc.pending());
-        doc.job
-            .machine_configuration
-            .as_mut()
-            .unwrap()
-            .length_compensation = Some(cam_core::post::LengthCompensation::MacroManaged);
-        assert!(!doc.pending());
-        for invalid in ["0", "1.5", "1.", "4294967296"] {
-            assert!(doc.edit_mapping("endmill", false, invalid.into()).is_err());
-            assert_eq!(doc.mapping_value("endmill", false), Some(7.));
-            assert_eq!(doc.mapping_text("endmill", false), invalid);
-            assert!(doc.pending());
-        }
-    }
-
-    #[test]
-    fn legacy_mapping_drafts_are_visible_and_replaced_only_for_the_same_tool_and_column() {
-        let mut doc = document();
-        doc.raw.operation = "second-carve".into();
-        let old = doc.raw.key(32);
-        doc.raw.raw.insert(old.clone(), "-".into());
-        doc.raw.raw.insert(doc.raw.key(33), "3.".into());
-        doc.raw.raw.insert(doc.raw.key(38), "4.".into());
-        doc.raw.operation = doc.job.operations[0].id.clone();
-        assert_eq!(doc.text(32), "-");
-        assert!(doc.pending());
-        doc.edit_mapping("endmill", false, "9".into()).unwrap();
-        assert!(!doc.raw.raw.contains_key(&old));
-        assert_eq!(doc.mapping_text("endmill", true), "3.");
-        assert_eq!(doc.mapping_text("vbit", false), "4.");
-        doc.clear_tool_mapping_draft("endmill", true);
-        assert_eq!(doc.mapping_text("vbit", false), "4.");
-        doc.clear_mapping_drafts(false);
-        assert!(doc.raw.raw.is_empty());
-    }
-
-    #[test]
-    fn applying_machine_clears_all_mapping_drafts_preserves_datum_and_undo_restores_them() {
-        let ctx = egui::Context::default();
-        let mut doc = document();
-        doc.edit_mapping("endmill", false, "-".into()).unwrap_err();
-        doc.raw.operation = "second-carve".into();
-        doc.raw.raw.insert(doc.raw.key(39), "2.".into());
-        doc.raw.operation = doc.job.operations[0].id.clone();
-        let prior = doc.raw.clone();
-        let datum = doc.job.setup.work_zero.clone();
-        let scene = engine::run(Command::ApplyProfile {
-            job: doc.job.to_json().unwrap(),
-            json: engine::PROFILE.into(),
-        })
-        .unwrap();
-        let mut app = App {
-            document: Some(doc),
-            active: Some((1, 0)),
-            ..Default::default()
-        };
-        app.accept(1, Ok(scene), &ctx);
-        let applied = app.document.as_ref().unwrap();
-        assert_eq!(applied.job.setup.work_zero, datum);
-        assert!(applied.raw.raw.is_empty());
-        assert!(!applied.pending());
-        app.undo(&ctx);
-        assert_eq!(app.document.as_ref().unwrap().raw, prior);
-        let recovery = app.recovery_snapshot().unwrap();
-        let mut restored = App::default();
-        restored.restore(recovery, &ctx);
-        assert_eq!(restored.document.as_ref().unwrap().raw, prior);
-        restored.redo(&ctx);
-        assert!(restored.document.as_ref().unwrap().raw.raw.is_empty());
-    }
-}
-
 impl Document {
     pub(crate) fn mapping_value(&self, tool: &str, length: bool) -> Option<f64> {
         let row = self
@@ -420,5 +307,118 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn document() -> Document {
+        let mut job =
+            CamJobV5::from_json(include_str!("../../../fixtures/gui4/lettering.job.json")).unwrap();
+        let mut second = job.operations[0].clone();
+        second.id = "second-carve".into();
+        job.operations.push(second);
+        let profile =
+            cam_core::post::sequence::SequenceProfile::from_json(engine::PROFILE).unwrap();
+        job =
+            cam_core::project::v5::machine::apply_machine_configuration(&job, &profile, "Workshop")
+                .unwrap()
+                .job;
+        job.machine_configuration
+            .as_mut()
+            .unwrap()
+            .length_compensation = Some(cam_core::post::LengthCompensation::ToolTable);
+        Document::new(job)
+    }
+
+    #[test]
+    fn mapping_drafts_follow_shared_tools_and_recover_without_an_operation() {
+        let mut doc = document();
+        doc.edit_mapping("endmill", false, "7".into()).unwrap();
+        assert!(doc.edit_mapping("endmill", true, "-".into()).is_err());
+        doc.raw.operation = "second-carve".into();
+        assert_eq!(doc.text(32), "7");
+        assert_eq!(doc.text(33), "-");
+        assert_eq!(doc.mapping_value("vbit", false), Some(2.));
+        assert!(doc.pending());
+        doc.job.operations.clear();
+        doc.raw.operation.clear();
+        let snapshot = doc.snapshot();
+        snapshot.validate().unwrap();
+        let draft = Draft::recover(&serde_json::to_string(&snapshot.draft).unwrap()).unwrap();
+        draft.validate_job(&doc.job).unwrap();
+        doc.raw = draft;
+        assert_eq!(doc.mapping_text("endmill", true), "-");
+        assert!(doc.pending());
+        doc.job
+            .machine_configuration
+            .as_mut()
+            .unwrap()
+            .length_compensation = Some(cam_core::post::LengthCompensation::MacroManaged);
+        assert!(!doc.pending());
+        for invalid in ["0", "1.5", "1.", "4294967296"] {
+            assert!(doc.edit_mapping("endmill", false, invalid.into()).is_err());
+            assert_eq!(doc.mapping_value("endmill", false), Some(7.));
+            assert_eq!(doc.mapping_text("endmill", false), invalid);
+            assert!(doc.pending());
+        }
+    }
+
+    #[test]
+    fn legacy_mapping_drafts_are_visible_and_replaced_only_for_the_same_tool_and_column() {
+        let mut doc = document();
+        doc.raw.operation = "second-carve".into();
+        let old = doc.raw.key(32);
+        doc.raw.raw.insert(old.clone(), "-".into());
+        doc.raw.raw.insert(doc.raw.key(33), "3.".into());
+        doc.raw.raw.insert(doc.raw.key(38), "4.".into());
+        doc.raw.operation = doc.job.operations[0].id.clone();
+        assert_eq!(doc.text(32), "-");
+        assert!(doc.pending());
+        doc.edit_mapping("endmill", false, "9".into()).unwrap();
+        assert!(!doc.raw.raw.contains_key(&old));
+        assert_eq!(doc.mapping_text("endmill", true), "3.");
+        assert_eq!(doc.mapping_text("vbit", false), "4.");
+        doc.clear_tool_mapping_draft("endmill", true);
+        assert_eq!(doc.mapping_text("vbit", false), "4.");
+        doc.clear_mapping_drafts(false);
+        assert!(doc.raw.raw.is_empty());
+    }
+
+    #[test]
+    fn applying_machine_clears_all_mapping_drafts_preserves_datum_and_undo_restores_them() {
+        let ctx = egui::Context::default();
+        let mut doc = document();
+        doc.edit_mapping("endmill", false, "-".into()).unwrap_err();
+        doc.raw.operation = "second-carve".into();
+        doc.raw.raw.insert(doc.raw.key(39), "2.".into());
+        doc.raw.operation = doc.job.operations[0].id.clone();
+        let prior = doc.raw.clone();
+        let datum = doc.job.setup.work_zero.clone();
+        let scene = engine::run(Command::ApplyProfile {
+            job: doc.job.to_json().unwrap(),
+            json: engine::PROFILE.into(),
+        })
+        .unwrap();
+        let mut app = App {
+            document: Some(doc),
+            active: Some((1, 0)),
+            ..Default::default()
+        };
+        app.accept(1, Ok(scene), &ctx);
+        let applied = app.document.as_ref().unwrap();
+        assert_eq!(applied.job.setup.work_zero, datum);
+        assert!(applied.raw.raw.is_empty());
+        assert!(!applied.pending());
+        app.undo(&ctx);
+        assert_eq!(app.document.as_ref().unwrap().raw, prior);
+        let recovery = app.recovery_snapshot().unwrap();
+        let mut restored = App::default();
+        restored.restore(recovery, &ctx);
+        assert_eq!(restored.document.as_ref().unwrap().raw, prior);
+        restored.redo(&ctx);
+        assert!(restored.document.as_ref().unwrap().raw.raw.is_empty());
     }
 }
