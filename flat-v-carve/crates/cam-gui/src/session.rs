@@ -540,6 +540,7 @@ pub fn open(text: &str) -> Result<CamJobV5, String> {
                     | OperationSettingsV5::Face(_)
                     | OperationSettingsV5::Profile(_)
                     | OperationSettingsV5::DragKnife(_)
+                    | OperationSettingsV5::Drill(_)
             )
         })
         || job
@@ -548,7 +549,7 @@ pub fn open(text: &str) -> Result<CamJobV5, String> {
             .any(|item| !matches!(item.content, v5::ArtworkContent::Svg(_)))
     {
         return Err(format!(
-            "This workspace supports SVG artwork and up to {} ordered Flat V-carve, Face, Profile or Drag knife operations; the current document was retained",
+            "This workspace supports SVG artwork and up to {} ordered Flat V-carve, Face, Profile, Drag knife or Drill operations; the current document was retained",
             crate::operation_authoring::MAX_OPERATIONS
         ));
     }

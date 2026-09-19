@@ -489,3 +489,60 @@ impl App {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A workspace with circle artwork and one selected drill operation.
+    fn drill_workspace() -> CamJobV5 {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><circle id="a" cx="10" cy="15" r="2.5" fill="#000"/><circle id="b" cx="30" cy="20" r="4" fill="#000"/></svg>"##;
+        let artwork = crate::authoring::import_svg("holes.svg".into(), svg.into()).unwrap();
+        crate::operation_authoring::apply(
+            &artwork,
+            crate::operation_authoring::add(crate::operation_authoring::Kind::Drill, &artwork),
+        )
+        .unwrap()
+    }
+
+    /// The gate every worker command passes the document through: a job that
+    /// carries a Drill operation must survive it, or no selection, tool or
+    /// generation command can ever run (the 2026-09-19 report).
+    #[test]
+    fn a_document_with_a_drill_operation_passes_the_workspace_gate() {
+        let job = drill_workspace();
+        let text = job.to_json().unwrap();
+        assert!(
+            crate::session::open(&text).is_ok(),
+            "drill documents must pass the session document gate"
+        );
+    }
+
+    /// The full worker path a clicked marker row drives: the document goes
+    /// through the gate, the DrillSelection command binds the catalogue's
+    /// point references, and the reply carries the updated selection.
+    #[test]
+    fn the_drill_selection_command_selects_marker_points() {
+        let job = drill_workspace();
+        let operation_id = job.operations[0].id.clone();
+        let catalogue = v5::artwork::inspect_artwork(&job).unwrap();
+        let references: Vec<v5::GeometryRef> = catalogue.items[0]
+            .point_entries
+            .iter()
+            .map(|entry| entry.reference.clone())
+            .collect();
+        assert_eq!(references.len(), 2, "both circles publish points");
+        let (meta, _scene_bytes) = crate::session::run(crate::session::Command::Artwork {
+            job: job.to_json().unwrap(),
+            operation_id,
+            action: engine::ArtworkCommand::DrillSelection { references },
+        })
+        .expect("the selection command runs");
+        let updated = CamJobV5::from_json(&meta.job).unwrap();
+        let points = crate::session::drill(&updated, &updated.operations[0].id)
+            .expect("drill operation survives the reply")
+            .points
+            .clone();
+        assert_eq!(points.len(), 2, "both markers selected: {points:?}");
+    }
+}

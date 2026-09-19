@@ -118,6 +118,7 @@ pub fn operation_selection(
             .iter()
             .map(|c| c.geometry.clone())
             .collect(),
+        Some(OperationSettingsV5::Drill(settings)) => settings.points.clone(),
         _ => vec![],
     }
 }
