@@ -1891,6 +1891,7 @@ impl App {
         self.view.set_profile_anchors(candidates);
         if let Some(doc) = &self.document {
             self.view.select_artwork(&doc.raw.artwork_item);
+            self.view.artwork.selected = operation_selection(&doc.job, &doc.raw.operation);
         }
         self.view.artwork.enabled = !self.simulate
             && self.active.is_none()
@@ -1922,6 +1923,14 @@ impl App {
                 }
                 crate::viewport::ArtworkEvent::ProfileSelection(references) => {
                     self.viewport_profile_selection(references, ctx);
+                }
+                crate::viewport::ArtworkEvent::DrillSelection(references) => {
+                    self.artwork_command(
+                        engine::ArtworkCommand::DrillSelection { references },
+                        ctx,
+                    );
+                    self.operation_tab = 0;
+                    self.navigate(2);
                 }
                 crate::viewport::ArtworkEvent::Placement {
                     item,

@@ -2579,6 +2579,92 @@ mod tests {
     }
 
     #[test]
+    fn live_geometry_highlights_cover_every_catalogue_and_clear_without_a_scene_reload() {
+        let job = crate::authoring::import_svg("holes.svg".into(),
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><circle id="a" cx="10" cy="15" r="2.5" fill="#000"/></svg>"##.into()).unwrap();
+        let (meta, payload) = crate::session::execute(
+            &mut cam_service::retained::Retained::new(),
+            crate::session::Command::Preview {
+                job: job.to_json().unwrap(),
+            },
+        )
+        .unwrap();
+        let components: Vec<crate::authoring::Component> =
+            serde_json::from_value(meta.report["gui2"]["components"].clone()).unwrap();
+        let mut view = Viewport::default();
+        view.load_scene(Ok((meta, payload)));
+        view.update_artwork(
+            0,
+            job.artwork[0].id.0.clone(),
+            job.artwork
+                .iter()
+                .map(|a| (a.id.0.clone(), a.placement.clone()))
+                .collect(),
+            components.clone(),
+            vec![],
+        );
+        let references = [
+            components[0].reference.clone(),
+            view.knife_chains[0].reference.clone(),
+            view.profile_contours[0].reference.clone(),
+            view.drill_points[0].reference.clone(),
+        ];
+        let ctx = egui::Context::default();
+        let highlight_count = |view: &Viewport| {
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default()
+                    .show(ctx, |ui| view.artwork_overlay(ui, ui.max_rect()));
+            });
+            output
+                .shapes
+                .iter()
+                .filter(|shape| match &shape.shape {
+                    egui::Shape::Path(path) => {
+                        path.stroke.color
+                            == egui::epaint::ColorMode::Solid(Color32::from_rgb(64, 204, 217))
+                    }
+                    egui::Shape::Circle(circle) => {
+                        circle.stroke.color == Color32::from_rgb(64, 204, 217)
+                    }
+                    _ => false,
+                })
+                .count()
+        };
+        // Even while the worker disables editing, the current selection stays
+        // visible. It does not depend on baked scene colours or operation kind.
+        view.artwork.enabled = false;
+        for reference in references {
+            view.artwork.selected = vec![reference.clone()];
+            assert!(
+                highlight_count(&view) > 0,
+                "missing highlight for {reference:?}"
+            );
+            view.artwork
+                .hidden
+                .insert(reference.artwork_item_id.0.clone());
+            assert_eq!(highlight_count(&view), 0);
+            view.artwork.hidden.clear();
+            view.stock_style.show_artwork = false;
+            assert_eq!(highlight_count(&view), 0);
+            view.stock_style.show_artwork = true;
+            view.artwork.selected.clear();
+            assert_eq!(
+                highlight_count(&view),
+                0,
+                "a cleared selection must not linger"
+            );
+        }
+        let spans = view.scene.as_ref().unwrap().meta.report["gui2"]["artworkSpans"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            spans.last().unwrap()[2].as_u64().unwrap() as usize,
+            view.scene.as_ref().unwrap().meta.contour_vertices,
+            "drill crosses must be in the visible artwork ranges"
+        );
+    }
+
+    #[test]
     fn knife_shift_click_extends_live_selection_while_the_scene_is_retained() {
         let job = include_str!("../../../fixtures/gui6/knife.job.json").to_owned();
         let scene = crate::session::execute(

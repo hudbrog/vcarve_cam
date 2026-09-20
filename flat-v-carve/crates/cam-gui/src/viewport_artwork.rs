@@ -9,6 +9,7 @@ use cam_core::{geometry::Point, project::v5::GeometryRef, svg::Placement};
 pub enum ArtworkEvent {
     KnifeSelection(Vec<GeometryRef>),
     ProfileSelection(Vec<GeometryRef>),
+    DrillSelection(Vec<GeometryRef>),
     CarveSelection(Vec<GeometryRef>),
     Placement {
         item: String,
@@ -89,8 +90,8 @@ impl Viewport {
         self.artwork.candidate_index = 0;
     }
     /// Every reference the displayed scene can resolve: filled components for
-    /// a carving operation, closed contours for a profile and knife chains for
-    /// a drag knife.
+    /// a carving operation, closed contours for a profile, knife chains for
+    /// a drag knife, and marker points for drilling.
     fn available_references(&self) -> Vec<GeometryRef> {
         self.artwork
             .components
@@ -98,6 +99,7 @@ impl Viewport {
             .map(|c| c.reference.clone())
             .chain(self.profile_contours.iter().map(|c| c.reference.clone()))
             .chain(self.knife_chains.iter().map(|c| c.reference.clone()))
+            .chain(self.drill_points.iter().map(|p| p.reference.clone()))
             .collect()
     }
     pub fn take_artwork_events(&mut self) -> Vec<ArtworkEvent> {
@@ -122,6 +124,8 @@ impl Viewport {
                     "Select knife paths"
                 } else if mode == GestureMode::Select && self.is_profile() {
                     "Select profile contours"
+                } else if mode == GestureMode::Select && self.is_drill() {
+                    "Select drill holes"
                 } else {
                     label
                 };
@@ -131,7 +135,11 @@ impl Viewport {
                     ui.close();
                 }
             }
-            if self.artwork.candidates.len() > 1 {
+            if self.artwork.candidates.len() > 1
+                && !self.is_knife()
+                && !self.is_profile()
+                && !self.is_drill()
+            {
                 let r = ui.button("Next overlap");
                 crate::app::observe_control("Next overlap", r.rect);
                 if r.clicked() {
@@ -149,7 +157,7 @@ impl Viewport {
                 }
             }
         });
-        ui.small(if self.artwork.mode != GestureMode::Select {"Drag the whole source · rotate/scale about setup 0,0 (numeric page origin) · Esc cancels"} else if self.is_knife() {"Click a knife path to assign it to this operation · Shift-click adds/removes · or use Geometry to cut in the operation"} else if self.is_profile() {"Click a closed contour to assign it to the profile with its suggested side · Shift-click adds/removes · choose Inside/Outside/On in the operation"} else {"Click a filled region to assign it to this operation · Shift-click adds/removes · or use Geometry to carve in the operation"});
+        ui.small(if self.artwork.mode != GestureMode::Select {"Drag the whole source · rotate/scale about setup 0,0 (numeric page origin) · Esc cancels"} else if self.is_knife() {"Click a knife path to assign it to this operation · Shift-click adds/removes · or use Geometry to cut in the operation"} else if self.is_profile() {"Click a closed contour to assign it to the profile with its suggested side · Shift-click adds/removes · choose Inside/Outside/On in the operation"} else if self.is_drill() {"Click a hole marker to assign it to this drill operation · Shift-click adds/removes"} else {"Click a filled region to assign it to this operation · Shift-click adds/removes · or use Geometry to carve in the operation"});
     }
     pub(super) fn artwork_pointer(
         &mut self,
@@ -171,6 +179,61 @@ impl Viewport {
             return;
         }
         if self.artwork.mode == GestureMode::Select {
+            if self.is_drill() {
+                if response.clicked()
+                    && let Some(p) = response.interact_pointer_pos()
+                {
+                    let setup = artwork_view::setup_point(camera, bounds, rect, p);
+                    let nearest = self
+                        .drill_points
+                        .iter()
+                        .filter_map(|point| {
+                            if self
+                                .artwork
+                                .hidden
+                                .contains(&point.reference.artwork_item_id.0)
+                                || self
+                                    .artwork
+                                    .locked
+                                    .contains(&point.reference.artwork_item_id.0)
+                            {
+                                return None;
+                            }
+                            let center = Point::new(point.center[0], point.center[1]);
+                            let distance =
+                                (p - artwork_view::screen_point(camera, bounds, rect, center))
+                                    .length();
+                            // Accept the drawn marker's interior as well as a fixed
+                            // pixel target around its center when zoomed out.
+                            let inside = (setup.x - center.x).hypot(setup.y - center.y)
+                                <= point.diameter_mm / 2.;
+                            (distance <= 8. || inside).then_some((distance, &point.reference))
+                        })
+                        .min_by(|a, b| a.0.total_cmp(&b.0));
+                    if let Some((_, reference)) = nearest {
+                        let mut selected: Vec<_> = self
+                            .artwork
+                            .selected
+                            .iter()
+                            .filter(|r| self.drill_points.iter().any(|p| &p.reference == *r))
+                            .cloned()
+                            .collect();
+                        if ui.input(|i| i.modifiers.shift) {
+                            if selected.contains(reference) {
+                                selected.retain(|r| r != reference);
+                            } else {
+                                selected.push(reference.clone());
+                            }
+                        } else {
+                            selected = vec![reference.clone()];
+                        }
+                        self.artwork
+                            .events
+                            .push(ArtworkEvent::DrillSelection(selected));
+                    }
+                }
+                return;
+            }
             if self.is_knife() {
                 if response.clicked()
                     && let Some(p) = response.interact_pointer_pos()
@@ -386,7 +449,7 @@ impl Viewport {
         }
     }
     pub(super) fn artwork_overlay(&self, ui: &egui::Ui, rect: egui::Rect) {
-        if !self.artwork.enabled {
+        if !self.stock_style.show_artwork {
             return;
         }
         let Some(scene) = &self.scene else {
@@ -395,9 +458,66 @@ impl Viewport {
         let camera = self.camera(rect);
         let bounds = scene.meta.bounds;
         let painter = ui.painter().with_clip_rect(rect);
-        // The orange outline is the placement-drag preview only. Assigned
-        // geometry is already colored by the scene, so the operation's own
-        // selection needs no second highlight.
+        // Draw the live operation selection after the scene and stock. Scene
+        // geometry can be shared by several catalogues and retained across
+        // edits; neither its draw order nor its old selection owns this signal.
+        let selected = |reference: &GeometryRef| {
+            self.artwork.selected.contains(reference)
+                && !self.artwork.hidden.contains(&reference.artwork_item_id.0)
+        };
+        let highlight = egui::Stroke::new(2.5, Color32::from_rgb(64, 204, 217));
+        let outline = |vertices: &[[f64; 2]], closed: bool| {
+            let mut points: Vec<_> = vertices
+                .iter()
+                .map(|xy| {
+                    artwork_view::screen_point(camera, bounds, rect, Point::new(xy[0], xy[1]))
+                })
+                .collect();
+            if closed && let Some(first) = points.first().copied() {
+                points.push(first);
+            }
+            painter.add(egui::Shape::line(
+                points.clone(),
+                egui::Stroke::new(4.5, Color32::BLACK),
+            ));
+            painter.add(egui::Shape::line(points, highlight));
+        };
+        for component in self
+            .artwork
+            .components
+            .iter()
+            .filter(|c| selected(&c.reference))
+        {
+            for ring in &component.rings {
+                outline(ring, true);
+            }
+        }
+        for chain in self.knife_chains.iter().filter(|c| selected(&c.reference)) {
+            outline(&chain.vertices, chain.closed);
+        }
+        for contour in self
+            .profile_contours
+            .iter()
+            .filter(|c| selected(&c.reference))
+        {
+            outline(&contour.vertices, true);
+        }
+        for point in self.drill_points.iter().filter(|p| selected(&p.reference)) {
+            let center = artwork_view::screen_point(
+                camera,
+                bounds,
+                rect,
+                Point::new(point.center[0], point.center[1]),
+            );
+            painter.circle_stroke(center, 7., egui::Stroke::new(4.5, Color32::BLACK));
+            painter.circle_stroke(center, 7., highlight);
+            for delta in [egui::vec2(5., 0.), egui::vec2(0., 5.)] {
+                painter.line_segment([center - delta, center + delta], highlight);
+            }
+        }
+        if !self.artwork.enabled {
+            return;
+        }
         if let Some(drag) = &self.artwork.drag {
             for component in &self.artwork.components {
                 if self

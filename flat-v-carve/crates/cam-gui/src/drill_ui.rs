@@ -742,4 +742,136 @@ mod tests {
             app.status
         );
     }
+
+    #[test]
+    fn drilling_preview_clicks_assign_toggle_and_undo_the_live_selection() {
+        let job = drill_workspace();
+        let operation = job.operations[0].id.clone();
+        let mut app = App {
+            document: Some(Document::new(job)),
+            preview_dirty: true,
+            ..Default::default()
+        };
+        app.port.use_inline_compute();
+        let mut settings = app.view.settings();
+        settings.tilt_deg = Some(0.);
+        settings.yaw = 0.;
+        app.view.restore_settings(&settings);
+        let ctx = egui::Context::default();
+        let time = std::cell::Cell::new(0.);
+        let frame = |app: &mut App, events, modifiers| {
+            time.set(time.get() + 0.1);
+            let _ = ctx.run(
+                egui::RawInput {
+                    time: Some(time.get()),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1400., 1000.),
+                    )),
+                    events,
+                    modifiers,
+                    ..Default::default()
+                },
+                |ctx| app.ui(ctx),
+            );
+        };
+        let settle = |app: &mut App| {
+            for _ in 0..8 {
+                frame(app, vec![], egui::Modifiers::default());
+            }
+            assert!(app.active.is_none(), "{}", app.status);
+        };
+        settle(&mut app);
+        let markers = app.view.drill_points();
+        assert_eq!(markers.len(), 2);
+        let click = |app: &mut App, index: usize, shift: bool, edge: bool| {
+            let [x0, y0, x1, y1] = control_rect("Artwork viewport").unwrap();
+            let rect = egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1));
+            let saved = app.view.settings();
+            let mut camera = crate::camera::Camera {
+                aspect: rect.width() / rect.height(),
+                yaw: saved.yaw,
+                pan: saved.pan,
+                ..Default::default()
+            };
+            camera.set_tilt(0.);
+            camera.set_zoom(saved.zoom);
+            let marker = &markers[index];
+            let point = crate::artwork_view::screen_point(
+                camera,
+                app.view.scene_bounds().unwrap(),
+                rect,
+                cam_core::geometry::Point::new(
+                    marker.center[0] + if edge { marker.diameter_mm * 0.45 } else { 0. },
+                    marker.center[1],
+                ),
+            );
+            let modifiers = egui::Modifiers {
+                shift,
+                ..Default::default()
+            };
+            for pressed in [true, false] {
+                frame(
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(point),
+                        egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers,
+                        },
+                    ],
+                    modifiers,
+                );
+            }
+            settle(app);
+        };
+        let assert_selection = |app: &App, indices: &[usize]| {
+            let expected: Vec<_> = indices
+                .iter()
+                .map(|i| markers[*i].reference.clone())
+                .collect();
+            assert_eq!(
+                crate::session::drill(&app.document.as_ref().unwrap().job, &operation)
+                    .unwrap()
+                    .points,
+                expected,
+                "{}",
+                app.status
+            );
+            assert_eq!(app.view.artwork.selected, expected);
+        };
+        click(&mut app, 0, false, false);
+        assert_selection(&app, &[0]);
+        click(&mut app, 1, true, true);
+        assert_selection(&app, &[0, 1]);
+        click(&mut app, 0, true, false);
+        assert_selection(&app, &[1]);
+        app.undo(&ctx);
+        settle(&mut app);
+        assert_selection(&app, &[0, 1]);
+        let item = markers[0].reference.artwork_item_id.0.clone();
+        app.view.artwork.locked.insert(item.clone());
+        click(&mut app, 0, false, false);
+        assert_selection(&app, &[0, 1]);
+        app.view.artwork.locked.clear();
+        app.view.artwork.hidden.insert(item);
+        click(&mut app, 0, false, false);
+        assert_selection(&app, &[0, 1]);
+        app.view.artwork.hidden.clear();
+        let doc = app.document.as_mut().unwrap();
+        doc.job = crate::operation_authoring::apply(
+            &doc.job,
+            crate::operation_authoring::add(crate::operation_authoring::Kind::Drill, &doc.job),
+        )
+        .unwrap();
+        let other_operation = doc.job.operations.last().unwrap().id.clone();
+        assert!(doc.select_operation(&other_operation));
+        settle(&mut app);
+        assert!(
+            app.view.artwork.selected.is_empty(),
+            "changing the current operation must clear its old highlight"
+        );
+    }
 }

@@ -202,28 +202,6 @@ fn artwork_inputs(_job: &CamJobV5) -> Result<v5::CombinedCatalogue, String> {
     v5::artwork::inspect_artwork(_job).map_err(|e| e.to_string())
 }
 
-fn selected_references(job: &CamJobV5) -> Vec<v5::GeometryRef> {
-    let mut out = vec![];
-    for operation in &job.operations {
-        match &operation.settings {
-            OperationSettingsV5::FlatVcarve(settings) => {
-                out.extend(settings.components.iter().cloned());
-            }
-            OperationSettingsV5::Profile(settings) => {
-                out.extend(settings.contours.iter().map(|c| c.geometry.clone()));
-            }
-            OperationSettingsV5::DragKnife(settings) => {
-                out.extend(settings.chains.iter().cloned());
-            }
-            OperationSettingsV5::Drill(settings) => {
-                out.extend(settings.points.iter().cloned());
-            }
-            OperationSettingsV5::Face(_) => {}
-        }
-    }
-    out
-}
-
 /// How a job tool is held: the shaft above the cutter and its stickout. A tool
 /// that states neither contributes a default (empty) assembly, which is what
 /// every job saved before these fields existed says too.
@@ -440,15 +418,9 @@ pub(crate) fn role_color(role: StageRole) -> [f32; 4] {
     }
 }
 
-/// How one piece of artwork is drawn: the operation's selection colour when it
-/// is selected, and otherwise the colour the drawing itself used. Two shapes
-/// that differ only in colour cut identically, so this is identity, never
-/// geometry — it is what lets a carving and the outline of the part be told
-/// apart while they are being picked.
-fn artwork_color(selected: bool, paint: Option<cam_core::svg::SourcePaint>) -> [f32; 4] {
-    if selected {
-        return [0.25, 0.8, 0.85, 1.];
-    }
+/// Retain the source colour. The viewport draws the current operation's
+/// selection above these shared outlines, independently of scene rebuilds.
+fn artwork_color(paint: Option<cam_core::svg::SourcePaint>) -> [f32; 4] {
     // The line is an overlay on the stock, so it is drawn opaque whatever the
     // source alpha was; a faint fill would otherwise be invisible.
     paint.map_or([0.5, 0.55, 0.6, 1.], |paint| {
@@ -481,7 +453,6 @@ pub fn build_with_preset(
     preset: crate::stock_preview::DisplayPreset,
 ) -> Result<(crate::compute::SceneMeta, Vec<u8>), String> {
     let catalogue = artwork_inputs(job)?;
-    let selected = selected_references(job);
     let components = crate::authoring::catalogue_components(&catalogue);
     let chains = crate::knife::chains(job)?;
     // The closed contours a profile operation selects, with their advisory
@@ -544,7 +515,7 @@ pub fn build_with_preset(
     let mut spans = Vec::new();
     for component in &components {
         let start = contour_points.len();
-        let color = artwork_color(selected.contains(&component.reference), component.paint);
+        let color = artwork_color(component.paint);
         for ring in &component.rings {
             for i in 0..ring.len() {
                 for p in [ring[i], ring[(i + 1) % ring.len()]] {
@@ -560,7 +531,7 @@ pub fn build_with_preset(
     }
     for chain in &chains {
         let start = contour_points.len();
-        let color = artwork_color(selected.contains(&chain.reference), chain.paint);
+        let color = artwork_color(chain.paint);
         let segments = chain
             .vertices
             .len()
@@ -582,13 +553,19 @@ pub fn build_with_preset(
     // Drill markers draw as small crosses at the hole positions: large enough
     // to pick at any zoom, never wider than the marker they stand for.
     for point in &drill_points {
-        let color = artwork_color(selected.contains(&point.reference), point.paint);
+        let start = contour_points.len();
+        let color = artwork_color(point.paint);
         let r = (point.diameter_mm / 2.).clamp(0.4, 1.5);
         let [x, y] = point.center;
         for (a, b) in [([x - r, y], [x + r, y]), ([x, y - r], [x, y + r])] {
             contour_points.push(([a[0], a[1], 0.02], color));
             contour_points.push(([b[0], b[1], 0.02], color));
         }
+        spans.push(json!([
+            point.reference.artwork_item_id,
+            start,
+            contour_points.len()
+        ]));
     }
     report["components"] = json!(components);
     report["chains"] = json!(chains);
@@ -1039,21 +1016,19 @@ mod tests {
     }
 
     #[test]
-    fn artwork_is_drawn_in_its_own_colour_until_it_is_selected() {
+    fn retained_artwork_keeps_its_source_colour() {
         let source = cam_core::svg::SourcePaint {
             red: 0xc0,
             green: 0x39,
             blue: 0x2b,
             alpha: 255,
         };
-        let drawn = artwork_color(false, Some(source));
+        let drawn = artwork_color(Some(source));
         assert!((drawn[0] - 192. / 255.).abs() < 1e-6);
         assert!((drawn[1] - 57. / 255.).abs() < 1e-6);
         assert!((drawn[2] - 43. / 255.).abs() < 1e-6);
         assert_eq!(drawn[3], 1., "an overlay line is drawn opaque");
         // A source with no single colour keeps the neutral artwork colour.
-        assert_eq!(artwork_color(false, None), [0.5, 0.55, 0.6, 1.]);
-        // Selection is the operation's own signal and outranks the drawing.
-        assert_eq!(artwork_color(true, Some(source)), artwork_color(true, None));
+        assert_eq!(artwork_color(None), [0.5, 0.55, 0.6, 1.]);
     }
 }
