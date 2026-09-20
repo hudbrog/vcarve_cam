@@ -4,7 +4,7 @@
 //! runs the engine as WebAssembly in a worker, and the native GUI spawns its
 //! own compute worker. The service therefore serves files and nothing else.
 //! The schema-3 planning/verification endpoints and the server-side tool
-//! library are gone with the schema diet (docs/flat-v-carve/schema-diet-plan.md).
+//! library are gone with the schema diet (docs/flat-v-carve/job-model.md).
 use axum::{
     Router,
     body::{Body, Bytes},

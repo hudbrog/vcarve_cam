@@ -1,7 +1,6 @@
 # Flat V-carve GUI
 
-The production home of the shared egui/eframe and wgpu application. GUI2 is an
-implementation milestone, not an experimental runtime. Native Windows and
+The production home of the shared egui/eframe and wgpu application. Native Windows and
 desktop Chromium/WebGPU use the same Rust document, retained execution,
 simulation and checked-output workflow.
 
@@ -37,16 +36,18 @@ filled components in the operation's own **Cutting → Geometry to carve**, or
 click them in the viewport (Shift-click adds or removes one); the Artwork panel
 manages placement, hide/lock and sources only. Set stock/work zero in Setup, and
 edit the two job tools and cutting assignments. New machining values are unset.
-The inspector filter and its scroll position help navigate longer forms. See the full
-[authoring and recovery recipe](../../../docs/flat-v-carve/gui2bc-progress.md).
+The inspector filter and its scroll position help navigate longer forms. See
+[GUI architecture](../../../docs/flat-v-carve/gui-architecture.md) for editing,
+recovery and worker contracts.
 
 Admission is limited to schema-5 jobs with SVG artwork and up to twelve ordered
-Flat V-carve, Face or Drag knife operations, plus schema-2 machine profiles.
+Flat V-carve, Face, Profile, Drag knife or Drill operations, plus schema-2 machine profiles.
 Older documents are refused; there is no old-file migration in the application.
-The fixture regeneration example is test-data preparation only. Profiles, tabs
-and entries are later slices.
+The fixture regeneration example is test-data preparation only. Profile supports
+tabs, finishing and entries. Drill supports hole selection, depth references,
+pecking and dwell; see the [drill fixtures](../../fixtures/drill/README.md).
 
-## Facing and ordered preparation (GUI7)
+## Facing and ordered preparation
 
 **File → New face job** starts a source-free Face job: set stock in Setup, then
 the coverage, height, tool and cutting values in Cutting. Passes run at 0° or
@@ -80,7 +81,6 @@ node crates/cam-gui/web/smoke.mjs --authoring
 node crates/cam-gui/web/smoke.mjs --gui7
 ```
 
-`experiments/gui1` is frozen framework qualification evidence. The incumbent
-`web` UI and `cam-app` remain available until replacement workflows are accepted;
-new GUI work belongs here. See the [GUI2a report](../../../docs/flat-v-carve/gui2a-progress.md)
-and [GUI2b/c report](../../../docs/flat-v-carve/gui2bc-progress.md).
+`experiments/gui1` preserves the framework experiment; the former React UI has
+been removed. New GUI work belongs here. The [documentation index](../../../docs/flat-v-carve/README.md)
+links current contracts and remaining work.

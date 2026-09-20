@@ -7,11 +7,11 @@ crate with native and browser entry points. Do not build new GUI features here.
 **GUI1 is complete: the framework is accepted with explicit scope limits.** The
 user accepted it on 2026-09-11 for Windows x86_64 native and desktop
 Chromium/WebGPU; the unexercised platform rows and the deferred manual checks are
-listed in the decision. The user also removed browser, then native,
+recorded in Git history and summarized in the current GUI architecture. The user also removed browser, then native,
 screen-reader support as requirements on 2026-09-11, so screen readers are
 outside scope on both targets. Keyboard/focus/IME behavior and named controls for
 framework tests are covered by the native suite and the real-browser smoke test.
-See the [framework decision](../../../docs/flat-v-carve/ui-framework-decision.md).
+See the [GUI architecture](../../../docs/flat-v-carve/gui-architecture.md).
 This is a runnable, deliberately incomplete risk experiment, not GUI2 or a new preferred application.
 
 From PowerShell in this directory:
@@ -112,7 +112,7 @@ node web/capture-build.mjs
 node web/compare-simulation.mjs --preview-only
 node web/compare-wasm-simulation.mjs
 node web/smoke-browser.mjs      # real browser; start `node web/serve.mjs` first
-target\release\cam-gui1-desktop.exe --measure docs\flat-v-carve\gui1-evidence\perf-measure.json flower
+target\release\cam-gui1-desktop.exe --measure flat-v-carve\experiments\gui1\artifacts\perf-measure.json flower
 ```
 
 The ignored image tests are opt-in GPU tests, separately executed locally at
@@ -148,10 +148,8 @@ browser, so it is opt-in like the golden layout tests.
 Open `/web/platform-probe.html` for real IndexedDB conflict/abort tests, the
 browser's own storage estimate and a bounded real quota attempt, plus the
 qualification facts.
-explicitly injected browser save-handle tests. See the
-[files/input evidence](../../../docs/flat-v-carve/gui1-files-input-evidence.md)
-for native destination failures, actual dialog/restart and browser offline/drop
-checks. After a manual `wasm-pack build`, run `node web/write-offline-manifest.mjs`
+Explicitly injected browser save-handle tests and the historical files/input
+evidence are recorded in Git history. After a manual `wasm-pack build`, run `node web/write-offline-manifest.mjs`
 before serving; `launch.ps1 -Target web` does this automatically. Reload again
 after a new offline worker activates to use its current asset cache.
 
@@ -161,13 +159,11 @@ after a new offline worker activates to use its current asset cache.
   through the existing service; the spike's open adapter supports legacy combined
   jobs only and rejects unsupported input without replacing its prior result.
 - The narrow Rust heightfield port matches the original TS on full-cell native
-  comparisons; the actual WASM module matches every preview checkpoint. See
-  [simulation evidence](../../../docs/flat-v-carve/gui1-simulation-evidence.md).
+  comparisons; the actual WASM module matches every preview checkpoint. The historical simulation evidence is in Git history.
   The 512-cell preview preset is explicitly coarser (flower 0.3609375 mm versus
   0.025 mm reference), has at most 18 checkpoints and a 20 MiB retained-cell cap.
   Arbitrary stock seeks, display picking, the blade glyph and marker, page
-  residency and incremental tile transport now exist with the measurements in
-  the [paging/viewport evidence](../../../docs/flat-v-carve/gui1-paging-viewport-evidence.md).
+  residency and incremental tile transport now exist with the historical paging/viewport measurements preserved in Git history.
   What remains: a sustained two-minute M frame-time run, real GPU transfer
   timing, GPU memory, the JS heap and a browser tab total.
 - Scene transport is paged and binary (metadata plus one sectioned payload).

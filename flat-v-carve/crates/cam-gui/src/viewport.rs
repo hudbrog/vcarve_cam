@@ -2096,7 +2096,7 @@ impl Viewport {
     /// The walls of the displayed field state, rebuilt when the state or the
     /// style's threshold changes and cached otherwise. The builder reads the
     /// packed field the display already holds, so no wall geometry is ever
-    /// transported (plan `stock-display-plan.md` §4).
+    /// transported (see `docs/flat-v-carve/gui-architecture.md`).
     fn stock_walls(&mut self, rect: egui::Rect) -> (Arc<Vec<Wall>>, u64) {
         let camera = self.camera(rect);
         // A true elevation draws the section: the silhouette of the material

@@ -6,7 +6,7 @@ use std::{
     process::Command,
 };
 
-pub const HELP: &str = "Local browser workspace (static hosting)\nUsage: cam serve --ui-dir <directory> [--port <0..65535>] [--open]\n\nBind is always 127.0.0.1; default port is 4848. Port 0 selects an available port.\n--open launches the default browser after the service is ready.\n--ui-dir serves a prebuilt UI directory, for example the browser GUI build\nartifacts/gui/browser; the executable embeds no UI of its own.\nThe browser build plans in its own WebAssembly worker, so the service serves\nfiles only: there is no planning API, no task ledger and no server-side tool\nlibrary (docs/flat-v-carve/schema-diet-plan.md).\n";
+pub const HELP: &str = "Local browser workspace (static hosting)\nUsage: cam serve --ui-dir <directory> [--port <0..65535>] [--open]\n\nBind is always 127.0.0.1; default port is 4848. Port 0 selects an available port.\n--open launches the default browser after the service is ready.\n--ui-dir serves a prebuilt UI directory, for example the browser GUI build\nartifacts/gui/browser; the executable embeds no UI of its own.\nThe browser build plans in its own WebAssembly worker, so the service serves\nfiles only: there is no planning API, no task ledger and no server-side tool\nlibrary (docs/flat-v-carve/job-model.md).\n";
 
 #[derive(Default, Debug)]
 struct Options {

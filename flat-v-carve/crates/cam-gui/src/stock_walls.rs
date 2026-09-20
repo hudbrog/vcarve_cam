@@ -1,6 +1,6 @@
 //! Interior walls of the simulated stock: the vertical faces a heightfield
 //! cannot represent, derived in the display process from the packed field it
-//! already holds (plan `stock-display-plan.md` §4).
+//! already holds (see `docs/flat-v-carve/gui-architecture.md`).
 //!
 //! Every wall is one instance the stock pass expands into a quad. A step counts
 //! as a wall only when it is deep enough that drawing it is useful: a V-bit

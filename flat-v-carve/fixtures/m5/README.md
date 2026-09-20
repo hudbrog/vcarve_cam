@@ -18,7 +18,7 @@ cargo build --release --workspace --locked
 
 `benchmark-m5.ps1` still drives the pre-diet `cam plan`/`cam verify` commands,
 which the schema diet deleted; porting it to `cam collection` is outstanding
-(see [schema-diet-progress.md](../../../docs/flat-v-carve/schema-diet-progress.md)).
+(see [script backlog](../../../docs/flat-v-carve/backlog.md)).
 The table above stays the record of the expected results.
 
 Each case creates `plan.json`, `verification.json`, `verification.svg`, and process logs under `artifacts/m5/<case>/`. `artifacts/m5/benchmark.json` records timings, observed process memory, segment counts, artifact sizes, and whether the expected status/exit code matched. The script exits unsuccessfully if an expectation changes.

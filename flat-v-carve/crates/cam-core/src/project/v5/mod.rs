@@ -20,7 +20,7 @@
 //! [`crate::job::VcarveInput`] survive as in-memory planning types — the
 //! collection substrate and the V-carve engine's input — with no document
 //! reader of their own, and nothing converts a document into this model: an
-//! older document is refused by name (docs/flat-v-carve/schema-diet-plan.md).
+//! older document is refused by name (docs/flat-v-carve/job-model.md).
 use crate::{
     geometry::{Diagnostic, Result},
     job::{PlanningTolerances, SourceSnapshot},

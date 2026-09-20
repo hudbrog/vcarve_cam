@@ -1,15 +1,14 @@
 # Flat V-carve CAM: technical design
 
-Date: 2026-09-05\
-Status: M0–M5 implemented and tested. M6 linear LinuxCNC output, machine profiles, and numeric readback are implemented; actual controller validation remains pending. M7's browser workflow is implemented in software; M8 physical validation remains.
+Reviewed: 2026-09-20. This guide describes the implemented geometry and verification models; collection execution and export contracts are described separately below.
 
-See [architecture](architecture.md) for scope and component boundaries, and [implementation plan](implementation-plan.md) for delivery order. Unless explicitly attributed to a source, the geometry below is derived for this project.
+See [architecture](architecture.md) for scope and component boundaries, and [remaining work](backlog.md) for unresolved tasks. Unless explicitly attributed to a source, the geometry below is derived for this project.
 
 The M3 milestone defines the current endmill-only implementation: offset loops with a numerical guard, explicit plunge/ramp entries, clearance-plane links, independent continuous segment clearance, and actual-motion stock comparisons at stepdown slices. M3 uses `verification_tolerance_mm` as the XY floor-coverage tolerance at those slices. An M3 `complete` stage does not claim the separate M5 adaptive stock/quality contract below.
 
 The M4 milestone implements the original combined planner: guarded full-depth boundaries, threshold-split medial paths, floor lanes, conservative air proofs against actual endmill sweeps, bounded cleanup, and a retained final finishing family. Engine 0.7.1 replaces broad floor lanes with contours clipped to residual stock, described below. M4 checks continuous linear-radius cutter clearance, floor coverage at the ridge depth minus an explicit numerical budget, and a configurable sample lattice with independent reachability bounds. Its sampled quality maxima and fixed slices are not the adaptive global certification specified for M5.
 
-The M5 milestone defines the implemented continuous verifier. Independent analytical point and box bounds drive adaptive height-field/depth-band refinement over the normalized target and every cutting footprint. Reported maximum-error intervals satisfy the requested verification uncertainty before passing. Explicit floor/detail limits are not increased by M4's numerical allowance. Decimal coordinate formatting triggers independent semantic and stock revalidation; cached reports cannot authorize changed jobs or motions. Source conversion error is reported separately from normalized-target bounds. M6 adds emitted-program verification; actual physical-machine validation remains pending.
+The M5 milestone defines the implemented continuous verifier. Independent analytical point and box bounds drive adaptive height-field/depth-band refinement over the normalized target and every cutting footprint. Reported maximum-error intervals satisfy the requested verification uncertainty before passing. Explicit floor/detail limits are not increased by M4's numerical allowance. Decimal coordinate formatting triggers independent semantic and stock revalidation; cached reports cannot authorize changed jobs or motions. Source conversion error is reported separately from normalized-target bounds. The collection exporter uses basic checks and numeric readback, not an automatic M5 quality gate. M6 adds emitted-program verification; actual physical-machine validation remains pending.
 
 ## 1. Coordinate and tolerance conventions
 
@@ -173,6 +172,7 @@ Flattening tolerance applies after transforms so scaling does not amplify an unt
 | --- | --- | --- |
 | Region | the element has a visible fill with a subpath of three or more vertices | Flat V-carve (a filled component), and Profile (the boundary of that region) |
 | Centreline | the element has a visible fill or stroke and a subpath of two or more vertices | Drag knife; Profile also cuts closed ones |
+| Drill point | analytic markers or area-derived centers of supported closed shapes | Drill |
 | Closed contour | the subpath is closed and the element has no fill (so no region already describes it) | Profile |
 
 An element can be an area and a line at once; a filled shape therefore offers its own drawn outline to a knife without any conversion step, and a closed outline drawn as a stroked path is offered to a profile. The consumer decides what it can use: a carving needs an area, a profile needs a closed boundary, a knife follows any line. Nothing is doubled — a stroke is never offset into two parallel cuts, and a subpath is never closed unless the drawing closes it or a fill makes it an area.
@@ -313,59 +313,46 @@ Quality acceptance has separate criteria: overcut must stay within the stated nu
 | `Tool` | Stable ID, kind, dimensions, cutting limits, spindle speed, cutting/plunge feeds, stepdown and relevant stepover. |
 | `FlatVCarveOperation` | Selected region IDs, depth cap, endmill/V-bit IDs, horizontal wall allowance, floor-ridge/detail-residual limits, clearing strategy. |
 | `NormalizedGeometry` | Rings with hierarchy, source mapping, integer scale, geometric bounds, normalization diagnostics. |
-| `Motion` | Explicit start/end XYZ, kind, tool and operation IDs, feed where applicable; linear segments initially. |
+| `Motion` | Explicit start/end XYZ, kind, tool and operation IDs, feed where applicable; linear and supported arc interpolation, plus dwell. |
 | `Plan` | Validated job snapshot including tools, normalized geometry, input fingerprint, engine/dependency versions, ordered operations and motions, tool-change markers. |
 | `VerificationReport` | Passed/failed/inconclusive status, error bounds, overcut/residual findings, locations, and model limitations. |
 | Applied machine configuration | LinuxCNC settings, work offset, clearance plane, tool mapping, length-compensation policy, M6 contract, output precision —**copied into** the document, with no dependency on the file it came from. |
 
-There is one document model (schema 5) and no conversion of older documents;
-the [schema-diet progress note](schema-diet-progress.md) records what was
-removed with the old models.
+There is one document model (schema 5) and no conversion of older documents.
+The [job model](job-model.md) describes structural validation, saveable broken
+references, operation-scoped readiness, resource copies and retained identities.
+Plans and previews are derived from the document rather than accepted as a
+second public file format.
 
-Use versioned JSON for jobs and planning artifacts. UI transport schemas are derived from or checked against the Rust model. Preserve the input SVG snapshot for repeatability; an external filename alone is insufficient. Derived previews are replaceable caches.
-
-A saved job can be incomplete while the user is editing it. Planning validates all required machining fields. Export additionally requires a complete machine profile and a successful verification of the required bounds.
-
-M2's schema-version-1 `Job` implements embedded artwork, import placement/precision, selected component IDs, nullable stock/operation/tool settings, tolerances, and an optional editable machine profile. It stores no trusted normalized-geometry cache. The implemented `import`, `inspect`, `select`, and `validate-job` commands rebuild/validate the source snapshot. M3 and M4 extend the job through schemas 2 and 3 and implement `plan`, `inspect`, and `verify` for endmill/combined artifacts. Export now requires M5 verification and a complete, separately versioned M6 LinuxCNC profile.
-
-CLI (`serve` implemented; it exposes the loopback HTTP service described in the [architecture](architecture.md)):
+The current CLI surface is:
 
 ```text
 cam import artwork.svg --output job.json
-cam plan job.json --output job.plan.json
-cam inspect job.plan.json --output preview.svg
-cam verify job.plan.json --output verification.json
-cam export job.plan.json --profile machine.json --output new-export-directory
-cam verify-gcode job.plan.json --profile machine.json --program new-export-directory/combined.ngc --output new-readback.json
-cam serve
+cam inspect job.json --output inspection.json
+cam collection plan configured-job.json --output summary.json
+cam collection export configured-job.json --output new-export-directory
+cam serve --ui-dir artifacts/gui/browser
 ```
 
-`import` creates an editable job; it does not invent tool or feed settings. `export` rechecks artifact fingerprints and required verification rather than trusting a stale status field. Progress goes to stderr and machine-readable results to files/stdout. Failure returns a nonzero exit status and stable diagnostic codes.
+Import supplies artwork and page-sized stock, without machining operations.
+Add operations/settings in the GUI or a prepared document. Export binds the
+generated execution, applied machine configuration and actual emitted bytes.
+The server hosts static files only. Progress goes to stderr; failure returns a
+nonzero status and stable diagnostic codes.
 
 ## 9. LinuxCNC postprocessor
 
-MVP output uses explicit linear `G0`/`G1` moves and a known modal state: millimeters, absolute XYZ, XY plane, units-per-minute feed, and no controller-side XY cutter compensation. Path control is a profile choice (`path_control`): `exact_path` emits `G61`; `blend` emits `G64 P<tolerance> [Q<naive cam>]`, defaulting to P0.05/Q0.05 for profiles that predate the field. Physical validation showed exact path decelerates to zero at every sub-millimeter V-bit segment; bounded blending keeps motion continuous within the declared deviation. Arc fitting remains a later optimization because it changes the executed path assumptions.
-
-LinuxCNC distinguishes `G61` exact path, `G61.1` exact stop, and `G64` blending; unrestricted blending can deviate from programmed geometry, so export rejects a blend tolerance larger than the job's verification tolerance and the report discloses the unmodeled deviation. [LinuxCNC path-control documentation](https://linuxcnc.org/docs/stable/html/gcode/g-code.html#gcode:g61)
-
-The machine profile must select one length-compensation contract:
-
-1. **Macro managed:** the existing M6 macro performs the required measurement/compensation; the post does not overwrite it.
-2. **Post managed:** the post applies the configured tool-table length offset after M6.
-
-Standard LinuxCNC M6 does not itself change the tool-length offset. Existing custom macros may do more. Verify their behavior before choosing the contract. [LinuxCNC M6 documentation](https://linuxcnc.org/docs/stable/html/gcode/m-code.html#mcode:m6)
-
-Before a tool change, retract according to the known current setup and stop the spindle. Emit the mapped tool selection and M6. Restore the required units, positioning/feed/path modes, work offset, and spindle/feed settings according to the macro contract before cutting resumes. Never blindly cancel a valid dynamic length offset. Do not invent G28/G30/G53 positions or probing commands. After the post-M6 safe-Z lift (or modal restore under other return contracts), emit one `M3 S…`/`M4 S…` block, the spin-up dwell, and the coolant state before any XY travel, so spindle spin-up overlaps the safe transit.
-
-The combined program groups both stages with descriptive comments and tool IDs. Separate per-tool exports contain complete setup/end sequences. Account for output rounding by regenerating the numeric move list from emitted words and validating it against the plan. The emitted-subset reader is not a general LinuxCNC interpreter; macro semantics are covered by the profile and machine tests.
-
-Engine 0.7.1 implements these software contracts in `post`. The separately versioned `LinuxCncProfile` adds explicit stock-top/stock-bottom datum translation, tool/H mapping, spindle direction/dwell/coolant, and M6 return policies. The user-described macro establishes Z-only TLO with stock-bottom/worktable zero; output adds stock thickness before formatting, preserving the internal stock-top model. The user-specified safe sequence is work-coordinate Z150 followed by X0 Y0. Its unknown initial sensor corridor is a machine-contract action, counted separately from geometrically checked motion.
-
-`export` accepts only an authenticated combined plan, checks original stock, emits and parses the selected combined/per-tool layout, compares every numeric motion, and rechecks decoded output stock. It publishes a new directory with reports and, only on success, G-code. Existing bundles are preserved. `verify-gcode` checks saved bytes and binds their hashes without interpreting arbitrary macros or expressions. See the [M6 report](m6-capability-report.md) for sequence, profile assumptions, strict grammar, evidence, and pending LinuxCNC integration.
+The current ordered postprocessor supports linear moves, fitted/native arcs and
+dwell. It establishes modal/process state, applies the setup-to-output transform,
+formats coordinates and independently reads back the emitted program. It uses
+basic plan checks and numeric readback; detailed M5 stock analysis remains a
+separate engine capability. The [LinuxCNC guide](linuxcnc.md) defines machine
+profiles, compensation, sequential output, precision and remaining physical
+validation. A simulated image never authorizes export.
 
 ## 10. Diagnostics and unresolved engineering work
 
-Diagnostics have a stable code, severity, stage, source region/operation, and optional geometric location. Expected cases include unsupported SVG features, collapsed regions, invalid tool geometry, unreachable detail, incomplete floor clearing, overcut, uncertain verification, missing machine settings, and cancellation.
+Diagnostics carry stable codes and contextual stage, source/operation, field path or location where available. The GUI issue model does not infer severity categories that its source does not provide. Expected cases include unsupported SVG features, collapsed regions, invalid tool geometry, unreachable detail, incomplete floor clearing, overcut, uncertain verification, missing machine settings, and cancellation.
 
 Planning may return a partial diagnostic preview, but it must label it incomplete. No automatic geometric repair or resource-limit fallback may silently remove requested detail.
 

@@ -24,7 +24,7 @@ The profile requires no G52/G92 compensation, no work-frame rotation, and no XY 
 
 `check-m6.ps1` still drives the pre-diet `cam plan`/`cam export`/`cam verify-gcode`
 commands, which the schema diet deleted; porting it to `cam collection` is
-outstanding (see [schema-diet-progress.md](../../../docs/flat-v-carve/schema-diet-progress.md)).
+outstanding (see [script backlog](../../../docs/flat-v-carve/backlog.md)).
 The expectations below stay the record, and the post-processor tests cover the
 same contracts.
 

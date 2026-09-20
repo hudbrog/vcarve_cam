@@ -19,5 +19,4 @@ node fixtures/gui6/create-review-fixture.mjs --flower
 
 An optional executable path selects a particular review worker. Both fixture
 jobs must pass actual generation and checked-output eligibility before the
-script writes them. See `docs/flat-v-carve/gui6-review.md` at the repository root
-for the full review recipe and explicit settings.
+script writes them. Use the [GUI regression workflow](../../crates/cam-gui/README.md) and the explicit settings embedded in these fixture jobs.

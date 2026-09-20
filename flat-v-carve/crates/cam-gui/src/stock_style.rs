@@ -2,7 +2,7 @@
 //! coloured, how deep gradients run, and whether the stock is solid or x-ray.
 //!
 //! Nothing here reaches the job, the plan identity or the emitted program: it
-//! is workspace state beside the camera (plan `stock-display-plan.md` §7), and
+//! is workspace state beside the camera (see `docs/flat-v-carve/gui-architecture.md`), and
 //! every colour is keyed by an operation or tool **id** so regenerating a plan
 //! cannot recolour a part.
 use serde::{Deserialize, Serialize};

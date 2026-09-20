@@ -8,7 +8,7 @@ Icons use a 20-point drawing grid, 18–20-point visible size, 1.5-point strokes
 |---|---|
 | Navigation | Stock, Machine, Library, Settings, Artwork |
 | Artwork state | Eye, Hidden, Lock, Unlock |
-| Operations and cutters | Face, Carve, Profile, Knife, Endmill, V-bit |
+| Operations and cutters | Face, Carve, Profile, Knife, Drill, Endmill, V-bit |
 | Actions | Add, More, Save, Undo, Redo |
 | View and playback | Fit, Play, Pause, Start |
 | Assistance | Warning, Help |
