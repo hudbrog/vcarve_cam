@@ -502,13 +502,28 @@ impl Viewport {
         {
             outline(&contour.vertices, true);
         }
-        for point in self.drill_points.iter().filter(|p| selected(&p.reference)) {
+        for point in self.drill_points.iter().filter(|p| {
+            !self.artwork.hidden.contains(&p.reference.artwork_item_id.0)
+                && (selected(&p.reference) || self.stock_style.show_unselected_hole_centers)
+        }) {
             let center = artwork_view::screen_point(
                 camera,
                 bounds,
                 rect,
                 Point::new(point.center[0], point.center[1]),
             );
+            if !selected(&point.reference) {
+                let guide = egui::Stroke::new(1., Color32::from_gray(160));
+                for direction in [
+                    egui::vec2(1., 0.),
+                    egui::vec2(-1., 0.),
+                    egui::vec2(0., 1.),
+                    egui::vec2(0., -1.),
+                ] {
+                    painter.line_segment([center + direction * 2., center + direction * 5.], guide);
+                }
+                continue;
+            }
             painter.circle_stroke(center, 7., egui::Stroke::new(4.5, Color32::BLACK));
             painter.circle_stroke(center, 7., highlight);
             for delta in [egui::vec2(5., 0.), egui::vec2(0., 5.)] {

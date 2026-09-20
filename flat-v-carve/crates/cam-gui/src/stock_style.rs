@@ -142,6 +142,8 @@ pub struct StockStyle {
     pub plain_wall: [f32; 3],
     pub show_stock: bool,
     pub show_artwork: bool,
+    /// Optional center guides for drillable geometry outside the selection.
+    pub show_unselected_hole_centers: bool,
     /// Cutting moves and travel moves toggle separately: a travel move says
     /// where the tool went, a cutting move says what it cut.
     pub show_cutting: bool,
@@ -166,6 +168,7 @@ impl Default for StockStyle {
             plain_wall: [0.34, 0.29, 0.22],
             show_stock: true,
             show_artwork: true,
+            show_unselected_hole_centers: false,
             show_cutting: true,
             show_travel: true,
             show_edges: false,

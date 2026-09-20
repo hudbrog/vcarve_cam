@@ -550,23 +550,8 @@ pub fn build_with_preset(
             contour_points.len()
         ]));
     }
-    // Drill markers draw as small crosses at the hole positions: large enough
-    // to pick at any zoom, never wider than the marker they stand for.
-    for point in &drill_points {
-        let start = contour_points.len();
-        let color = artwork_color(point.paint);
-        let r = (point.diameter_mm / 2.).clamp(0.4, 1.5);
-        let [x, y] = point.center;
-        for (a, b) in [([x - r, y], [x + r, y]), ([x, y - r], [x, y + r])] {
-            contour_points.push(([a[0], a[1], 0.02], color));
-            contour_points.push(([b[0], b[1], 0.02], color));
-        }
-        spans.push(json!([
-            point.reference.artwork_item_id,
-            start,
-            contour_points.len()
-        ]));
-    }
+    // Center marks belong to the viewport overlay: selected holes are always
+    // marked, while unselected centers follow the workspace display toggle.
     report["components"] = json!(components);
     report["chains"] = json!(chains);
     report["profileContours"] = json!(profile_contours);

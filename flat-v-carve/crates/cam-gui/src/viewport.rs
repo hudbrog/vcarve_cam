@@ -2660,7 +2660,22 @@ mod tests {
         assert_eq!(
             spans.last().unwrap()[2].as_u64().unwrap() as usize,
             view.scene.as_ref().unwrap().meta.contour_vertices,
-            "drill crosses must be in the visible artwork ranges"
+            "all retained artwork must be in the visible ranges"
+        );
+        let expected_vertices: usize = components
+            .iter()
+            .flat_map(|c| &c.rings)
+            .map(|ring| ring.len() * 2)
+            .sum::<usize>()
+            + view
+                .knife_chains
+                .iter()
+                .map(|c| (c.vertices.len() - usize::from(!c.closed)) * 2)
+                .sum::<usize>();
+        assert_eq!(
+            view.scene.as_ref().unwrap().meta.contour_vertices,
+            expected_vertices,
+            "unselected drill centers must not be baked into the artwork"
         );
     }
 

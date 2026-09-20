@@ -197,6 +197,11 @@ impl Viewport {
         }
         let artwork = ui.checkbox(&mut self.stock_style.show_artwork, "Artwork");
         observe_control("Layer Artwork", artwork.rect);
+        let centers = ui.checkbox(
+            &mut self.stock_style.show_unselected_hole_centers,
+            "Unselected hole centers",
+        ).on_hover_text("Show subtle gray center guides on unselected hole markers. Selected holes always keep their highlighted centers.");
+        observe_control("Layer Unselected hole centers", centers.rect);
         if artwork.changed() {
             self.overlay_signature = None;
         }
