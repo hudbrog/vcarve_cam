@@ -4,6 +4,12 @@ An isolated Rust workspace for the combined endmill/V-bit planner described in t
 
 ## Desktop and browser GUI
 
+The standalone [Pocket operation](../docs/flat-v-carve/pocket.md) supports
+islands, several pockets at a shared depth, layered clearing and wall finishing,
+plunge/ramp/helical entry, and tangent line/arc leads. It uses one flat endmill
+and participates in the same ordered planning, simulation and checked-export
+workflow as the other operations.
+
 [`crates/cam-gui`](crates/cam-gui/README.md) is the only GUI, built in the main
 Cargo workspace with shared Rust state and wgpu rendering. Run
 `cargo run -p cam-gui --release --locked`, or use

@@ -43,6 +43,8 @@ pub struct ScenePoint {
 impl StageSpan {
     fn role_word(&self) -> &'static str {
         match self.role {
+            StageRole::PocketRough => "Pocket rough",
+            StageRole::PocketFinish => "Pocket finish",
             StageRole::Face => "Face",
             StageRole::VcarveRough => "Endmill",
             StageRole::VcarveFinish => "V-bit",
@@ -408,6 +410,8 @@ pub(crate) fn sim_motion(
 
 pub(crate) fn role_color(role: StageRole) -> [f32; 4] {
     match role {
+        StageRole::PocketRough => [0.19, 0.72, 0.81, 1.],
+        StageRole::PocketFinish => [0.85, 0.36, 0.68, 1.],
         StageRole::Face => [0.16, 0.68, 0.38, 1.],
         StageRole::VcarveRough => [0.19, 0.72, 0.81, 1.],
         StageRole::VcarveFinish => [1., 0.62, 0.2, 1.],
@@ -937,6 +941,77 @@ pub fn build_with_preset(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pocket_helix_display_keeps_z_interpolation_and_island_stock() {
+        let mut job = CamJobV5::from_json(include_str!(
+            "../../../fixtures/pocket/two-pockets.job.json"
+        ))
+        .unwrap();
+        let OperationSettingsV5::Pocket(s) = &mut job.operations[0].settings else {
+            unreachable!()
+        };
+        s.bottom.offset_mm = -0.7;
+        let plan = OperationPlanV5::plan_job_v5(
+            &job,
+            &v5::ReadinessScope::AllEnabled,
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(
+            plan.operation_results
+                .iter()
+                .all(|r| r.generation_status == cam_core::sequence::GenerationStatus::Complete)
+        );
+        let stock = Stock {
+            x0: 0.,
+            y0: 0.,
+            x1: 80.,
+            y1: 40.,
+            thickness_mm: 18.,
+        };
+        let mut field = crate::sim::Field::new(
+            stock,
+            &[ToolSpec::Endmill {
+                diameter: 4.,
+                cutting_length: 12.,
+            }],
+            0.1,
+        )
+        .unwrap();
+        let motions: Vec<_> = plan
+            .motions
+            .iter()
+            .map(|m| {
+                sim_motion(
+                    m,
+                    0,
+                    0,
+                    if m.effect == cam_core::toolpath::MotionEffect::MillingSweep {
+                        "cut"
+                    } else {
+                        "rapid_xy"
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(motions.len(), plan.motions.len());
+        let helix = motions
+            .iter()
+            .find(|m| m.arc.is_some() && m.z0 > m.z1)
+            .unwrap();
+        assert!((helix.point_at(0.5)[2] - (helix.z0 + helix.z1) / 2.).abs() < 1e-10);
+        let timed = helix.duration_seconds(5000.).unwrap();
+        assert!((timed - 60. * helix.length_mm() / helix.feed_mm_min.unwrap()).abs() < 1e-10);
+        for m in &motions {
+            field.apply(m, 0., 1.).unwrap();
+        }
+        assert_eq!(field.cell_at(200, 200).0, 0, "island remains at stock top");
+        for (x, y) in [(80, 80), (600, 200)] {
+            let depth = f64::from(field.cell_at(x, y).0) * field.quantum;
+            assert!((depth - 0.7).abs() < 0.001, "both pocket floors: {depth}");
+        }
+    }
 
     #[test]
     fn drill_dwell_survives_scene_transport_and_playback_timing() {

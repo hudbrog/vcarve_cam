@@ -37,6 +37,24 @@ fn tab_for_operation_control(kind: Option<crate::session::OperationKind>, label:
     use crate::session::OperationKind;
     let field = FIELDS.iter().position(|f| *f == label);
     match kind {
+        Some(OperationKind::Pocket) => match field {
+            Some(123 | 124) => 0,
+            Some(10 | 98..=107 | 125) => 2,
+            Some(_) => 1,
+            None if label.contains("entry")
+                || label.contains("Lead")
+                || label.contains("Helix") =>
+            {
+                2
+            }
+            None if label.contains("component")
+                || label.contains("reference")
+                || label.contains("Pocket regions") =>
+            {
+                0
+            }
+            _ => 1,
+        },
         Some(OperationKind::Face) => match field {
             Some(78..=87) => 0,
             Some(_) => 1,
@@ -165,6 +183,10 @@ impl App {
             self.operation_tab = tab_for_operation_control(self.operation_kind(), label);
         }
         match self.operation_kind() {
+            Some(crate::session::OperationKind::Pocket) => {
+                self.operation_tabs(ui, &["Geometry & depth", "Cutting", "Entry & leads"]);
+                return;
+            }
             Some(crate::session::OperationKind::Face) => return self.face_header(ui, ctx),
             Some(crate::session::OperationKind::Profile) => {
                 return self.profile_header(ui, ctx);
@@ -268,6 +290,7 @@ impl App {
 
     pub(super) fn cutting_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         match self.operation_kind() {
+            Some(crate::session::OperationKind::Pocket) => return self.pocket_panel(ui, ctx),
             Some(crate::session::OperationKind::Face) => return self.face_panel(ui, ctx),
             Some(crate::session::OperationKind::DragKnife) => return self.knife_panel(ui, ctx),
             Some(crate::session::OperationKind::Drill) => return self.drill_panel(ui, ctx),
@@ -428,7 +451,7 @@ impl App {
     /// The operation's own filled-component selection. Geometry belongs to
     /// each operation, so nothing here reads or writes an artwork-level
     /// assignment; the viewport assigns through the same command.
-    fn carving_geometry(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    pub(super) fn carving_geometry(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         // Field search must not trap scrolling inside a large component list
         // before the matching numeric field can be reached.
         if !self.search.is_empty() {
@@ -436,9 +459,7 @@ impl App {
         }
         let job = &self.document.as_ref().unwrap().job;
         let operation_id = self.document.as_ref().unwrap().raw.operation.clone();
-        let selected = engine::settings_in(job, &operation_id)
-            .map(|settings| settings.components.clone())
-            .unwrap_or_default();
+        let selected = super::super::operation_selection(job, &operation_id);
         let components = self.components.clone();
         let artwork = job
             .artwork
@@ -452,7 +473,12 @@ impl App {
             .collect::<Vec<_>>();
         let idle = self.active.is_none();
         let mut next = selected.clone();
-        self.operation_group(ui, "Geometry to carve", true, |app, ui| {
+        let title = if self.operation_kind() == Some(crate::session::OperationKind::Pocket) {
+            "Pocket regions"
+        } else {
+            "Geometry to carve"
+        };
+        self.operation_group(ui, title, true, |app, ui| {
             ui.small(format!("{} selected · {} filled components", selected.len(), components.len()))
                 .on_hover_text("Cyan = selected; source colours = excluded. Click a filled region in the viewport to assign it; Shift-click adds or removes one.");
             ui.horizontal_wrapped(|ui| {
@@ -613,10 +639,13 @@ impl App {
                         .clicked()
                         {
                             app.edit_job(ctx, &[], |job| {
-                                crate::authoring::settings_mut_in(job, &operation_id)
-                                    .ok_or("This operation is not a Flat V-carve")?
-                                    .components
-                                    .retain(|r| r != reference);
+                                let op = engine::operation_mut(job, &operation_id).ok_or("Operation missing")?;
+                                let components = match &mut op.settings {
+                                    OperationSettingsV5::FlatVcarve(s) => &mut s.components,
+                                    OperationSettingsV5::Pocket(s) => &mut s.components,
+                                    _ => return Err("Operation does not select filled regions".into()),
+                                };
+                                components.retain(|r| r != reference);
                                 Ok(())
                             });
                         }

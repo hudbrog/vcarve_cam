@@ -257,6 +257,11 @@ pub fn inspect_operation_fields(
         .find(|op| op.id == operation_id)
         .ok_or_else(|| super::error("OPERATION_NOT_FOUND", "Unknown operation"))?;
     match &operation.settings {
+        OperationSettingsV5::Pocket(s) => Ok(crate::operations::pocket::missing_fields(
+            &crate::operations::PlanContext::from_v5(job),
+            operation_id,
+            s,
+        )),
         OperationSettingsV5::FlatVcarve(_) => inspect_flat_vcarve_fields(job, operation_id),
         OperationSettingsV5::Face(_) => inspect_face_fields(job, operation_id),
         OperationSettingsV5::DragKnife(_) => inspect_knife_fields(job, operation_id),
@@ -267,6 +272,7 @@ pub fn inspect_operation_fields(
 
 fn operation_kind(settings: &OperationSettingsV5) -> &'static str {
     match settings {
+        OperationSettingsV5::Pocket(_) => "pocket",
         OperationSettingsV5::FlatVcarve(_) => "flat_vcarve",
         OperationSettingsV5::Face(_) => "face",
         OperationSettingsV5::Profile(_) => "profile",
@@ -298,6 +304,7 @@ fn geometry_refs(settings: &OperationSettingsV5) -> Vec<&GeometryRef> {
     }
     match settings {
         OperationSettingsV5::FlatVcarve(s) => s.components.iter().collect(),
+        OperationSettingsV5::Pocket(s) => s.components.iter().collect(),
         OperationSettingsV5::Face(_) => vec![],
         OperationSettingsV5::Profile(s) => s
             .contours
@@ -693,6 +700,14 @@ fn resolve_settings_heights(
 ) -> Option<ResolvedHeightsDto> {
     let thickness = job.setup.stock.thickness_mm;
     match settings {
+        OperationSettingsV5::Pocket(s) => {
+            crate::setup::resolve_heights_values(thickness, &s.top, &s.bottom, published)
+                .ok()
+                .map(|h| ResolvedHeightsDto {
+                    top_z_mm: h.top_z,
+                    bottom_z_mm: Some(h.bottom_z),
+                })
+        }
         OperationSettingsV5::FlatVcarve(s) => Some(ResolvedHeightsDto {
             top_z_mm: crate::setup::resolve_top_values(thickness, &s.top, published).ok()?,
             bottom_z_mm: None,

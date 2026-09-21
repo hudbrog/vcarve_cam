@@ -603,6 +603,7 @@ pub fn capture_assignment_in(
         (v5::OperationSettingsV5::FlatVcarve(s), AssignmentRole::Vbit) => &s.vbit,
         (v5::OperationSettingsV5::Face(s), AssignmentRole::Milling) => &s.assignment,
         (v5::OperationSettingsV5::Profile(s), AssignmentRole::Milling) => &s.assignment,
+        (v5::OperationSettingsV5::Pocket(s), AssignmentRole::Milling) => &s.assignment,
         _ => return Err("Choose a compatible milling assignment to capture".into()),
     };
     let preset = CuttingPreset {

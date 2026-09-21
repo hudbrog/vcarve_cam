@@ -73,6 +73,8 @@ fn prepared_summary(
                 .as_ref()
                 .and_then(|m| m.tools.iter().find(|t| t.job_tool_id == stage.tool_id));
             let role = match stage.role {
+                cam_core::sequence::StageRole::PocketRough => "Pocket roughing",
+                cam_core::sequence::StageRole::PocketFinish => "Pocket finishing",
                 cam_core::sequence::StageRole::Face => "Face",
                 cam_core::sequence::StageRole::ProfileRough => "Profile roughing",
                 cam_core::sequence::StageRole::ProfileFinish => "Profile finishing",

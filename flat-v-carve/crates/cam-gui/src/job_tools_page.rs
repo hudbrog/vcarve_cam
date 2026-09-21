@@ -33,6 +33,7 @@ fn cutting_values(job: &CamJobV5, operation: &str, role: Role) -> (String, Strin
         return ("Missing".into(), "Missing".into());
     };
     let assignment = match &op.settings {
+        OperationSettingsV5::Pocket(s) => &s.assignment,
         OperationSettingsV5::FlatVcarve(s) => {
             if role == Role::Vbit {
                 &s.vbit

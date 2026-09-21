@@ -70,6 +70,10 @@ fn assignment_mut<'a>(
         ))
     };
     Ok(match settings {
+        OperationSettingsV5::Pocket(settings) => match role {
+            AssignmentRole::Milling => AssignmentRef::Milling(&mut settings.assignment),
+            _ => return Err(mismatch("pocket")),
+        },
         OperationSettingsV5::FlatVcarve(settings) => match role {
             AssignmentRole::Endmill => AssignmentRef::Milling(&mut settings.endmill),
             AssignmentRole::Vbit => AssignmentRef::Milling(&mut settings.vbit),
@@ -479,6 +483,14 @@ fn assignment_ref_of<'a>(
     role: AssignmentRole,
 ) -> Result<AssignmentRead<'a>> {
     Ok(match settings {
+        OperationSettingsV5::Pocket(settings) => match role {
+            AssignmentRole::Milling => AssignmentRead::Milling(&settings.assignment),
+            _ => {
+                return Err(resource_error(
+                    "assignment role does not match the operation",
+                ));
+            }
+        },
         OperationSettingsV5::FlatVcarve(settings) => match role {
             AssignmentRole::Endmill => AssignmentRead::Milling(&settings.endmill),
             AssignmentRole::Vbit => AssignmentRead::Milling(&settings.vbit),
@@ -798,7 +810,9 @@ pub fn assignments_of(job: &CamJobV5) -> Vec<(String, AssignmentRole)> {
                 out.push((operation.id.clone(), AssignmentRole::Endmill));
                 out.push((operation.id.clone(), AssignmentRole::Vbit));
             }
-            OperationSettingsV5::Face(_) | OperationSettingsV5::Profile(_) => {
+            OperationSettingsV5::Face(_)
+            | OperationSettingsV5::Profile(_)
+            | OperationSettingsV5::Pocket(_) => {
                 out.push((operation.id.clone(), AssignmentRole::Milling));
             }
             OperationSettingsV5::DragKnife(_) => {

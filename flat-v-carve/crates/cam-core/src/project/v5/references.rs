@@ -320,6 +320,29 @@ fn operation_reference_issues(
         }
     };
     match &operation.settings {
+        OperationSettingsV5::Pocket(settings) => {
+            require_tool(
+                &mut issues,
+                &settings.assignment.tool_id,
+                "endmill",
+                "assignment.tool_id",
+            );
+            for (index, component) in settings.components.iter().enumerate() {
+                let field = format!("components[{index}]");
+                let outcome = resolve_geometry_ref(component, items);
+                if let Some(issue) = geometry_issue(component, &outcome, id, &field) {
+                    issues.push(issue);
+                }
+            }
+            check_heights(
+                job,
+                operation,
+                &settings.top,
+                Some(&settings.bottom),
+                require_enabled_preceding_face,
+                &mut issues,
+            );
+        }
         OperationSettingsV5::FlatVcarve(settings) => {
             require_tool(
                 &mut issues,

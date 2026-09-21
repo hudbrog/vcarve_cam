@@ -37,11 +37,13 @@ pub mod authoring;
 pub mod commands;
 pub mod inspection;
 pub mod machine;
+mod pocket;
 pub mod references;
 pub mod resolve;
 pub mod resources;
 
 pub use artwork::{CombinedCatalogue, GeometryPick, SetupBounds, inspect_artwork, item_catalogue};
+pub use pocket::{PocketEntry, PocketLimits, PocketSettingsV5};
 pub use references::ReadinessScope;
 
 pub const CAM_JOB_V5_SCHEMA_VERSION: u32 = 5;
@@ -921,6 +923,7 @@ fn drill_retract_default() -> crate::project::HeightRef {
     deny_unknown_fields
 )]
 pub enum OperationSettingsV5 {
+    Pocket(PocketSettingsV5),
     FlatVcarve(FlatVcarveSettingsV5),
     Face(FaceSettingsV5),
     Profile(ProfileSettingsV5),
@@ -1221,6 +1224,10 @@ impl CamJobV5 {
             short_label(&operation.name, "operation name")?;
             let id = operation.id.as_str();
             let (top, bottom) = match &operation.settings {
+                OperationSettingsV5::Pocket(settings) => {
+                    settings.validate()?;
+                    (Some(&settings.top), Some(&settings.bottom))
+                }
                 OperationSettingsV5::FlatVcarve(settings) => {
                     validate_flat_vcarve(settings, id)?;
                     (Some(&settings.top), None)

@@ -121,10 +121,14 @@ const operationTarget=label=>shapeFields.includes(label)?0:endmillFields.include
 // The operation's own geometry selection lives on its shape tab.
 const geometryTarget=label=>['Select all filled components','Clear component selection','Unresolved selections','Operation Geometry to carve'].includes(label)||label.startsWith('Carving component')||label.startsWith('Replace reference')||label.startsWith('Remove unresolved reference')?0:null;
 const authoringRoute=(current,label)=>{
-  if(current.workspace?.inspector!==2||['Operation Area & heights','Operation Tool & passes','Operation Geometry','Operation Cutting','Operation Tabs & entry','Operation Corners & start'].includes(label)||current.controls?.['Assignment picker'])return null;
+  if(current.job?.kind==='pocket' && current.workspace?.inspector===2 && !label.startsWith('Operation ')) {
+    const index = /Pocket (top|bottom) offset|component|reference/i.test(label) ? 0 : /[Ee]ntry|[Hh]elix|Lead-|Plunge feed/.test(label) ? 2 : 1;
+    return [['Operation Geometry & depth','Operation Cutting','Operation Entry & leads'],index];
+  }
+  if(current.workspace?.inspector!==2||['Operation Geometry & depth','Operation Entry & leads','Operation Area & heights','Operation Tool & passes','Operation Geometry','Operation Cutting','Operation Tabs & entry','Operation Corners & start'].includes(label)||current.controls?.['Assignment picker'])return null;
   if(current.controls?.['Operation Tool & passes']){
     const area=/Entire stock|Rectangle|Face (area|margin|top|bottom)|^Top:|^Bottom:|Operation Coverage/.test(label);
-    return [['Operation Area & heights','Operation Tool & passes'],area?0:1];
+    return [['Operation Geometry & depth','Operation Entry & leads','Operation Area & heights','Operation Tool & passes'],area?0:1];
   }
   if(current.controls?.['Operation Tabs & entry']){
     const index=label==='Operation Geometry & capabilities'?1:/[Tt]ab|[Ss]tart|[Ee]ntry|Lead-|[Aa]nchor/.test(label)?2:/[Cc]ontour|[Gg]eometry|[Ss]election|^Profile side|^Profile traversal|^Cut |^Order:|reference/.test(label)?0:1;
@@ -224,7 +228,7 @@ const control = async label => {
     // Offscreen inspector controls can pass under the header while scrolling.
     // Only named shell controls bypass the inspector clip; position alone
     // would click an unrelated header button behind a clipped form control.
-    const shellAction=/^(Display resolution|Path stage|Paths |All paths|Playback |Stock color |Stock walls |Layer )/.test(label)||['Save as…','Close export','Restore viewport','Inspect Summary','Inspect Section','Inspect Warnings','Operation Area & heights','Operation Tool & passes','Operation Geometry','Operation Cutting','Operation Tabs & entry','Operation Corners & start','All enabled operations','Through selected operation','Setup','Machine','Job settings','Endmill tool','V-bit tool','Knife tool','Rename','Move earlier','Move later','Delete operation','Generate through operation','Tool geometry','Job tools','Tool library','Setup pages','Toggle navigator','Toggle inspector','Generation scope','Inspect result'].includes(label);
+    const shellAction=/^(Display resolution|Path stage|Paths |All paths|Playback |Stock color |Stock walls |Layer )/.test(label)||['Save as…','Close export','Restore viewport','Inspect Summary','Inspect Section','Inspect Warnings','Operation Geometry & depth','Operation Entry & leads','Operation Area & heights','Operation Tool & passes','Operation Geometry','Operation Cutting','Operation Tabs & entry','Operation Corners & start','All enabled operations','Through selected operation','Setup','Machine','Job settings','Endmill tool','V-bit tool','Knife tool','Rename','Move earlier','Move later','Delete operation','Generate through operation','Tool geometry','Job tools','Tool library','Setup pages','Toggle navigator','Toggle inspector','Generation scope','Inspect result'].includes(label);
     if(shellAction||label.includes('library tool')||label.includes('library profile')||label.startsWith('Apply Roughing')||label.startsWith('Apply Finish')||['Endmill only','Combined','Operation Shape & depth','Operation Endmill','Operation V-bit','Generate operation'].includes(label)||rect[1]>=top && rect[3]<=bottom || !nav && !resource && !jobTools && rect[0]<(clip?.[0]??850) || libraryMenus[label] || dropdown && (resource||jobTools) || ['Cancel selection','Browse library…','Resource item chooser','Library profile chooser','Library profile actions','Library actions','Library search','New tool','New machine','Use machine','Use tool','Use tool & profile','Apply reviewed machine','Tools & profiles','Machines','Close library','Load library','Save library','Compare stored revision','Reload stored library','Overwrite reviewed revision','Import library','Export library','Import machine configuration','Close job tools','Roughing assignment','Finishing assignment','Filter fields','File','Generate','Prepare','Simulate','Export…','Prepare checked output','Save job','Undo','Redo','Cancel','Restore draft','Retry previous save'].includes(label)) {
       await click((rect[0]+rect[2])/2,(rect[1]+rect[3])/2); await sleep(120);return;
     }
@@ -260,7 +264,10 @@ try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
   if(process.argv.includes('--trace-io'))await evaluate(`(()=>{globalThis.GUI_IO_TRACE=[];const original=globalThis.CAM_GUI.receive_event;globalThis.CAM_GUI.receive_event=text=>{try{const event=JSON.parse(text);if(event.Io)globalThis.GUI_IO_TRACE.push(event.Io);}catch{}return original(text);};})()`);
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  if(process.argv.includes('--exception-review')) {
+  if(process.argv.includes('--pocket')) {
+    const {pocketScenario}=await import('./pocket-scenario.mjs');
+    await pocketScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,path,out,chooseFile});
+  } else if(process.argv.includes('--exception-review')) {
     const {exceptionReviewScenario}=await import('./completion-review-scenario.mjs');
     await exceptionReviewScenario({control,state,waitFor,evaluate,sleep,record,screenshot,readFileSync,pressKey,send,chooseFile});
   } else if(process.argv.includes('--completion-review')) {
@@ -369,7 +376,7 @@ try {
   const browserVersion=await send('Browser.getVersion');
   const gpuResult=await send('Runtime.evaluate',{expression:'(async()=>{const a=await navigator.gpu.requestAdapter();return a?{vendor:a.info.vendor,architecture:a.info.architecture,device:a.info.device,description:a.info.description}:null})()',awaitPromise:true,returnByValue:true});
   writeFileSync(path.join(out,'evidence.json'),JSON.stringify({url:base,browserVersion,gpu:gpuResult.result?.value,offlineBuild,checks,consoleErrors:problems,note:'Real Chromium/WebGPU UI and WASM Worker. Checks list the exercised workflow; saved download bytes are verified where recorded. Browser terminate does not measure stopped CPU latency.'},null,2));
-  console.log((process.argv.includes('--gui9')?'GUI9':process.argv.includes('--gui8')?'GUI8':process.argv.includes('--gui7')?'GUI7':process.argv.includes('--gui6')?'GUI6':process.argv.includes('--gui5')?'GUI5':process.argv.includes('--gui4')?'GUI4':process.argv.includes('--gui3')?'GUI3':'GUI2')+' browser workflow passed');
+  console.log((process.argv.includes('--pocket')?'Pocket':process.argv.includes('--gui9')?'GUI9':process.argv.includes('--gui8')?'GUI8':process.argv.includes('--gui7')?'GUI7':process.argv.includes('--gui6')?'GUI6':process.argv.includes('--gui5')?'GUI5':process.argv.includes('--gui4')?'GUI4':process.argv.includes('--gui3')?'GUI3':'GUI2')+' browser workflow passed');
 } catch(error) {const screenshot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(path.join(out,'failure.png'),Buffer.from(screenshot.data,'base64'));writeFileSync(path.join(out,'failure-state.json'),JSON.stringify(await state(),null,2));if(process.argv.includes('--trace-io'))writeFileSync(path.join(out,'io-trace.json'),JSON.stringify(await evaluate('globalThis.GUI_IO_TRACE'),null,2));console.error(error);console.error(await state());console.error(problems);process.exitCode=1;}
 finally {
   await Promise.race([send('Browser.close'),sleep(1500)]);

@@ -136,13 +136,98 @@ pub fn check_plan(plan: &OperationPlan) -> Result<BasicCheckReport> {
 /// assembly invariants are identical; only the embedded document differs.
 pub fn check_plan_v5(plan: &crate::sequence::OperationPlanV5) -> Result<BasicCheckReport> {
     let safety = Safety::of_job_v5(&plan.job_snapshot);
-    check_assembly(
+    let mut report = check_assembly(
         &plan.operation_results,
         &plan.stages,
         &plan.motions,
         &plan.execution,
         &safety,
-    )
+    )?;
+    if report.export_ready {
+        check_pockets(plan, &mut report)?;
+    }
+    Ok(report)
+}
+
+fn check_pockets(
+    plan: &crate::sequence::OperationPlanV5,
+    report: &mut BasicCheckReport,
+) -> Result<()> {
+    use crate::project::v5::{self, OperationSettingsV5};
+    let job = &plan.job_snapshot;
+    if !job
+        .operations
+        .iter()
+        .any(|op| matches!(op.settings, OperationSettingsV5::Pocket(_)))
+    {
+        return Ok(());
+    }
+    let catalogue = v5::inspect_artwork(job)?;
+    let mut planes = std::collections::BTreeMap::new();
+    for result in &plan.operation_results {
+        let Some(op) = job
+            .operations
+            .iter()
+            .find(|op| op.id == result.operation_id)
+        else {
+            continue;
+        };
+        if let OperationSettingsV5::Pocket(s) = &op.settings {
+            let checked = (|| {
+                let resolved = v5::resolve::resolve_filled_region(job, &s.components, &catalogue)?;
+                let heights = crate::setup::resolve_heights_values(
+                    job.setup.stock.thickness_mm,
+                    &s.top,
+                    &s.bottom,
+                    &planes,
+                )?;
+                let Some(crate::project::ToolGeometry::Endmill(tool)) = job
+                    .tools
+                    .iter()
+                    .find(|t| t.id == s.assignment.tool_id)
+                    .and_then(|t| t.geometry.as_ref())
+                else {
+                    return Err(Diagnostic::new(
+                        "PROJECT_TOOL_KIND",
+                        "Pocket requires a flat endmill",
+                    ));
+                };
+                let motions: Vec<_> = plan
+                    .motions
+                    .iter()
+                    .filter(|m| m.operation_id == op.id)
+                    .cloned()
+                    .collect();
+                crate::operations::pocket::verify_recorded_motions(
+                    &resolved.region,
+                    s,
+                    tool.diameter_mm / 2.,
+                    heights.top_z,
+                    heights.bottom_z,
+                    job.tolerances.verification_tolerance_mm.unwrap_or(0.),
+                    &motions,
+                )
+            })();
+            if let Err(d) = checked {
+                report.status = CheckStatus::Failed;
+                report.export_ready = false;
+                report.findings.push(CheckFinding {
+                    code: d.code,
+                    message: d.message,
+                    operation_id: Some(op.id.clone()),
+                    stage_id: None,
+                });
+            }
+        }
+        for output in &result.named_outputs {
+            if output.kind == "face_plane"
+                && let Some(z) = output.z_mm
+            {
+                planes.insert(op.id.clone(), z);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Physical stock and cutter facts the entry-safety pass needs. The plan's own
@@ -661,6 +746,8 @@ fn check_assembly(
                 role,
                 Some(
                     StageRole::VcarveRough
+                        | StageRole::PocketRough
+                        | StageRole::PocketFinish
                         | StageRole::VcarveFinish
                         | StageRole::Face
                         | StageRole::ProfileRough

@@ -2102,6 +2102,8 @@ fn compare_motions(
 
 fn role_name(role: StageRole) -> &'static str {
     match role {
+        StageRole::PocketRough => "pocket_rough",
+        StageRole::PocketFinish => "pocket_finish",
         StageRole::Face => "face",
         StageRole::ProfileRough => "profile_rough",
         StageRole::ProfileFinish => "profile_finish",

@@ -16,6 +16,7 @@ pub const MAX_OPERATIONS: usize = 12;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
+    Pocket,
     Face,
     FlatVcarve,
     Profile,
@@ -26,6 +27,7 @@ pub enum Kind {
 impl Kind {
     pub fn new_operation_kind(self) -> v5::commands::NewOperationKind {
         match self {
+            Self::Pocket => v5::commands::NewOperationKind::Pocket,
             Self::Face => v5::commands::NewOperationKind::Face,
             Self::FlatVcarve => v5::commands::NewOperationKind::FlatVcarve,
             Self::Profile => v5::commands::NewOperationKind::Profile,
@@ -35,6 +37,7 @@ impl Kind {
     }
     pub fn id_prefix(self) -> &'static str {
         match self {
+            Self::Pocket => "pocket",
             Self::Face => "face",
             Self::FlatVcarve => "carving",
             Self::Profile => "profile",

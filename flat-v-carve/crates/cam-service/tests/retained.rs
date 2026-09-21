@@ -261,6 +261,122 @@ fn prefix_scope() -> CollectionScope {
     }
 }
 
+#[test]
+fn pocket_prefix_prepares_retained_helices_and_rejects_stale_or_incomplete_work() {
+    let fixture = CamJobV5::from_json(include_str!(
+        "../../../fixtures/pocket/two-pockets.job.json"
+    ))
+    .unwrap();
+    let mut fixture = v5::commands::add_operation(
+        &fixture,
+        v5::commands::NewOperationKind::Drill,
+        "later",
+        "Later incomplete drill",
+    )
+    .unwrap()
+    .job;
+    // One layer retains all entry/lead/finish semantics while keeping this
+    // transport test focused on freshness and admission rather than depth cost.
+    let v5::OperationSettingsV5::Pocket(s) = &mut fixture.operations[0].settings else {
+        unreachable!()
+    };
+    s.bottom.offset_mm = -0.7;
+    let tool = fixture.tools[0].id.clone();
+    let job = execute(CollectionCommand::ApplyMachineConfiguration {
+        job: serde_json::to_value(&fixture).unwrap(),
+        profile: machine_profile(
+            json!([{"tool_id":tool,"tool_number":1,"length_offset_number":null}]),
+        ),
+        configuration_name: "Pocket test machine".into(),
+    })
+    .unwrap()["job"]
+        .clone();
+    let mut runtime = Retained::new();
+    let task = runtime
+        .execute_driven(CollectionCommand::Generate {
+            job: job.clone(),
+            scope: CollectionScope::ThroughOperation {
+                operation_id: "pocket".into(),
+            },
+        })
+        .unwrap()["task"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let status = runtime
+        .execute(CollectionCommand::TaskStatus { task_id: task })
+        .unwrap();
+    assert_eq!(status["task"]["state"], "succeeded", "{status}");
+    let handle = status["task"]["planHandle"].as_str().unwrap().to_string();
+    let prepare = |runtime: &mut Retained, job: Value| {
+        let task = runtime
+            .execute_driven(CollectionCommand::PrepareOutput {
+                plan_handle: handle.clone(),
+                job,
+                layout: OutputLayout::OneProgram,
+            })
+            .unwrap()["task"]["taskId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        runtime.execute(CollectionCommand::PreparedOutput { task_id: task })
+    };
+    let baseline = prepare(&mut runtime, job.clone()).unwrap();
+    let sha = baseline["bundle"]["files"][0]["sha256"].clone();
+    assert!(sha.is_string(), "{baseline}");
+    let retry = prepare(&mut runtime, job.clone()).unwrap();
+    assert_eq!(retry["bundle"]["files"][0]["sha256"], sha);
+    let mut renamed = job.clone();
+    renamed["operations"][0]["name"] = json!("Renamed pocket");
+    assert_eq!(
+        prepare(&mut runtime, renamed).unwrap()["bundle"]["files"][0]["sha256"],
+        sha
+    );
+    for mutation in ["tool", "geometry", "helix"] {
+        let mut changed = job.clone();
+        match mutation {
+            "tool" => changed["tools"][0]["geometry"]["dimensions"]["diameter_mm"] = json!(3.9),
+            "geometry" => changed["artwork"][0]["placement"]["origin_mm"]["x"] = json!(0.1),
+            _ => {
+                changed["operations"][0]["settings"]["settings"]["entry"]["radius_mm"] = json!(0.9)
+            }
+        }
+        assert_eq!(
+            prepare(&mut runtime, changed).unwrap_err().code,
+            "RETAINED_PLAN_STALE",
+            "{mutation} must stale retained output"
+        );
+    }
+    let all = runtime
+        .execute_driven(CollectionCommand::Generate {
+            job: job.clone(),
+            scope: CollectionScope::AllEnabled,
+        })
+        .unwrap();
+    let full_task = all["task"]["taskId"].as_str().unwrap().to_string();
+    let full = runtime
+        .execute(CollectionCommand::TaskStatus { task_id: full_task })
+        .unwrap();
+    let prepare_task = runtime
+        .execute_driven(CollectionCommand::PrepareOutput {
+            plan_handle: full["task"]["planHandle"].as_str().unwrap().to_string(),
+            job,
+            layout: OutputLayout::OneProgram,
+        })
+        .unwrap()["task"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        runtime
+            .execute(CollectionCommand::PreparedOutput {
+                task_id: prepare_task
+            })
+            .is_err(),
+        "later incomplete drill cannot authorize full output"
+    );
+}
+
 /// Scenario 9: plan a prefix, page its motions without re-running the
 /// planners, prepare and export that prefix, fail and retry a save of
 /// identical bytes — and the prefix never exports the full job.

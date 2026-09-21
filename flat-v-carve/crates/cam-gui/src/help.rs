@@ -199,7 +199,7 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
     })
 }
 
-const FIELD_HELP: [&str; 123] = [
+const FIELD_HELP: [&str; 126] = [
     "Total carving depth below the operation top, in millimeters. Stepdown controls how much is removed in each pass.",
     "Material left on walls by roughing, in millimeters, for a later finishing pass. Zero requests no extra allowance.",
     "Endmill cutting speed along the path, in mm/min. Choose for your cutter, material and machine; it is not spindle RPM.",
@@ -323,6 +323,9 @@ const FIELD_HELP: [&str; 123] = [
     "Drill bit cutting diameter in millimeters. This sets the hole diameter; artwork markers only choose its position.",
     "Usable flute length of the drill bit in millimeters. It must accommodate the planned drilling depth, including any breakthrough or point extension.",
     "Included angle of the drill's conical point in degrees, for example 118. Used to calculate the extra tip depth for full-diameter holes.",
+    "Pocket top offset from the selected reference. A top below the original stock surface requires a preceding face covering the selected regions.",
+    "Pocket bottom offset from the selected reference. Use a negative offset from operation top for pocket depth; all selected regions share this bottom.",
+    "Radius of the cutter-center helix path. Swept diameter equals tool diameter plus twice this radius. It must be smaller than the tool radius to avoid a central plug, and the whole entry must fit within each pocket.",
 ];
 
 #[cfg(test)]

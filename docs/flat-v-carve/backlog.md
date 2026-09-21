@@ -47,10 +47,13 @@ Git history.
 - **Drilling:** nearest-neighbor ordering, conical-tip stock modeling, optional
   canned G81/G83 output and synchronized tapping/reaming/boring. Current expanded
   cycles, pecks, dwell and full-diameter depth are implemented.
-- **Machining:** multiple clearance cutters, generic pocketing, ramped tab
-  shoulders, multiple radial/axial profile finishing passes, helical entries
+- **Machining:** multiple clearance cutters, open/adaptive/rest pocketing,
+  bounded pocket residual cleanup and optimized links, ramped tab
+  shoulders, multiple radial/axial profile finishing passes, profile helical entries
   and sacrificial knife alignment leads. Each needs its own geometry/check
   contract rather than being inferred from a UI control.
+  Closed flat-bottom Pocket with islands, shared-depth regions, plunge/ramp/helix,
+  tangent leads and layered wall finishing is implemented; see [Pocket](pocket.md).
 - **Performance:** measure the medial subdivision budget before relaxing it;
   consider end-to-end execution paging and sparse checkpoint transfer before
   admitting the originally proposed million-motion display workload;

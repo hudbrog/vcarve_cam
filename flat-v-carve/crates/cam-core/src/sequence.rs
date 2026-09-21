@@ -150,6 +150,8 @@ fn fit_milling_arcs(planned: &mut PlannedOperation, tolerances: &PlanningToleran
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StageRole {
+    PocketRough,
+    PocketFinish,
     Face,
     ProfileRough,
     ProfileFinish,
@@ -993,13 +995,15 @@ fn compose_stock_history(
     through: Option<&str>,
 ) -> Result<crate::stock::history::StockHistory> {
     let mut history = crate::stock::history::StockHistory::new(thickness, xy)?;
-    for stage in stages {
+    // An operation may contain several stages (multiple pockets, finishing,
+    // or multiple tools). Its prefix ends after the last of those stages.
+    let end = through
+        .and_then(|id| stages.iter().rposition(|s| s.operation_id == id))
+        .map_or(stages.len(), |index| index + 1);
+    for stage in &stages[..end] {
         // Knife traces never enter the milling-stock model (plan section
         // 9.1); knife stages contribute no sweeps and need no cutter.
         if stage.role == StageRole::Knife {
-            if through == Some(stage.operation_id.as_str()) {
-                break;
-            }
             continue;
         }
         let cutter = tool_geometry(&stage.tool_id).and_then(|geometry| match &geometry {
@@ -1050,9 +1054,6 @@ fn compose_stock_history(
                 cutter,
                 motions: sweeps,
             });
-        }
-        if through == Some(stage.operation_id.as_str()) {
-            break;
         }
     }
     Ok(history)
@@ -1115,6 +1116,7 @@ pub(crate) fn scoped_enabled_operations_v5<'a>(
 /// H4 machine-configuration resolver for active-scope mapping validation.
 pub(crate) fn tool_ids_of_v5(settings: &OperationSettingsV5) -> Vec<&str> {
     match settings {
+        OperationSettingsV5::Pocket(s) => vec![s.assignment.tool_id.as_str()],
         OperationSettingsV5::FlatVcarve(s) => {
             vec![s.endmill.tool_id.as_str(), s.vbit.tool_id.as_str()]
         }
@@ -1147,6 +1149,7 @@ fn referenced_item_ids(settings: &OperationSettingsV5) -> Vec<&v5::ArtworkItemId
         OperationSettingsV5::FlatVcarve(s) => {
             s.components.iter().map(|r| &r.artwork_item_id).collect()
         }
+        OperationSettingsV5::Pocket(s) => s.components.iter().map(|r| &r.artwork_item_id).collect(),
         OperationSettingsV5::Face(_) => vec![],
         OperationSettingsV5::Profile(s) => s
             .contours
@@ -1194,6 +1197,15 @@ fn semantic_knife(assignment: &KnifeAssignmentV5) -> KnifeAssignmentV5 {
 
 fn semantic_settings(settings: &OperationSettingsV5) -> OperationSettingsV5 {
     match settings {
+        OperationSettingsV5::Pocket(s) => OperationSettingsV5::Pocket(v5::PocketSettingsV5 {
+            assignment: semantic_milling(&s.assignment),
+            finish_feed_mm_min: if s.finish_walls {
+                s.finish_feed_mm_min
+            } else {
+                None
+            },
+            ..s.clone()
+        }),
         OperationSettingsV5::FlatVcarve(s) => {
             OperationSettingsV5::FlatVcarve(v5::FlatVcarveSettingsV5 {
                 components: s.components.clone(),

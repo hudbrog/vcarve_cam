@@ -640,7 +640,9 @@ mod tests {
                         role_index(Role::Endmill)
                     }
                 }
-                Some(Kind::Face) | Some(Kind::Profile) => role_index(Role::Milling),
+                Some(Kind::Face) | Some(Kind::Profile) | Some(Kind::Pocket) => {
+                    role_index(Role::Milling)
+                }
                 Some(Kind::DragKnife) => role_index(Role::Knife),
                 Some(Kind::Drill) => role_index(Role::Drill),
             };

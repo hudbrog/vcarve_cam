@@ -645,6 +645,16 @@ fn rebind_live(job: &mut v5::CamJobV5) {
         };
     for operation in &mut job.operations {
         match &mut operation.settings {
+            OperationSettingsV5::Pocket(s) => {
+                for component in &mut s.components {
+                    *component = lookup(
+                        &component.artwork_item_id.clone(),
+                        component.kind,
+                        &component.local_geometry_id.clone(),
+                    )
+                    .expect("referenced item resolves");
+                }
+            }
             OperationSettingsV5::FlatVcarve(s) => {
                 for component in &mut s.components {
                     *component = lookup(

@@ -9,6 +9,8 @@ mod knife_ui;
 mod machine_ui;
 #[path = "operation_ui.rs"]
 mod operation_ui;
+#[path = "pocket_ui.rs"]
+mod pocket_ui;
 #[path = "profile_ui.rs"]
 mod profile_ui;
 #[path = "tool_picker.rs"]
@@ -87,8 +89,10 @@ impl App {
                 64 if operation => "Plunge feed",
                 66 if operation => "Tool stepdown limit",
                 67 if operation => "Pass stepdown",
-                73 | 86 | 89 if operation => "Top offset",
-                74 | 87 | 90 if operation => "Bottom offset",
+                73 | 86 | 89 | 123 if operation => "Top offset",
+                74 | 87 | 90 | 124 if operation => "Bottom offset",
+                98 if self.operation_kind() == Some(OperationKind::Pocket) => "Maximum entry angle",
+                99 if self.operation_kind() == Some(OperationKind::Pocket) => "Entry feed",
                 75 if operation => "Pass angle",
                 76 if operation => "Entry overrun",
                 77 if operation => "Exit overrun",
@@ -467,6 +471,11 @@ impl App {
                 .enumerate()
                 .filter_map(|(index, op)| {
                     let count = match &op.settings {
+                        OperationSettingsV5::Pocket(s) => s
+                            .components
+                            .iter()
+                            .filter(|r| r.artwork_item_id == item.id)
+                            .count(),
                         OperationSettingsV5::FlatVcarve(s) => s
                             .components
                             .iter()

@@ -113,6 +113,7 @@ pub fn operation_selection(
     match &crate::session::operation(job, operation_id).map(|op| &op.settings) {
         Some(OperationSettingsV5::DragKnife(settings)) => settings.chains.clone(),
         Some(OperationSettingsV5::FlatVcarve(settings)) => settings.components.clone(),
+        Some(OperationSettingsV5::Pocket(settings)) => settings.components.clone(),
         Some(OperationSettingsV5::Profile(settings)) => settings
             .contours
             .iter()
@@ -169,6 +170,7 @@ pub fn anchored_stock_values(
 
 fn kind_name(kind: OperationKind) -> &'static str {
     match kind {
+        OperationKind::Pocket => "pocket",
         OperationKind::FlatVcarve => "flat_vcarve",
         OperationKind::Face => "face",
         OperationKind::Profile => "profile",
@@ -189,6 +191,7 @@ fn anchor_field(kind: crate::profile::AnchorKind) -> usize {
 /// placement, tool geometry) resolves through the shared authoring layer.
 pub fn value(job: &CamJobV5, operation_id: &str, field: usize) -> Option<f64> {
     match engine::kind(job, operation_id) {
+        Some(OperationKind::Pocket) => crate::pocket::value(job, operation_id, field),
         None => crate::authoring::value_in(job, operation_id, field),
         Some(OperationKind::Face) => crate::face::value(job, operation_id, field),
         Some(OperationKind::Profile) => crate::profile::value(job, operation_id, field),
@@ -233,6 +236,7 @@ pub fn set_value(
         return Ok(job);
     }
     match engine::kind(&job, operation_id) {
+        Some(OperationKind::Pocket) => crate::pocket::set(&mut job, operation_id, field, value)?,
         Some(OperationKind::Face) => crate::face::set(&mut job, operation_id, field, value)?,
         Some(OperationKind::Profile) => crate::profile::set(&mut job, operation_id, field, value)?,
         Some(OperationKind::DragKnife) => {
@@ -1075,6 +1079,14 @@ impl App {
             "selectedOperation": selected,
         });
         let mut probe = match engine::kind(&d.job, &selected) {
+            Some(OperationKind::Pocket) => json!({
+                "kind": "pocket",
+                "pocket": crate::pocket::settings(&d.job, &selected),
+                "components": operation_selection(&d.job, &selected).len(),
+                "machine": d.job.machine_configuration.is_some(),
+                "rawBottomOffset": d.text(124),
+                "rawHelixRadius": d.text(125),
+            }),
             None => json!({"kind": "empty"}),
             Some(OperationKind::DragKnife) => json!({
                 "kind": "drag_knife",

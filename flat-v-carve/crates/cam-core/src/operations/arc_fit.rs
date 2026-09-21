@@ -330,5 +330,8 @@ pub(crate) fn fit_motions(
 /// Whether a stage role may be fitted. Knife stages keep their planner's arcs:
 /// their tip contract is the planner's, not this pass's.
 pub(crate) fn fittable_role(role: StageRole) -> bool {
-    role != StageRole::Knife
+    !matches!(
+        role,
+        StageRole::Knife | StageRole::PocketRough | StageRole::PocketFinish
+    )
 }

@@ -173,6 +173,15 @@ pub fn tool_in<'a>(
     finishing: bool,
 ) -> Option<&'a JobToolV5> {
     let id = match crate::session::kind(job, operation_id)? {
+        crate::session::OperationKind::Pocket => {
+            if finishing {
+                return None;
+            }
+            match &crate::session::operation(job, operation_id)?.settings {
+                OperationSettingsV5::Pocket(s) => &s.assignment.tool_id,
+                _ => return None,
+            }
+        }
         crate::session::OperationKind::FlatVcarve => {
             let s = crate::session::settings_in(job, operation_id)?;
             if finishing {
@@ -224,6 +233,14 @@ pub fn tool(job: &CamJobV5, finishing: bool) -> Option<&JobToolV5> {
 pub fn clear_assignment_in(job: &mut CamJobV5, operation_id: &str, finishing: bool) {
     use crate::session::OperationKind;
     match crate::session::kind(job, operation_id) {
+        Some(OperationKind::Pocket) => {
+            if let Some(operation) = crate::session::operation_mut(job, operation_id)
+                && let OperationSettingsV5::Pocket(s) = &mut operation.settings
+            {
+                clear_milling(&mut s.assignment);
+            }
+            return;
+        }
         Some(OperationKind::Face) => {
             if let Some(face) = crate::session::face_mut(job, operation_id) {
                 clear_milling(&mut face.assignment);
@@ -293,6 +310,18 @@ pub fn assign_tool_in(
         return Err("Tool geometry does not match this assignment".into());
     }
     match crate::session::kind(job, operation_id) {
+        Some(OperationKind::Pocket) => {
+            let operation =
+                crate::session::operation_mut(job, operation_id).ok_or("Operation missing")?;
+            let OperationSettingsV5::Pocket(s) = &mut operation.settings else {
+                return Err("Expected Pocket".into());
+            };
+            if s.assignment.tool_id != id {
+                s.assignment.tool_id = id.into();
+                clear_milling(&mut s.assignment);
+            }
+            return Ok(());
+        }
         Some(OperationKind::Face) => {
             let face = crate::session::face_mut(job, operation_id).ok_or("Expected Face")?;
             if face.assignment.tool_id == id {
@@ -371,7 +400,7 @@ pub const FIELDS: &[usize] = &[
     56, 57, 58, 59, 60, 34, 35, 36, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76,
     77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99,
     100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118,
-    119, 120, 121, 122,
+    119, 120, 121, 122, 123, 124, 125,
 ];
 
 /// Face-editor field IDs (GUI7a/b). Reused IDs 2/8/9/10/11 are the operation's
@@ -390,6 +419,9 @@ pub fn active_in(job: &CamJobV5, operation_id: &str, field: usize) -> bool {
         return matches!(field, 6 | 7 | 23 | 25..=31 | 34..=36 | 40..=45);
     }
     match crate::session::kind(job, operation_id) {
+        Some(crate::session::OperationKind::Pocket) => {
+            return crate::pocket::active(field);
+        }
         Some(crate::session::OperationKind::DragKnife) => {
             return matches!(field, 6 | 7 | 23 | 25..=36 | 40..=45 | 61..=74);
         }

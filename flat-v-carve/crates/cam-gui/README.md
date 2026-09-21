@@ -20,6 +20,12 @@ browser requires wasm-pack and the wasm32-unknown-unknown Rust target.
 
 ## Known-carve regression
 
+For Pocket, open `fixtures/pocket/two-pockets.job.json`. The operation editor
+has **Geometry & depth**, **Cutting**, and **Entry & leads** tabs. See the
+[Pocket guide](../../../docs/flat-v-carve/pocket.md) for selection semantics,
+entry constraints and verification. The browser regression command is
+`node crates/cam-gui/web/smoke.mjs --pocket` from the workspace root.
+
 1. Open `fixtures/gui2/flower.job.json`, or choose **File → Flower fixture**.
 2. In **Machine**, load `fixtures/gui2/machine.json`, or expand **Example machine**
    and choose **Apply flower machine profile**.

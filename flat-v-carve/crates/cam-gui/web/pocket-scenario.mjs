@@ -1,0 +1,58 @@
+// Exercise the packaged WASM editor/worker through browser input events.
+import {existsSync} from 'node:fs';
+export async function pocketScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,path,out}) {
+  const clearSearch=async()=>{
+    await control('Filter fields');await pressKey('a','KeyA',2);await pressKey('Backspace','Backspace');await sleep(200);
+  };
+  const source=readFileSync('fixtures/pocket/two-pockets.job.json','utf8');
+  await evaluate(`(()=>{const t=new DataTransfer();t.items.add(new File([${JSON.stringify(source)}],'pocket.job.json',{type:'application/json'}));document.getElementById('cam').dispatchEvent(new DragEvent('drop',{dataTransfer:t,bubbles:true,cancelable:true}));})()`);
+  await waitFor(s=>!s.active&&s.job?.kind==='pocket','Pocket fixture');
+  await control('Cutting');
+  await control('Operation Geometry & depth');
+  await screenshot('pocket-geometry.png');
+  if((await state()).job.components!==2)throw Error('Lost pocket selections');
+  await control('Clear component selection');
+  await waitFor(s=>!s.active&&s.job.components===0,'cleared selection');
+  await control('Select all filled components');
+  await waitFor(s=>!s.active&&s.job.components===2,'both pocket selections');
+  await edit('Pocket bottom offset','-1.3');await clearSearch();
+  await waitFor(s=>!s.active&&!s.pending&&s.job.pocket.bottom.offset_mm===-1.3,'depth edit');
+  await edit('Helix radius','0.8');await clearSearch();
+  await waitFor(s=>!s.active&&!s.pending&&s.job.pocket.entry.radius_mm===0.8,'helix edit');
+  await control('Operation Entry & leads');
+  await screenshot('pocket-entry.png');
+  await edit('Helix radius','-');await clearSearch();
+  await waitFor(s=>s.pending,'partial helix draft');
+  await control('Undo');
+  await waitFor(s=>!s.pending&&s.job.pocket.entry.radius_mm===0.8,'undo partial helix');
+  await control('Machine');await control('Example machine');await control('Apply flower machine profile');
+  await waitFor(s=>!s.active&&s.job.machine,'Pocket example machine');
+  const begin=Date.now();
+  await control('Generate');
+  const generated=await waitFor(s=>!s.active&&s.current&&s.motions>0,'Pocket generation',180);
+  record('Pocket worker generation',{ms:Date.now()-begin,motions:generated.motions,issues:generated.issues});
+  await control('Simulate');
+  await control('Start');
+  await waitFor(s=>!s.active&&s.stockPrefix===0,'Pocket simulation start');
+  await control('After pocket finish (2 of 2)');
+  const simulated=await waitFor(s=>!s.active&&s.stockPrefix===s.motions,'Pocket stock simulation',180);
+  record('Pocket stock simulation',{prefix:simulated.stockPrefix,motions:simulated.motions});
+  await screenshot('pocket-stock.png');
+  await control('Isometric');await screenshot('pocket-isometric.png');
+  await control('Prepare checked output');
+  await waitFor(s=>!s.active&&s.prepared,'Pocket checked output',180);
+  await evaluate('globalThis.showSaveFilePicker=undefined');
+  await control('Save as…');
+  await waitFor(s=>s.status.includes('Download requested'),'Pocket program download');
+  for(let i=0;i<100&&!existsSync(path.join(out,'sequence.ngc'));i++)await sleep(100);
+  const gcode=readFileSync(path.join(out,'sequence.ngc'),'utf8');
+  if(!/^G[23] .*Z-/m.test(gcode)||!gcode.includes('F250')||!gcode.includes('F400'))throw Error('Missing helical/lead/finish program motions');
+  record('Pocket checked program downloaded',{sha256:(await state()).preparedSha256,bytes:gcode.length});
+  await control('Save job');await waitFor(s=>s.status.includes('Download requested'),'Pocket job download');
+  for(let i=0;i<100&&!existsSync(path.join(out,'carving.gui2.job.json'));i++)await sleep(100);
+  const saved=readFileSync(path.join(out,'carving.gui2.job.json'),'utf8');
+  await evaluate(`(()=>{const t=new DataTransfer();t.items.add(new File([${JSON.stringify(saved)}],'pocket-reopened.job.json',{type:'application/json'}));document.getElementById('cam').dispatchEvent(new DragEvent('drop',{dataTransfer:t,bubbles:true,cancelable:true}));})()`);
+  const reopened=await waitFor(s=>!s.active&&s.job?.kind==='pocket'&&!s.current,'Pocket save/reopen');
+  if(reopened.job.components!==2||reopened.job.pocket.entry.radius_mm!==0.8||reopened.job.pocket.bottom.offset_mm!==-1.3)throw Error('Pocket save/reopen lost values');
+  record('Pocket save/reopen',reopened.job.pocket);
+}

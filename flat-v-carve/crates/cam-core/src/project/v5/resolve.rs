@@ -198,8 +198,23 @@ pub fn resolve_vcarve_region(
     settings: &FlatVcarveSettingsV5,
     combined: &CombinedCatalogue,
 ) -> Result<ResolvedVcarveRegion> {
+    resolve_filled_region(job, &settings.components, combined)
+}
+
+/// Resolve qualified filled selections for a constant-section or V-carve target.
+pub fn resolve_filled_region(
+    job: &CamJobV5,
+    components: &[GeometryRef],
+    combined: &CombinedCatalogue,
+) -> Result<ResolvedVcarveRegion> {
     let mut groups: Vec<(&ArtworkItem, Vec<String>)> = vec![];
-    for (index, reference) in settings.components.iter().enumerate() {
+    for (index, reference) in components.iter().enumerate() {
+        if reference.kind != GeometryRefKind::FilledComponent {
+            return Err(located(
+                "GEOMETRY_REFERENCE_KIND",
+                "select filled components",
+            ));
+        }
         match resolve_reference(reference, combined, &format!("components[{index}]")) {
             RefResolution::Resolved => {}
             RefResolution::Issue(issue) => return Err(issue),
@@ -525,6 +540,18 @@ pub(crate) fn plan_operation_v5(
     prior_motions: &[crate::toolpath::PlannedMotion],
 ) -> Result<PlannedOperation> {
     match &operation.settings {
+        OperationSettingsV5::Pocket(settings) => {
+            match resolve_filled_region(job, &settings.components, combined) {
+                Ok(resolved) => crate::operations::pocket::plan(
+                    ctx,
+                    &operation.id,
+                    settings,
+                    &resolved,
+                    published_faces,
+                ),
+                Err(diagnostic) => Ok(incomplete_with(&operation.id, diagnostic)),
+            }
+        }
         OperationSettingsV5::FlatVcarve(settings) => {
             match resolve_vcarve_region(job, &operation.id, settings, combined) {
                 Ok(resolved) => crate::operations::flat_vcarve::plan_v5(

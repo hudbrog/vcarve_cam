@@ -162,6 +162,11 @@ fn reserved_item_ids(job: &CamJobV5) -> BTreeSet<String> {
     };
     for operation in &job.operations {
         match &operation.settings {
+            OperationSettingsV5::Pocket(s) => {
+                for r in &s.components {
+                    reserve(r);
+                }
+            }
             OperationSettingsV5::FlatVcarve(s) => {
                 for r in &s.components {
                     reserve(r);
@@ -470,9 +475,10 @@ pub fn set_component_selection(
     let mut candidate = job.clone();
     match &mut candidate.operations[index].settings {
         OperationSettingsV5::FlatVcarve(settings) => settings.components = bound,
+        OperationSettingsV5::Pocket(settings) => settings.components = bound,
         _ => {
             return Err(command_error(format!(
-                "operation '{operation_id}' is not a Flat V-carve operation"
+                "operation '{operation_id}' does not select filled components"
             )));
         }
     }
@@ -497,22 +503,27 @@ pub fn replace_component_reference(
     let bound = bind_pick(&catalogue, replacement, "replacement")?.0;
     let index = operation_index(job, operation_id)?;
     let mut candidate = job.clone();
-    let OperationSettingsV5::FlatVcarve(settings) = &mut candidate.operations[index].settings
-    else {
-        return Err(command_error("Expected a Flat V-carve operation"));
+    let components = match &mut candidate.operations[index].settings {
+        OperationSettingsV5::FlatVcarve(settings) => &mut settings.components,
+        OperationSettingsV5::Pocket(settings) => &mut settings.components,
+        _ => {
+            return Err(command_error(
+                "Expected an operation selecting filled components",
+            ));
+        }
     };
-    if !settings.components.contains(expected) {
+    if !components.contains(expected) {
         return Err(command_error(
             "Reference changed before repair; select it again",
         ));
     }
-    for reference in &mut settings.components {
+    for reference in components.iter_mut() {
         if reference == expected {
             *reference = bound.clone();
         }
     }
     let mut unique = Vec::new();
-    settings.components.retain(|r| {
+    components.retain(|r| {
         if unique.contains(r) {
             false
         } else {
@@ -1092,6 +1103,7 @@ pub fn stock_overlap_issues(job: &CamJobV5) -> Result<Vec<LocatedDiagnostic>> {
 /// stays unset until the user states it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NewOperationKind {
+    Pocket,
     FlatVcarve,
     Face,
     Profile,
@@ -1102,6 +1114,7 @@ pub enum NewOperationKind {
 impl NewOperationKind {
     pub fn default_name(self) -> &'static str {
         match self {
+            Self::Pocket => "Pocket",
             Self::FlatVcarve => "Flat V-carve",
             Self::Face => "Face",
             Self::Profile => "Profile",
@@ -1171,6 +1184,27 @@ pub fn add_operation(
         offset_mm: 0.,
     };
     let settings = match kind {
+        NewOperationKind::Pocket => {
+            let tool = push_job_tool(&mut candidate, "endmill", "Endmill");
+            affected.push(AffectedEntity::JobTool(tool.clone()));
+            OperationSettingsV5::Pocket(super::PocketSettingsV5 {
+                components: vec![],
+                assignment: new_milling_assignment(tool),
+                top: zero_top.clone(),
+                bottom: crate::project::HeightRef {
+                    reference: crate::project::HeightReference::OperationTop,
+                    offset_mm: 0.,
+                },
+                direction: None,
+                wall_allowance_mm: Some(0.),
+                finish_walls: false,
+                finish_feed_mm_min: None,
+                entry: Default::default(),
+                lead_in: Default::default(),
+                lead_out: Default::default(),
+                limits: Default::default(),
+            })
+        }
         NewOperationKind::Face => {
             let tool = push_job_tool(&mut candidate, "endmill", "Endmill");
             affected.push(AffectedEntity::JobTool(tool.clone()));

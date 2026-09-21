@@ -280,8 +280,14 @@ fn artwork_command(
     let mut rejected = Vec::new();
     let (outcome, selected) = match action {
         ArtworkCommand::CarveSelection { references } => {
-            if crate::session::settings_in(job, &target).is_none() {
-                return Err("Select a Flat V-carve operation before selecting its geometry".into());
+            if !matches!(
+                crate::session::kind(job, &target),
+                Some(OperationKind::FlatVcarve | OperationKind::Pocket)
+            ) {
+                return Err(
+                    "Select a Flat V-carve or Pocket operation before selecting its geometry"
+                        .into(),
+                );
             }
             // Only the displayed catalogue's exact references are accepted:
             // a reference from a replaced source is reattached deliberately,
@@ -537,6 +543,7 @@ pub fn open(text: &str) -> Result<CamJobV5, String> {
             !matches!(
                 op.settings,
                 OperationSettingsV5::FlatVcarve(_)
+                    | OperationSettingsV5::Pocket(_)
                     | OperationSettingsV5::Face(_)
                     | OperationSettingsV5::Profile(_)
                     | OperationSettingsV5::DragKnife(_)
@@ -549,7 +556,7 @@ pub fn open(text: &str) -> Result<CamJobV5, String> {
             .any(|item| !matches!(item.content, v5::ArtworkContent::Svg(_)))
     {
         return Err(format!(
-            "This workspace supports SVG artwork and up to {} ordered Flat V-carve, Face, Profile, Drag knife or Drill operations; the current document was retained",
+            "This workspace supports SVG artwork and up to {} ordered Flat V-carve, Pocket, Face, Profile, Drag knife or Drill operations; the current document was retained",
             crate::operation_authoring::MAX_OPERATIONS
         ));
     }
@@ -568,6 +575,7 @@ pub fn operation_mut<'a>(job: &'a mut CamJobV5, id: &str) -> Option<&'a mut v5::
 /// The selected operation's kind, or None when the job has no operations.
 pub fn kind(job: &CamJobV5, id: &str) -> Option<OperationKind> {
     Some(match &operation(job, id)?.settings {
+        OperationSettingsV5::Pocket(_) => OperationKind::Pocket,
         OperationSettingsV5::FlatVcarve(_) => OperationKind::FlatVcarve,
         OperationSettingsV5::Face(_) => OperationKind::Face,
         OperationSettingsV5::Profile(_) => OperationKind::Profile,
@@ -578,6 +586,7 @@ pub fn kind(job: &CamJobV5, id: &str) -> Option<OperationKind> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationKind {
+    Pocket,
     FlatVcarve,
     Face,
     Profile,
@@ -588,6 +597,7 @@ pub enum OperationKind {
 /// Display name of one operation's kind.
 pub fn kind_label(job: &CamJobV5, id: &str) -> &'static str {
     match kind(job, id) {
+        Some(OperationKind::Pocket) => "Pocket",
         Some(OperationKind::Face) => "Face",
         Some(OperationKind::FlatVcarve) => "Flat V-carve",
         Some(OperationKind::DragKnife) => "Drag knife",

@@ -1,0 +1,150 @@
+{
+  "schema_version": 5,
+  "name": "Pocket demonstration",
+  "setup": {
+    "stock": {
+      "thickness_mm": 18.0,
+      "xy": {
+        "min_x_mm": 0.0,
+        "min_y_mm": 0.0,
+        "width_mm": 80.0,
+        "length_mm": 40.0
+      }
+    },
+    "work_zero": {
+      "xy": {
+        "kind": "setup_origin"
+      },
+      "z": "stock_top"
+    },
+    "clearance_above_stock_mm": 5.0,
+    "start_xy_mm": {
+      "x": 0.0,
+      "y": 0.0
+    }
+  },
+  "artwork": [
+    {
+      "id": "artwork-1",
+      "name": "pocket-demo.svg",
+      "content": {
+        "kind": "svg",
+        "filename": "pocket-demo.svg",
+        "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80mm\" height=\"40mm\" viewBox=\"0 0 80 40\"><path id=\"island-pocket\" fill-rule=\"evenodd\" d=\"M3 3H37V37H3Z M14 14H26V26H14Z\"/><rect id=\"second-pocket\" x=\"47\" y=\"6\" width=\"25\" height=\"28\"/></svg>"
+      },
+      "import_settings": {
+        "geometry_tolerance_mm": 0.001
+      },
+      "placement": {
+        "origin_mm": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "scale": 1.0,
+        "rotation_deg": 0.0
+      }
+    }
+  ],
+  "tools": [
+    {
+      "id": "endmill",
+      "name": "4 mm flat endmill",
+      "geometry": {
+        "kind": "endmill",
+        "dimensions": {
+          "diameter_mm": 4.0,
+          "cutting_length_mm": 12.0
+        }
+      },
+      "assembly": {},
+      "capabilities": {
+        "plunge_capable": true,
+        "ramp_capable": true
+      }
+    }
+  ],
+  "operations": [
+    {
+      "id": "pocket",
+      "name": "Two pockets with an island",
+      "enabled": true,
+      "settings": {
+        "kind": "pocket",
+        "settings": {
+          "components": [
+            {
+              "artwork_item_id": "artwork-1",
+              "kind": "filled_component",
+              "local_geometry_id": "island-pocket::0",
+              "source_revision": {
+                "content_digest": "359e707ff487d69865090906d2245dbed66c730af83bbd3adc5492601d0b9963",
+                "algorithm_version": 1
+              }
+            },
+            {
+              "artwork_item_id": "artwork-1",
+              "kind": "filled_component",
+              "local_geometry_id": "second-pocket::0",
+              "source_revision": {
+                "content_digest": "359e707ff487d69865090906d2245dbed66c730af83bbd3adc5492601d0b9963",
+                "algorithm_version": 1
+              }
+            }
+          ],
+          "assignment": {
+            "tool_id": "endmill",
+            "spindle_rpm": 10000.0,
+            "spindle_direction": "clockwise",
+            "cutting_feed_mm_min": 600.0,
+            "plunge_feed_mm_min": 150.0,
+            "max_stepdown_mm": 1.0,
+            "stepover_mm": 2.0
+          },
+          "top": {
+            "reference": {
+              "kind": "stock_top"
+            },
+            "offset_mm": 0.0
+          },
+          "bottom": {
+            "reference": {
+              "kind": "operation_top"
+            },
+            "offset_mm": -2.3
+          },
+          "direction": "climb",
+          "wall_allowance_mm": 0.2,
+          "finish_walls": true,
+          "finish_feed_mm_min": 400.0,
+          "entry": {
+            "kind": "helix",
+            "radius_mm": 1.0,
+            "max_angle_deg": 10.0,
+            "feed_mm_min": 200.0
+          },
+          "lead_in": {
+            "kind": "tangent_arc",
+            "radius_mm": 0.2,
+            "sweep_deg": 90.0,
+            "feed_mm_min": 250.0
+          },
+          "lead_out": {
+            "kind": "tangent_line",
+            "length_mm": 0.2,
+            "feed_mm_min": 250.0
+          },
+          "limits": {
+            "max_layers": 256,
+            "max_loops_per_layer": 1024,
+            "max_motions": 100000
+          }
+        }
+      }
+    }
+  ],
+  "tolerances": {
+    "motion_tolerance_mm": 0.01,
+    "verification_tolerance_mm": 0.05,
+    "arc_fit_tolerance_mm": 0.005
+  }
+}

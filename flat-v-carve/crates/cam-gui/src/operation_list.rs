@@ -83,6 +83,7 @@ impl App {
         for (index, op) in job.operations.iter().enumerate() {
             let id = &op.id;
             let icon = match op.settings {
+                Settings::Pocket(_) => Icon::Carve,
                 Settings::Face(_) => Icon::Face,
                 Settings::FlatVcarve(_) => Icon::Carve,
                 Settings::Profile(_) => Icon::Profile,
@@ -249,6 +250,7 @@ impl App {
         let menu = ui.menu_button("+ Add operation", |ui| {
             for (label, kind) in [
                 ("Add Face", Kind::Face),
+                ("Add Pocket", Kind::Pocket),
                 ("Add Flat V-carve", Kind::FlatVcarve),
                 ("Add Profile", Kind::Profile),
                 ("Add drag knife", Kind::DragKnife),

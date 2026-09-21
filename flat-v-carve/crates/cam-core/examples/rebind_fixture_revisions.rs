@@ -49,6 +49,11 @@ fn main() {
                 None => missing += 1,
             };
             match &mut operation.settings {
+                OperationSettingsV5::Pocket(settings) => {
+                    for reference in &mut settings.components {
+                        bind(reference);
+                    }
+                }
                 OperationSettingsV5::FlatVcarve(settings) => {
                     for reference in &mut settings.components {
                         bind(reference);

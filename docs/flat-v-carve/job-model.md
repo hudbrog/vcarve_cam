@@ -2,6 +2,10 @@
 
 ## One portable document
 
+The additive schema-5 [Pocket operation](pocket.md) stores filled-component
+references, one milling assignment, shared top/bottom heights, entry/leads and
+optional wall finishing. It has no dependency on a V-bit assignment.
+
 `cam-core/src/project/v5/mod.rs` defines `CamJobV5` (schema 5): setup, embedded
 artwork items, job tools, ordered operations, tolerances and one applied machine
 configuration. Imports create artwork and page-sized stock without inventing an

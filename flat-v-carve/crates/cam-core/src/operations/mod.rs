@@ -13,6 +13,7 @@ pub mod drag_knife;
 pub mod drill;
 pub mod face;
 pub mod flat_vcarve;
+pub mod pocket;
 pub mod profile;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
