@@ -239,13 +239,17 @@ fn measure(job: &str) -> Measurements {
     }
     assert_eq!(transported, replay.packed_tile_bytes());
 
-    // GUI9b: the same retained execution at three display resolutions. The plan
+    // GUI9b: the same retained execution at every display resolution. The plan
     // is not replanned and the playhead does not move.
     let resolutions = DisplayPreset::ALL
         .into_iter()
         .map(|preset| {
             let rebuild = measure_rebuild(&mut service, &handle, preset, last_scrub);
-            assert!(rebuild.cell_mm >= rebuild.reference_cell_mm);
+            if let Some(cell) = preset.cell_mm() {
+                assert_eq!(rebuild.cell_mm, cell);
+            } else {
+                assert!(rebuild.cell_mm >= rebuild.reference_cell_mm);
+            }
             json!({
                 "preset": rebuild.preset,
                 "cellMm": rebuild.cell_mm,

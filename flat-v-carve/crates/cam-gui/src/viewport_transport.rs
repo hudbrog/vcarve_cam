@@ -249,6 +249,12 @@ impl Viewport {
                 }
             });
         observe_control("Display resolution", combo.header_response.rect);
+        if let Some(stock) = &self.stock {
+            ui.small(format!(
+                "Current grid: {:.3} mm · {} × {} cells",
+                stock.meta.cell_mm, stock.meta.cols, stock.meta.rows,
+            ));
+        }
     }
 
     fn motion_slider(&mut self, ui: &mut egui::Ui) {

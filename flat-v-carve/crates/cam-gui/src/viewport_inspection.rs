@@ -630,7 +630,7 @@ impl Viewport {
                 );
             } else {
                 ui.small(format!(
-                    "Display raster {:.4} mm cells, at the plan's requested resolution ({:.4} mm).",
+                    "Display raster {:.4} mm cells · reference grid {:.4} mm. Features narrower than one cell may not appear.",
                     s.cell_mm, reference
                 ));
             }

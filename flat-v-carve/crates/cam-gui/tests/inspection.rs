@@ -68,6 +68,79 @@ fn profile_job() -> String {
 }
 
 #[test]
+fn physical_detail_generation_transports_one_frame_and_keeps_exact_worker_seeks() {
+    let mut job = gui::open(&profile_job()).unwrap();
+    let stock = job.setup.stock.xy.as_mut().unwrap();
+    stock.width_mm = 1000.;
+    stock.length_mm = 125.;
+    let mut service = Retained::new();
+    let (meta, payload) = gui::execute(
+        &mut service,
+        Command::generate_at(job.to_json().unwrap(), DisplayPreset::Detail01),
+    )
+    .unwrap();
+    let handle = meta.report["gui2"]["handle"].as_str().unwrap().to_owned();
+    let preview = meta.stock.as_ref().unwrap();
+    assert_eq!(preview.cell_mm, 0.1);
+    assert_eq!((preview.cols, preview.rows), (10000, 1250));
+    assert_eq!(preview.frames.len(), 1);
+    assert!(preview.ladder_frames >= 3);
+    assert_eq!(meta.transport.stock_checkpoints, 1);
+    assert_eq!(meta.payload_bytes, payload.len());
+    assert_eq!(
+        meta.payload_sha256,
+        cam_gui_runtime::compute::hash(&payload)
+    );
+    assert!(payload.len() + serde_json::to_vec(&meta).unwrap().len() < 128_000_000);
+    let expected = preview.frames[0].checksum.clone();
+    let end = preview.frames[0].prefix;
+    let parsed = cam_gui_runtime::pages::Payload::parse(payload.clone()).unwrap();
+    assert_eq!(parsed.sections(), meta.sections);
+    let scene = cam_gui_runtime::compute::Scene {
+        meta,
+        payload: std::sync::Arc::new(payload),
+    };
+    let input = scene.sim_input().unwrap().unwrap();
+    assert_eq!(input.motions.len(), end);
+    let mut replay = cam_gui_runtime::sim::Field::new(input.stock, &input.tools, 0.1).unwrap();
+    for motion in &input.motions {
+        replay.apply(motion, 0., 1.).unwrap();
+    }
+    assert_eq!(scene.stock_cells(0).unwrap(), replay.packed_tile_bytes());
+    for position in [0, end] {
+        let (seek, _) = gui::execute(
+            &mut service,
+            Command::Seek {
+                handle: handle.clone(),
+                prefix: position,
+            },
+        )
+        .unwrap();
+        let frame = &seek.stock.as_ref().unwrap().frames[0];
+        assert_eq!(frame.prefix, position);
+        if position == 0 {
+            assert_eq!(frame.stats.removed_volume_mm3, 0.);
+        } else {
+            assert_eq!(frame.checksum, expected);
+        }
+    }
+    for preset in [DisplayPreset::Detail02, DisplayPreset::Detail05] {
+        let (rebuilt, _) = gui::execute(
+            &mut service,
+            Command::DisplayPreset {
+                handle: handle.clone(),
+                preset,
+            },
+        )
+        .unwrap();
+        let stock = rebuilt.stock.unwrap();
+        assert_eq!(stock.cell_mm, preset.cell_mm().unwrap());
+        assert_eq!(stock.frames[0].prefix, end);
+        assert_eq!(rebuilt.report["gui2"]["handle"], handle);
+    }
+}
+
+#[test]
 fn another_display_resolution_rebuilds_the_same_execution_at_a_new_key() {
     let job = profile_job();
     let mut service = Retained::new();

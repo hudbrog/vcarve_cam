@@ -19,10 +19,11 @@ pub const PROFILE: &str = include_str!("../../../fixtures/gui2/machine.json");
 /// motion section (two 28-byte vertices per motion) plus the replayable motion
 /// stream (64 bytes per motion: kind, stage, interpolation, tool, feed and the
 /// six coordinates) is 120 bytes per motion, and the bounded stock
-/// checkpoints add at most `MAX_PREVIEW_BYTES`. The native worker refuses a
-/// response above 128 MB, so the derived ceiling is about 1.06 million motions;
-/// 250,000 is the measured display bound (the M workload plus headroom) rather
-/// than the transfer ceiling. Above it the job is refused by name instead of
+/// display grids transport at most 64 MiB of stock for physical presets
+/// (their checkpoint ladder stays in the worker). The native worker refuses a
+/// response above 128 MB. The 250,000-motion display bound leaves room for
+/// stock and metadata within that transfer limit (the M workload plus
+/// headroom). Above it the job is refused by name instead of
 /// being truncated.
 pub const MOTION_LIMIT: usize = 250_000;
 /// Bound on the timeline's visible path groups (one per executed stage).
@@ -917,12 +918,14 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             )?;
             let scene = crate::compute::Scene {
                 meta: result.0.clone(),
-                payload: std::sync::Arc::new(result.1.clone()),
+                payload: std::sync::Arc::new(std::mem::take(&mut result.1)),
             };
             // An incomplete plan has no executed stage: the scene carries the
             // inspection and reasons, and there is nothing to seed playback
             // with. Everything else keeps its stock preview.
             let (Some(input), Some(meta)) = (scene.sim_input()?, scene.meta.stock.as_ref()) else {
+                result.1 =
+                    std::sync::Arc::try_unwrap(scene.payload).unwrap_or_else(|p| (*p).clone());
                 return Ok(result);
             };
             let mut seed = Vec::new();
@@ -975,6 +978,11 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                     preset,
                 })
             });
+            result.1 = if preset.cell_mm().is_some() {
+                crate::compute::final_stock_frame(&mut result.0, &scene.payload)?
+            } else {
+                std::sync::Arc::try_unwrap(scene.payload).unwrap_or_else(|p| (*p).clone())
+            };
             return Ok(result);
         }
         Command::Prepare { job, handle } => {

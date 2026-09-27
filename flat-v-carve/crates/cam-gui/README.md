@@ -53,6 +53,21 @@ The fixture regeneration example is test-data preparation only. Profile supports
 tabs, finishing and entries. Drill supports hole selection, depth references,
 pecking and dwell; see the [drill fixtures](../../fixtures/drill/README.md).
 
+## Simulator detail
+
+The simulator's **Display** control offers Coarse, Standard and Fine relative
+grids, plus fixed **0.5 mm**, **0.2 mm** and **0.1 mm** cell spacing. For a
+960 × 125 mm stock, Fine uses about 0.94 mm cells; 0.1 mm uses 9600 × 1250
+cells. The control shows the actual spacing and grid dimensions. These are
+display samples: a feature narrower than a cell can disappear, and seeing the
+shape of a feature requires multiple cells across it.
+
+Changing spacing replays the retained toolpath at the same playhead without
+replanning. Physical presets keep up to 256 MiB of checkpoints in the worker
+and send one frame to the viewport. They admit at most 64 MiB per padded frame;
+larger grids ask for a coarser spacing rather than silently reducing detail.
+Finer grids take more memory and may slow playback and rendering.
+
 ## Facing and ordered preparation
 
 **File → New face job** starts a source-free Face job: set stock in Setup, then

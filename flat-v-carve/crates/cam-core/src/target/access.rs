@@ -130,6 +130,9 @@ impl Target {
         let mut interior_vertices = 0;
         for edge in &diagram.edges {
             for p in [edge.start, edge.end].into_iter().flatten() {
+                if self.boundary.outside_bounds(p) {
+                    continue;
+                }
                 let q = sample(p)?;
                 if q.location != PointLocation::Inside {
                     continue;
@@ -151,6 +154,9 @@ impl Target {
             };
             let Some(curve) = &edge.curve else { continue };
             let mid = curve.evaluate(0.5)?;
+            if self.boundary.outside_bounds(mid) {
+                continue;
+            }
             let middle = sample(mid)?;
             if middle.location == PointLocation::Inside
                 && self.fit_from_clearance(middle, required).status == FitStatus::Clearance
@@ -176,6 +182,8 @@ impl Target {
             }
             let fit = self.fit_from_clearance(middle, required);
             if fit.status != FitStatus::Contact
+                || self.boundary.outside_bounds(start)
+                || self.boundary.outside_bounds(end)
                 || self.fit_from_clearance(sample(start)?, required).status != FitStatus::Contact
                 || self.fit_from_clearance(sample(end)?, required).status != FitStatus::Contact
             {

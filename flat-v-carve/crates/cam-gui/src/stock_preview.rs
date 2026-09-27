@@ -1,4 +1,4 @@
-//! Bounded, explicitly coarser display grid. All integration happens in
+//! Bounded display grids with relative and physical cell-size presets. All integration happens in
 //! `sim::Field`; this module only chooses the display preset, records tile
 //! versions for incremental upload and packages the checkpoint cells for the
 //! binary payload.
@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_PREVIEW_BYTES: usize = 20 * 1024 * 1024;
 pub const CHECKPOINTS: usize = 18;
+/// Includes tile padding; fits the stock storage buffer and leaves room in
+/// the 128 MB worker response for the bounded motion stream and metadata.
+pub const MAX_DETAIL_FRAME_BYTES: usize = 64 * 1024 * 1024;
 /// The synthetic S/M/L probes are explicit workload generators with their own
 /// stated budget; they are not the interactive reference preset.
 pub const PROBE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
@@ -27,16 +30,37 @@ pub enum DisplayPreset {
     Standard,
     /// Finer cells for thin features, at four times the retained bytes.
     Fine,
+    Detail05,
+    Detail02,
+    Detail01,
 }
 
 impl DisplayPreset {
-    pub const ALL: [Self; 3] = [Self::Coarse, Self::Standard, Self::Fine];
-    /// Longest side of the display raster, in cells.
-    pub fn max_side(self) -> usize {
+    pub const ALL: [Self; 6] = [
+        Self::Coarse,
+        Self::Standard,
+        Self::Fine,
+        Self::Detail05,
+        Self::Detail02,
+        Self::Detail01,
+    ];
+    /// Relative presets cap the longest side; physical presets fix cell size.
+    pub fn max_side(self) -> Option<usize> {
         match self {
-            Self::Coarse => 256,
-            Self::Standard => 512,
-            Self::Fine => 1024,
+            Self::Coarse => Some(256),
+            Self::Standard => Some(512),
+            Self::Fine => Some(1024),
+            Self::Detail05 | Self::Detail02 | Self::Detail01 => None,
+        }
+    }
+    /// An explicit physical spacing, independent of stock extent and the
+    /// reference simulator's texture-size cap.
+    pub fn cell_mm(self) -> Option<f64> {
+        match self {
+            Self::Detail05 => Some(0.5),
+            Self::Detail02 => Some(0.2),
+            Self::Detail01 => Some(0.1),
+            _ => None,
         }
     }
     /// Bytes the retained stock checkpoints may occupy.
@@ -45,6 +69,7 @@ impl DisplayPreset {
             Self::Coarse => 8 * 1024 * 1024,
             Self::Standard => MAX_PREVIEW_BYTES,
             Self::Fine => 64 * 1024 * 1024,
+            Self::Detail05 | Self::Detail02 | Self::Detail01 => 256 * 1024 * 1024,
         }
     }
     pub fn checkpoints(self) -> usize {
@@ -55,6 +80,9 @@ impl DisplayPreset {
             Self::Coarse => "coarse",
             Self::Standard => "standard",
             Self::Fine => "fine",
+            Self::Detail05 => "detail05",
+            Self::Detail02 => "detail02",
+            Self::Detail01 => "detail01",
         }
     }
     pub fn from_wire(value: &str) -> Option<Self> {
@@ -65,6 +93,9 @@ impl DisplayPreset {
             Self::Coarse => "Coarse",
             Self::Standard => "Standard",
             Self::Fine => "Fine",
+            Self::Detail05 => "0.5 mm",
+            Self::Detail02 => "0.2 mm",
+            Self::Detail01 => "0.1 mm",
         }
     }
     /// One line for the control: what the preset costs and what it buys.
@@ -73,6 +104,7 @@ impl DisplayPreset {
             Self::Coarse => "256 cells across · 8 MiB checkpoints",
             Self::Standard => "512 cells across · 20 MiB checkpoints",
             Self::Fine => "1024 cells across · 64 MiB checkpoints",
+            Self::Detail05 | Self::Detail02 | Self::Detail01 => "Fixed cell spacing",
         }
     }
 }
@@ -182,18 +214,27 @@ fn build_with_limits(
     let checkpoints = checkpoints.max(3);
     let width = input.stock.x1 - input.stock.x0;
     let height = input.stock.y1 - input.stock.y0;
-    // Coarsening is confined to this named display preset. Toolpaths and core
-    // checks never consume this field, and the reference parity grid is unchanged.
-    let cell = input
-        .resolution
-        .cell_mm
-        .max(width.max(height) / preset.max_side() as f64);
+    // Physical presets bypass both relative side caps. Toolpaths, core checks
+    // and the reference parity grid never consume this display-only choice.
+    let cell = preset.cell_mm().unwrap_or_else(|| {
+        input
+            .resolution
+            .cell_mm
+            .max(width.max(height) / preset.max_side().expect("relative preset") as f64)
+    });
     let mut field = Field::new(input.stock, &input.tools, cell)?;
     let per_frame = field
         .versions
         .len()
         .max(1)
         .saturating_mul(crate::sim::TILE * crate::sim::TILE * 4);
+    if preset.cell_mm().is_some() && per_frame > MAX_DETAIL_FRAME_BYTES {
+        return Err(format!(
+            "The {} display grid needs {:.1} MiB per frame (limit 64 MiB). Choose a coarser display spacing or reduce the stock area.",
+            preset.label(),
+            per_frame as f64 / (1024. * 1024.),
+        ));
+    }
     let mut marks: Vec<usize> = marks
         .iter()
         .copied()
@@ -462,6 +503,85 @@ mod tests {
             assert!(!frame.checksum.is_empty());
         }
         assert!(preview.meta.frames.iter().any(|f| !f.allocated.is_empty()));
+    }
+
+    #[test]
+    fn physical_presets_resolve_a_narrow_groove_on_meter_long_stock() {
+        let mut input = input(1);
+        input.stock = Stock {
+            x0: 0.,
+            y0: 0.,
+            x1: 1000.,
+            y1: 125.,
+            thickness_mm: 18.,
+        };
+        input.resolution = choose_resolution(1000., 125., 0.1, 8192., 64_000_000.).unwrap();
+        assert!(
+            input.resolution.cell_mm > 0.1,
+            "reference side cap must be exercised"
+        );
+        input.tools = vec![ToolSpec::Endmill {
+            diameter: 0.2,
+            cutting_length: 2.,
+        }];
+        let motion = &mut input.motions[0];
+        motion.x0 = 1.;
+        motion.x1 = 999.;
+        motion.y0 = 0.05;
+        motion.y1 = 0.05;
+        for (preset, cell) in [
+            (DisplayPreset::Detail05, 0.5),
+            (DisplayPreset::Detail02, 0.2),
+            (DisplayPreset::Detail01, 0.1),
+        ] {
+            let preview = build_with_marks(&input, &[], preset, "meter").unwrap();
+            assert_eq!(preview.meta.cell_mm, cell);
+            assert_eq!(preview.meta.cols, (1000. / cell) as usize);
+            assert!(preview.meta.retained_bytes <= preset.budget());
+            let frame = preview.meta.frames.last().unwrap();
+            let field = Field::from_packed(
+                input.stock,
+                &input.tools,
+                cell,
+                preview.cells.last().unwrap(),
+                &frame.versions,
+                &frame.allocated,
+                frame.stats.clone(),
+            )
+            .unwrap();
+            if cell == 0.1 {
+                assert!(field.cell_at(5000, 0).0 > 0, "the 0.2 mm groove is visible");
+                assert_eq!(field.cell_at(5000, 2).0, 0, "nearby stock is untouched");
+            } else if cell == 0.5 {
+                assert_eq!(
+                    field.cell_at(1000, 0).0,
+                    0,
+                    "coarse sampling misses this narrow groove"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn physical_presets_refuse_oversize_grids_without_silently_coarsening() {
+        let mut input = input(0);
+        input.stock.x1 = 1000.;
+        input.stock.y1 = 200.;
+        let error = build_with_marks(&input, &[], DisplayPreset::Detail01, "oversize").unwrap_err();
+        assert!(error.contains("limit 64 MiB"), "{error}");
+    }
+
+    #[test]
+    fn all_display_presets_round_trip_through_saved_views_and_worker_commands() {
+        for preset in DisplayPreset::ALL {
+            let json = serde_json::to_string(&preset).unwrap();
+            assert_eq!(
+                serde_json::from_str::<DisplayPreset>(&json).unwrap(),
+                preset
+            );
+            assert_eq!(DisplayPreset::from_wire(preset.wire()), Some(preset));
+            assert_eq!(json, format!("\"{}\"", preset.wire()));
+        }
     }
 
     #[test]

@@ -321,6 +321,49 @@ fn section_of(payload: &Payload, kind: u8, index: usize) -> Result<(usize, usize
         .ok_or_else(|| "Payload is missing a required section".into())
 }
 
+/// The compute process retains the full checkpoint ladder. Detailed grids
+/// transport only the final frame on generation, just as preset changes and
+/// seeks transport one frame, keeping the response below the worker limit.
+pub(crate) fn final_stock_frame(meta: &mut SceneMeta, bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let last_stock = meta
+        .sections
+        .iter()
+        .rposition(|s| s.kind == SECTION_STOCK)
+        .ok_or("Missing stock section")?;
+    let mut builder = Builder::new();
+    for (index, section) in meta.sections.iter().enumerate() {
+        if section.kind != SECTION_STOCK || index == last_stock {
+            builder.push(
+                section.kind,
+                bytes
+                    .get(section.offset..section.offset + section.len)
+                    .ok_or("Invalid scene section")?
+                    .to_vec(),
+            );
+        }
+    }
+    let payload = Payload::parse(builder.finish())?;
+    (meta.motion_offset, meta.motion_len) = section_of(&payload, SECTION_MOTIONS, 0)?;
+    if let Some(sim) = &mut meta.sim {
+        (sim.offset, sim.len) = section_of(&payload, SECTION_SIM, 0)?;
+    }
+    let stock = meta.stock.as_mut().ok_or("Missing stock metadata")?;
+    let frame = stock.frames.pop().ok_or("Missing final stock frame")?;
+    stock.frames = vec![frame];
+    meta.transport.stock_bytes = payload.find(SECTION_STOCK, 0).unwrap().len;
+    meta.transport.stock_checkpoints = 1;
+    meta.sections = payload.sections().to_vec();
+    let bytes = payload.into_bytes();
+    meta.payload_bytes = bytes.len();
+    meta.payload_sha256 = hash(&bytes);
+    meta.transport.payload_bytes = bytes.len();
+    meta.report["transport"] = serde_json::to_value(&meta.transport).map_err(|e| e.to_string())?;
+    for _ in 0..2 {
+        meta.transport.metadata_bytes = serde_json::to_vec(meta).map_err(|e| e.to_string())?.len();
+    }
+    Ok(bytes)
+}
+
 /// Normalized scene coordinates of one plan point. This is **the** conversion
 /// from plan millimetres into the space the viewport draws in: the motion
 /// vertices, the contour outline and the picker index all rest on it, so the

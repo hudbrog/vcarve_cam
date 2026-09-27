@@ -26,6 +26,7 @@ pub struct BoundaryQuery {
     index: SpatialIndex,
     magnitude: f64,
     query_limit: f64,
+    bounds: Option<Aabb>,
 }
 
 impl BoundaryQuery {
@@ -37,16 +38,30 @@ impl BoundaryQuery {
             .map(|p| p.x.abs().max(p.y.abs()))
             .fold(1.0, f64::max);
         let segments = region.segments();
+        let bounds = segments
+            .iter()
+            .map(|s| Aabb::new(s.start, s.end))
+            .reduce(Aabb::union);
         let index = SpatialIndex::new(segments.iter().map(|s| Aabb::new(s.start, s.end)).collect());
         Self {
             segments,
             index,
             magnitude,
             query_limit: 4.0 * region.grid().max_coordinate_mm(),
+            bounds,
         }
     }
     pub fn segments(&self) -> &[Segment] {
         &self.segments
+    }
+    /// Exclude finite exterior Voronoi witnesses before requesting a distance.
+    /// The full diagram can extend far beyond the input grid's query range.
+    /// Nonfinite points still reach the normal query validation and fail.
+    pub(crate) fn outside_bounds(&self, p: Point) -> bool {
+        p.finite()
+            && self.bounds.is_some_and(|bounds| {
+                p.x < bounds.min.x || p.x > bounds.max.x || p.y < bounds.min.y || p.y > bounds.max.y
+            })
     }
     /// Visit boundary edges whose boxes intersect a caller's conservative search box.
     /// Exact geometric predicates, including any proof for omitted edges, remain

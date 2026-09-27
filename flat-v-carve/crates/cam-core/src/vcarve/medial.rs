@@ -218,9 +218,12 @@ pub(super) fn build(ctx: &Context) -> Result<(MedialAxis, Vec<Candidate>)> {
             continue;
         };
         let mid = curve.evaluate(0.5)?;
+        if !edge.primary || ctx.target.boundary().outside_bounds(mid) {
+            excluded += 1;
+            continue;
+        }
         let q = queries.sample(mid)?;
-        if !edge.primary
-            || q.location != PointLocation::Inside
+        if q.location != PointLocation::Inside
             || closest(edge.sites[0], mid, &diagram.source_segments).distance(closest(
                 edge.sites[1],
                 mid,
@@ -303,4 +306,46 @@ pub(super) fn build(ctx: &Context) -> Result<(MedialAxis, Vec<Candidate>)> {
         },
         paths,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::{Grid, Region};
+
+    #[test]
+    fn distant_exterior_midpoints_do_not_block_medial_paths() {
+        let mut input = crate::job::input_from_fixture_json(include_str!(
+            "../../../../fixtures/m4/wide-floor.json"
+        ))
+        .unwrap();
+        input.region = Region::from_rings(
+            Grid::new(0.001, 1000.).unwrap(),
+            &[vec![
+                Point::new(0., 0.),
+                Point::new(500., 0.001),
+                Point::new(1000., 0.),
+                Point::new(1000., 20.),
+                Point::new(0., 20.),
+            ]],
+        )
+        .unwrap();
+        let ctx = Context::new(&input).unwrap();
+        let limit = 4. * ctx.target.region().grid().max_coordinate_mm();
+        assert!(ctx.target.diagram().unwrap().edges.iter().any(|edge| {
+            edge.primary
+                && edge.curve.as_ref().is_some_and(|curve| {
+                    let mid = curve.evaluate(0.5).unwrap();
+                    mid.x.abs().max(mid.y.abs()) > limit
+                })
+        }));
+        let (axis, paths) = build(&ctx).unwrap();
+        assert!(axis.excluded_edges > 0);
+        assert!(!paths.is_empty());
+        for point in paths.iter().flat_map(|path| &path.points) {
+            let clearance = ctx.target.boundary().sample(point.xy()).unwrap();
+            assert_eq!(clearance.location, PointLocation::Inside);
+            assert!(point.depth() <= clearance.distance_mm / ctx.tool.angle().slope());
+        }
+    }
 }

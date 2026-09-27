@@ -82,6 +82,37 @@ fn planning_grid_refinement_preserves_source_coordinates_and_uncertainty() {
 }
 
 #[test]
+fn distant_exterior_voronoi_vertices_do_not_block_tool_access() {
+    // A shallow notch in a long edge produces legitimate exterior vertices far
+    // beyond the distance-query domain, despite the input fitting on the grid.
+    let region = Region::from_rings(
+        Grid::new(0.001, 1000.).unwrap(),
+        &[vec![
+            Point::new(0., 0.),
+            Point::new(500., 0.001),
+            Point::new(1000., 0.),
+            Point::new(1000., 20.),
+            Point::new(0., 20.),
+        ]],
+    )
+    .unwrap();
+    let t = Target::for_planning(region, depth(2.), IncludedAngle::new(90.).unwrap()).unwrap();
+    let diagram = cam_core::geometry::VoronoiDiagram::build(t.region()).unwrap();
+    let limit = 4. * t.region().grid().max_coordinate_mm();
+    assert!(diagram.edges.iter().any(|edge| {
+        [edge.start, edge.end]
+            .into_iter()
+            .flatten()
+            .any(|p| p.x.abs().max(p.y.abs()) > limit)
+    }));
+    for radius in [1.5, 2.5, 3.5] {
+        let centers = t.center_set(length(radius)).unwrap();
+        assert_eq!(centers.status, CenterSetStatus::Area);
+        assert!(centers.area.area_mm2() > 1000.);
+    }
+}
+
+#[test]
 fn repeated_center_sets_preserve_contacts_and_isolate_returned_geometry() {
     let t = target(vec![rectangle(0., 0., 40., 20.)], 2., 90.);
     for radius in [1., 2., 10., 11., 1.] {

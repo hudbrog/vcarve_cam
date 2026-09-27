@@ -388,8 +388,9 @@ mod tests {
     /// The marker's tip and the removed material come from the same clock and the
     /// same field, so this pins the interface between them numerically instead of
     /// asking a reviewer to judge a screenshot: at each preset's cell size, the
-    /// cell under the tip holds exactly the depth the tip is standing in, and
-    /// cells the tool has not reached are still stock.
+    /// cell under the tip samples the physical cutter surface, and cells the
+    /// tool has not reached are still stock. A coarse cell's centre can lie
+    /// beyond the V-bit's flat tip, where its flank is shallower.
     #[test]
     fn the_drawn_tip_stands_on_the_cell_it_cut_at_every_preset() {
         use crate::sim::Interpolation;
@@ -429,9 +430,10 @@ mod tests {
             z1,
         };
         for preset in DisplayPreset::ALL {
-            // The display preset coarsens the raster to its longest side, exactly
-            // as `stock_preview::build_with_limits` does.
-            let cell = 40. / preset.max_side() as f64;
+            // Relative side caps and fixed physical spacing both drive the clock.
+            let cell = preset
+                .cell_mm()
+                .unwrap_or_else(|| 40. / preset.max_side().unwrap() as f64);
             for (tool, z0, z1) in [(0, -1.5, -1.5), (1, -0.5, -2.5)] {
                 for fraction in [0.25_f64, 0.5, 0.75] {
                     let motion = cut(tool, z0, z1);
@@ -457,8 +459,19 @@ mod tests {
                     );
                     let (level, _, _) = field.cell_at(col as usize, row as usize);
                     let removed = level as f64 * field.quantum;
+                    let distance = (stock.x0 + (col + 0.5) * cell - tip[0])
+                        .hypot(stock.y0 + (row + 0.5) * cell - tip[1]);
+                    // This descending pass ends behind the sample centre, so
+                    // its deepest removal is at the current tip. The 90-degree
+                    // V-bit rises 1 mm per mm beyond its 0.2 mm flat-tip radius.
+                    let expected = -tip[2]
+                        - if tool == 1 {
+                            (distance - 0.2).max(0.)
+                        } else {
+                            0.
+                        };
                     assert!(
-                        (removed - -tip[2]).abs() <= field.quantum + 1e-9,
+                        (removed - expected).abs() <= field.quantum + 1e-9,
                         "{preset:?} cell {cell:.4} tool {tool} at {fraction}: the tip is at \
                          z {:.4} but the cell holds {removed:.4} mm",
                         tip[2]

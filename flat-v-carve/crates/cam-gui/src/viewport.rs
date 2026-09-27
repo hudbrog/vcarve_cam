@@ -717,10 +717,9 @@ impl Viewport {
     }
 
     /// Seed the display's playback clock from the frames that travelled with the
-    /// scene. Two states are enough to run and rewind a program — the pristine
-    /// stock at prefix 0 and the state the display opens on — because the whole
-    /// ladder is already resident as payload bytes and a seek that needs another
-    /// checkpoint asks the compute process for it.
+    /// scene. The pristine field is reconstructed locally; detailed presets
+    /// transport only the final frame. A seek that needs another checkpoint
+    /// asks the compute process for its retained ladder.
     fn seed_clock(
         &self,
         scene: &Scene,
@@ -741,7 +740,7 @@ impl Viewport {
             )
             .ok()
         };
-        let pristine = field_at(0)?;
+        let pristine = sim::Field::new(meta.stock, &input.tools, meta.cell_mm).ok()?;
         let last = meta.frames.len().checked_sub(1)?;
         let field = field_at(last)?;
         let prefix = meta.frames.get(last)?.prefix;
@@ -2405,6 +2404,34 @@ fn visible_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_final_frame_only_scene_rewinds_to_pristine_stock() {
+        let (meta, payload) = crate::session::execute(
+            &mut cam_service::retained::Retained::new(),
+            crate::session::Command::generate_at(
+                crate::session::FLOWER,
+                crate::stock_preview::DisplayPreset::Detail01,
+            ),
+        )
+        .unwrap();
+        assert_eq!(meta.stock.as_ref().unwrap().frames.len(), 1);
+        let scene = Scene {
+            meta,
+            payload: Arc::new(payload),
+        };
+        let mut view = Viewport::default();
+        view.set_scene(scene);
+        let clock = view.stock.as_mut().unwrap().clock.as_mut().unwrap();
+        assert!(clock.field().stats.removed_volume_mm3 > 0.);
+        let checksum = clock.field().checksum();
+        let end = clock.motions();
+        clock.restore(0, 0.).unwrap();
+        assert_eq!(clock.field().stats.removed_volume_mm3, 0.);
+        assert_eq!(clock.field().stats.applied_motions, 0);
+        clock.restore(end, 0.).unwrap();
+        assert_eq!(clock.field().checksum(), checksum);
+    }
 
     /// The cutter and its trail are drawn in the same scene space as the motion
     /// vertices. A tip left in plan millimetres is tens of scene units from the
