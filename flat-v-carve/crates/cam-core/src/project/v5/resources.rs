@@ -867,6 +867,48 @@ pub fn assignment_statuses(job: &CamJobV5) -> Vec<AssignmentStatus> {
         .collect()
 }
 
+/// Remove only untouched auto-created slots after their last user is gone.
+/// Keep configured, renamed, library-backed and machine-mapped tools, even
+/// when no operation currently uses them.
+pub(crate) fn prune_unused_placeholders(job: &mut CamJobV5) -> Vec<String> {
+    let mut referenced = assigned_tool_ids(job);
+    if let Some(machine) = &job.machine_configuration {
+        referenced.extend(machine.tools.iter().map(|row| row.job_tool_id.clone()));
+    }
+    let mut removed = Vec::new();
+    job.tools.retain(|tool| {
+        let generated = [
+            ("endmill", "Endmill"),
+            ("vbit", "V-bit target"),
+            ("knife-tool", "Drag knife"),
+            ("drill", "Drill"),
+        ]
+        .iter()
+        .any(|(prefix, name)| {
+            tool.name == *name
+                && (tool.id == *prefix
+                    || tool.id.strip_prefix(prefix).is_some_and(|suffix| {
+                        suffix.strip_prefix('-').is_some_and(|number| {
+                            number
+                                .parse::<usize>()
+                                .is_ok_and(|value| value >= 2 && value.to_string() == number)
+                        })
+                    }))
+        });
+        let remove = generated
+            && !referenced.contains(&tool.id)
+            && tool.geometry.is_none()
+            && tool.assembly.is_empty()
+            && tool.capabilities == ToolCapabilities::default()
+            && tool.library_origin.is_none();
+        if remove {
+            removed.push(tool.id.clone());
+        }
+        !remove
+    });
+    removed
+}
+
 /// Job tool IDs referenced by at least one assignment.
 pub fn assigned_tool_ids(job: &CamJobV5) -> BTreeSet<String> {
     assignment_statuses(job)

@@ -1306,9 +1306,10 @@ impl CamJobV5 {
                 "job exceeds the 64 MB input limit",
             ));
         }
-        let job: Self =
+        let mut job: Self =
             serde_json::from_str(json).map_err(|e| error("PROJECT_JSON", e.to_string()))?;
         job.validate_structure()?;
+        resources::prune_unused_placeholders(&mut job);
         Ok(job)
     }
 

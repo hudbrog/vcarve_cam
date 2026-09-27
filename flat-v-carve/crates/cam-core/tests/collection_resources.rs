@@ -369,6 +369,89 @@ fn status_of(job: &CamJobV5, operation_id: &str, role: Role) -> ProfileStatus {
 /// after the library is gone, Reset restores the copied baseline and the
 /// reopened document needs no library to describe itself.
 #[test]
+fn replacing_generated_slots_does_not_accumulate_empty_tools() {
+    use v5::commands::{NewOperationKind, add_operation, remove_operation};
+    let original = base_job();
+    let mut job = original.clone();
+    for _ in 0..3 {
+        job = add_operation(&job, NewOperationKind::FlatVcarve, "new-carve", "Carve")
+            .unwrap()
+            .job;
+        assert_eq!(job.tools.len(), original.tools.len() + 2);
+        job = use_job_tool(&job, "new-carve", Role::Endmill, "t1")
+            .unwrap()
+            .job;
+        assert!(!job.tools.iter().any(|tool| tool.id == "endmill"));
+        assert!(job.tools.iter().any(|tool| tool.id == "vbit"));
+        job = remove_operation(&job, "new-carve").unwrap().job;
+        assert_eq!(job.tools, original.tools);
+    }
+}
+
+#[test]
+fn opening_old_jobs_prunes_only_untouched_unused_generated_slots() {
+    let mut job = base_job();
+    let placeholder = v5::JobToolV5 {
+        id: "endmill".into(),
+        name: "Endmill".into(),
+        geometry: None,
+        assembly: Default::default(),
+        capabilities: Default::default(),
+        library_origin: None,
+    };
+    job.tools.push(placeholder.clone());
+    for suffix in 2..=4 {
+        let mut tool = placeholder.clone();
+        tool.id = format!("endmill-{suffix}");
+        match suffix {
+            2 => tool.name = "My unfinished cutter".into(),
+            3 => tool.assembly.stickout_mm = Some(20.),
+            _ => tool.capabilities.plunge_capable = Some(false),
+        }
+        job.tools.push(tool);
+    }
+    let loaded = CamJobV5::from_json(&job.to_json().unwrap()).unwrap();
+    job.tools.retain(|tool| tool.id != "endmill");
+    assert_eq!(loaded, job);
+    assert_eq!(
+        CamJobV5::from_json(&loaded.to_json().unwrap()).unwrap(),
+        loaded
+    );
+}
+
+#[test]
+fn shared_and_machine_mapped_placeholders_survive_cleanup() {
+    use v5::commands::{NewOperationKind, add_operation};
+    let mut job = add_operation(
+        &base_job(),
+        NewOperationKind::FlatVcarve,
+        "new-carve",
+        "Carve",
+    )
+    .unwrap()
+    .job;
+    job.operations.push(job.operations[0].clone());
+    job.operations[1].id = "shared-carve".into();
+    job = use_job_tool(&job, "new-carve", Role::Endmill, "t1")
+        .unwrap()
+        .job;
+    assert!(job.tools.iter().any(|tool| tool.id == "endmill"));
+    job.machine_configuration = Some(
+        serde_json::from_value(serde_json::json!({
+            "origin": { "configuration_id": "test", "name": "Test machine" },
+            "tools": [{ "job_tool_id": "endmill", "tool_number": 1 }]
+        }))
+        .unwrap(),
+    );
+    job = use_job_tool(&job, "shared-carve", Role::Endmill, "t1")
+        .unwrap()
+        .job;
+    let loaded = CamJobV5::from_json(&job.to_json().unwrap()).unwrap();
+    assert!(loaded.tools.iter().any(|tool| tool.id == "endmill"));
+    assert!(loaded.tools.iter().any(|tool| tool.id == "vbit"));
+}
+
+#[test]
 fn a_job_tool_without_geometry_binds_to_any_assignment_but_a_mismatch_does_not() {
     // An empty snapshot is an incomplete state, not a wrong cutter: binding it
     // keeps the operation saveable and lets the planner report the missing

@@ -57,8 +57,13 @@ impl CommandOutcome {
     /// Validate the candidate structurally, enforce the aggregate serialized
     /// budget, then inspect references. Failing any step preserves the prior
     /// document because commands never mutate their input.
-    pub(crate) fn commit(job: CamJobV5, affected: Vec<AffectedEntity>) -> Result<Self> {
+    pub(crate) fn commit(mut job: CamJobV5, mut affected: Vec<AffectedEntity>) -> Result<Self> {
         job.to_json()?;
+        affected.extend(
+            super::resources::prune_unused_placeholders(&mut job)
+                .into_iter()
+                .map(AffectedEntity::JobTool),
+        );
         let issues = super::references::inspect_references(&job)?.issues;
         Ok(Self {
             job,
