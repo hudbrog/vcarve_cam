@@ -102,6 +102,8 @@ fn main() {
             "drawing": measured_svg.unwrap_or_else(|| "two-pockets.job.json".into()),
             "planningMs": planned_ms, "planningAndChecksMs": started.elapsed().as_secs_f64() * 1000.,
             "motions": plan.motions.len(), "stages": plan.stages.len(),
+            "retracts": plan.motions.iter().filter(|m| matches!(m.interpolation, cam_core::toolpath::Interpolation::Rapid) && m.end.z > m.start.z).count(),
+            "stayDownLinks": plan.motions.iter().filter(|m| m.purpose == cam_core::toolpath::MotionPurpose::Approach && m.start.z == m.end.z).count(),
             "results": plan.operation_results, "diagnostics": plan.generation_diagnostics,
             "checks": checks,
         })).unwrap());

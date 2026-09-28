@@ -44,9 +44,23 @@ revolution before leaving the entry. No fractional final turn is needed.
 Leads are tangent at the loop seam. Their entire cutter sweep must stay inside
 the pocket, including around islands. Requested leads are never silently
 shortened, dropped, or replaced; a lead or helix that cannot fit blocks the
-whole operation with a pocket/layer diagnostic. Clearance retracts separate
-runs and disconnected pockets. Each pocket's roughing and finishing complete
-before the next pocket begins.
+whole operation with a pocket/layer diagnostic. Adjacent loops use short feed
+connections at cutting depth when their complete cutter sweep fits inside the
+pocket. Seams move toward the previous endpoint when the requested leads fit.
+Each connection advances at most one stepover (plus the geometry grid reserve)
+from the preceding cut's established cutter footprint, at the lower of entry
+and cutting feed. Connections cannot chain together into a long slot.
+Unproved or longer connections, stage changes, and disconnected pockets retain
+clearance retracts. Each pocket's roughing and finishing complete before the
+next pocket begins.
+
+Later entries reuse established depths: plunge entries use a previously swept
+endpoint column; ramps and helices require matching level paths from earlier
+cuts. Ramps include a level cleanup traversal and helices a level revolution
+to establish that floor. The tool feeds down the cleared column before starting
+the next descent; it never rapids below the pocket top. A changed entry location
+without this evidence still starts from the top. Layer changes currently retain
+the clearance retract while avoiding repeated ramp/helix descent through air.
 
 Offset clearing proceeds from the inside outward. With a clockwise spindle,
 climb passes go counterclockwise around outer pocket walls and clockwise
@@ -84,7 +98,7 @@ it rather than interpreting it as another operation.
   lead arcs are retained and pass the existing numeric G-code readback.
 
 Open-sided pockets, breakthrough below stock, multiple cutters, rest machining,
-adaptive clearing, optimized stay-down links, and floor finishing are outside
+adaptive clearing, long-distance stay-down routing, and floor finishing are outside
 this version. Pocket stock history records removal but publishes no reusable
 top plane.
 
@@ -102,12 +116,13 @@ Run `node crates/cam-gui/web/smoke.mjs --pocket` against a built browser served
 on localhost:5182 to exercise editing, generation, stock replay, checked G-code
 download and reopening the saved job.
 
-On 2026-09-21, Chrome 152 / NVIDIA Ampere completed that workflow with no browser
+For the initial implementation on 2026-09-21, Chrome 152 / NVIDIA Ampere completed that workflow with no browser
 errors: 2,434 motions, 8.439 seconds for generation including checks and display
 preparation, using the scenario's 1.3 mm depth and 0.8 mm helix radius. This is a
 local measurement, not a hardware-independent performance guarantee.
 
-Release-mode core measurements on the same workstation:
+Initial implementation release-mode core measurements on the same workstation
+(before short loop connections and reused entry depths):
 
 | Workload | Motions / stages | Planning | Planning + independent checks |
 | --- | --- | --- | --- |
@@ -121,10 +136,20 @@ part of the workspace gate. Reproduce the measurements with
 `cargo run -p cam-core --release --example pocket_fixture -- --measure` and
 `cargo run -p cam-core --release --example pocket_fixture -- --measure-svg ../real_data/flower_box.svg`.
 
-The command-line `collection plan`, `collection apply-machine`, and
+The initial command-line `collection plan`, `collection apply-machine`, and
 `collection export --through pocket --layout one` paths also passed with the
 full demonstration: 3,651 motions, four stages, one checked program. The
 example machine's requested three decimal places were escalated to four by
 the existing output-precision policy, with `EXPORT_PRECISION_ESCALATED` reported.
 The output still passed numeric readback; the applied machine precision remains
 visible for review.
+
+After adding short connections and reused entry depths, the same full fixture
+produces 3,461 motions, 15 stay-down connections and 36 retracts (previously 51).
+Planning took 4.256 s and planning plus independent checks 5.114 s in one local
+release run. The planner's estimated operation time changed from 752.225 s to
+541.333 s; these are software estimates, not measured machine cycle times.
+Rectangular-pocket regression tests require one entry per pocket per layer.
+Other regressions cover preserved leads, ramp-only cutters with finishing,
+reused plunge/ramp/helix depths, and rejection of oversized links or descents
+without prior clearance evidence.

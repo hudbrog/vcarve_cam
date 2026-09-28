@@ -109,6 +109,160 @@ fn multiple_pockets_share_depth_and_end_on_partial_layer() {
 }
 
 #[test]
+fn adjacent_offsets_share_one_entry_per_layer_and_pockets_still_retract() {
+    let p = plan(&job(RECT));
+    complete(&p);
+    let entries: Vec<_> = p
+        .motions
+        .iter()
+        .filter(|m| m.purpose == MotionPurpose::Entry && m.start.z > m.end.z)
+        .collect();
+    assert_eq!(
+        entries.len(),
+        6,
+        "one entry for each of three layers in two pockets"
+    );
+    let links: Vec<_> = p
+        .motions
+        .iter()
+        .filter(|m| m.purpose == MotionPurpose::Approach && m.start.z == m.end.z)
+        .collect();
+    assert!(links.len() >= 20, "adjacent offsets should stay down");
+    assert!(
+        links
+            .iter()
+            .all(|m| m.start.xy().distance(m.end.xy()) <= 2.001 && m.feed_mm_min.unwrap() <= 150.)
+    );
+    for stage in &p.stages {
+        let last = &p.motions[stage.motion_range.1 - 1];
+        assert!(last.end.z > 0., "separate pockets must end at clearance");
+    }
+}
+
+#[test]
+fn deeper_ramps_and_helices_start_at_the_established_floor() {
+    for entry in [
+        v5::PocketEntry::Plunge,
+        v5::PocketEntry::Ramp {
+            max_angle_deg: Some(10.),
+            feed_mm_min: Some(200.),
+        },
+        v5::PocketEntry::Helix {
+            radius_mm: Some(1.),
+            max_angle_deg: Some(10.),
+            feed_mm_min: Some(200.),
+        },
+    ] {
+        let mut j = job(SMALL);
+        settings(&mut j).entry = entry;
+        let p = plan(&j);
+        complete(&p);
+        for (layer, surface) in [(1, 0.), (2, -1.), (3, -2.)] {
+            let first = p
+                .motions
+                .iter()
+                .find(|m| {
+                    m.layer == layer && m.purpose == MotionPurpose::Entry && m.start.z > m.end.z
+                })
+                .unwrap();
+            assert_eq!(first.start.z, surface);
+        }
+        assert!(
+            p.motions
+                .iter()
+                .filter(
+                    |m| matches!(m.interpolation, cam_core::toolpath::Interpolation::Rapid)
+                        && m.start.z > m.end.z
+                )
+                .all(|m| m.end.z >= 0.)
+        );
+    }
+}
+
+#[test]
+fn independent_verifier_rejects_unbounded_links_and_unproved_lower_approaches() {
+    let j = job(RECT);
+    let p = plan(&j);
+    let OperationSettingsV5::Pocket(s) = &j.operations[0].settings else {
+        panic!()
+    };
+    let region =
+        v5::resolve::resolve_filled_region(&j, &s.components, &v5::inspect_artwork(&j).unwrap())
+            .unwrap();
+    let verify = |motions: &[cam_core::toolpath::PlannedMotion]| {
+        cam_core::operations::pocket::verify_recorded_motions(
+            &region.region,
+            s,
+            2.,
+            0.,
+            -2.5,
+            0.05,
+            motions,
+        )
+    };
+    verify(&p.motions).unwrap();
+    let mut long = p.motions.clone();
+    let link = long
+        .iter_mut()
+        .find(|m| m.purpose == MotionPurpose::Approach && m.start.z == m.end.z)
+        .unwrap();
+    link.end.x += 6.;
+    assert_eq!(verify(&long).unwrap_err().code, "POCKET_LINK_UNVERIFIED");
+    let mut lower = p.motions.clone();
+    let approach = lower
+        .iter_mut()
+        .find(|m| m.purpose == MotionPurpose::Approach && m.start.z > m.end.z)
+        .unwrap();
+    approach.end.z -= 0.1;
+    assert_eq!(verify(&lower).unwrap_err().code, "POCKET_LINK_UNVERIFIED");
+}
+
+#[test]
+fn linked_leads_and_finish_work_with_a_ramp_only_cutter() {
+    for lead in [
+        project::LeadSpec::TangentLine {
+            length_mm: Some(0.2),
+            feed_mm_min: Some(250.),
+        },
+        project::LeadSpec::TangentArc {
+            radius_mm: Some(0.2),
+            sweep_deg: Some(90.),
+            feed_mm_min: Some(250.),
+        },
+    ] {
+        let mut j = job(SMALL);
+        j.tools[0].capabilities.plunge_capable = Some(false);
+        let s = settings(&mut j);
+        s.entry = v5::PocketEntry::Helix {
+            radius_mm: Some(1.),
+            max_angle_deg: Some(10.),
+            feed_mm_min: Some(200.),
+        };
+        s.lead_in = lead.clone();
+        s.lead_out = lead;
+        s.finish_walls = true;
+        s.wall_allowance_mm = Some(0.2);
+        let p = plan(&j);
+        complete(&p);
+        assert!(
+            p.motions
+                .iter()
+                .any(|m| m.purpose == MotionPurpose::Approach && m.start.z == m.end.z)
+        );
+        assert_eq!(
+            p.motions
+                .iter()
+                .filter(|m| m.purpose == MotionPurpose::LeadIn)
+                .count(),
+            p.motions
+                .iter()
+                .filter(|m| m.purpose == MotionPurpose::LeadOut)
+                .count()
+        );
+    }
+}
+
+#[test]
 fn island_is_preserved_and_wall_finish_follows_roughing() {
     let mut job = job(ISLAND);
     settings(&mut job).wall_allowance_mm = Some(0.3);
@@ -285,7 +439,12 @@ fn independent_verifier_rejects_missing_floor_and_island_crossing() {
     verify(&p.motions).unwrap();
     let mut missing = p.motions.clone();
     missing.retain(|m| !(m.layer == 1 && m.purpose == MotionPurpose::Rough));
-    assert_eq!(verify(&missing).unwrap_err().code, "POCKET_COVERAGE");
+    // Removing clearing also invalidates the later links/column approaches
+    // whose clearance depended on those cuts.
+    assert!(matches!(
+        verify(&missing).unwrap_err().code.as_str(),
+        "POCKET_COVERAGE" | "POCKET_LINK_UNVERIFIED"
+    ));
     let mut crossing = p.motions.clone();
     let cut = crossing
         .iter_mut()

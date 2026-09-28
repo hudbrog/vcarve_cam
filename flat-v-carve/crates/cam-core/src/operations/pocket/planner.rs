@@ -317,6 +317,7 @@ fn generate(
                     ));
                 }
             }
+            b.rapid(Position::new(b.cursor.xy(), clearance))?;
             verify::containment(
                 &region,
                 radius

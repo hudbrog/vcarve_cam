@@ -5,7 +5,7 @@ use crate::{
         union::UnionAccumulator,
     },
     stock::capsule_bounds,
-    toolpath::{Interpolation, MotionEffect, PlannedMotion},
+    toolpath::{Interpolation, MotionEffect, MotionPurpose, PlannedMotion},
 };
 
 /// Recheck recorded Pocket cuts without regenerating their paths. The caller
@@ -61,6 +61,58 @@ pub fn verify_recorded_motions(
         bottom,
         motions,
     )?;
+    for (index, m) in motions
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.purpose == MotionPurpose::Approach)
+    {
+        let prefix = &motions[..index];
+        let valid = if m.start.z == m.end.z {
+            short_link(
+                prefix,
+                m.start,
+                m.end,
+                settings,
+                region.grid().tolerance_mm(),
+            )
+        } else {
+            m.start.xy() == m.end.xy()
+                && m.start.z > m.end.z
+                && endpoint_floor(prefix, m.end.xy(), top) <= m.end.z
+        };
+        let entry_feed = match settings.entry {
+            crate::project::v5::PocketEntry::Plunge => settings.assignment.plunge_feed_mm_min,
+            crate::project::v5::PocketEntry::Ramp { feed_mm_min, .. }
+            | crate::project::v5::PocketEntry::Helix { feed_mm_min, .. } => feed_mm_min,
+        }
+        .unwrap_or(0.);
+        let feed_limit = if m.start.z == m.end.z {
+            let cutting_feed = if prefix
+                .iter()
+                .rev()
+                .find(|p| matches!(p.purpose, MotionPurpose::Rough | MotionPurpose::Finish))
+                .is_some_and(|p| p.purpose == MotionPurpose::Finish)
+            {
+                settings
+                    .finish_feed_mm_min
+                    .or(settings.assignment.cutting_feed_mm_min)
+            } else {
+                settings.assignment.cutting_feed_mm_min
+            };
+            entry_feed.min(cutting_feed.unwrap_or(0.))
+        } else {
+            entry_feed
+        };
+        if m.interpolation != Interpolation::LinearFeed
+            || !valid
+            || !m.feed_mm_min.is_some_and(|f| f > 0. && f <= feed_limit)
+        {
+            return Err(error(
+                "POCKET_LINK_UNVERIFIED",
+                format!("motion {} has no established link/entry clearance", m.id),
+            ));
+        }
+    }
     for m in motions
         .iter()
         .filter(|m| m.effect == MotionEffect::MillingSweep)
@@ -114,6 +166,76 @@ pub fn verify_recorded_motions(
 
 pub(super) fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("pocket")
+}
+
+/// A bridge advances at most one stepover from an already established cutter
+/// footprint. It cannot chain into a long slot: the preceding motion must be
+/// a contour cut or its lead-out, not another bridge. Wall/island containment
+/// is checked separately over the entire capsule.
+pub(super) fn short_link(
+    prefix: &[PlannedMotion],
+    from: crate::motion::Position,
+    to: crate::motion::Position,
+    settings: &crate::project::v5::PocketSettingsV5,
+    e: f64,
+) -> bool {
+    from.z == to.z
+        && from.xy().distance(to.xy()) <= settings.assignment.stepover_mm.unwrap_or(0.) + 4. * e
+        && prefix.last().is_some_and(|m| {
+            m.end == from
+                && m.start.z == from.z
+                && m.effect == MotionEffect::MillingSweep
+                && matches!(
+                    m.purpose,
+                    MotionPurpose::Rough | MotionPurpose::Finish | MotionPurpose::LeadOut
+                )
+        })
+}
+
+/// Exact endpoints of earlier cutter sweeps establish vertical cleared columns.
+/// No sampled stock display or tolerance-expanded removal is used as evidence.
+pub(super) fn endpoint_floor(
+    motions: &[PlannedMotion],
+    at: crate::geometry::Point,
+    top: f64,
+) -> f64 {
+    motions
+        .iter()
+        .filter(|m| m.effect == MotionEffect::MillingSweep)
+        .flat_map(|m| [m.start, m.end])
+        .filter(|p| p.xy() == at)
+        .fold(top, |z, p| z.min(p.z))
+}
+
+/// Reuse only exactly matching, level paths. For a helix both half-circles
+/// must already have run at the proposed surface; a descending arc is not proof.
+pub(super) fn path_floor(
+    motions: &[PlannedMotion],
+    paths: &[(
+        crate::geometry::Point,
+        crate::geometry::Point,
+        Interpolation,
+    )],
+    top: f64,
+) -> f64 {
+    paths
+        .iter()
+        .map(|&(a, b, interpolation)| {
+            motions
+                .iter()
+                .filter(|m| {
+                    m.effect == MotionEffect::MillingSweep
+                        && m.start.z == m.end.z
+                        && m.interpolation == interpolation
+                        && ((m.start.xy() == a && m.end.xy() == b)
+                            || (interpolation == Interpolation::LinearFeed
+                                && m.start.xy() == b
+                                && m.end.xy() == a))
+                })
+                .fold(top, |z, m| z.min(m.end.z))
+        })
+        .reduce(f64::max)
+        .unwrap_or(top)
 }
 
 pub(super) fn segment_inside(
