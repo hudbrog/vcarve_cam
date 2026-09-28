@@ -1572,7 +1572,12 @@ impl App {
                             field_path: None,
                         })
                         .collect();
-                    self.status = if reply["checks"]["exportReady"] == true {
+                    self.status = if self.planning_limit_reached() {
+                        format!(
+                            "Planning limit reached · {} motions retained · toolpath is incomplete; see warning below",
+                            meta.motions
+                        )
+                    } else if reply["checks"]["exportReady"] == true {
                         format!(
                             "Generated {} motions · basic checks passed · ready to simulate or prepare output",
                             meta.motions
@@ -1586,7 +1591,9 @@ impl App {
                     self.view.load_scene(Ok((meta, payload)));
                     if revalidated {
                         self.view.seek(previous_prefix);
-                        self.status="Retained carving still matches the machining inputs. Output settings will be checked when preparing.".into();
+                        if !self.planning_limit_reached() {
+                            self.status="Retained carving still matches the machining inputs. Output settings will be checked when preparing.".into();
+                        }
                     }
                     if let Some((fingerprint, prefix)) = self.resume_view.take()
                         && self.plan_fingerprint.as_ref() == Some(&fingerprint)

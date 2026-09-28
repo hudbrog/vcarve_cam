@@ -235,6 +235,7 @@ fn plan_region(
     let mut motions = vec![];
     let mut diagnostics = vec![];
     let mut resource_hit = false;
+    let mut exhausted_budget = "entry motion";
     for (layer, &depth) in levels.iter().enumerate() {
         let planning_depth = strategy_depth(&ctx, depth);
         let access = ctx.target.endmill_centers(
@@ -298,6 +299,7 @@ fn plan_region(
             for mut points in inset.rings_mm() {
                 if loop_count >= ctx.settings.max_loops_per_layer || resource_hit {
                     resource_hit = true;
+                    exhausted_budget = "contour";
                     break;
                 }
                 loop_count += 1;
@@ -330,6 +332,7 @@ fn plan_region(
                 // already contain more cuts than the entire motion budget.
                 if cut_count >= ctx.settings.max_motions {
                     resource_hit = true;
+                    exhausted_budget = "motion";
                     break;
                 }
             }
@@ -338,6 +341,7 @@ fn plan_region(
             }
             if offset + 1 == ctx.settings.max_loops_per_layer {
                 resource_hit = true;
+                exhausted_budget = "contour";
             }
         }
         let mut entries = vec![];
@@ -417,6 +421,7 @@ fn plan_region(
                 }
                 Ok(_) => {
                     resource_hit = true;
+                    exhausted_budget = "motion";
                     break;
                 }
                 Err(d) => {
@@ -433,7 +438,10 @@ fn plan_region(
     if resource_hit {
         diagnostics.push(error(
             "PLANNING_RESOURCE_LIMIT",
-            "loop/motion budget was exhausted; retained motions are a partial plan",
+            format!(
+                "Endmill {exhausted_budget} limit reached: retained {} motions (motion limit {}, contour limit {} per layer). Roughing is incomplete and may leave uncut islands for the V-bit. Review the toolpath, adjust the planner limits or geometry tolerance, and regenerate.",
+                motions.len(), ctx.settings.max_motions, ctx.settings.max_loops_per_layer
+            ),
         ));
     }
     timing.lap("generate motions");

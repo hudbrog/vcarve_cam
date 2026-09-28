@@ -867,7 +867,11 @@ fn execute(
     if moves.len() + additions.len() - usize::from(linked) > ctx.settings.max_motions {
         return Err(error(
             "VBIT_MOTION_LIMIT",
-            "V-bit motion budget exhausted; complete excursions are retained",
+            format!(
+                "V-bit motion limit {} reached: retained {} motions. Finishing is incomplete; complete excursions are retained. Review the planner limit and regenerate.",
+                ctx.settings.max_motions,
+                moves.len()
+            ),
         ));
     }
     if linked {

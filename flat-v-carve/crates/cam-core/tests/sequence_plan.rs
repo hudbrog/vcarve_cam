@@ -216,6 +216,50 @@ fn resource_limit_fixture_is_inconclusive_not_truncated_success() {
         "budget exhaustion must not read as complete, got {status:?}"
     );
     assert!(!plan.generation_diagnostics.is_empty());
+    let issue = plan
+        .generation_diagnostics
+        .iter()
+        .find(|issue| issue.code == "VBIT_MOTION_LIMIT")
+        .expect("the V-bit limit reason must reach the UI, not just the finish shortfall");
+    assert_eq!(issue.operation_id.as_deref(), Some(operation_id(&cam)));
+    assert_eq!(
+        issue.stage_id,
+        Some(format!("{}-vcarve-finish", operation_id(&cam)))
+    );
+}
+
+#[test]
+fn endmill_limits_reach_sequence_diagnostics_with_budget_and_stage() {
+    for (motions, contours, reason) in [(10, 128, "motion"), (10000, 1, "contour")] {
+        let mut cam: CamJob = serde_json::from_str(M3_RECTANGLE).unwrap();
+        let OperationSettings::FlatVcarve(settings) = &mut cam.operations[0].settings else {
+            panic!("expected V-carve fixture");
+        };
+        let rough = settings.rough.as_mut().unwrap();
+        rough.max_motions = motions;
+        rough.max_loops_per_layer = contours;
+        let plan = OperationPlan::plan_job(&cam, &PlanLimits::default()).unwrap();
+        let issue = plan
+            .generation_diagnostics
+            .iter()
+            .find(|issue| issue.code == "PLANNING_RESOURCE_LIMIT")
+            .unwrap();
+        assert!(
+            issue
+                .message
+                .contains(&format!("Endmill {reason} limit reached"))
+        );
+        assert!(issue.message.contains(&format!("motion limit {motions}")));
+        assert!(issue.message.contains("Roughing is incomplete"));
+        assert_eq!(
+            issue.stage_id,
+            Some(format!("{}-vcarve-rough", operation_id(&cam)))
+        );
+        assert_ne!(
+            plan.operation_results[0].generation_status,
+            GenerationStatus::Complete
+        );
+    }
 }
 
 #[test]

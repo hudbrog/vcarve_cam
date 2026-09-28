@@ -200,12 +200,13 @@ impl Context {
         };
         target.boundary().sample(settings.start_xy_mm)?;
         // Account for existing offset error before spending motion tolerance on
-        // cleanup, and retain most of the geometry guard.
+        // cleanup. The simplifier independently checks that each replacement
+        // retains half the clearance guard; limiting displacement to a fraction
+        // of the import grid would needlessly preserve tiny interior segments.
         let cleanup_budget = (motion_tolerance
             - target.region().grid().arc_tolerance_mm()
             - target.region().grid().snap_bound_mm())
         .max(0.)
-        .min(e / 4.)
         .min(coverage_tolerance / 8.);
         Ok(Self {
             target,

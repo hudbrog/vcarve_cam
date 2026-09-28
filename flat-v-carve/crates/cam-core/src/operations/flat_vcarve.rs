@@ -765,6 +765,12 @@ fn run_engine(
                     stage_id: Some(rough_stage_id.clone()),
                 })
                 .collect();
+            issues.extend(plan.generation_issues.iter().map(|issue| PlanIssue {
+                code: issue.code.clone(),
+                message: issue.message.clone(),
+                operation_id: Some(operation_id.into()),
+                stage_id: Some(finish_stage_id.clone()),
+            }));
             // The combined planner folds finish-path shortfall into its
             // analysis; surface it as an explicit generation diagnostic.
             if plan.analysis.finish_paths_expected != plan.analysis.finish_paths_executed {

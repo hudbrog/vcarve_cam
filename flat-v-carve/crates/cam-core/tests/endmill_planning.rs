@@ -27,6 +27,31 @@ fn fixture_form(name: &str) -> cam_core::job::FixtureJob {
     .unwrap()
 }
 #[test]
+fn fine_imported_back_panel_clears_centers_within_its_motion_budget() {
+    // Resolved roughing settings and artwork from real_data/back_panel.json.
+    // A 0.001 mm import grid must not force contour cleanup below the
+    // independently checked 0.01 mm motion / 0.05 mm coverage tolerances.
+    // Previously the 20,000-motion budget truncated the inner offsets and
+    // left roughly 1,301 mm² of accessible floor for the V-bit to clear.
+    let job = fixture("back-panel");
+    let plan = plan_endmill(&job).unwrap();
+    assert_eq!(
+        plan.analysis.status,
+        PlanStatus::Complete,
+        "{:?}",
+        plan.analysis.diagnostics
+    );
+    assert!(plan.generation_issues.is_empty());
+    assert!(plan.motions.len() < job.endmill_planning.as_ref().unwrap().max_motions);
+    assert!(!plan.analysis.layers.is_empty());
+    for layer in &plan.analysis.layers {
+        assert!(layer.missing_floor_beyond_tolerance.rings().is_empty());
+        assert!(layer.possible_overcut.rings().is_empty());
+    }
+    assert!(plan.analysis.minimum_center_margin_mm.unwrap() >= 0.);
+}
+
+#[test]
 fn standard_clearing_fixtures() {
     for name in [
         "rectangle",

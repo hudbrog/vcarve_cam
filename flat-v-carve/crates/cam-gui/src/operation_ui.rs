@@ -434,6 +434,7 @@ impl App {
                     } else {
                         "Planner limits"
                     });
+                    ui.small("Limits bound planning time and memory. Reaching a limit leaves an incomplete toolpath and a warning; increase it only after reviewing the result.");
                     app.operation_numbers(
                         ui,
                         ctx,

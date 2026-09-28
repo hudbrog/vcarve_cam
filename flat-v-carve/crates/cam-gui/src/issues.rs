@@ -187,6 +187,12 @@ fn target_in(job: &CamJobV5, path: &str, owner: Option<&str>) -> Option<(usize, 
 }
 
 impl App {
+    pub(super) fn planning_limit_reached(&self) -> bool {
+        self.issues
+            .iter()
+            .any(|issue| issue.code.ends_with("_LIMIT"))
+    }
+
     fn open_issue(
         &mut self,
         issue: &cam_core::operations::LocatedDiagnostic,
@@ -217,10 +223,18 @@ impl App {
             return;
         }
         egui::TopBottomPanel::bottom("machining-issues").show(ctx, |ui| {
+            let limited = self.planning_limit_reached();
             ui.colored_label(
                 crate::ui_theme::WARNING,
-                RichText::new(format!("Settings need attention · {}", self.issues.len())).strong(),
+                RichText::new(if limited {
+                    "Planning limit reached — toolpath is incomplete".into()
+                } else {
+                    format!("Settings need attention · {}", self.issues.len())
+                }).strong(),
             );
+            if limited {
+                ui.label("Some cuts may be missing. Review the affected operation's planner limits and regenerate before export.");
+            }
             egui::ScrollArea::vertical()
                 .max_height(100.)
                 .show(ui, |ui| {
