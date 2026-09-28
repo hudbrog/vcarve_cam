@@ -77,7 +77,7 @@ impl App {
                             }
                         };
                         let id = app.operation_id();
-                        app.edit_job(ctx, &[], move |job| {
+                        app.edit_job(ctx, &[82, 83, 84, 85], move |job| {
                             face::set_area(job, &id, target.clone())
                         });
                     }
@@ -136,7 +136,7 @@ impl App {
                     observe_control(label, r.rect);
                     if r.clicked() && !selected {
                         let id = app.operation_id();
-                        app.edit_job(ctx, &[], move |job| {
+                        app.edit_job(ctx, &[75], move |job| {
                             face::set(job, &id, 75, Some(angle))
                         });
                     }
@@ -196,7 +196,7 @@ impl App {
                 observe_control(&label, response.rect);
                 if response.clicked() && !selected {
                     let id = self.operation_id();
-                    self.edit_job(ctx, &[], move |job| face::set_entry(job, &id, value));
+                    self.edit_job(ctx, &[109], move |job| face::set_entry(job, &id, value));
                 }
             }
         });
@@ -529,6 +529,77 @@ mod tests {
             -0.5
         );
         doc.validate().unwrap();
+    }
+
+    #[test]
+    fn face_choices_replace_the_numeric_drafts_they_supersede() {
+        for (field, text, choice) in [
+            (75, "0", "90° (rows along Y)"),
+            (84, "80", "Entire stock"),
+            (109, "-40", "Start at X−"),
+        ] {
+            let (mut app, id) = configured_face();
+            let ctx = egui::Context::default();
+            let doc = app.document.as_mut().unwrap();
+            if field == 84 {
+                let rect = doc.job.setup.stock.xy.unwrap();
+                face::set_area(&mut doc.job, &id, FaceArea::Rectangle { rect }).unwrap();
+            } else if field == 109 {
+                face::set_entry(&mut doc.job, &id, FaceEntry::At { coordinate_mm: 0. }).unwrap();
+            }
+            doc.edit(field, text.into()).unwrap();
+            assert!(!doc.pending());
+            let frame = |app: &mut App, events| {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1200., 900.),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            if field == 84 {
+                                app.face_coverage(ui, ctx);
+                            } else {
+                                app.face_travel(ui, ctx);
+                            }
+                        });
+                    },
+                );
+            };
+            for _ in 0..3 {
+                frame(&mut app, vec![]);
+            }
+            let [x0, y0, x1, y1] = CONTROLS.with(|c| c.borrow()[choice]);
+            let pos = egui::pos2((x0 + x1) / 2., (y0 + y1) / 2.);
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::default(),
+                        },
+                    ],
+                );
+            }
+            let doc = app.document.as_ref().unwrap();
+            assert_eq!(
+                doc.text(field),
+                if field == 75 { "90" } else { "" },
+                "{choice} must replace the prior numeric draft",
+            );
+            assert!(
+                !doc.pending(),
+                "{choice} must allow generation without switching operations"
+            );
+        }
     }
 
     #[test]

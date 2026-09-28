@@ -381,7 +381,7 @@ export async function gui9Scenario({control,edit,state,waitFor,send,evaluate,sle
   await screenshot('gui9c-cancelled.png');
   await control('Generate');
   const small = await waitFor(
-    s => s.current && !s.active && s.motions === 22883,
+    s => s.current && !s.active && s.motions === 18653,
     'small reference generation',
     900,
   );

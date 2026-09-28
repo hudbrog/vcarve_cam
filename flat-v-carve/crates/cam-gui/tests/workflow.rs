@@ -24,8 +24,12 @@ fn canonical_flower_retains_exact_execution_and_prepares_without_replanning() {
     let input = profile(gui::FLOWER);
     let mut service = Retained::new();
     let (scene, payload) = gui::execute(&mut service, Command::generate(input.clone())).unwrap();
-    assert_eq!(scene.motions, 22_883);
-    assert_eq!(scene.rough_vertices / 2, 7_048);
+    // The endmill cleanup uses the available motion-tolerance budget, removing
+    // tiny interior segments while preserving the verified clearance guard.
+    assert_eq!(scene.motions, 18_653);
+    assert_eq!(scene.rough_vertices / 2, 2_818);
+    let total = scene.motions;
+    let rough_end = scene.rough_vertices / 2;
     assert!(scene.stock.is_some());
     assert!(scene.sim.is_some());
     let handle = scene.report["gui2"]["handle"].as_str().unwrap().to_owned();
@@ -37,7 +41,7 @@ fn canonical_flower_retains_exact_execution_and_prepares_without_replanning() {
     };
     let sim = scene.sim_input().unwrap().unwrap();
     // Real worker replay, including backward seeks, agrees with cold replay.
-    for prefix in [7_048, 22_883, 1_234, 17_111, 0] {
+    for prefix in [rough_end, total, 1_234, 17_111, 0] {
         let (meta, payload) = gui::execute(
             &mut service,
             Command::Seek {

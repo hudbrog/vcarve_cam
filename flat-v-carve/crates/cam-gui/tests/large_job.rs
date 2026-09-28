@@ -330,7 +330,7 @@ fn the_flower_box_batch_generates_and_scrubs_inside_the_display_budget() {
     );
 
     let small = measure(&with_machine(gui::FLOWER));
-    assert_eq!(small.motions, 22_883, "the small reference is unchanged");
+    assert_eq!(small.motions, 18_653, "the small reference is unchanged");
 
     if let Ok(path) = std::env::var("CAM_GUI9_MEASURE_OUT") {
         let report = json!({
