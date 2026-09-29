@@ -55,6 +55,53 @@ struct Display {
     resolution: crate::sim::Resolution,
     marks: Vec<usize>,
     preset: crate::stock_preview::DisplayPreset,
+    /// The trimmed scene this execution last answered a generation with, so a
+    /// matching revalidation can return it instead of rebuilding one.
+    scene: Option<RetainedScene>,
+}
+
+/// The scene one generation produced, with the job readings it was built
+/// from: while they stand, a revalidation of the same execution answers with
+/// this scene — patched to carry the current document — instead of
+/// rebuilding the projections, the motion vertices, the machine checks and
+/// the stock rasters for an execution that did not change.
+struct RetainedScene {
+    /// The artwork state the scene projected.
+    artwork_key: String,
+    /// The tool list including assemblies, the machine configuration and the
+    /// operation list as serialized JSON: the display-facing readings the
+    /// machining identity does not cover.
+    tools: String,
+    machine: String,
+    operations: String,
+    scope: GenerateScope,
+    preset: crate::stock_preview::DisplayPreset,
+    meta: SceneMeta,
+    payload: std::sync::Arc<Vec<u8>>,
+}
+
+impl RetainedScene {
+    /// The scene answers for this job when the artwork state, the tool list,
+    /// the machine configuration, the operation list, the display preset and
+    /// the scope are the ones it was generated from; the machining identity
+    /// match already covered everything else the scene reads.
+    fn answers(
+        &self,
+        artwork_key: &str,
+        job: &CamJobV5,
+        scope: &GenerateScope,
+        preset: crate::stock_preview::DisplayPreset,
+    ) -> bool {
+        self.artwork_key == artwork_key
+            && self.scope == *scope
+            && self.preset == preset
+            && Some(&self.tools) == serde_json::to_string(&job.tools).ok().as_ref()
+            && Some(&self.machine)
+                == serde_json::to_string(&job.machine_configuration)
+                    .ok()
+                    .as_ref()
+            && Some(&self.operations) == serde_json::to_string(&job.operations).ok().as_ref()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -882,13 +929,34 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 retained.filter(|p| Some(&p.machining_identity) == identity.as_ref())
             {
                 let plan = retained.trusted.plan();
-                return scene(
+                // The retained execution already answered with a scene built
+                // from these same readings: return it, patched to carry the
+                // current document, instead of rebuilding one for an
+                // execution that did not change.
+                if let Some(reused) =
+                    reuse_generated_scene(&job, plan, &handle, &scope, preset, artwork)
+                {
+                    return Ok(reused);
+                }
+                let mut result = scene(
                     &job,
                     plan,
                     json!({"kind":"revalidated","handle":handle,"scope":scope,"executionFingerprint":plan.execution_fingerprint,"checks":retained.checks,"generationIssues":plan.generation_diagnostics}),
                     preset,
                     artwork,
-                );
+                )?;
+                // Transport parity with generation: the checkpoint ladder stays
+                // worker-side and the reply carries the final frame.
+                let transported = crate::compute::Scene {
+                    meta: result.0.clone(),
+                    payload: std::sync::Arc::new(std::mem::take(&mut result.1)),
+                };
+                result.1 = if result.0.stock.is_some() {
+                    crate::compute::final_stock_frame(&mut result.0, &transported.payload)?
+                } else {
+                    std::sync::Arc::try_unwrap(transported.payload).unwrap_or_else(|p| (*p).clone())
+                };
+                return Ok(result);
             }
             return outline(&job, json!({"kind":"stale"}), artwork);
         }
@@ -1005,6 +1073,7 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                     resolution: input.resolution,
                     marks,
                     preset,
+                    scene: None,
                 })
             });
             result.1 = if preset.cell_mm().is_some() {
@@ -1012,6 +1081,35 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             } else {
                 std::sync::Arc::try_unwrap(scene.payload).unwrap_or_else(|p| (*p).clone())
             };
+            // Keep the scene this execution answered with, against the job
+            // readings it was built from, for a matching revalidation. The
+            // kept scene transports the final stock frame whatever the reply
+            // carried: a revalidation reply always does.
+            let retained_scene = crate::artwork_cache::projections(&job)
+                .ok()
+                .and_then(|artwork| {
+                    let mut meta = result.0.clone();
+                    let payload = if meta.stock.is_some() {
+                        crate::compute::final_stock_frame(&mut meta, &result.1).ok()?
+                    } else {
+                        result.1.clone()
+                    };
+                    Some(RetainedScene {
+                        artwork_key: artwork.key.clone(),
+                        tools: serde_json::to_string(&job.tools).ok()?,
+                        machine: serde_json::to_string(&job.machine_configuration).ok()?,
+                        operations: serde_json::to_string(&job.operations).ok()?,
+                        scope: scope.clone(),
+                        preset,
+                        meta,
+                        payload: std::sync::Arc::new(payload),
+                    })
+                });
+            DISPLAY.with(|d| {
+                if let Some(display) = d.borrow_mut().as_mut() {
+                    display.scene = retained_scene;
+                }
+            });
             return Ok(result);
         }
         Command::Prepare { job, handle } => {
@@ -1053,6 +1151,55 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
         }
     };
     outline(&job, report, artwork)
+}
+
+/// The retained scene a matching revalidation can answer with: the scene
+/// this execution's generation answered with, when every display-facing
+/// reading it was built from still describes the job — the artwork state,
+/// the tool list, the machine configuration, the operation list, the preset
+/// and the scope (the identity match covered the machining inputs). The
+/// patched metadata carries the current document and name; the payload is
+/// byte-identical, so the display's resident pages stay valid.
+fn reuse_generated_scene(
+    job: &CamJobV5,
+    plan: &cam_core::sequence::OperationPlanV5,
+    handle: &str,
+    scope: &GenerateScope,
+    preset: crate::stock_preview::DisplayPreset,
+    artwork_fields: bool,
+) -> Option<(SceneMeta, Vec<u8>)> {
+    let artwork_key = crate::artwork_cache::projections(job).ok()?.key.clone();
+    DISPLAY.with(|d| {
+        let display = d.borrow();
+        let display = display.as_ref().filter(|display| {
+            display.fingerprint == plan.execution_fingerprint
+                && display
+                    .scene
+                    .as_ref()
+                    .is_some_and(|scene| scene.answers(&artwork_key, job, scope, preset))
+        })?;
+        let scene = display.scene.as_ref()?;
+        let mut meta = scene.meta.clone();
+        let gui2 = &mut meta.report["gui2"];
+        gui2["kind"] = json!("revalidated");
+        gui2["handle"] = json!(handle);
+        gui2["scope"] = json!(scope);
+        gui2["executionFingerprint"] = json!(plan.execution_fingerprint);
+        if !artwork_fields && let Some(fields) = gui2.as_object_mut() {
+            for field in ["components", "chains", "profileContours", "drillPoints"] {
+                fields.remove(field);
+            }
+        }
+        meta.job = job.to_json().ok()?;
+        meta.name = job.name.clone();
+        // The metadata size follows the patched document, the same two-pass
+        // accounting the scene package performs.
+        meta.report["transport"] = serde_json::to_value(&meta.transport).ok()?;
+        for _ in 0..2 {
+            meta.transport.metadata_bytes = serde_json::to_vec(&meta).ok()?.len();
+        }
+        Some((meta, (*scene.payload).clone()))
+    })
 }
 
 fn outline(job: &CamJobV5, report: Value, artwork: bool) -> Result<(SceneMeta, Vec<u8>), String> {
@@ -1229,5 +1376,113 @@ mod tests {
         .unwrap();
         assert_eq!(stale_plan.report["gui2"]["kind"], "stale");
         assert!(stale_plan.report["gui2"]["components"].is_array());
+    }
+
+    /// A revalidation whose job still reads exactly as the generated one
+    /// answers with the retained scene — one final stock frame, metadata
+    /// patched to carry the current document. A display-facing change that
+    /// the machining identity does not cover (a document rename) still
+    /// reuses; changes that do (another display preset, new unselected
+    /// artwork) rebuild. Every revalidation reply transports the final frame
+    /// while the generation's checkpoint ladder stays worker-side.
+    #[test]
+    fn a_matching_revalidation_reuses_the_generated_scene() {
+        let job = CamJobV5::from_json(include_str!(
+            "../../../fixtures/pocket/two-pockets.job.json"
+        ))
+        .unwrap();
+        let text = job.to_json().unwrap();
+        let mut service = Retained::new();
+        let (generated, generated_payload) =
+            execute(&mut service, Command::generate(text.clone())).unwrap();
+        assert!(
+            generated.report["transport"]["stockCheckpoints"]
+                .as_u64()
+                .unwrap()
+                > 1,
+            "a standard generation still publishes its checkpoint ladder"
+        );
+        let handle = generated.report["gui2"]["handle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let validate = |service: &mut Retained, job: String, handle: &str, preset| {
+            execute(
+                service,
+                Command::ValidatePlan {
+                    job,
+                    handle: handle.into(),
+                    scope: GenerateScope::AllEnabled,
+                    preset,
+                    have_artwork: None,
+                },
+            )
+            .unwrap()
+        };
+
+        // The same document: the retained scene answers, carrying it — as
+        // one final stock frame, not the ladder the generation published.
+        let (meta, payload) = validate(&mut service, text.clone(), &handle, Default::default());
+        assert_eq!(meta.report["gui2"]["kind"], "revalidated");
+        assert_ne!(
+            payload, generated_payload,
+            "a revalidation transports the final frame, not the ladder"
+        );
+        assert!(payload.len() < generated_payload.len());
+        assert_eq!(meta.report["transport"]["stockCheckpoints"], 1);
+        assert!(meta.report["gui2"]["components"].is_array());
+        assert_eq!(
+            meta.job, text,
+            "the patched metadata carries the current document"
+        );
+
+        // A rename touches neither machining nor the artwork state: the same
+        // retained scene answers, named for the renamed document.
+        let mut renamed = job.clone();
+        renamed.name = "renamed job".into();
+        let renamed_text = renamed.to_json().unwrap();
+        let (meta, renamed_payload) =
+            validate(&mut service, renamed_text, &handle, Default::default());
+        assert_eq!(meta.report["gui2"]["kind"], "revalidated");
+        assert_eq!(payload, renamed_payload);
+        assert_eq!(meta.name, "renamed job");
+
+        // Another display preset re-derives the raster: same execution,
+        // different transported bytes, still one final frame.
+        let (meta, coarse) = validate(
+            &mut service,
+            text.clone(),
+            &handle,
+            crate::stock_preview::DisplayPreset::Coarse,
+        );
+        assert_eq!(meta.report["gui2"]["kind"], "revalidated");
+        assert_ne!(coarse, payload);
+        assert_eq!(meta.report["transport"]["stockCheckpoints"], 1);
+
+        // New unselected artwork widens the artwork state the scene projected
+        // while the machining identity stands: the scene is rebuilt for it.
+        let added = v5::commands::add_artwork(
+            &job,
+            vec![v5::commands::ArtworkInput {
+                filename: "wider.svg".into(),
+                svg: PAGE_SVG.into(),
+                interpretation: v5::SvgInterpretation::default(),
+                placement: Default::default(),
+                name: None,
+            }],
+        )
+        .unwrap();
+        let widened = added.outcome.job;
+        let (meta, widened_payload) = validate(
+            &mut service,
+            widened.to_json().unwrap(),
+            &handle,
+            Default::default(),
+        );
+        assert_eq!(meta.report["gui2"]["kind"], "revalidated");
+        assert_ne!(widened_payload, payload);
+        assert!(meta.report["gui2"]["components"].is_array());
+        assert_eq!(meta.report["transport"]["stockCheckpoints"], 1);
     }
 }
