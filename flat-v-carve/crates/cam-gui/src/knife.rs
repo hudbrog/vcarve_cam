@@ -312,7 +312,13 @@ pub struct Chain {
 }
 pub fn chains(job: &CamJobV5) -> Result<Vec<Chain>, String> {
     let catalogue = crate::artwork_cache::inspect(job)?;
-    Ok(catalogue
+    Ok(chains_of(&catalogue))
+}
+
+/// The catalogue's centreline chains, owner-qualified: the reading the scene
+/// and the pickers share, derived per artwork state.
+pub fn chains_of(catalogue: &artwork::CombinedCatalogue) -> Vec<Chain> {
+    catalogue
         .items
         .iter()
         .flat_map(|item| {
@@ -334,7 +340,7 @@ pub fn chains(job: &CamJobV5) -> Result<Vec<Chain>, String> {
                 })
             })
         })
-        .collect())
+        .collect()
 }
 
 /// No selection is inferred from imports; bind only the explicit current picks.

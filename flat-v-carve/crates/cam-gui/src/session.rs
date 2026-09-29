@@ -80,6 +80,11 @@ pub enum Command {
     },
     Preview {
         job: String,
+        /// The artwork key the display already holds. When it still matches
+        /// the job's artwork state the reply omits the artwork report fields
+        /// instead of re-transporting geometry the display adopted already.
+        #[serde(default)]
+        have_artwork: Option<String>,
     },
     ValidatePlan {
         job: String,
@@ -87,6 +92,8 @@ pub enum Command {
         scope: GenerateScope,
         #[serde(default)]
         preset: crate::stock_preview::DisplayPreset,
+        #[serde(default)]
+        have_artwork: Option<String>,
     },
     Seek {
         handle: String,
@@ -181,13 +188,14 @@ impl Command {
             action,
         }
     }
-    /// Revalidate a retained plan against the whole enabled list.
+    /// Revalidation a display without adopted artwork asked for.
     pub fn validate_plan(job: impl Into<String>, handle: impl Into<String>) -> Self {
         Command::ValidatePlan {
             job: job.into(),
             handle: handle.into(),
             scope: GenerateScope::AllEnabled,
             preset: crate::stock_preview::DisplayPreset::Standard,
+            have_artwork: None,
         }
     }
 }
@@ -293,8 +301,7 @@ fn artwork_command(
             // Only the displayed catalogue's exact references are accepted:
             // a reference from a replaced source is reattached deliberately,
             // never rebound by re-sending it.
-            let catalogue = crate::artwork_cache::inspect(job)?;
-            let available = crate::authoring::catalogue_components(&catalogue);
+            let available = &crate::artwork_cache::projections(job)?.components;
             if references
                 .iter()
                 .any(|reference| !available.iter().any(|c| &c.reference == reference))
@@ -318,13 +325,11 @@ fn artwork_command(
             }
             // Only the displayed catalogue's exact point references are
             // accepted, exactly as the component selection insists.
-            let catalogue = crate::artwork_cache::inspect(job)?;
-            let available = catalogue
-                .items
+            let available: Vec<_> = crate::artwork_cache::projections(job)?
+                .points
                 .iter()
-                .flat_map(|item| item.point_entries.iter())
-                .map(|entry| entry.reference.clone())
-                .collect::<Vec<_>>();
+                .map(|point| point.reference.clone())
+                .collect();
             if references
                 .iter()
                 .any(|reference| !available.contains(reference))
@@ -489,8 +494,8 @@ fn artwork_command(
                 return Err("Select an operation before repairing its selection".into());
             }
             // Reject a target picked from an obsolete displayed catalogue.
-            let catalogue = crate::artwork_cache::inspect(job)?;
-            if !crate::authoring::catalogue_components(&catalogue)
+            if !crate::artwork_cache::projections(job)?
+                .components
                 .iter()
                 .any(|c| c.reference == replacement)
             {
@@ -695,7 +700,12 @@ fn scoped_operations<'a>(
 }
 
 pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, Vec<u8>), String> {
-    let (job, report) = match command {
+    // The fall-through arms end in one outline; each says whether its reply
+    // carries the artwork report fields. An arm whose reply the display
+    // adopts artwork from says yes; an arm the display only reads job values
+    // from says no; the display-driven arms (Preview, ValidatePlan) ask the
+    // artwork cache what the display already holds.
+    let (job, report, artwork) = match command {
         Command::Seek { handle, prefix } => {
             let plan = service.generated_plan(&handle).map_err(|e| e.to_string())?;
             return DISPLAY.with(|display| {
@@ -816,17 +826,24 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             (
                 crate::operation_authoring::apply(&open(&job)?, action)?,
                 json!({"kind":"operation","activeOperation":active}),
+                // The display keeps its adopted artwork; an operation edit
+                // cannot change it.
+                false,
             )
         }
         Command::ImportSvg { filename, svg } => (
             crate::authoring::import_svg(filename, svg)?,
             json!({"kind":"imported"}),
+            true,
         ),
         Command::Artwork {
             job,
             operation_id,
             action,
-        } => artwork_command(&open(&job)?, &operation_id, action)?,
+        } => {
+            let (job, report) = artwork_command(&open(&job)?, &operation_id, action)?;
+            (job, report, true)
+        }
         Command::Resource { job, action } => {
             let job = open(&job)?;
             let clear = action.clear_fields(&job);
@@ -837,16 +854,26 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             (
                 (*action).execute(&job)?,
                 json!({"kind":"resource","clearFields":clear,"clearMappings":clear_mappings}),
+                // The display reads copied values only; its artwork stands.
+                false,
             )
         }
-        Command::Preview { job } => (open(&job)?, json!({"kind":"preview"})),
+        Command::Preview { job, have_artwork } => {
+            let job = open(&job)?;
+            let artwork =
+                crate::artwork_cache::reply_includes_artwork(&job, have_artwork.as_deref());
+            (job, json!({"kind":"preview"}), artwork)
+        }
         Command::ValidatePlan {
             job,
             handle,
             scope,
             preset,
+            have_artwork,
         } => {
             let job = open(&job)?;
+            let artwork =
+                crate::artwork_cache::reply_includes_artwork(&job, have_artwork.as_deref());
             let retained = service.generated_plan(&handle).ok();
             let identity =
                 cam_core::sequence::OperationPlanV5::machining_identity(&job, &scope.readiness())
@@ -860,11 +887,12 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                     plan,
                     json!({"kind":"revalidated","handle":handle,"scope":scope,"executionFingerprint":plan.execution_fingerprint,"checks":retained.checks,"generationIssues":plan.generation_diagnostics}),
                     preset,
+                    artwork,
                 );
             }
-            return outline(&job, json!({"kind":"stale"}));
+            return outline(&job, json!({"kind":"stale"}), artwork);
         }
-        Command::Open { json } => (open(&json)?, json!({"kind":"opened"})),
+        Command::Open { json } => (open(&json)?, json!({"kind":"opened"}), true),
         Command::ApplyProfile { job, json } => {
             let mut job = open(&job)?;
             let machine = cam_core::post::sequence::SequenceProfile::from_json(&json)
@@ -873,7 +901,7 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 .map_err(|e| e.to_string())?;
             job = profile.job;
             job.setup.clearance_above_stock_mm = Some(machine.clearance_z_mm);
-            (job, json!({"kind":"profile"}))
+            (job, json!({"kind":"profile"}), true)
         }
         Command::Generate { job, scope, preset } => {
             let job = open(&job)?;
@@ -894,7 +922,7 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                     .blockers(),
             );
             if !issues.is_empty() {
-                return outline(&job, json!({"kind":"issues", "issues":issues}));
+                return outline(&job, json!({"kind":"issues", "issues":issues}), false);
             }
             let reply = service
                 .execute_driven(C::Generate {
@@ -915,6 +943,7 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
                 json!({"kind":"generated", "handle":handle, "scope":scope,
                 "checks":retained.checks, "generationIssues":plan.generation_diagnostics, "executionFingerprint":plan.execution_fingerprint, "retained":reply["retained"]}),
                 preset,
+                true,
             )?;
             let scene = crate::compute::Scene {
                 meta: result.0.clone(),
@@ -1018,14 +1047,22 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             (
                 job,
                 json!({"kind":"prepared", "file":bytes["file"], "bundle":bundle["bundle"], "retained":bytes["retained"]}),
+                // The display reads the checked bundle; its artwork stands.
+                false,
             )
         }
     };
-    outline(&job, report)
+    outline(&job, report, artwork)
 }
 
-fn outline(job: &CamJobV5, report: Value) -> Result<(SceneMeta, Vec<u8>), String> {
-    crate::scene::build(job, None, report)
+fn outline(job: &CamJobV5, report: Value, artwork: bool) -> Result<(SceneMeta, Vec<u8>), String> {
+    crate::scene::build_reply(
+        job,
+        None,
+        report,
+        crate::stock_preview::DisplayPreset::Standard,
+        artwork,
+    )
 }
 
 pub fn scene(
@@ -1033,8 +1070,9 @@ pub fn scene(
     plan: &cam_core::sequence::OperationPlanV5,
     report: Value,
     preset: crate::stock_preview::DisplayPreset,
+    artwork: bool,
 ) -> Result<(SceneMeta, Vec<u8>), String> {
-    crate::scene::build_with_preset(job, Some(plan), report, preset)
+    crate::scene::build_reply(job, Some(plan), report, preset, artwork)
 }
 
 #[cfg(test)]
@@ -1084,5 +1122,112 @@ mod tests {
         .unwrap();
         assert_eq!(imported.setup.stock.xy, before.xy);
         assert_eq!(imported.setup.stock.thickness_mm, before.thickness_mm);
+    }
+
+    /// The display sends the artwork key it already holds with its preview
+    /// and revalidation commands. While that key names the job's artwork
+    /// state the reply omits the artwork report fields — the display keeps
+    /// the ones it adopted — and names the state either way; a stale key, an
+    /// artwork edit, or an unadvertised display ships the fields again. The
+    /// per-item spans always travel: the viewport filters hidden artwork
+    /// from them per frame.
+    #[test]
+    fn preview_and_revalidation_omit_artwork_the_display_holds() {
+        let job = CamJobV5::from_json(include_str!(
+            "../../../fixtures/pocket/two-pockets.job.json"
+        ))
+        .unwrap();
+        let text = job.to_json().unwrap();
+        let mut service = Retained::new();
+
+        let (full, _) = execute(
+            &mut service,
+            Command::Preview {
+                job: text.clone(),
+                have_artwork: None,
+            },
+        )
+        .unwrap();
+        let reply = &full.report["gui2"];
+        for field in ["components", "chains", "profileContours", "drillPoints"] {
+            assert!(reply[field].is_array(), "{field} travels to a bare display");
+        }
+        let key = reply["artworkKey"].as_str().unwrap().to_owned();
+
+        let (omitted, _) = execute(
+            &mut service,
+            Command::Preview {
+                job: text.clone(),
+                have_artwork: Some(key.clone()),
+            },
+        )
+        .unwrap();
+        let reply = &omitted.report["gui2"];
+        for field in ["components", "chains", "profileContours", "drillPoints"] {
+            assert!(reply[field].is_null(), "{field} stays with the display");
+        }
+        assert!(reply["artworkSpans"].is_array(), "spans always travel");
+        assert_eq!(reply["artworkKey"].as_str(), Some(key.as_str()));
+
+        let (stale, _) = execute(
+            &mut service,
+            Command::Preview {
+                job: text.clone(),
+                have_artwork: Some("an artwork state the display cannot hold".into()),
+            },
+        )
+        .unwrap();
+        assert!(stale.report["gui2"]["components"].is_array());
+
+        let mut renamed = job.clone();
+        renamed.artwork[0].name = "renamed source".into();
+        let (rekeyed, _) = execute(
+            &mut service,
+            Command::Preview {
+                job: renamed.to_json().unwrap(),
+                have_artwork: Some(key.clone()),
+            },
+        )
+        .unwrap();
+        assert!(
+            rekeyed.report["gui2"]["components"].is_array(),
+            "an artwork edit rekeys, so the fields travel again"
+        );
+
+        // Revalidation follows the same rule on both outcomes.
+        let (generated, _) = execute(&mut service, Command::generate(text.clone())).unwrap();
+        let handle = generated.report["gui2"]["handle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (revalidated, _) = execute(
+            &mut service,
+            Command::ValidatePlan {
+                job: text.clone(),
+                handle: handle.clone(),
+                scope: GenerateScope::AllEnabled,
+                preset: Default::default(),
+                have_artwork: Some(key),
+            },
+        )
+        .unwrap();
+        assert_eq!(revalidated.report["gui2"]["kind"], "revalidated");
+        assert!(revalidated.report["gui2"]["components"].is_null());
+
+        let mut unmachined = job;
+        unmachined.operations[0].enabled = false;
+        let (stale_plan, _) = execute(
+            &mut service,
+            Command::ValidatePlan {
+                job: unmachined.to_json().unwrap(),
+                handle,
+                scope: GenerateScope::AllEnabled,
+                preset: Default::default(),
+                have_artwork: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(stale_plan.report["gui2"]["kind"], "stale");
+        assert!(stale_plan.report["gui2"]["components"].is_array());
     }
 }

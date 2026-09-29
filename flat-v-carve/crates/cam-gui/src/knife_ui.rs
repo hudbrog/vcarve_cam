@@ -376,6 +376,7 @@ mod tests {
         };
         let scene = engine::run(Command::Preview {
             job: job.to_json().unwrap(),
+            have_artwork: None,
         })
         .unwrap();
         app.view.load_scene(Ok(scene));
@@ -404,6 +405,7 @@ mod tests {
         app.resources.ready = true;
         let scene = engine::run(Command::Preview {
             job: job.to_json().unwrap(),
+            have_artwork: None,
         })
         .unwrap();
         app.view.load_scene(Ok(scene));

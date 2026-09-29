@@ -488,7 +488,13 @@ pub struct Contour {
 /// Every closed contour of every artwork item, owner-qualified.
 pub fn contours(job: &CamJobV5) -> Result<Vec<Contour>, String> {
     let catalogue = crate::artwork_cache::inspect(job)?;
-    Ok(catalogue
+    Ok(contours_of(&catalogue))
+}
+
+/// The catalogue's closed contours, owner-qualified: the reading the scene
+/// and the profile pickers share, derived per artwork state.
+pub fn contours_of(catalogue: &artwork::CombinedCatalogue) -> Vec<Contour> {
+    catalogue
         .items
         .iter()
         .flat_map(|item| {
@@ -530,7 +536,7 @@ pub fn contours(job: &CamJobV5) -> Result<Vec<Contour>, String> {
                         .unwrap_or_default(),
                 })
         })
-        .collect())
+        .collect()
 }
 
 /// Walk a closed ring by arc-length fraction. This is the numeric equivalent

@@ -211,6 +211,7 @@ fn persistent_native_process_open_edit_generate_seek_prepare_save_reopen_and_sto
     assert!(incomplete.operations.is_empty());
     let (preview, _) = worker.request(Command::Preview {
         job: imported.job.clone(),
+        have_artwork: None,
     });
     assert_eq!(
         preview.report["gui2"]["components"]

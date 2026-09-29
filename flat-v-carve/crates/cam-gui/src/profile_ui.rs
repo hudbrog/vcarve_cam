@@ -1196,8 +1196,14 @@ mod tests {
             ..Default::default()
         };
         let job = app.document.as_ref().unwrap().job.to_json().unwrap();
-        let preview =
-            crate::session::execute(&mut Retained::new(), Command::Preview { job }).unwrap();
+        let preview = crate::session::execute(
+            &mut Retained::new(),
+            Command::Preview {
+                job,
+                have_artwork: None,
+            },
+        )
+        .unwrap();
         app.view.load_scene(Ok(preview));
         app
     }

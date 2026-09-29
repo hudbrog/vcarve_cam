@@ -197,14 +197,6 @@ fn stage_spans(plan: &OperationPlanV5) -> Result<Vec<StageSpan>, String> {
     Ok(spans)
 }
 
-/// Selected-by-any-enabled-operation projection of the artwork the ordered
-/// plan actually uses. Selection stays owned by the operation; this is a
-/// display hint only. Cached per artwork state: every command's scene build
-/// reads it, and an unchanged artwork must not re-import its SVG.
-fn artwork_inputs(_job: &CamJobV5) -> Result<std::sync::Arc<v5::CombinedCatalogue>, String> {
-    crate::artwork_cache::inspect(_job)
-}
-
 /// How a job tool is held: the shaft above the cutter and its stickout. A tool
 /// that states neither contributes a default (empty) assembly, which is what
 /// every job saved before these fields existed says too.
@@ -425,7 +417,9 @@ pub(crate) fn role_color(role: StageRole) -> [f32; 4] {
 
 /// Retain the source colour. The viewport draws the current operation's
 /// selection above these shared outlines, independently of scene rebuilds.
-fn artwork_color(paint: Option<cam_core::svg::SourcePaint>) -> [f32; 4] {
+/// Shared with the cached artwork projections, which derive the contour
+/// points once per artwork state.
+pub(crate) fn artwork_color(paint: Option<cam_core::svg::SourcePaint>) -> [f32; 4] {
     // The line is an overlay on the stock, so it is drawn opaque whatever the
     // source alpha was; a faint fill would otherwise be invisible.
     paint.map_or([0.5, 0.55, 0.6, 1.], |paint| {
@@ -436,16 +430,18 @@ fn artwork_color(paint: Option<cam_core::svg::SourcePaint>) -> [f32; 4] {
 
 /// Build the complete scene for `job`; `plan` is the retained execution of the
 /// chosen scope, or `None` for the artwork/stock preview before generation.
+/// The reply carries the artwork report fields.
 pub fn build(
     job: &CamJobV5,
     plan: Option<&OperationPlanV5>,
     report: Value,
 ) -> Result<(crate::compute::SceneMeta, Vec<u8>), String> {
-    build_with_preset(
+    build_reply(
         job,
         plan,
         report,
         crate::stock_preview::DisplayPreset::Standard,
+        true,
     )
 }
 
@@ -454,31 +450,26 @@ pub fn build(
 pub fn build_with_preset(
     job: &CamJobV5,
     plan: Option<&OperationPlanV5>,
-    mut report: Value,
+    report: Value,
     preset: crate::stock_preview::DisplayPreset,
 ) -> Result<(crate::compute::SceneMeta, Vec<u8>), String> {
-    let catalogue = artwork_inputs(job)?;
-    let components = crate::authoring::catalogue_components(&catalogue);
-    let chains = crate::knife::chains(job)?;
-    // The closed contours a profile operation selects, with their advisory
-    // sides. This is the same catalogue the planner resolves against, projected
-    // once per scene so the editor never imports the SVG on the frame thread.
-    let profile_contours = crate::profile::contours(job)?;
-    // Drillable marker points, from the same catalogue: hole positions the
-    // viewport can pick directly.
-    let drill_points: Vec<ScenePoint> = catalogue
-        .items
-        .iter()
-        .flat_map(|item| {
-            item.point_entries.iter().map(|point| ScenePoint {
-                reference: point.reference.clone(),
-                center: [point.center.x, point.center.y],
-                diameter_mm: point.diameter_mm,
-                paint: point.paint,
-                exact: point.exact,
-            })
-        })
-        .collect();
+    build_reply(job, plan, report, preset, true)
+}
+
+/// Build the scene, optionally omitting the artwork report fields. The
+/// display sends the artwork key it already holds with its command; when
+/// that is still this job's artwork state the components, chains, contours
+/// and marker points stay out of the reply — the display keeps the ones it
+/// adopted — while the per-item spans (a few numbers each) always travel so
+/// hidden-artwork filtering needs no retained state.
+pub fn build_reply(
+    job: &CamJobV5,
+    plan: Option<&OperationPlanV5>,
+    mut report: Value,
+    preset: crate::stock_preview::DisplayPreset,
+    artwork_fields: bool,
+) -> Result<(crate::compute::SceneMeta, Vec<u8>), String> {
+    let artwork = crate::artwork_cache::projections(job)?;
     let mut bounds = job
         .setup
         .stock
@@ -492,76 +483,32 @@ pub fn build_with_preset(
             ]
         })
         .unwrap_or([0., 0., 1., 1.]);
-    for component in &components {
-        bounds[0] = bounds[0].min(component.bounds[0]);
-        bounds[1] = bounds[1].min(component.bounds[1]);
-        bounds[2] = bounds[2].max(component.bounds[2]);
-        bounds[3] = bounds[3].max(component.bounds[3]);
-    }
-    for chain in &chains {
-        for point in &chain.vertices {
-            bounds[0] = bounds[0].min(point[0]);
-            bounds[1] = bounds[1].min(point[1]);
-            bounds[2] = bounds[2].max(point[0]);
-            bounds[3] = bounds[3].max(point[1]);
-        }
-    }
-    for point in &drill_points {
-        bounds[0] = bounds[0].min(point.center[0]);
-        bounds[1] = bounds[1].min(point.center[1]);
-        bounds[2] = bounds[2].max(point.center[0]);
-        bounds[3] = bounds[3].max(point.center[1]);
+    if let Some(placed) = artwork.artwork_bounds {
+        bounds[0] = bounds[0].min(placed[0]);
+        bounds[1] = bounds[1].min(placed[1]);
+        bounds[2] = bounds[2].max(placed[2]);
+        bounds[3] = bounds[3].max(placed[3]);
     }
     // Artwork and knife-chain points stay in setup coordinates until the
     // display frame is final below: the frame also carries the generated
     // toolpath, so normalizing them here would scale them against a different
     // rectangle than the stock and the motions.
-    let mut contour_points: Vec<([f64; 3], [f32; 4])> = Vec::new();
-    let mut spans = Vec::new();
-    for component in &components {
-        let start = contour_points.len();
-        let color = artwork_color(component.paint);
-        for ring in &component.rings {
-            for i in 0..ring.len() {
-                for p in [ring[i], ring[(i + 1) % ring.len()]] {
-                    contour_points.push(([p[0], p[1], 0.02], color));
-                }
-            }
-        }
-        spans.push(json!([
-            component.reference.artwork_item_id,
-            start,
-            contour_points.len()
-        ]));
-    }
-    for chain in &chains {
-        let start = contour_points.len();
-        let color = artwork_color(chain.paint);
-        let segments = chain
-            .vertices
-            .len()
-            .saturating_sub(usize::from(!chain.closed));
-        for i in 0..segments {
-            for p in [
-                chain.vertices[i],
-                chain.vertices[(i + 1) % chain.vertices.len()],
-            ] {
-                contour_points.push(([p[0], p[1], 0.02], color));
-            }
-        }
-        spans.push(json!([
-            chain.reference.artwork_item_id,
-            start,
-            contour_points.len()
-        ]));
-    }
+    report["artworkKey"] = json!(artwork.key);
     // Center marks belong to the viewport overlay: selected holes are always
     // marked, while unselected centers follow the workspace display toggle.
-    report["components"] = json!(components);
-    report["chains"] = json!(chains);
-    report["profileContours"] = json!(profile_contours);
-    report["drillPoints"] = json!(drill_points);
-    report["artworkSpans"] = json!(spans);
+    if artwork_fields {
+        report["components"] = json!(artwork.components);
+        report["chains"] = json!(artwork.chains);
+        report["profileContours"] = json!(artwork.contours);
+        report["drillPoints"] = json!(artwork.points);
+    }
+    report["artworkSpans"] = json!(
+        artwork
+            .spans
+            .iter()
+            .map(|(id, start, end)| json!([id, start, end]))
+            .collect::<Vec<_>>()
+    );
     if let Some(xy) = job.setup.stock.xy {
         report["stockRect"] = json!([
             xy.min_x_mm,
@@ -641,7 +588,7 @@ pub fn build_with_preset(
     };
     match &executed {
         Some(frame) => bounds = frame.bounds,
-        None if plan.is_none() && !contour_points.is_empty() => {
+        None if plan.is_none() && !artwork.contour_points.is_empty() => {
             bounds = [
                 bounds[0] - 2.,
                 bounds[1] - 2.,
@@ -651,7 +598,8 @@ pub fn build_with_preset(
         }
         None => {}
     }
-    let mut vertices: Vec<crate::compute::Vertex> = contour_points
+    let mut vertices: Vec<crate::compute::Vertex> = artwork
+        .contour_points
         .iter()
         .map(|(point, color)| vertex(*point, bounds, *color))
         .collect();

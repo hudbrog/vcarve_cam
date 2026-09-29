@@ -104,6 +104,152 @@ pub(crate) fn inspect(job: &CamJobV5) -> Result<Arc<v5::artwork::CombinedCatalog
     Ok(catalogue)
 }
 
+/// Every artwork-derived reading a scene builds from, derived once per
+/// artwork state. The catalogue feeds the pickers and the command gates;
+/// the components, chains, contours and marker points feed the scene report
+/// the display adopts; the contour points are the shared outline geometry
+/// every scene normalizes against its own bounds.
+pub(crate) struct Projections {
+    /// Identity of the artwork state these projections resolve.
+    pub key: String,
+    pub components: Vec<crate::authoring::Component>,
+    pub chains: Vec<crate::knife::Chain>,
+    pub contours: Vec<crate::profile::Contour>,
+    pub points: Vec<crate::scene::ScenePoint>,
+    /// Outline line segments in setup millimetres with source colour.
+    pub contour_points: Vec<([f64; 3], [f32; 4])>,
+    /// `[item id, start, len]` into `contour_points`, in draw order.
+    pub spans: Vec<(String, usize, usize)>,
+    /// Union of the placed components, chains and marker points; `None`
+    /// when the artwork places nothing.
+    pub artwork_bounds: Option<[f64; 4]>,
+}
+
+thread_local! {
+    /// The projections of the last artwork state.
+    static PROJECTIONS: RefCell<Option<(String, Arc<Projections>)>> = const { RefCell::new(None) };
+}
+
+/// The shared artwork readings for `job`, derived once per artwork state: a
+/// command whose artwork did not change — an operation edit, a revalidation,
+/// a preview — reuses them instead of re-deriving every projection.
+pub(crate) fn projections(job: &CamJobV5) -> Result<Arc<Projections>, String> {
+    let key = job_key(job)?;
+    if let Some((kept, projections)) = PROJECTIONS.with(|cache| cache.borrow().clone())
+        && kept == key
+    {
+        return Ok(projections);
+    }
+    let catalogue = inspect(job)?;
+    let components = crate::authoring::catalogue_components(&catalogue);
+    let chains = crate::knife::chains_of(&catalogue);
+    let contours = crate::profile::contours_of(&catalogue);
+    let points: Vec<crate::scene::ScenePoint> = catalogue
+        .items
+        .iter()
+        .flat_map(|item| {
+            item.point_entries
+                .iter()
+                .map(|point| crate::scene::ScenePoint {
+                    reference: point.reference.clone(),
+                    center: [point.center.x, point.center.y],
+                    diameter_mm: point.diameter_mm,
+                    paint: point.paint,
+                    exact: point.exact,
+                })
+        })
+        .collect();
+    let mut contour_points: Vec<([f64; 3], [f32; 4])> = Vec::new();
+    let mut spans = Vec::new();
+    for component in &components {
+        let start = contour_points.len();
+        let color = crate::scene::artwork_color(component.paint);
+        for ring in &component.rings {
+            for i in 0..ring.len() {
+                for p in [ring[i], ring[(i + 1) % ring.len()]] {
+                    contour_points.push(([p[0], p[1], 0.02], color));
+                }
+            }
+        }
+        spans.push((
+            component.reference.artwork_item_id.0.clone(),
+            start,
+            contour_points.len(),
+        ));
+    }
+    for chain in &chains {
+        let start = contour_points.len();
+        let color = crate::scene::artwork_color(chain.paint);
+        let segments = chain
+            .vertices
+            .len()
+            .saturating_sub(usize::from(!chain.closed));
+        for i in 0..segments {
+            for p in [
+                chain.vertices[i],
+                chain.vertices[(i + 1) % chain.vertices.len()],
+            ] {
+                contour_points.push(([p[0], p[1], 0.02], color));
+            }
+        }
+        spans.push((
+            chain.reference.artwork_item_id.0.clone(),
+            start,
+            contour_points.len(),
+        ));
+    }
+    let mut artwork_bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for component in &components {
+        artwork_bounds[0] = artwork_bounds[0].min(component.bounds[0]);
+        artwork_bounds[1] = artwork_bounds[1].min(component.bounds[1]);
+        artwork_bounds[2] = artwork_bounds[2].max(component.bounds[2]);
+        artwork_bounds[3] = artwork_bounds[3].max(component.bounds[3]);
+    }
+    for point in chains.iter().flat_map(|chain| chain.vertices.iter()) {
+        artwork_bounds[0] = artwork_bounds[0].min(point[0]);
+        artwork_bounds[1] = artwork_bounds[1].min(point[1]);
+        artwork_bounds[2] = artwork_bounds[2].max(point[0]);
+        artwork_bounds[3] = artwork_bounds[3].max(point[1]);
+    }
+    for point in &points {
+        artwork_bounds[0] = artwork_bounds[0].min(point.center[0]);
+        artwork_bounds[1] = artwork_bounds[1].min(point.center[1]);
+        artwork_bounds[2] = artwork_bounds[2].max(point.center[0]);
+        artwork_bounds[3] = artwork_bounds[3].max(point.center[1]);
+    }
+    let artwork_bounds = artwork_bounds[0].is_finite().then_some(artwork_bounds);
+    let projections = Arc::new(Projections {
+        key: key.clone(),
+        components,
+        chains,
+        contours,
+        points,
+        contour_points,
+        spans,
+        artwork_bounds,
+    });
+    PROJECTIONS.with(|cache| {
+        *cache.borrow_mut() = Some((key, Arc::clone(&projections)));
+    });
+    Ok(projections)
+}
+
+/// Whether a reply for `job` should carry the artwork report fields: the
+/// display says which artwork key it already holds, and the fields travel
+/// only when that is not this job's artwork state. An unreadable artwork
+/// state ships them, so the failure path keeps today's behaviour.
+pub(crate) fn reply_includes_artwork(job: &CamJobV5, have: Option<&str>) -> bool {
+    match (job_key(job), have) {
+        (Ok(key), Some(have)) => key != have,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +348,24 @@ mod tests {
         };
         assert_eq!(wires(&cached), wires(&direct));
         assert_eq!(cached.items.len(), direct.items.len());
+    }
+
+    /// The scene-level readings are derived once per artwork state: a job
+    /// whose artwork stands shares them across commands, and a placement
+    /// move re-derives them.
+    #[test]
+    fn projections_follow_the_artwork_state() {
+        let job = imported();
+        let first = projections(&job).unwrap();
+        assert!(Arc::ptr_eq(&first, &projections(&job).unwrap()));
+        let mut renamed_job = job.clone();
+        renamed_job.name = "a job edit that cannot touch artwork".into();
+        assert!(Arc::ptr_eq(&first, &projections(&renamed_job).unwrap()));
+        let mut moved = job;
+        moved.artwork[0].placement.origin_mm.x += 1.;
+        let next = projections(&moved).unwrap();
+        assert!(!Arc::ptr_eq(&first, &next));
+        let shift = next.artwork_bounds.unwrap()[0] - first.artwork_bounds.unwrap()[0];
+        assert!((shift + 1.).abs() < 1e-9, "placed bounds follow the move");
     }
 }

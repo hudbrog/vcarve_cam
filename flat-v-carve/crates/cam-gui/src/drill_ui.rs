@@ -614,6 +614,7 @@ mod tests {
             &mut cam_service::retained::Retained::new(),
             crate::session::Command::Preview {
                 job: drill_workspace().to_json().unwrap(),
+                have_artwork: None,
             },
         );
         app.view.load_scene(preview);
@@ -625,6 +626,7 @@ mod tests {
             &mut cam_service::retained::Retained::new(),
             crate::session::Command::Preview {
                 job: empty.to_json().unwrap(),
+                have_artwork: None,
             },
         ));
         assert!(app.view.drill_points().is_empty());

@@ -216,6 +216,7 @@ mod tests {
             &mut cam_service::retained::Retained::new(),
             crate::session::Command::Preview {
                 job: job.to_json().unwrap(),
+                have_artwork: None,
             },
         )
         .unwrap();

@@ -465,6 +465,26 @@ impl Default for Viewport {
     }
 }
 
+/// A scene report field the worker may omit: when the artwork state a field
+/// describes is unchanged the reply carries no field, and the previous
+/// scene's reading stands. A field that travels is adopted even when it
+/// parses empty, exactly as before.
+fn retained_scene_field<T: serde::de::DeserializeOwned>(
+    scene: &Scene,
+    key: &str,
+    current: &Arc<Vec<T>>,
+) -> Arc<Vec<T>> {
+    scene.meta.report["gui2"][key]
+        .as_array()
+        .map(|entries| {
+            Arc::new(
+                serde_json::from_value::<Vec<T>>(serde_json::Value::Array(entries.clone()))
+                    .unwrap_or_default(),
+            )
+        })
+        .unwrap_or_else(|| Arc::clone(current))
+}
+
 impl Viewport {
     /// Record the CPU display memory the worker reported with a scene or stock
     /// response. A response that carries none leaves the previous numbers: an
@@ -559,17 +579,10 @@ impl Viewport {
 
     pub fn set_scene(&mut self, scene: Scene) {
         self.adopt_display_memory(&scene.meta.report["gui2"]["displayMemory"]);
-        self.knife_chains = Arc::new(
-            serde_json::from_value(scene.meta.report["gui2"]["chains"].clone()).unwrap_or_default(),
-        );
-        self.profile_contours = Arc::new(
-            serde_json::from_value(scene.meta.report["gui2"]["profileContours"].clone())
-                .unwrap_or_default(),
-        );
-        self.drill_points = Arc::new(
-            serde_json::from_value(scene.meta.report["gui2"]["drillPoints"].clone())
-                .unwrap_or_default(),
-        );
+        self.knife_chains = retained_scene_field(&scene, "chains", &self.knife_chains);
+        self.profile_contours =
+            retained_scene_field(&scene, "profileContours", &self.profile_contours);
+        self.drill_points = retained_scene_field(&scene, "drillPoints", &self.drill_points);
         self.groups = Arc::new(
             serde_json::from_value(scene.meta.report["gui2"]["groups"].clone()).unwrap_or_default(),
         );
@@ -2613,6 +2626,7 @@ mod tests {
             &mut cam_service::retained::Retained::new(),
             crate::session::Command::Preview {
                 job: job.to_json().unwrap(),
+                have_artwork: None,
             },
         )
         .unwrap();
@@ -2711,7 +2725,10 @@ mod tests {
         let job = include_str!("../../../fixtures/gui6/knife.job.json").to_owned();
         let scene = crate::session::execute(
             &mut cam_service::retained::Retained::new(),
-            crate::session::Command::Preview { job },
+            crate::session::Command::Preview {
+                job,
+                have_artwork: None,
+            },
         )
         .unwrap();
         let mut view = Viewport::default();

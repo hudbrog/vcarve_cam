@@ -34,6 +34,7 @@ fn delete_save_reopen_and_add_preserve_job_context() {
     session::execute(
         &mut service,
         Command::Preview {
+            have_artwork: None,
             job: empty.to_json().unwrap(),
         },
     )

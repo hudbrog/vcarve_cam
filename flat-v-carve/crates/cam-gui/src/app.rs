@@ -651,6 +651,9 @@ pub struct App {
     ime: bool,
     focus: Option<egui::Id>,
     components: Vec<crate::authoring::Component>,
+    /// The artwork key of the adopted `components`: what the worker's replies
+    /// omit the artwork report fields against.
+    artwork_key: Option<String>,
     /// Drillable marker points of the current artwork, cached per document
     /// revision (the same freshness contract as `components`).
     points: Vec<cam_core::project::v5::artwork::PointEntry>,
@@ -740,6 +743,7 @@ impl Default for App {
             ime: false,
             focus: None,
             components: vec![],
+            artwork_key: None,
             points: vec![],
             points_revision: 0,
             points_seen: false,
@@ -1813,6 +1817,10 @@ impl App {
             return;
         }
         self.components = serde_json::from_value(reply["components"].clone()).unwrap_or_default();
+        // The key the worker named for this artwork state: the next
+        // preview or revalidation says it holds this, and the reply omits
+        // the artwork fields while the state stands.
+        self.artwork_key = reply["artworkKey"].as_str().map(str::to_owned);
         if let Some(doc) = &self.document {
             self.view.update_artwork(
                 self.revision,
@@ -1887,14 +1895,19 @@ impl App {
             && let Some(doc) = &self.document
         {
             let job = doc.job.to_json().unwrap();
+            // The artwork the display already adopted travels under its key:
+            // while the artwork state stands, the reply omits the artwork
+            // fields instead of re-transporting them after every edit.
+            let have_artwork = self.artwork_key.clone();
             let command = match &self.plan {
                 Some((handle, _)) => Command::ValidatePlan {
                     job,
                     handle: handle.clone(),
                     scope: self.plan_scope.clone().unwrap_or(GenerateScope::AllEnabled),
                     preset: self.view.desired_preset(),
+                    have_artwork,
                 },
-                None => Command::Preview { job },
+                None => Command::Preview { job, have_artwork },
             };
             self.submit(command, ctx);
         }
@@ -2177,6 +2190,42 @@ mod tests {
 
     fn job() -> CamJobV5 {
         CamJobV5::from_json(engine::FLOWER).unwrap()
+    }
+
+    /// Adoption keeps the artwork the display already holds: a reply without
+    /// the artwork report fields (the worker omits them while the artwork
+    /// key the display sent still names the job's artwork state) changes
+    /// neither the adopted components nor the key they were adopted under.
+    #[test]
+    fn a_reply_without_artwork_fields_keeps_the_adopted_artwork() {
+        let job = job();
+        let text = job.to_json().unwrap();
+        let (meta, _) = crate::session::execute(
+            &mut cam_service::retained::Retained::new(),
+            crate::session::Command::Preview {
+                job: text,
+                have_artwork: None,
+            },
+        )
+        .unwrap();
+        let mut app = App {
+            document: Some(Document::new(job)),
+            ..Default::default()
+        };
+        app.adopt_artwork(&meta.report["gui2"]);
+        assert!(!app.components.is_empty());
+        let adopted = app.artwork_key.clone();
+        assert_eq!(
+            adopted.as_deref(),
+            meta.report["gui2"]["artworkKey"].as_str(),
+            "adoption remembers the key the fields arrived under"
+        );
+        app.adopt_artwork(&json!({"kind": "preview", "artworkKey": "another state"}));
+        assert!(!app.components.is_empty(), "the held artwork stands");
+        assert_eq!(
+            app.artwork_key, adopted,
+            "a key without fields is not adopted"
+        );
     }
 
     fn app_with_document() -> App {
