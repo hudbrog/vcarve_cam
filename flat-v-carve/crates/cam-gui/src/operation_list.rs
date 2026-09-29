@@ -493,14 +493,14 @@ mod tests {
         let delete = Action::Delete {
             operation_id: "face-1".into(),
         };
-        let deleted = operation_authoring::apply(&app.document.as_ref().unwrap().job, delete)
-            .unwrap();
+        let deleted =
+            operation_authoring::apply(&app.document.as_ref().unwrap().job, delete).unwrap();
         app.adopt_operation(deleted, None, &ctx);
         // The deleted operation freed its ID, so the re-created face is
         // face-1 again — created with every machining value unset.
         let job = app.document.as_ref().unwrap().job.clone();
-        let recreated = operation_authoring::apply(&job, operation_authoring::add(Kind::Face, &job))
-            .unwrap();
+        let recreated =
+            operation_authoring::apply(&job, operation_authoring::add(Kind::Face, &job)).unwrap();
         app.adopt_operation(recreated, Some("face-1"), &ctx);
         let doc = app.document.as_ref().unwrap();
         assert_eq!(doc.raw.operation, "face-1");
