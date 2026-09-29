@@ -203,10 +203,12 @@ $camRun = [ordered]@{
     stepOrder = @($camSteps.Id)
     steps = @()
 }
-($camRun | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $camResultsPath -Encoding utf8NoBOM
+# WriteAllText emits BOM-less UTF-8 on Windows PowerShell 5.1 too;
+# Set-Content -Encoding utf8NoBOM requires PowerShell 7.
+[IO.File]::WriteAllText($camResultsPath, ($camRun | ConvertTo-Json -Depth 8) + "`n")
 
 function Save-CamResults {
-    ($camRun | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $camResultsPath -Encoding utf8NoBOM
+    [IO.File]::WriteAllText($camResultsPath, ($camRun | ConvertTo-Json -Depth 8) + "`n")
 }
 
 # Save and restore every environment variable the run touches.
@@ -268,7 +270,7 @@ try {
 
         # -Value (not a pipeline) so a step that prints nothing still gets a log file.
         $camLogText = (($camOutputText | ForEach-Object { "$_" }) -join [Environment]::NewLine)
-        Set-Content -LiteralPath $camLogPath -Value $camLogText -Encoding utf8NoBOM
+        [IO.File]::WriteAllText($camLogPath, $camLogText + [Environment]::NewLine)
 
         # Count from the written log: stream redirection turns some cargo lines
         # into error records, and CARGO_TERM_COLOR adds escape codes, so match on

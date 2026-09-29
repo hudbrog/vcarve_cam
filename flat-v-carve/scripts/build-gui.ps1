@@ -28,7 +28,9 @@ try {
         Copy-Item -LiteralPath 'crates/cam-gui/licenses' -Destination $destination -Recurse -Force
         Copy-Item -LiteralPath 'crates/cam-gui/THIRD-PARTY.md' -Destination $destination -Force
         $hash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
-        "$hash *cam-gui.exe" | Set-Content (Join-Path $destination 'SHA256SUMS') -Encoding utf8NoBOM
+        # WriteAllText emits BOM-less UTF-8 on Windows PowerShell 5.1 too;
+        # Set-Content -Encoding utf8NoBOM requires PowerShell 7.
+        [IO.File]::WriteAllText((Join-Path $destination 'SHA256SUMS'), "$hash *cam-gui.exe`n")
         Write-Host "GUI: $executable"
         if ($Launch) { Start-Process -FilePath $executable }
     } else {

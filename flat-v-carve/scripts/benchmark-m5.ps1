@@ -79,5 +79,7 @@ $summary = [ordered]@{
     verification_measurement = 'Includes saved-plan authentication/replay, original/optional rounded verification, JSON and SVG output.'
     cases = $results
 }
-$summary | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $destination 'benchmark.json') -Encoding utf8NoBOM
+# WriteAllText emits BOM-less UTF-8 on Windows PowerShell 5.1 too;
+# Set-Content -Encoding utf8NoBOM requires PowerShell 7.
+[IO.File]::WriteAllText((Join-Path $destination 'benchmark.json'), ($summary | ConvertTo-Json -Depth 20) + "`n")
 if ($results.Where({ -not $_.expectation_met }).Count -ne 0) { throw 'M5 fixture expectations failed; see benchmark.json and per-case reports.' }
