@@ -297,8 +297,34 @@ impl App {
         let mut next = Document::new(job);
         if let Some(old) = &self.document {
             // Raw text is keyed by stable operation/artwork identity, so it
-            // follows its own entity through add, delete and reorder.
-            next.raw.raw = old.raw.raw.clone();
+            // follows its own entity through reorder, enable and rename
+            // edits. An identity missing from either document is a deleted
+            // operation — or a fresh one that recycled its ID — and its text
+            // must not attach to an operation the document gave no values;
+            // the panel would show numbers generation then reports as empty.
+            // Mapping text follows tool identity instead of operation
+            // identity, so it keeps its own recoverable keys.
+            let carried = |job: &CamJobV5, id: &str| {
+                id.is_empty() || job.operations.iter().any(|operation| operation.id == id)
+            };
+            next.raw.raw = old
+                .raw
+                .raw
+                .iter()
+                .filter(|(key, _)| {
+                    let Some((scope, operation, label)) = crate::state::scope_of(key) else {
+                        return false;
+                    };
+                    let Some(field) = crate::state::FIELDS.iter().position(|name| *name == label)
+                    else {
+                        return false;
+                    };
+                    !crate::state::is_mapping(scope, operation, field)
+                        && carried(&old.job, operation)
+                        && carried(&next.job, operation)
+                })
+                .map(|(key, text)| (key.clone(), text.clone()))
+                .collect();
             next.raw.artwork_item = old.raw.artwork_item.clone();
         }
         next.sync_artwork();
@@ -436,6 +462,65 @@ mod tests {
                 "row stays inside the panel: {rect:?} of {rows:?} {toggles:?}"
             );
         }
+    }
+
+    /// A deleted operation's drafts must not attach to a re-created operation
+    /// that recycled its ID: the panel would show numbers the document does
+    /// not carry, and generation would report those same fields as empty.
+    /// Text of operations both documents carry survives the adoption.
+    #[test]
+    fn a_recreated_operation_does_not_inherit_the_deleted_one_text() {
+        let empty = operation_authoring::empty_job();
+        let job = operation_authoring::apply(&empty, operation_authoring::add(Kind::Face, &empty))
+            .unwrap();
+        let job =
+            operation_authoring::apply(&job, operation_authoring::add(Kind::FlatVcarve, &job))
+                .unwrap();
+        let mut app = App {
+            document: Some(Document::new(job)),
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        {
+            let doc = app.document.as_mut().unwrap();
+            doc.select_operation("face-1");
+            doc.edit(8, "1".into()).unwrap();
+            // A retained (unparseable) draft on the surviving carve: adoption
+            // keeps the user's spelling for an operation both documents carry.
+            doc.select_operation("carving-1");
+            doc.edit(8, "2.".into()).unwrap_err();
+        }
+        let delete = Action::Delete {
+            operation_id: "face-1".into(),
+        };
+        let deleted = operation_authoring::apply(&app.document.as_ref().unwrap().job, delete)
+            .unwrap();
+        app.adopt_operation(deleted, None, &ctx);
+        // The deleted operation freed its ID, so the re-created face is
+        // face-1 again — created with every machining value unset.
+        let job = app.document.as_ref().unwrap().job.clone();
+        let recreated = operation_authoring::apply(&job, operation_authoring::add(Kind::Face, &job))
+            .unwrap();
+        app.adopt_operation(recreated, Some("face-1"), &ctx);
+        let doc = app.document.as_ref().unwrap();
+        assert_eq!(doc.raw.operation, "face-1");
+        assert_eq!(
+            crate::face::value(&doc.job, "face-1", 8),
+            None,
+            "the fresh face has no stepdown"
+        );
+        assert!(
+            doc.text(8).is_empty(),
+            "the editor shows no stepdown either: {}",
+            doc.text(8)
+        );
+        assert!(
+            !doc.pending(),
+            "the editor and the document agree, so generation is not refused"
+        );
+        let doc = app.document.as_mut().unwrap();
+        doc.select_operation("carving-1");
+        assert_eq!(doc.text(8), "2.", "the surviving carve keeps its own text");
     }
 
     /// Rows that asked for more width than the navigator had grew its reserved space past its
