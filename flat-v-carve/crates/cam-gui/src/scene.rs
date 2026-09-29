@@ -199,9 +199,10 @@ fn stage_spans(plan: &OperationPlanV5) -> Result<Vec<StageSpan>, String> {
 
 /// Selected-by-any-enabled-operation projection of the artwork the ordered
 /// plan actually uses. Selection stays owned by the operation; this is a
-/// display hint only.
-fn artwork_inputs(_job: &CamJobV5) -> Result<v5::CombinedCatalogue, String> {
-    v5::artwork::inspect_artwork(_job).map_err(|e| e.to_string())
+/// display hint only. Cached per artwork state: every command's scene build
+/// reads it, and an unchanged artwork must not re-import its SVG.
+fn artwork_inputs(_job: &CamJobV5) -> Result<std::sync::Arc<v5::CombinedCatalogue>, String> {
+    crate::artwork_cache::inspect(_job)
 }
 
 /// How a job tool is held: the shaft above the cutter and its stickout. A tool

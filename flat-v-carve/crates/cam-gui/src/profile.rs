@@ -487,7 +487,7 @@ pub struct Contour {
 
 /// Every closed contour of every artwork item, owner-qualified.
 pub fn contours(job: &CamJobV5) -> Result<Vec<Contour>, String> {
-    let catalogue = artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
+    let catalogue = crate::artwork_cache::inspect(job)?;
     Ok(catalogue
         .items
         .iter()
@@ -776,7 +776,7 @@ fn anchor_resolved(job: &CamJobV5, anchor: &ContourAnchorV5) -> bool {
 
 /// The catalogue fingerprint of one qualified contour, if it still exists.
 pub fn fingerprint_matches(job: &CamJobV5, reference: &v5::GeometryRef, fingerprint: &str) -> bool {
-    let Ok(catalogue) = artwork::inspect_artwork(job) else {
+    let Ok(catalogue) = crate::artwork_cache::inspect(job) else {
         return false;
     };
     catalogue
@@ -859,7 +859,7 @@ pub fn bind_anchor(
         return Err("Anchor position must be a fraction from 0 up to 1".into());
     }
     settings_in(job, operation_id).ok_or("Expected a profile operation")?;
-    let catalogue = artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
+    let catalogue = crate::artwork_cache::inspect(job)?;
     let entry = catalogue
         .entry(wire_id)
         .ok_or("That contour is not in the current artwork")?;
@@ -954,7 +954,7 @@ pub fn reattach(
     wire_id: &str,
     fraction: Option<f64>,
 ) -> Result<CamJobV5, String> {
-    let catalogue = artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
+    let catalogue = crate::artwork_cache::inspect(job)?;
     let entry = catalogue
         .entry(wire_id)
         .ok_or("That contour is not in the current artwork")?;

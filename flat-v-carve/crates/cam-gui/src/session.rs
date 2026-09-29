@@ -293,7 +293,7 @@ fn artwork_command(
             // Only the displayed catalogue's exact references are accepted:
             // a reference from a replaced source is reattached deliberately,
             // never rebound by re-sending it.
-            let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
+            let catalogue = crate::artwork_cache::inspect(job)?;
             let available = crate::authoring::catalogue_components(&catalogue);
             if references
                 .iter()
@@ -318,7 +318,7 @@ fn artwork_command(
             }
             // Only the displayed catalogue's exact point references are
             // accepted, exactly as the component selection insists.
-            let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
+            let catalogue = crate::artwork_cache::inspect(job)?;
             let available = catalogue
                 .items
                 .iter()
@@ -489,7 +489,7 @@ fn artwork_command(
                 return Err("Select an operation before repairing its selection".into());
             }
             // Reject a target picked from an obsolete displayed catalogue.
-            let catalogue = v5::artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
+            let catalogue = crate::artwork_cache::inspect(job)?;
             if !crate::authoring::catalogue_components(&catalogue)
                 .iter()
                 .any(|c| c.reference == replacement)

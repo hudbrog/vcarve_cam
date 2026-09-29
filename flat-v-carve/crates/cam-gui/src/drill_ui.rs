@@ -3,7 +3,6 @@
 //! reference, ordering). The planner reports what the settings actually cut.
 use super::*;
 use crate::drill;
-use cam_core::project::v5;
 use cam_core::project::v5::artwork::PointEntry;
 use cam_core::project::{
     DrillDepthReference, DrillHoleOrder, DrillPeckMode, HeightReference, SpindleDirection,
@@ -42,15 +41,15 @@ impl App {
     /// The catalogue's marker points, refreshed on the first panel frame and
     /// again whenever the document revision moves (an untouched document
     /// still sits at revision 0, which the revision counter alone cannot
-    /// distinguish from "never looked"). Points come from the same import
-    /// the other readings do, so the panel never re-parses anything the
-    /// reference inspection did not.
+    /// distinguish from "never looked"). Points come from the same cached
+    /// import the other readings do, so an unchanged artwork state costs no
+    /// re-import here either.
     fn refresh_points(&mut self) {
         let Some(doc) = &self.document else { return };
         if self.points_seen && self.points_revision == self.revision {
             return;
         }
-        self.points = v5::artwork::inspect_artwork(&doc.job)
+        self.points = crate::artwork_cache::inspect(&doc.job)
             .map(|catalogue| {
                 catalogue
                     .items
@@ -497,6 +496,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cam_core::project::v5;
 
     /// A workspace with circle artwork and one selected drill operation.
     fn drill_workspace() -> CamJobV5 {

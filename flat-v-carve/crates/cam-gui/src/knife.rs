@@ -311,7 +311,7 @@ pub struct Chain {
     pub paint: Option<cam_core::svg::SourcePaint>,
 }
 pub fn chains(job: &CamJobV5) -> Result<Vec<Chain>, String> {
-    let catalogue = artwork::inspect_artwork(job).map_err(|e| e.to_string())?;
+    let catalogue = crate::artwork_cache::inspect(job)?;
     Ok(catalogue
         .items
         .iter()
