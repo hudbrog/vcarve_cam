@@ -21,7 +21,7 @@
 //!   after [`MAX_FIT_SPAN`] vertices, so a long straight run costs a bounded
 //!   amount and is still collapsed into one block per span.
 use crate::{
-    checks::ARC_RESERVE_MM,
+    checks::{ARC_CENTRE_OFFSET_LIMIT_MM, ARC_RESERVE_MM},
     geometry::Point,
     motion::Position,
     sequence::{ArcFitOutput, StageRole},
@@ -34,6 +34,12 @@ use crate::{
 pub const MAX_FIT_SPAN: usize = 1024;
 /// Numeric reserve on the tolerance comparison.
 const RESERVE: f64 = 1e-9;
+/// How much better than the straight primitive an arc must measure before the
+/// fit prefers it. The two only compete when both already satisfy the
+/// tolerance, so this chooses between two legal primitives; the margin keeps
+/// floating-point noise on a straight run from minting a multi-kilometre arc
+/// that no controller can tell from the line it replaced.
+const LINE_TIE_MARGIN_MM: f64 = 1e-6;
 
 /// The purposes a fit may rewrite. Everything else is a semantic breakpoint:
 /// an entry, a lift, a lead, a tab transition or a knife motion is left
@@ -186,6 +192,15 @@ fn candidate_arc(points: &[Point], from: usize, to: usize) -> Option<ArcMove> {
     }
     let middle = from + (to - from) / 2;
     let center = circumcentre(points[from], points[middle], points[to])?;
+    // The centre's offset from the span's start is exactly what the program's
+    // `I`/`J` words carry, so a centre beyond the word bound is not
+    // programmable — and an arc that far away is the straight primitive
+    // anyway. Refuse it here and let the line cover the span.
+    if (center.x - points[from].x).abs() > ARC_CENTRE_OFFSET_LIMIT_MM
+        || (center.y - points[from].y).abs() > ARC_CENTRE_OFFSET_LIMIT_MM
+    {
+        return None;
+    }
     // The sign of the turn between the two chords is the arc's direction.
     let (a, b) = (points[middle], points[to]);
     let cross = (a.x - points[from].x) * (b.y - a.y) - (a.y - points[from].y) * (b.x - a.x);
@@ -206,8 +221,9 @@ fn candidate_arc(points: &[Point], from: usize, to: usize) -> Option<ArcMove> {
 
 /// Longest primitive starting at `from`: extended while either model still
 /// covers every vertex inside the tolerance, then the model that covers it
-/// best is emitted. A tie prefers the straight move, which every controller
-/// handles natively.
+/// best is emitted. An arc has to beat the straight move by more than
+/// [`LINE_TIE_MARGIN_MM`]; a tie — or a noise-scale win on a straight run —
+/// keeps the line, which every controller handles natively.
 fn fit_from(points: &[Point], depths: &[f64], from: usize, tolerance: f64) -> Option<Primitive> {
     let last = points.len() - 1;
     let limit = last.min(from + MAX_FIT_SPAN);
@@ -221,11 +237,13 @@ fn fit_from(points: &[Point], depths: &[f64], from: usize, tolerance: f64) -> Op
                 .map(|error| (arc, error))
         });
         let chosen = match (line, arc) {
-            (Some(line), Some((arc, arc_error))) => Some(if arc_error < line {
-                Primitive::Arc { end: to, arc }
-            } else {
-                Primitive::Line { end: to }
-            }),
+            (Some(line), Some((arc, arc_error))) => {
+                Some(if line - arc_error > LINE_TIE_MARGIN_MM {
+                    Primitive::Arc { end: to, arc }
+                } else {
+                    Primitive::Line { end: to }
+                })
+            }
             (Some(_), None) => Some(Primitive::Line { end: to }),
             (None, Some((arc, _))) => Some(Primitive::Arc { end: to, arc }),
             // Neither model reaches this far: the last vertex that fit is the
@@ -334,4 +352,105 @@ pub(crate) fn fittable_role(role: StageRole) -> bool {
         role,
         StageRole::Knife | StageRole::PocketRough | StageRole::PocketFinish
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One fittable linear cutting motion of a single continuous run.
+    fn segment(from: Point, to: Point) -> PlannedMotion {
+        PlannedMotion {
+            id: 0,
+            operation_id: "op".into(),
+            stage_id: "stage".into(),
+            tool_id: "tool".into(),
+            contour_id: Some("contour".into()),
+            pass_id: 0,
+            layer: 0,
+            interpolation: Interpolation::LinearFeed,
+            purpose: MotionPurpose::Finish,
+            effect: MotionEffect::MillingSweep,
+            start: Position::new(from, -1.),
+            end: Position::new(to, -1.),
+            feed_mm_min: Some(400.),
+            blade_heading_deg: None,
+        }
+    }
+
+    /// A near-straight run of `count` segments along +X, every vertex lifted
+    /// `wiggle` mm above the chord's line, chaining end to start.
+    fn near_straight_run(count: usize, wiggle: f64) -> Vec<PlannedMotion> {
+        let span = 1.1;
+        let step = span / count as f64;
+        let vertex = |i: usize| {
+            let x = i as f64 * step;
+            Point::new(x, wiggle * (std::f64::consts::PI * x / span).sin())
+        };
+        (0..count)
+            .map(|i| segment(vertex(i), vertex(i + 1)))
+            .collect()
+    }
+
+    #[test]
+    fn a_straight_run_with_noise_scale_curvature_fits_to_lines_not_arcs() {
+        // A wiggle below the tie margin is indistinguishable from a straight
+        // line at the program's own precision, so the fit must keep emitting
+        // the straight primitive rather than a sub-micron "win" that mints an
+        // arc with a centre kilometres away (the failing-export shape).
+        let motions = near_straight_run(64, 9e-7);
+        let (fitted, evidence) = fit_motions(&motions, 0.005);
+        assert_eq!(
+            evidence.arcs_emitted, 0,
+            "noise-scale curvature must not mint arcs"
+        );
+        assert!(
+            fitted.len() < motions.len(),
+            "the run still collapses: {} primitives for {} segments",
+            fitted.len(),
+            motions.len()
+        );
+        assert!(
+            fitted
+                .iter()
+                .all(|motion| motion.interpolation == Interpolation::LinearFeed)
+        );
+        assert!(evidence.max_deviation_mm <= 0.005);
+    }
+
+    #[test]
+    fn a_curved_run_still_fits_arcs() {
+        // Real curvature wins by far more than the margin, so the tie-break
+        // must not suppress the arcs the fit exists to emit.
+        let motions = near_straight_run(64, 0.002);
+        let (fitted, evidence) = fit_motions(&motions, 0.005);
+        assert!(evidence.arcs_emitted > 0, "{evidence:?}");
+        for motion in &fitted {
+            if let Interpolation::ArcFeed(arc) = motion.interpolation {
+                let from = motion.start.xy();
+                assert!(
+                    (arc.center.x - from.x).abs() <= ARC_CENTRE_OFFSET_LIMIT_MM
+                        && (arc.center.y - from.y).abs() <= ARC_CENTRE_OFFSET_LIMIT_MM,
+                    "an emitted arc carries a centre the program cannot word"
+                );
+            }
+        }
+        assert!(evidence.max_deviation_mm <= 0.005);
+    }
+
+    #[test]
+    fn a_span_whose_circumcentre_is_beyond_the_word_bound_has_no_arc() {
+        // Endpoints 2 mm apart with a 0.25 µm bulge: the circle through all
+        // three vertices has its centre about 2 km away, past the limit the
+        // program's I/J words can carry, so no arc candidate exists.
+        let points = [
+            Point::new(0., 0.),
+            Point::new(1., 2.5e-7),
+            Point::new(2., 0.),
+        ];
+        assert!(candidate_arc(&points, 0, 2).is_none());
+        // The same span with real curvature keeps its arc candidate.
+        let curved = [Point::new(0., 0.), Point::new(1., 0.25), Point::new(2., 0.)];
+        assert!(candidate_arc(&curved, 0, 2).is_some());
+    }
 }

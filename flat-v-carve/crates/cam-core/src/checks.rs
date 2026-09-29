@@ -64,14 +64,24 @@ fn finding(code: &str, message: impl Into<String>) -> CheckFinding {
 /// A `G2`/`G3` block states its centre as offsets from the start point, so the
 /// reader reconstructs the arc from the start, the centre and the end. An arc
 /// whose endpoints are not the same distance from the centre is a geometry the
-/// machine has to reconcile, and one whose endpoints coincide has no swing to
-/// state at all (a full circle is two arcs). Both are refused here rather than
-/// left to the controller.
+/// machine has to reconcile, one whose endpoints coincide has no swing to
+/// state at all (a full circle is two arcs), and one whose centre sits too far
+/// from its start is a word the program cannot carry. All are refused here
+/// rather than left to the controller.
 fn arc_problem(motion: &PlannedMotion, arc: &crate::toolpath::ArcMove) -> Option<String> {
     let from = motion.start.xy();
     let to = motion.end.xy();
     if !arc.center.finite() {
         return Some("has a non-finite arc centre".into());
+    }
+    let offset = (arc.center.x - from.x)
+        .abs()
+        .max((arc.center.y - from.y).abs());
+    if offset > ARC_CENTRE_OFFSET_LIMIT_MM {
+        return Some(format!(
+            "has a centre {:.3} mm from its start; a programmable arc keeps its `I`/`J` words within {} mm",
+            offset, ARC_CENTRE_OFFSET_LIMIT_MM
+        ));
     }
     let start_radius = from.distance(arc.center);
     let end_radius = to.distance(arc.center);
@@ -95,6 +105,12 @@ fn arc_problem(motion: &PlannedMotion, arc: &crate::toolpath::ArcMove) -> Option
 
 /// Smallest arc radius the plan will program, in mm.
 pub const ARC_RESERVE_MM: f64 = 1e-6;
+/// Largest arc centre offset the plan will program, in mm. The `I`/`J` words
+/// of a `G2`/`G3` block are the centre's offset from the arc's start, and the
+/// reader refuses any machine word beyond ±1,000,000 mm; the 1 mm reserve
+/// keeps a word inside that bound after the post rounds it onto the output
+/// decimal grid.
+pub const ARC_CENTRE_OFFSET_LIMIT_MM: f64 = 999_999.;
 /// How far the two endpoint radii of one programmed arc may differ, in mm.
 /// The post quantizes coordinates to the output precision, so this is the
 /// budget a rounded `I`/`J` centre may spend before the machine has to
@@ -1092,5 +1108,56 @@ pub fn require_pass(report: &BasicCheckReport) -> Result<()> {
             .unwrap_or_else(|| {
                 Diagnostic::new("PLAN_BASIC_CHECKS", "basic checks did not pass").at_stage("checks")
             })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arc_motion(center: (f64, f64), clockwise: bool) -> PlannedMotion {
+        PlannedMotion {
+            id: 0,
+            operation_id: "op".into(),
+            stage_id: "stage".into(),
+            tool_id: "tool".into(),
+            contour_id: Some("contour".into()),
+            pass_id: 0,
+            layer: 0,
+            interpolation: Interpolation::ArcFeed(crate::toolpath::ArcMove {
+                center: crate::geometry::Point::new(center.0, center.1),
+                clockwise,
+            }),
+            purpose: MotionPurpose::Finish,
+            effect: MotionEffect::MillingSweep,
+            start: crate::motion::Position::new(crate::geometry::Point::new(0., 0.), -1.),
+            end: crate::motion::Position::new(crate::geometry::Point::new(2., 0.), -1.),
+            feed_mm_min: Some(400.),
+            blade_heading_deg: None,
+        }
+    }
+
+    #[test]
+    fn an_arc_whose_centre_cannot_be_worded_is_refused() {
+        // A centre on the chord's bisector keeps the radii matched, so the
+        // only reason to refuse this arc is that its I/J words cannot carry
+        // the centre: the readback bounds every machine word at ±1,000,000 mm.
+        let far = arc_motion((1., 2_000_000.), false);
+        let problem = arc_problem(
+            &far,
+            &match far.interpolation {
+                Interpolation::ArcFeed(arc) => arc,
+                _ => unreachable!(),
+            },
+        )
+        .expect("a centre beyond the word bound is a plan problem");
+        assert!(problem.contains("programmable arc"), "{problem}");
+        // The same chord with a centre the program can word stays acceptable.
+        let near = arc_motion((1., 1.), false);
+        let arc = match near.interpolation {
+            Interpolation::ArcFeed(arc) => arc,
+            _ => unreachable!(),
+        };
+        assert_eq!(arc_problem(&near, &arc), None);
     }
 }
