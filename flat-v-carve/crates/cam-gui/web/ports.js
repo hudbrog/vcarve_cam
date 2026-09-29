@@ -63,7 +63,11 @@ export async function saveFile(id,name,bytes,deny) {
   const retained=bytes.slice();
   try {
     if(typeof globalThis.showSaveFilePicker==='function') {
-      const handle=await globalThis.showSaveFilePicker({suggestedName:name});
+      // Type the picker after the suggested name so a typed bare name keeps
+      // its extension, mirroring the native save dialog's filter.
+      const extension=name.includes('.')?name.split('.').pop().toLowerCase():'json';
+      const mime=extension==='json'?'application/json':'application/octet-stream';
+      const handle=await globalThis.showSaveFilePicker({suggestedName:name,types:[{description:extension.toUpperCase(),accept:{[mime]:['.'+extension]}}]});
       const stream=await handle.createWritable();
       try {await stream.write(retained);await stream.close();}catch(error){try{await stream.abort();}catch{}throw error;}
       const saved=await handle.getFile();

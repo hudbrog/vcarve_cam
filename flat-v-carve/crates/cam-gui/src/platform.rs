@@ -182,10 +182,17 @@ mod native {
                     if deny {
                         return Err("Injected denied write; retained bytes and draft remain available for retry".into());
                     }
-                    let path = rfd::FileDialog::new()
+                    let (filter, extension) = save_filter(&name);
+                    let mut path = rfd::FileDialog::new()
+                        .add_filter(filter, &[extension])
                         .set_file_name(&name)
                         .save_file()
                         .ok_or("Save cancelled; bytes retained")?;
+                    // Windows and macOS append the selected filter's extension
+                    // to a typed bare name; GTK does not.
+                    if path.extension().is_none() {
+                        path.set_extension(extension);
+                    }
                     crate::file_io::atomic_write(&path, &bytes)?;
                     Ok(format!(
                         "Saved {} exact bytes; SHA256 {}",
@@ -273,6 +280,31 @@ mod native {
                 let _ = tx.send(Event::RecoverySaved { edit, result });
                 ctx.request_repaint();
             });
+        }
+    }
+
+    /// Save filter matching the suggested name's extension, defaulting to
+    /// JSON: dialogs append the selected filter's extension to a typed name,
+    /// so bare names stay openable by the JSON-filtered load dialog.
+    fn save_filter(name: &str) -> (&'static str, &'static str) {
+        if name.ends_with(".ngc") {
+            ("G-code", "ngc")
+        } else {
+            ("JSON", "json")
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn save_dialog_filter_follows_the_suggested_name_and_defaults_to_json() {
+            assert_eq!(save_filter("carving.gui2.job.json"), ("JSON", "json"));
+            assert_eq!(save_filter("cam-library.json"), ("JSON", "json"));
+            assert_eq!(save_filter("sequence.ngc"), ("G-code", "ngc"));
+            assert_eq!(save_filter("01-face-T1.ngc"), ("G-code", "ngc"));
+            assert_eq!(save_filter("untitled"), ("JSON", "json"));
         }
     }
 }
