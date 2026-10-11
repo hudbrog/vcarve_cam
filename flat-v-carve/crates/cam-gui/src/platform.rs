@@ -289,6 +289,8 @@ mod native {
     fn save_filter(name: &str) -> (&'static str, &'static str) {
         if name.ends_with(".ngc") {
             ("G-code", "ngc")
+        } else if name.ends_with(".svg") {
+            ("SVG", "svg")
         } else {
             ("JSON", "json")
         }
@@ -305,6 +307,7 @@ mod native {
             assert_eq!(save_filter("sequence.ngc"), ("G-code", "ngc"));
             assert_eq!(save_filter("01-face-T1.ngc"), ("G-code", "ngc"));
             assert_eq!(save_filter("untitled"), ("JSON", "json"));
+            assert_eq!(save_filter("sketch.svg"), ("SVG", "svg"));
         }
     }
 }

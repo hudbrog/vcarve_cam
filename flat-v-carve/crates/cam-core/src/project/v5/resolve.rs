@@ -245,11 +245,7 @@ pub fn resolve_filled_region(
     // per-item region the schema-4 path generated.
     let mut imported: Vec<(f64, Region, f64)> = vec![];
     for (item, local_ids) in &groups {
-        let snapshot = match &item.content {
-            super::ArtworkContent::Svg(snapshot) => snapshot.clone(),
-        };
-        let geometry =
-            crate::svg::import_svg(&snapshot.svg, &item.import_options(), Some(local_ids))?;
+        let geometry = super::artwork::materialize_item(item, Some(local_ids))?.geometry;
         imported.push((
             item.import_settings.geometry_tolerance_mm,
             geometry.selected,

@@ -35,6 +35,18 @@ fn install_panic_log() {
 fn main() -> eframe::Result {
     install_panic_log();
     let args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|a| a == "--sketch-worker") {
+        let result = args
+            .get(2)
+            .ok_or_else(|| "Missing solver mailbox".to_owned())
+            .and_then(|folder| {
+                cam_gui_runtime::sketch::worker::serve(std::path::PathBuf::from(folder))
+            });
+        if result.is_err() {
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
     #[cfg(feature = "ui-review")]
     if args.get(1).is_some_and(|a| a == "--ui-review") {
         return cam_gui_runtime::app::ui_review::run(&args[2..]);

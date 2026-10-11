@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Headless sketch WASM qualification</title>
+<pre id="result">Running the production solver adapter…</pre>
+<script type="module">
+import init, { solveSketch } from './pkg/cam_sketch_solver.js';
+const result = document.querySelector('#result');
+try {
+  await init();
+  const input = await (await fetch('./rectangle.json')).json();
+  const tests = [];
+  const check = (name, ok) => { if (!ok) throw new Error(name); tests.push({ name, passed: true }); };
+  const solve = model => JSON.parse(solveSketch(JSON.stringify(model)));
+  const original = solve(input);
+  check('saved rectangle, hole and knife wire', original.status === 'accepted' && original.degrees_of_freedom === 0);
+  const edit = structuredClone(input);
+  edit.constraints.find(c => c.definition.kind === 'length' && c.definition.line === 'a').definition.value_mm = 24;
+  const resized = solve(edit);
+  check('driving dimension and fixed origin', resized.status === 'accepted' && Math.abs(resized.candidate.entities[0].geometry.end.x - 26) < 1e-6);
+  check('independent residuals', resized.validation.constraints.every(c => c.residual_mm <= 1e-6));
+  const reopened = solve(JSON.parse(JSON.stringify(resized.candidate)));
+  check('saved candidate roundtrip', reopened.status === 'accepted');
+  edit.constraints.push({ id: 'conflict', definition: { kind: 'length', line: 'a', value_mm: 15 } });
+  check('contradictory dimensions', solve(edit).status === 'rejected');
+  edit.constraints.at(-1).definition.line = 'missing';
+  let refused = false; try { solve(edit); } catch { refused = true; }
+  check('malformed operand refused', refused);
+  result.textContent = JSON.stringify({ status: 'passed', tests, solver: resized.solver_revision, iterations: resized.iterations }, null, 2);
+} catch (error) {
+  result.textContent = JSON.stringify({ status: 'failed', message: String(error) }, null, 2);
+}
+</script>

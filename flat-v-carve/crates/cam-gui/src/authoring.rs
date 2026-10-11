@@ -24,32 +24,7 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
 /// Capture the selected SVG's full page, including its placement, rather than
 /// the smaller bounds of the paths drawn on it. Runs on the compute worker.
 pub fn svg_page_stock(item: &ArtworkItem) -> Result<project::RectXY, String> {
-    let ArtworkContent::Svg(source) = &item.content;
-    let geometry = cam_core::svg::import_svg(&source.svg, &item.import_options(), None)
-        .map_err(|e| e.to_string())?;
-    let mut min = [f64::INFINITY; 2];
-    let mut max = [f64::NEG_INFINITY; 2];
-    for (x, y) in [
-        (0., 0.),
-        (geometry.page_width_mm, 0.),
-        (0., geometry.page_height_mm),
-        (geometry.page_width_mm, geometry.page_height_mm),
-    ] {
-        let p = item
-            .placement
-            .to_setup(cam_core::geometry::Point { x, y })
-            .map_err(|e| e.to_string())?;
-        min[0] = min[0].min(p.x);
-        min[1] = min[1].min(p.y);
-        max[0] = max[0].max(p.x);
-        max[1] = max[1].max(p.y);
-    }
-    Ok(project::RectXY {
-        min_x_mm: min[0],
-        min_y_mm: min[1],
-        width_mm: max[0] - min[0],
-        length_mm: max[1] - min[1],
-    })
+    cam_core::project::v5::authoring::page_stock(item).map_err(|e| e.to_string())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -27,6 +27,92 @@ discard execution or automatically resume playback on return. Shared semantic
 theme/widgets and procedural diagrams are described in the
 [asset manifest](ui-asset-manifest.md).
 
+## Sketch artwork workspace
+
+**New sketch** in the artwork navigator and **Edit sketch** below the artwork
+inspector heading open the shared orthographic XY editor (`sketch`, `app::sketch_ui`).
+Double-clicking a sketch navigator row or its Edit context action reopens it too.
+The canvas works in local millimetres with Y up. Lines, polylines, rectangles,
+circles, three-point arcs and reference points create persistent model entities;
+coincident open endpoints join explicit wires. Closing a polyline makes a closed
+wire. Construction wires render dashed and do not publish machining geometry.
+Visible endpoint, centre, midpoint, quadrant, origin and grid snaps copy exact
+coordinates without creating constraints. Geometry snaps take priority over grid.
+
+Selection always uses ordered individual point/body operands; Shift-click adds/removes,
+double-click selects a complete wire, and an empty-space drag box-selects geometry.
+The geometry list shares that selection. Panel visibility never changes selection
+or the active tool. Delete and Toggle construction require complete wires and reject
+partial selections without expanding them. Related constraints must be removed before
+deletion. The optional constraint panel edits all supported constraints,
+including fixed points and driving/reference dimensions. Its form is a local edit
+until Add/Update; Apply requires committing or discarding changed form text.
+Canvas dimension labels remain visible with the panel closed and double-clicking
+one opens its form. `sketch::tools_ui` provides visible drawing/constraint/dimension
+tools and FreeCAD-compatible key sequences with a two-second prefix timeout and
+text/IME focus protection. Geometry and constraint list visibility persists in egui
+session data between sketch sessions; their resizable container uses egui layout memory.
+
+`sketch::solve` sends bounded, revision-tagged requests to `sketch::worker`: a
+dedicated native `--sketch-worker` child or browser `sketch-worker.js`. The worker
+is independent of CAM computation. Structural edits cancel prior requests; drag
+targets coalesce to one latest queued request. Obsolete IDs/revisions and superseded
+cursor replies cannot install geometry or diagnostics. Every accepted candidate
+is independently checked for identical authored identities/definitions, numerical
+residuals and connected wire joins before installation. Failures retain the last
+accepted geometry, leaving conflicting authored constraints editable. Worker failure
+and a ten-second deadline terminate the worker and permit retry.
+
+Arael treats wire joins as endpoint equalities and cursor positions as soft goals.
+The last solve stage projects onto driving constraints with cursor penalties off.
+An unreachable cursor is reported as a drag limit, not authority to relax a driving
+dimension. DOF is measured without cursor penalties. Constraint rows show measured
+references, residuals and exact duplicate warnings; diagnostics do not claim a
+minimal conflict set or general redundant-constraint classification.
+
+The editor owns its model, gesture state, selection and local undo/redo. One
+completed drawing action or drag is one local transaction; history is bounded to
+64 entries and 4 MB per stack. Escape cancels the current gesture and returns to
+selection. Enter finishes an open polyline. Wheel zoom and middle/right drag pan
+the canvas; Fit sketch frames its geometry. The fixed source envelope remains
+unchanged. Placement, stock and work zero are never inferred from draft bounds.
+
+Apply validates structure, numerical constraints and materialized topology before
+calling the atomic add/apply command. Invalid output keeps the draft open with a
+diagnostic. A changed Apply is one document undo step; an unchanged Apply closes
+without invalidating the job. Cancel discards the draft. Job save/open, generation
+and document history are unavailable while editing. Native window close requires
+Apply/Cancel; browser tab close/reload uses a before-unload prompt.
+
+`commands::apply_sketch_with_report` commits model and reference revisions together
+and returns a transient explanation of output and binding changes. Stable wire
+membership, entity types, region holes and ancestry provide continuity evidence.
+Changed anchor boundaries, removed/split outputs, and already unresolved bindings
+require explicit repair. The inspector report links to the existing operation
+selection/start/tab controls. Reference inspection remains authoritative after
+save/reopen or undo/redo; reports are cleared on subsequent document edits.
+Apply invalidates prepared output and old plan freshness. Retained preparation
+independently checks machining identity, including mixed SVG/sketch operations.
+
+`artwork::export_svg` preserves SVG source bytes or delegates to
+`sketch::export::to_svg` for verified geometry in the fixed millimeter frame.
+Even-odd compound paths preserve holes; open wires remain strokes. Curve
+tessellation is shared with CAM. Isolated circles retain analytic elements;
+compound-region circles become paths. Placement, constraints and construction
+data remain in the job. Export uses the existing native atomic-write/browser
+save/download ports with an exact-byte retry; its save completion cannot mark
+the portable job saved.
+
+Recovery stores the current model, source identity, target and name separately
+from the committed job. It retains incomplete accepted drawing geometry, including
+open wires, and the constraint form including incomplete dimension text, but not an
+unfinished click gesture, camera, worker results or local undo history. Restoring a
+draft starts fresh local history and solver analysis; document undo history is
+still recovered. Recovery writes remain asynchronous and use the existing size
+limit and visible failure status. Apply refuses a draft whose original source
+identity has changed. Entity/wire IDs use random 128-bit identities so deleted
+geometry cannot acquire a former ID after reopening.
+
 ## Workers and persistence
 
 Native computation runs in a disposable process; browser computation runs in a

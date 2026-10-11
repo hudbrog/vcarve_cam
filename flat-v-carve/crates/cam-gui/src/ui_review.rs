@@ -60,7 +60,10 @@ pub fn run(args: &[OsString]) -> eframe::Result {
                 if panel.starts_with("simulation") || panel.starts_with("export") {
                     Command::generate(job.clone())
                 } else {
-                    Command::Preview { job: job.clone() }
+                    Command::Preview {
+                        job: job.clone(),
+                        have_artwork: None,
+                    }
                 },
             )?;
             app.accept(2, Ok(scene), &cc.egui_ctx);
@@ -106,6 +109,80 @@ pub fn run(args: &[OsString]) -> eframe::Result {
                 "operation-last" => 2,
                 _ => 0,
             };
+            if panel == "sketch-impact" {
+                use cam_core::project::v5::{
+                    ArtworkContent, ContourAnchorV5, OperationSettingsV5, StartSelectionV5, artwork,
+                };
+                let doc = app.document.as_mut().unwrap();
+                let item = doc
+                    .job
+                    .artwork
+                    .iter()
+                    .find(|i| matches!(i.content, ArtworkContent::Sketch(_)))
+                    .unwrap()
+                    .clone();
+                let catalogue = artwork::item_catalogue(&item)?;
+                let OperationSettingsV5::Profile(settings) = &mut doc.job.operations[0].settings
+                else {
+                    return Err("Sketch impact review requires a profile".into());
+                };
+                let reference = settings
+                    .contours
+                    .iter()
+                    .find(|c| c.geometry.artwork_item_id == item.id)
+                    .unwrap()
+                    .geometry
+                    .clone();
+                settings.start = StartSelectionV5::Anchor(Box::new(ContourAnchorV5 {
+                    source_geometry_fingerprint: catalogue
+                        .contour(&reference.local_geometry_id)
+                        .unwrap()
+                        .source_fingerprint
+                        .clone(),
+                    geometry: reference,
+                    fraction_along_source_contour: 0.25,
+                }));
+                app.begin_sketch(Some(item.id), &cc.egui_ctx);
+                let editor = app.sketch.as_mut().unwrap();
+                let cam_core::sketch::ConstraintKind::Length { value_mm, .. } =
+                    &mut editor.saved.model.constraints[8].definition
+                else {
+                    return Err("Expected fixture width dimension".into());
+                };
+                *value_mm = 25.;
+                // Keep solver work off the Windows UI thread, as the normal
+                // editor does. The review fixture waits before rendering.
+                let model = editor.saved.model.clone();
+                let solved = std::thread::spawn(move || cam_sketch_solver::solve(&model))
+                    .join()
+                    .map_err(|_| "Review solver failed")??;
+                if !solved.accepted() {
+                    return Err("Review sketch solve rejected".into());
+                }
+                editor.saved.model = solved.candidate;
+                // This fixture has already solved and validated the model.
+                // Clear the editor's pending initial analysis before Apply;
+                // production transport is asynchronous, unlike unit tests.
+                editor.cancel_solve();
+                app.apply_sketch(&cc.egui_ctx)?;
+            }
+            if panel == "sketch" || panel == "sketch-constraints" {
+                let target = app.document.as_ref().and_then(|d| {
+                    d.job
+                        .artwork
+                        .iter()
+                        .find(|i| {
+                            matches!(i.content, cam_core::project::v5::ArtworkContent::Sketch(_))
+                        })
+                        .map(|i| i.id.clone())
+                });
+                app.begin_sketch(target, &cc.egui_ctx);
+                if panel == "sketch-constraints"
+                    && let Some(editor) = &mut app.sketch
+                {
+                    editor.show_constraints = true;
+                }
+            }
             app.resources.ready = true;
             app.resources.draft = crate::resources::Catalog::decode(include_str!(
                 "../../../fixtures/gui5/library.json"
@@ -199,6 +276,7 @@ impl eframe::App for Review {
                 "pixels": shot.size,
                 "pixelsPerPoint": ctx.pixels_per_point(),
                 "workspace": self.app.workspace(),
+                "sketch": self.app.sketch.as_ref().map(|s|s.canvas_probe()),
                 "controls": CONTROLS.with(|c| c.borrow().clone()),
                 "renderer": self.app.view.renderer_probe(),
             });
@@ -207,6 +285,7 @@ impl eframe::App for Review {
                 serde_json::to_vec_pretty(&metadata).unwrap(),
             )
             .expect("write native review metadata");
+            self.app.sketch = None;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         } else if self.frames > 15 && !self.requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));

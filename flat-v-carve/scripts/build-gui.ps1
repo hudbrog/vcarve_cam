@@ -48,7 +48,7 @@ try {
             Copy-Item -LiteralPath 'pkg' -Destination $destination -Recurse -Force
             Copy-Item -LiteralPath 'licenses' -Destination $destination -Recurse -Force
             Copy-Item -LiteralPath 'THIRD-PARTY.md' -Destination $destination -Force
-            foreach ($asset in @('index.html','worker.js','recovery-store.js','sw.js','offline-manifest.js')) {
+            foreach ($asset in @('index.html','worker.js','sketch-worker.js','recovery-store.js','sw.js','offline-manifest.js')) {
                 Copy-Item -LiteralPath (Join-Path 'web' $asset) -Destination (Join-Path $destination 'web') -Force
             }
             Write-Host 'GUI: http://127.0.0.1:5182/web/index.html'

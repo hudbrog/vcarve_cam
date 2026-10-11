@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 const root=fileURLToPath(new URL('..',import.meta.url));
-const assets=['web/index.html','web/worker.js','web/recovery-store.js'];
+const assets=['web/index.html','web/worker.js','web/sketch-worker.js','web/recovery-store.js'];
 function walk(relative){for(const entry of readdirSync(path.join(root,relative),{withFileTypes:true})){
  const file=`${relative}/${entry.name}`;if(entry.isDirectory())walk(file);else if(/\.(js|wasm)$/.test(file))assets.push(file);
 }}

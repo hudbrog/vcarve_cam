@@ -414,14 +414,20 @@ impl App {
                 d.job
                     .artwork
                     .iter()
-                    .map(|i| (i.id.0.clone(), i.name.clone()))
+                    .map(|i| {
+                        (
+                            i.id.0.clone(),
+                            i.name.clone(),
+                            matches!(i.content, cam_core::project::v5::ArtworkContent::Sketch(_)),
+                        )
+                    })
                     .collect()
             })
             .unwrap_or_default();
         if items.is_empty() {
             self.nav_item(ui, "Artwork collection", "Artwork", 0);
         }
-        for (id, name) in items {
+        for (id, name, sketch) in items {
             let selected = self
                 .document
                 .as_ref()
@@ -436,7 +442,7 @@ impl App {
                                 ui_widgets::navigation_row(
                                     ui,
                                     &name,
-                                    None,
+                                    Some(if sketch { "Sketch" } else { "SVG" }),
                                     Icon::Artwork,
                                     selected && self.inspector_tab == 0,
                                 )
@@ -449,6 +455,29 @@ impl App {
                     }
                     if row.clicked() {
                         self.select_artwork(&id, ctx);
+                    }
+                    if sketch && row.double_clicked() {
+                        self.begin_sketch(
+                            Some(cam_core::project::v5::ArtworkItemId(id.clone())),
+                            ctx,
+                        );
+                    }
+                    if sketch {
+                        row.context_menu(|ui| {
+                            if button(
+                                ui,
+                                "Edit sketch",
+                                self.active.is_none() && self.io.is_none(),
+                            )
+                            .clicked()
+                            {
+                                self.begin_sketch(
+                                    Some(cam_core::project::v5::ArtworkItemId(id.clone())),
+                                    ctx,
+                                );
+                                ui.close();
+                            }
+                        });
                     }
                     let hidden = self.view.artwork.hidden.contains(&id);
                     let eye = ui_icons::button(
@@ -498,6 +527,9 @@ impl App {
                 },
                 ctx,
             );
+        }
+        if button(ui, "New sketch", self.active.is_none() && self.io.is_none()).clicked() {
+            self.begin_sketch(None, ctx);
         }
     }
     fn navigator_tools(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, compact: bool) {

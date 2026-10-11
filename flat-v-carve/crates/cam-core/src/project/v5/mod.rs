@@ -142,21 +142,14 @@ impl SvgInterpretation {
     }
 }
 
-/// Embedded artwork content. A tagged enum so a future Sketch item can
-/// produce the same catalogue; only `Svg` exists today and unsupported kinds
-/// are rejected by strict parsing rather than treated as empty items.
+/// Embedded artwork, resolved through one operation-facing geometry boundary.
+/// Sketches store their versioned authored model and accepted coordinates;
+/// no generated SVG or solver internals are serialized.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ArtworkContent {
     Svg(SourceSnapshot),
-}
-
-impl ArtworkContent {
-    fn svg(&self) -> &SourceSnapshot {
-        match self {
-            Self::Svg(snapshot) => snapshot,
-        }
-    }
+    Sketch(crate::sketch::SketchDocument),
 }
 
 /// One independently placed artwork item. Items stay logically independent
@@ -183,14 +176,22 @@ impl ArtworkItem {
         }
     }
 
-    /// Placement-independent identity of the exact embedded content plus its
-    /// interpretation (plan section 22.3). It excludes the display name and
-    /// placement: renaming or moving an item never invalidates references,
-    /// while any content or interpretation change does, including edits
-    /// smaller than the contour fingerprint grid.
+    /// Placement-independent source geometry identity. SVG keeps its original
+    /// exact-text hash. Sketches exclude annotations, constraints and construction
+    /// geometry; validity is checked separately before machining. Coordinate edits
+    /// smaller than the contour fingerprint grid still change this revision.
     pub fn source_revision(&self) -> Result<SourceRevision> {
-        let digest = crate::plan_hash::hash(&(&self.content.svg().svg, &self.import_settings))
-            .map_err(|e| error("PROJECT_JSON", e.to_string()))?;
+        let digest = match &self.content {
+            ArtworkContent::Svg(source) => {
+                crate::plan_hash::hash(&(&source.svg, &self.import_settings))
+            }
+            ArtworkContent::Sketch(sketch) => crate::plan_hash::hash(&(
+                "sketch-v1",
+                sketch.geometry_digest()?,
+                &self.import_settings,
+            )),
+        }
+        .map_err(|e| error("PROJECT_JSON", e.to_string()))?;
         Ok(SourceRevision {
             content_digest: digest,
             algorithm_version: SOURCE_REVISION_ALGORITHM_VERSION,
@@ -200,17 +201,21 @@ impl ArtworkItem {
     fn validate(&self) -> Result<()> {
         self.id.validate()?;
         short_label(&self.name, "artwork item name")?;
-        let snapshot = self.content.svg();
-        short_label(&snapshot.filename, "artwork source filename")?;
-        if snapshot.svg.len() > crate::svg::MAX_SVG_BYTES {
-            return Err(error(
-                "PROJECT_RESOURCE_LIMIT",
-                format!(
-                    "artwork item '{}' exceeds the {} byte per-item source limit",
-                    self.id.0,
-                    crate::svg::MAX_SVG_BYTES
-                ),
-            ));
+        match &self.content {
+            ArtworkContent::Sketch(sketch) => sketch.validate_structure()?,
+            ArtworkContent::Svg(snapshot) => {
+                short_label(&snapshot.filename, "artwork source filename")?;
+                if snapshot.svg.len() > crate::svg::MAX_SVG_BYTES {
+                    return Err(error(
+                        "PROJECT_RESOURCE_LIMIT",
+                        format!(
+                            "artwork item '{}' exceeds the {} byte per-item source limit",
+                            self.id.0,
+                            crate::svg::MAX_SVG_BYTES
+                        ),
+                    ));
+                }
+            }
         }
         self.import_settings.validate()?;
         let placement = &self.placement;
@@ -228,6 +233,13 @@ impl ArtworkItem {
             ));
         }
         Ok(())
+    }
+
+    /// Full authored state for inspection caches; unlike machining identity this
+    /// includes constraints, reference dimensions, labels and construction geometry.
+    pub fn authored_revision(&self) -> Result<String> {
+        crate::plan_hash::hash(&(&self.content, &self.import_settings))
+            .map_err(|e| error("PROJECT_JSON", e.to_string()))
     }
 }
 

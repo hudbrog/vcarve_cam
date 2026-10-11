@@ -46,12 +46,141 @@ The inspector filter and its scroll position help navigate longer forms. See
 [GUI architecture](../../../docs/flat-v-carve/gui-architecture.md) for editing,
 recovery and worker contracts.
 
-Admission is limited to schema-5 jobs with SVG artwork and up to twelve ordered
+Admission is limited to schema-5 jobs with SVG or sketch artwork and up to twelve ordered
 Flat V-carve, Face, Profile, Drag knife or Drill operations, plus schema-2 machine profiles.
 Older documents are refused; there is no old-file migration in the application.
 The fixture regeneration example is test-data preparation only. Profile supports
 tabs, finishing and entries. Drill supports hole selection, depth references,
 pecking and dwell; see the [drill fixtures](../../fixtures/drill/README.md).
+
+## Sketch artwork
+
+Choose **New sketch** in the artwork navigator. To reopen a saved sketch,
+double-click its name under **ARTWORK**, right-click that row and choose
+**Edit sketch**, or select it and use **Edit sketch** below its inspector heading.
+Open the saved job JSON to retain editable geometry and dimensions; importing an
+exported SVG creates SVG artwork with no sketch constraints.
+
+The left **Tools** panel contains all supported drawing, constraint and dimension
+commands. Hover a tool for its shortcut and required selection. Draw an outline with Rectangle or Polyline, then add
+circles for holes. Polyline closes when you click its first vertex; Enter finishes
+an open path. Arc takes start, a point along the arc, then end. Point creates a
+reference point with no cutting geometry. Construction creates dashed geometry
+excluded from machining.
+
+Snap shows its target beside the cursor. Snap and Grid snap can be switched off;
+the grid spacing is editable in millimetres. Snapping does not add constraints.
+Click selects an individual edge or point; Shift-click adds/removes items.
+Double-click an edge, or choose **Select wire**, to select its complete wire.
+Drag empty space left-to-right to select contained geometry, or right-to-left
+to include crossed geometry. Drag selected geometry as far as constraints permit.
+Delete selection and Toggle construction require complete wires and explain how
+to select them; neither silently expands a partial selection. Remove related
+constraints before deleting a wire.
+Ctrl-Z/Ctrl-Y (or Cmd-Z/Cmd-Shift-Z) use sketch-local history. Escape cancels a
+gesture and returns to Select. Wheel zooms, middle/right drag pans, and Fit sketch frames the geometry.
+
+**Geometry list** and **Constraints & dimensions** independently show optional
+lists on the right. Toggling either preserves selection and the active tool.
+Geometry rows select the corresponding canvas entity; **Locate selection** centres
+it. Constraint filters show All, Dimensions, or Problems. Panel visibility is
+remembered when reopening sketches in the same app session; widths are resizable.
+At small window sizes the tools and lists scroll.
+
+FreeCAD-style sequences are pressed in order, not held together. After G or K,
+the footer shows available continuations. Escape cancels a sequence; an unfinished
+sequence expires after two seconds. Tool shortcuts do not run inside text fields.
+
+| Command | Shortcut |
+| --- | --- |
+| Line / Polyline / Rectangle / Circle / Point | G,L / G,M / G,R / G,C / G,Y |
+| Three-point arc | G,3,A |
+| Construction (selected complete wires, or new geometry) | G,N |
+| Horizontal / Vertical / Coincident | H / V / C |
+| Parallel / Perpendicular / Equal length / Tangent / Symmetry | P / N / E / T / S |
+| Point on line / signed X distance / signed Y distance | O / L / I |
+| Distance between points, or length of selected line | K,D |
+| Radius / Diameter / Angle / Fix entity | K,R / K,O / K,A / K,B |
+| Switch driving/reference in the current dimension form | K,X, then Add/Update |
+
+**Apply sketch** validates the output and makes one job undo transaction.
+**Cancel sketch** leaves the committed artwork intact. Apply reports invalid
+intersections, incomplete topology or unsatisfied saved constraints and leaves the
+draft editable. Local recovery retains the draft separately from the job; after
+restoring, local undo history starts afresh. Finish with Apply/Cancel before saving
+or opening another job. Stock and artwork placement stay fixed throughout editing.
+
+Selection works with the lists open or closed. Click an endpoint or centre for a point operand; click the middle of a curve for an
+entity operand. Shift-click adds operands in the order shown as A, B and C.
+Choose a visible geometric constraint tool to apply it to a valid selection;
+otherwise follow its selection hint and use **Add constraint**. Dimension tools
+open a value form. Double-click a canvas dimension label or click its list row to edit
+or remove it; use **Update constraint** to commit form changes. **Clear operands**
+discards the form edit. Remove related constraints before deleting a wire.
+
+Available constraints include coincident, horizontal/vertical, parallel,
+perpendicular, equal length/radius, tangent, point on line/circle, midpoint,
+symmetry, fixed entity/point, distance, signed X/Y distance, length, radius, diameter and
+signed angle. Dimensions use local millimetres or degrees. X/Y distances are
+A minus B; angles run from line A to line B. Tangency uses the supporting circle
+of an arc. Wire joins remain connected automatically.
+
+Driving dimensions set the geometry. **Reference dimension** measures it without
+removing degrees of freedom; conversion to driving starts at the current value.
+Drag a selected endpoint to deform its wire, or select a complete wire to
+move a group. Arael solves in a separate native process/browser Worker. The status
+shows remaining DOF, failures and cursor limits. **Solve sketch** retries and
+**Cancel solve** stops an active request. Failed solves keep the previous geometry
+and the editable constraints. Diagnostic rows locate unsatisfied constraints;
+hover a constraint for its residual. Duplicate constraints are flagged, but the
+diagnostics do not promise a minimal conflict set or a complete redundancy analysis.
+
+The current per-sketch limits are 500 entities, 2,000 constraints, 500 wires,
+500 total wire edges, and 2 MB of model JSON. Geometry coordinates/parameters
+must be finite and within the model's ±100,000 numeric range. Requests/replies
+are limited to 2.5/4 MB; a solve exceeding ten seconds is terminated and can be
+retried. Sketch undo retains up to 64 entries and 4 MB per history direction.
+These limits bound resource use; a 500-entity sketch is not guaranteed to solve
+interactively. Split a larger design into separate artwork items.
+
+Constraint edits and each completed drag have one local undo step. Recovery also
+retains unfinished dimension text; Apply requires adding/updating or discarding
+that form first. Applied sketches use the existing operation geometry pickers
+alongside SVGs. Constraint validity is separate from the topology check at Apply.
+
+After Apply, the artwork inspector reports preserved selections/anchors and
+anything needing repair. Dimension changes keep selections whose persistent
+topology survives. Deleted or split outputs, changed region membership, and
+manual starts/tabs on changed boundaries need explicit reassignment. **Repair
+start**, **Repair tab**, and **Repair selection** open the affected operation.
+Existing unresolved references stay unresolved. Apply is one job undo step;
+undo/redo restores both the sketch and its operation references. Generate again
+after geometry edits before preparing checked output. SVGs and sketches can
+participate in the same operation and the same generated job.
+
+**Export artwork SVG** saves a geometry snapshot without changing the editable
+job or marking it saved. Sketches export their fixed page in millimeters,
+excluding construction geometry, constraints, and setup placement. Closed
+regions retain holes and islands; open wires remain strokes. Curves use CAM's
+tessellation tolerance; isolated circles remain analytic SVG circles, while
+circles in compound regions become paths (their analytic drill markers are not
+retained in that SVG). SVG sources export their original bytes. Page coordinates
+are relative to the sketch frame's minimum; when reimporting a sketch with a
+nonzero frame minimum at its old setup position, subtract that minimum from the
+old placement origin. Keep the job JSON for editable dimensions and original
+selection identities.
+
+Tests: `cargo test -p cam-gui --lib sketch` and, with browser assets built and
+the development server running, `node crates/cam-gui/web/smoke.mjs --sketch`.
+Use `--sketch-constraints` for the browser constraint/drag/recovery scenario.
+Use `--sketch-ux` for independent selection/lists, shortcuts, reopening, dimension
+labels and solver failure/retry. Use `--sketch-performance` for production WASM
+worker measurements; `node scripts/qualify-sketch-native.mjs` measures the release
+native solver process. Neither benchmark substitutes for the normal native UI run.
+Use `--sketch-lifecycle` for mixed-source Apply, anchor repair, undo/redo, checked
+output, SVG retry and save/reopen. The `ui-review` feature accepts `sketch`,
+`sketch-constraints`, and `sketch-impact` (with `fixtures/v5/sketch-lifecycle-job.json`)
+for native captures.
 
 ## Simulator detail
 

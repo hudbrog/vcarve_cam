@@ -225,10 +225,18 @@ impl ContourCatalogue {
             ));
         };
         let geometry = crate::svg::import_svg(&source.svg, &job.import, None)?;
-        let placement = job.import.placement.clone();
+        Self::from_geometry(&geometry, &job.import)
+    }
+
+    /// Shared catalogue derivation for imported and authored artwork.
+    pub fn from_geometry(
+        geometry: &crate::svg::NormalizedGeometry,
+        options: &crate::svg::ImportOptions,
+    ) -> Result<Self> {
+        let placement = options.placement.clone();
         // One declared merge budget, shared by contour rings and centreline
         // chains, so both spend the same quarter of the import tolerance.
-        let budget = job.import.geometry_tolerance_mm / CHAIN_SIMPLIFY_BUDGET_FRACTION;
+        let budget = options.geometry_tolerance_mm / CHAIN_SIMPLIFY_BUDGET_FRACTION;
         let mut contours = vec![];
         for component in &geometry.sources {
             let region = &component.geometry;

@@ -15,17 +15,26 @@ use crate::{
 /// The whole SVG page, including its placement, as a stock rectangle. Page
 /// capture is a page measurement, not the bounds of the drawn paths.
 pub fn page_stock(item: &ArtworkItem) -> Result<crate::project::RectXY> {
-    let ArtworkContent::Svg(source) = &item.content;
-    let geometry = crate::svg::import_svg(&source.svg, &item.import_options(), None)?;
+    let (origin, width, height) = match &item.content {
+        ArtworkContent::Svg(source) => {
+            let g = crate::svg::import_svg(&source.svg, &item.import_options(), None)?;
+            (Point::new(0., 0.), g.page_width_mm, g.page_height_mm)
+        }
+        ArtworkContent::Sketch(sketch) => {
+            sketch.validate_structure()?;
+            (
+                sketch.frame.min,
+                sketch.frame.width_mm,
+                sketch.frame.height_mm,
+            )
+        }
+    };
     let mut min = [f64::INFINITY; 2];
     let mut max = [f64::NEG_INFINITY; 2];
-    for (x, y) in [
-        (0., 0.),
-        (geometry.page_width_mm, 0.),
-        (0., geometry.page_height_mm),
-        (geometry.page_width_mm, geometry.page_height_mm),
-    ] {
-        let p = item.placement.to_setup(Point::new(x, y))?;
+    for (x, y) in [(0., 0.), (width, 0.), (0., height), (width, height)] {
+        let p = item
+            .placement
+            .to_setup(Point::new(origin.x + x, origin.y + y))?;
         min[0] = min[0].min(p.x);
         min[1] = min[1].min(p.y);
         max[0] = max[0].max(p.x);

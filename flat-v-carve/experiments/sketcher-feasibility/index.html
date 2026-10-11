@@ -1,0 +1,82 @@
+<!doctype html><meta charset="utf-8"><title>Sketcher feasibility</title>
+<style>body{font:16px system-ui;margin:32px;background:#101a23;color:#deebf3}button{padding:10px 18px}pre{white-space:pre-wrap}table{border-collapse:collapse;font-size:13px}td,th{padding:6px 12px;border-bottom:1px solid #405060;text-align:right}td:first-child,th:first-child{text-align:left}</style>
+<h1>Sketcher feasibility</h1><p>Same fixtures, independent residual checks, real Web Workers.</p>
+<button id="run">Run native/browser comparison fixtures</button><p id="status">Ready</p><div id="results"></div><pre id="log"></pre>
+<script type="module">
+import {summarize} from './validate.mjs';
+const fixtures=await (await fetch('./fixtures.json')).json();
+const status=document.querySelector('#status'),log=document.querySelector('#log');
+let request=0;
+async function benchmark(backend) {
+  const results=[],failures=[],loads=[];let geometry;
+  // Isolate each case: a fatal WASM allocation failure must not hide later results.
+  for(const fixture of fixtures) {
+    const worker=new Worker('./worker.mjs',{type:'module'}),id=++request,start=performance.now();
+    try {await new Promise((resolve,reject)=>{
+      const timeout=setTimeout(()=>reject(Error(`${backend}: timeout`)),30000);
+      worker.onerror=e=>{clearTimeout(timeout);reject(Error(e.message));};
+      worker.onmessage=({data})=>{
+        if(data.request!==id)return;
+        if(data.kind==='ready')loads.push(performance.now()-start);
+        if(data.kind==='solving')status.textContent=`${backend}: ${data.id}`;
+        if(data.kind==='result')results.push(data.result);
+        if(data.kind==='geometry')geometry=data.result;
+        if(data.kind==='error'){clearTimeout(timeout);reject(Error(data.error));}
+        if(data.kind==='done'){clearTimeout(timeout);resolve();}
+      };worker.postMessage({backend,request:id,fixtures:[fixture],geometry:backend==='arael'&&fixture.id==='rectangle'});
+    });}catch(e){failures.push({id:fixture.id,error:String(e)});}finally{worker.terminate();}
+  }
+  const summary=results.map(r=>summarize(fixtures.find(f=>f.id===r.id),r));
+  const payload={backend,platform:navigator.userAgent,hardwareConcurrency:navigator.hardwareConcurrency,loads_ms:loads,results,summary,failures,geometry};
+  await fetch(`/results/${backend}-browser.json`,{method:'POST',body:JSON.stringify(payload)});
+  const heading=document.createElement('h2');heading.textContent=backend;document.querySelector('#results').append(heading);
+  const table=document.createElement('table');table.innerHTML='<tr><th>Fixture</th><th>Residual mm</th><th>DOF</th><th>Cold ms</th><th>Warm p95 ms</th></tr>';
+  for(const r of summary.filter(r=>['scale-25','scale-100','scale-500','connected-100','coincident','conflicting'].includes(r.id))){const tr=document.createElement('tr');for(const x of [r.id,r.max_residual_mm.toExponential(2),r.dof,r.cold_ms.toFixed(2),r.warm_p95_ms?.toFixed(2)??'—']){const td=document.createElement('td');td.textContent=x;tr.append(td);}table.append(tr);}document.querySelector('#results').append(table);
+  const p=document.createElement('p');p.textContent=failures.length?`Failed cases: ${failures.map(f=>`${f.id}: ${f.error}`).join('; ')}`:'All cases executed';document.querySelector('#results').append(p);
+  const good=summary.filter(r=>r.expected==='valid'),failed=good.filter(r=>!r.accepted||!r.dof_ok||r.warm_max_residual_mm>1e-6||r.drag_max_residual_mm>1e-6);
+  const health=document.createElement('p');health.textContent=`${good.length-failed.length}/${good.length} executed valid fixtures pass. ${geometry?.passed?'Geometry and selection preservation pass.':''}`;document.querySelector('#results').append(health);
+}
+async function staleReplies() {
+  const active={request:++request,document_revision:2,sketch_revision:3};
+  const accept=r=>Object.keys(active).every(k=>r[k]===active[k]);
+  const accepted=[],rejected=[],arrival=[];
+  await Promise.all([0,1].map(async old=>{
+    const worker=new Worker('./worker.mjs',{type:'module'});
+    const stamp=old?{request:active.request-1,document_revision:1,sketch_revision:2}:active;
+    try{await new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>reject(Error('stale reply timeout')),30000);
+      worker.onmessage=({data})=>{
+        if(data.kind==='result'){arrival.push(data.request);(accept(data)?accepted:rejected).push(data.request);}
+        if(data.kind==='error'){clearTimeout(timer);reject(Error(data.error));}
+        if(data.kind==='done'){clearTimeout(timer);resolve();}
+      };
+      worker.postMessage({backend:'arael',...stamp,fixtures:[fixtures.find(f=>f.id==='point-dimensions')],delay_ms:old?250:0});
+    });}finally{worker.terminate();}
+  }));
+  return {arrival,accepted,rejected,stale_rejected:rejected.length===1&&accepted.length===1,document_guard:!accept({...active,document_revision:1}),sketch_guard:!accept({...active,sketch_revision:2})};
+}
+async function cancellation(backend) {
+  const id=++request,worker=new Worker('./worker.mjs',{type:'module'});
+  const fixture=structuredClone(fixtures.find(f=>f.id==='scale-100'));fixture.samples=1000;
+  let ticks=0;const interval=setInterval(()=>ticks++,5);let start;
+  try{return await new Promise((resolve,reject)=>{
+    const timeout=setTimeout(()=>reject(Error('cancellation setup timeout')),30000);
+    worker.onmessage=({data})=>{
+      if(data.kind==='error'){clearTimeout(timeout);reject(Error(data.error));}
+      if(data.kind==='solving') {start=performance.now();ticks=0;setTimeout(()=>{worker.terminate();clearTimeout(timeout);resolve({backend,terminated_ms:performance.now()-start,ui_ticks:ticks,request:id});},25);}
+    };worker.postMessage({backend,request:id,fixtures:[fixture]});
+  });}finally{worker.terminate();clearInterval(interval);}
+}
+document.querySelector('#run').onclick=async()=>{
+  document.querySelector('#run').disabled=true;
+  document.querySelector('#results').replaceChildren();
+  try {
+    await benchmark('arael');await benchmark('planegcs');
+    const cancel=[await cancellation('arael'),await cancellation('planegcs')];
+    const lifecycle={cancel,...await staleReplies()};
+    await fetch('/results/browser-lifecycle.json',{method:'POST',body:JSON.stringify(lifecycle)});
+    log.textContent=`Worker cancellation: ${cancel.map(c=>`${c.backend} ${c.terminated_ms.toFixed(1)} ms, ${c.ui_ticks} UI ticks`).join('; ')}.\nStale reply rejected: ${lifecycle.stale_rejected}; document/sketch guards: ${lifecycle.document_guard&&lifecycle.sketch_guard}.`;status.textContent='Complete — results saved';
+  }catch(e){status.textContent='Failed';log.textContent=e.stack;await fetch('/results/browser-error.json',{method:'POST',body:JSON.stringify({error:e.stack})});}
+  finally{document.querySelector('#run').disabled=false;}
+};
+</script>

@@ -5,7 +5,7 @@
 //! or five times.
 //!
 //! An item's resolution is a pure function of its identity — id, name,
-//! placement, and the content revision that already hashes the source text
+//! placement, and the full authored revision (including sketch constraints)
 //! with its interpretation — so a resolution is kept under that key and
 //! reused until one of those inputs changes. The assembled whole-job
 //! catalogue is kept for the last artwork state; going back and forth
@@ -25,10 +25,10 @@ thread_local! {
 }
 
 /// Everything `resolve_artwork_item` reads: the item's id, name, placement,
-/// and the content revision (source text plus interpretation). Equal keys
+/// and the authored revision (full content plus interpretation). Equal keys
 /// resolve to equal catalogues, so the key is a sound memo identity.
 fn item_key(item: &v5::ArtworkItem) -> Result<String, String> {
-    let revision = item.source_revision().map_err(|e| e.to_string())?;
+    let revision = item.authored_revision().map_err(|e| e.to_string())?;
     Ok(crate::compute::hash(
         &serde_json::to_vec(&(&item.id.0, &item.name, &revision, &item.placement))
             .map_err(|e| e.to_string())?,
@@ -348,6 +348,53 @@ mod tests {
         };
         assert_eq!(wires(&cached), wires(&direct));
         assert_eq!(cached.items.len(), direct.items.len());
+    }
+
+    #[test]
+    fn sketch_constraint_edits_invalidate_cached_readiness_and_open_without_solving() {
+        use cam_core::{geometry::Point, sketch::*};
+        let mut job = imported();
+        job.artwork[0].content = v5::ArtworkContent::Sketch(SketchDocument {
+            entities: vec![Entity {
+                id: "circle".into(),
+                label: None,
+                construction: false,
+                geometry: SketchGeometry::Circle {
+                    center: Point::new(10., 10.),
+                    radius_mm: 3.,
+                },
+            }],
+            wires: vec![Wire {
+                id: "circle".into(),
+                label: None,
+                closed: true,
+                edges: vec![WireEdge {
+                    entity_id: "circle".into(),
+                    reversed: false,
+                }],
+            }],
+            ..Default::default()
+        });
+        let first = inspect(&job).unwrap();
+        assert!(first.items[0].import_error.is_none());
+        let revision = job.artwork[0].source_revision().unwrap();
+        let v5::ArtworkContent::Sketch(sketch) = &mut job.artwork[0].content else {
+            panic!()
+        };
+        sketch.constraints.push(Constraint {
+            id: "radius".into(),
+            reference: false,
+            definition: ConstraintKind::Radius {
+                curve: "circle".into(),
+                value_mm: 9.,
+            },
+        });
+        let opened = crate::session::open(&job.to_json().unwrap()).unwrap();
+        assert_eq!(opened, job);
+        assert_eq!(job.artwork[0].source_revision().unwrap(), revision);
+        let next = inspect(&opened).unwrap();
+        assert!(!Arc::ptr_eq(&first, &next));
+        assert!(next.items[0].import_error.is_some());
     }
 
     /// The scene-level readings are derived once per artwork state: a job

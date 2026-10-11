@@ -5,6 +5,8 @@ pub const MAX_BYTES: usize = 9_000_000;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sketch: Option<crate::sketch::SavedDraft>,
     pub inspector: usize,
     #[serde(default)]
     pub operation_tab: usize,
@@ -58,6 +60,7 @@ fn read_scroll_positions<'de, D: serde::Deserializer<'de>>(
 impl Default for Workspace {
     fn default() -> Self {
         Self {
+            sketch: None,
             inspector: 2,
             operation_tab: 0,
             operation_scroll: [0.; 3],
@@ -82,6 +85,9 @@ impl Default for Workspace {
 }
 impl Workspace {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(sketch) = &self.sketch {
+            sketch.validate()?;
+        }
         if self.inspector > 7
             || self.operation_tab > 2
             || self.operation_views.len() > 10000

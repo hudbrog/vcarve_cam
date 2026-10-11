@@ -375,18 +375,47 @@ impl App {
         if let Some(item) = &item {
             ui.heading(&item.name);
             ui_widgets::scope(ui, "Artwork item · this job");
+            if matches!(
+                item.content,
+                cam_core::project::v5::ArtworkContent::Sketch(_)
+            ) && button(
+                ui,
+                "Edit sketch",
+                self.active.is_none() && self.io.is_none(),
+            )
+            .clicked()
+            {
+                self.begin_sketch(Some(item.id.clone()), ctx);
+            }
         }
         let idle = self.active.is_none() && self.io.is_none();
         ui_widgets::section(ui, "Source", Some(Icon::Artwork));
         ui.horizontal_wrapped(|ui| {
+            if button(ui, "New sketch", idle).clicked() {
+                self.begin_sketch(None, ctx);
+            }
             if button(ui, "Add SVG", idle).clicked() {
                 self.open(IoKind::AddSvg, ctx);
             }
-            if button(ui, "Replace SVG", idle && item.is_some()).clicked() {
+            if button(
+                ui,
+                "Replace SVG",
+                idle && item.as_ref().is_some_and(|i| {
+                    matches!(i.content, cam_core::project::v5::ArtworkContent::Svg(_))
+                }),
+            )
+            .clicked()
+            {
                 self.open(IoKind::ReplaceSvg, ctx);
             }
         });
         if let Some(item) = item {
+            if button(ui, "Export artwork SVG", idle).on_hover_text(
+                "Export the source in its own page frame, without setup placement. Sketch export contains verified geometry in millimeters, excluding construction geometry and constraints. Curves are tessellated at CAM tolerance; circles within compound regions become paths."
+            ).clicked() {
+                self.export_artwork_svg(&item, ctx);
+            }
+            self.sketch_impact_panel(ui, &item.id, ctx);
             let actions = ui.menu_button("Source actions", |ui| {
                 if button(ui, "Delete artwork", idle).clicked() {
                     self.artwork_command(
@@ -453,11 +482,20 @@ impl App {
                 }
             });
             observe_control("Source actions", actions.response.rect);
-            ui.collapsing("SVG interpretation", |ui| {
+            if matches!(
+                item.content,
+                cam_core::project::v5::ArtworkContent::Sketch(_)
+            ) {
+                ui.small(
+                    "Sketch · local millimetres, Y up. Edit the sketch to change its geometry.",
+                );
+            } else {
+                ui.collapsing("SVG interpretation", |ui| {
                 ui.small("SVG units become mm. The page is flipped once about its physical height; placement = scale × rotate(artwork − origin).");
                 ui.small(format!("Import tolerance: {} mm", item.import_settings.geometry_tolerance_mm));
                 ui.small("Hide/Lock affect this workspace only. Assigned hidden artwork still cuts; numeric edits remain available when locked.");
             });
+            }
             ui_widgets::section(ui, "Placement", None);
             self.numbers(ui, ctx, &[26, 27, 28, 29]);
             ui_widgets::section(ui, "Usage", None);
@@ -522,7 +560,7 @@ impl App {
                 }
             }
         } else {
-            ui.label("Add an SVG to this project. Unresolved selections can be repaired after adding artwork or with Undo.");
+            ui.label("Create a sketch or add an SVG. Unresolved selections can be repaired after adding artwork or with Undo.");
         }
         ui.small("References include selections awaiting source repair. Choose geometry in its operation or by clicking the viewport; Shift-click adds or removes a selection.");
         if button(ui, "Open operation geometry", self.document.is_some()).clicked() {

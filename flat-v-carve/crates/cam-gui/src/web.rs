@@ -54,6 +54,10 @@ pub fn payload_view() -> Vec<u8> {
 pub fn protocol() -> String {
     crate::compute::PROTOCOL.into()
 }
+#[wasm_bindgen]
+pub fn solve_sketch_request(input: &str) -> Result<String, JsValue> {
+    crate::sketch::worker::run_json(input).map_err(|e| JsValue::from_str(&e))
+}
 
 #[wasm_bindgen]
 pub fn validate_recovery(text: &str) -> Result<String, JsValue> {

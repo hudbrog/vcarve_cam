@@ -616,6 +616,219 @@ fn stale_machining_rejects_preparation_output_only_edits_rebind() {
     assert_eq!(status["retained"]["retainedBundles"], json!(3));
 }
 
+#[test]
+fn sketch_constraint_only_edit_cannot_authorize_retained_output() {
+    use cam_core::sketch::*;
+    let mut job: CamJobV5 = serde_json::from_value(configured_job(2.)).unwrap();
+    job.artwork[0].content = ArtworkContent::Sketch(SketchDocument {
+        entities: vec![Entity {
+            id: "circle".into(),
+            label: None,
+            construction: false,
+            geometry: SketchGeometry::Circle {
+                center: Point::new(10., 10.),
+                radius_mm: 4.,
+            },
+        }],
+        wires: vec![Wire {
+            id: "circle".into(),
+            label: None,
+            closed: true,
+            edges: vec![WireEdge {
+                entity_id: "circle".into(),
+                reversed: false,
+            }],
+        }],
+        constraints: vec![Constraint {
+            id: "radius".into(),
+            reference: false,
+            definition: ConstraintKind::Radius {
+                curve: "circle".into(),
+                value_mm: 4.,
+            },
+        }],
+        ..Default::default()
+    });
+    let revision = job.artwork[0].source_revision().unwrap();
+    let v5::OperationSettingsV5::Profile(settings) = &mut job.operations[0].settings else {
+        panic!()
+    };
+    settings.contours[0].geometry = GeometryRef {
+        artwork_item_id: job.artwork[0].id.clone(),
+        kind: GeometryRefKind::ClosedContour,
+        local_geometry_id: "contour-circle".into(),
+        source_revision: revision.clone(),
+    };
+    let mut runtime = Retained::new();
+    let generated = runtime
+        .execute_driven(CollectionCommand::Generate {
+            job: serde_json::to_value(&job).unwrap(),
+            scope: prefix_scope(),
+        })
+        .unwrap();
+    let task_id = generated["task"]["taskId"].as_str().unwrap().to_string();
+    let state = runtime
+        .execute(CollectionCommand::TaskStatus { task_id })
+        .unwrap();
+    let handle = state["task"]["planHandle"]
+        .as_str()
+        .expect("generated sketch profile")
+        .to_string();
+    let prepared = runtime
+        .execute_driven(CollectionCommand::PrepareOutput {
+            plan_handle: handle.clone(),
+            job: serde_json::to_value(&job).unwrap(),
+            layout: OutputLayout::OneProgram,
+        })
+        .unwrap();
+    let task_id = prepared["task"]["taskId"].as_str().unwrap().to_string();
+    runtime
+        .execute(CollectionCommand::PreparedOutput { task_id })
+        .expect("checked sketch output");
+    let ArtworkContent::Sketch(sketch) = &mut job.artwork[0].content else {
+        panic!()
+    };
+    sketch.constraints[0].definition = ConstraintKind::Radius {
+        curve: "circle".into(),
+        value_mm: 8.,
+    };
+    assert_eq!(job.artwork[0].source_revision().unwrap(), revision);
+    let prepared = runtime
+        .execute_driven(CollectionCommand::PrepareOutput {
+            plan_handle: handle,
+            job: serde_json::to_value(&job).unwrap(),
+            layout: OutputLayout::OneProgram,
+        })
+        .unwrap();
+    let task_id = prepared["task"]["taskId"].as_str().unwrap().to_string();
+    let err = runtime
+        .execute(CollectionCommand::PreparedOutput { task_id })
+        .unwrap_err();
+    assert_eq!(err.code, "SKETCH_UNSATISFIED", "{err:?}");
+}
+
+fn mixed_sketch_job() -> CamJobV5 {
+    let mut job: CamJobV5 = serde_json::from_value(configured_job(1.)).unwrap();
+    job.name = "Mixed SVG and sketch lifecycle".into();
+    let sketch = CamJobV5::from_json(include_str!("../../../fixtures/v5/sketch-job.json"))
+        .unwrap()
+        .artwork
+        .remove(0);
+    let id = sketch.id.clone();
+    job.artwork.push(sketch);
+    // One profile operation owns contours from both sources. The independent
+    // knife operation continues to use its original SVG reference.
+    let original = match &job.operations[0].settings {
+        v5::OperationSettingsV5::Profile(s) => s.contours[0].clone(),
+        _ => panic!(),
+    };
+    let picked = v5::artwork::GeometryPick {
+        artwork_item_id: id,
+        kind: GeometryRefKind::ClosedContour,
+        local_geometry_id: "contour-plate".into(),
+    };
+    job = v5::commands::set_contour_selection(
+        &job,
+        "profile-1",
+        &[v5::commands::ProfileContourPick {
+            geometry: picked,
+            side: cam_core::project::ContourSide::Outside,
+            traversal: None,
+        }],
+    )
+    .unwrap()
+    .job;
+    let v5::OperationSettingsV5::Profile(s) = &mut job.operations[0].settings else {
+        panic!()
+    };
+    s.contours.insert(0, original);
+    job
+}
+
+#[test]
+fn mixed_sketch_resize_rejects_old_output_and_restored_job_reuses_exact_plan() {
+    use cam_core::sketch::{ConstraintKind, SketchGeometry};
+    let original = mixed_sketch_job();
+    assert_eq!(
+        original,
+        CamJobV5::from_json(include_str!(
+            "../../../fixtures/v5/sketch-lifecycle-job.json"
+        ))
+        .unwrap()
+    );
+    let mut runtime = Retained::new();
+    let generate = |runtime: &mut Retained, job: &CamJobV5| {
+        let task = runtime
+            .execute_driven(CollectionCommand::Generate {
+                job: serde_json::to_value(job).unwrap(),
+                scope: CollectionScope::AllEnabled,
+            })
+            .unwrap()["task"]["taskId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        runtime
+            .execute(CollectionCommand::TaskStatus { task_id: task })
+            .unwrap()["task"]["planHandle"]
+            .as_str()
+            .expect("mixed-source plan")
+            .to_owned()
+    };
+    let prepare = |runtime: &mut Retained, job: &CamJobV5, handle: &str| {
+        let task = runtime
+            .execute_driven(CollectionCommand::PrepareOutput {
+                plan_handle: handle.into(),
+                job: serde_json::to_value(job).unwrap(),
+                layout: OutputLayout::OneProgram,
+            })
+            .unwrap()["task"]["taskId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        runtime.execute(CollectionCommand::PreparedOutput { task_id: task })
+    };
+    let old_handle = generate(&mut runtime, &original);
+    let first = prepare(&mut runtime, &original, &old_handle).unwrap();
+    assert!(first["bundle"]["files"].is_array(), "{first}");
+    let ArtworkContent::Sketch(mut sketch) = original.artwork[1].content.clone() else {
+        panic!()
+    };
+    // Accepted solved coordinates for a width change; no solver in the CAM service.
+    for e in sketch.entities.iter_mut().take(4) {
+        if let SketchGeometry::Line { start, end } = &mut e.geometry {
+            if start.x == 22. {
+                start.x = 27.;
+            }
+            if end.x == 22. {
+                end.x = 27.;
+            }
+        }
+    }
+    let ConstraintKind::Length { value_mm, .. } = &mut sketch.constraints[8].definition else {
+        panic!()
+    };
+    *value_mm = 25.;
+    let applied =
+        v5::commands::apply_sketch_with_report(&original, &original.artwork[1].id, sketch).unwrap();
+    assert_eq!(applied.report.preserved_count(), 1);
+    assert_eq!(applied.report.repair_count(), 0);
+    assert_eq!(applied.outcome.job.operations[1], original.operations[1]);
+    let roundtrip = CamJobV5::from_json(&applied.outcome.job.to_json().unwrap()).unwrap();
+    let error = prepare(&mut runtime, &roundtrip, &old_handle).unwrap_err();
+    assert_eq!(error.code, "RETAINED_PLAN_STALE");
+    let new_handle = generate(&mut runtime, &roundtrip);
+    prepare(&mut runtime, &roundtrip, &new_handle).unwrap();
+    // Job-level undo restores the old geometry AND bindings, so its identity
+    // can use the retained old plan; redo still requires the new plan.
+    prepare(&mut runtime, &original, &old_handle).unwrap();
+    assert_eq!(
+        prepare(&mut runtime, &original, &new_handle)
+            .unwrap_err()
+            .code,
+        "RETAINED_PLAN_STALE"
+    );
+}
+
 /// Cancellation is the single authoritative winner: a completion arriving
 /// after cancellation is discarded and issues no handle; cancelling a
 /// finished task changes nothing.

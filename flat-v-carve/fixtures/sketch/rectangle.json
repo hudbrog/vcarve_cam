@@ -1,0 +1,332 @@
+{
+  "sketch_version": 1,
+  "frame": {
+    "min": {
+      "x": 0,
+      "y": 0
+    },
+    "width_mm": 40,
+    "height_mm": 30
+  },
+  "entities": [
+    {
+      "id": "a",
+      "construction": false,
+      "geometry": {
+        "kind": "line",
+        "start": {
+          "x": 2,
+          "y": 2
+        },
+        "end": {
+          "x": 22,
+          "y": 2
+        }
+      }
+    },
+    {
+      "id": "b",
+      "construction": false,
+      "geometry": {
+        "kind": "line",
+        "start": {
+          "x": 22,
+          "y": 2
+        },
+        "end": {
+          "x": 22,
+          "y": 12
+        }
+      }
+    },
+    {
+      "id": "c",
+      "construction": false,
+      "geometry": {
+        "kind": "line",
+        "start": {
+          "x": 22,
+          "y": 12
+        },
+        "end": {
+          "x": 2,
+          "y": 12
+        }
+      }
+    },
+    {
+      "id": "d",
+      "construction": false,
+      "geometry": {
+        "kind": "line",
+        "start": {
+          "x": 2,
+          "y": 12
+        },
+        "end": {
+          "x": 2,
+          "y": 2
+        }
+      }
+    },
+    {
+      "id": "origin",
+      "construction": false,
+      "geometry": {
+        "kind": "point",
+        "position": {
+          "x": 2,
+          "y": 2
+        }
+      }
+    },
+    {
+      "id": "hole",
+      "construction": false,
+      "geometry": {
+        "kind": "circle",
+        "center": {
+          "x": 10,
+          "y": 7
+        },
+        "radius_mm": 2
+      }
+    },
+    {
+      "id": "knife",
+      "construction": false,
+      "geometry": {
+        "kind": "line",
+        "start": {
+          "x": 26,
+          "y": 5
+        },
+        "end": {
+          "x": 36,
+          "y": 5
+        }
+      }
+    }
+  ],
+  "constraints": [
+    {
+      "id": "c0",
+      "reference": false,
+      "definition": {
+        "kind": "coincident",
+        "a": {
+          "entity_id": "a",
+          "point": "end"
+        },
+        "b": {
+          "entity_id": "b",
+          "point": "start"
+        }
+      }
+    },
+    {
+      "id": "c1",
+      "reference": false,
+      "definition": {
+        "kind": "coincident",
+        "a": {
+          "entity_id": "b",
+          "point": "end"
+        },
+        "b": {
+          "entity_id": "c",
+          "point": "start"
+        }
+      }
+    },
+    {
+      "id": "c2",
+      "reference": false,
+      "definition": {
+        "kind": "coincident",
+        "a": {
+          "entity_id": "c",
+          "point": "end"
+        },
+        "b": {
+          "entity_id": "d",
+          "point": "start"
+        }
+      }
+    },
+    {
+      "id": "c3",
+      "reference": false,
+      "definition": {
+        "kind": "coincident",
+        "a": {
+          "entity_id": "d",
+          "point": "end"
+        },
+        "b": {
+          "entity_id": "a",
+          "point": "start"
+        }
+      }
+    },
+    {
+      "id": "c4",
+      "reference": false,
+      "definition": {
+        "kind": "horizontal",
+        "line": "a"
+      }
+    },
+    {
+      "id": "c5",
+      "reference": false,
+      "definition": {
+        "kind": "horizontal",
+        "line": "c"
+      }
+    },
+    {
+      "id": "c6",
+      "reference": false,
+      "definition": {
+        "kind": "vertical",
+        "line": "b"
+      }
+    },
+    {
+      "id": "c7",
+      "reference": false,
+      "definition": {
+        "kind": "vertical",
+        "line": "d"
+      }
+    },
+    {
+      "id": "c8",
+      "reference": false,
+      "definition": {
+        "kind": "length",
+        "line": "a",
+        "value_mm": 20
+      }
+    },
+    {
+      "id": "c9",
+      "reference": false,
+      "definition": {
+        "kind": "length",
+        "line": "b",
+        "value_mm": 10
+      }
+    },
+    {
+      "id": "c10",
+      "reference": false,
+      "definition": {
+        "kind": "coincident",
+        "a": {
+          "entity_id": "a",
+          "point": "start"
+        },
+        "b": {
+          "entity_id": "origin",
+          "point": "position"
+        }
+      }
+    },
+    {
+      "id": "c11",
+      "reference": false,
+      "definition": {
+        "kind": "fixed",
+        "entity": "origin",
+        "target": {
+          "kind": "point",
+          "position": {
+            "x": 2,
+            "y": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "c12",
+      "reference": false,
+      "definition": {
+        "kind": "fixed",
+        "entity": "hole",
+        "target": {
+          "kind": "circle",
+          "center": {
+            "x": 10,
+            "y": 7
+          },
+          "radius_mm": 2
+        }
+      }
+    },
+    {
+      "id": "c13",
+      "reference": false,
+      "definition": {
+        "kind": "fixed",
+        "entity": "knife",
+        "target": {
+          "kind": "line",
+          "start": {
+            "x": 26,
+            "y": 5
+          },
+          "end": {
+            "x": 36,
+            "y": 5
+          }
+        }
+      }
+    }
+  ],
+  "wires": [
+    {
+      "id": "plate",
+      "edges": [
+        {
+          "entity_id": "a",
+          "reversed": false
+        },
+        {
+          "entity_id": "b",
+          "reversed": false
+        },
+        {
+          "entity_id": "c",
+          "reversed": false
+        },
+        {
+          "entity_id": "d",
+          "reversed": false
+        }
+      ],
+      "closed": true
+    },
+    {
+      "id": "hole",
+      "edges": [
+        {
+          "entity_id": "hole",
+          "reversed": false
+        }
+      ],
+      "closed": true
+    },
+    {
+      "id": "knife",
+      "edges": [
+        {
+          "entity_id": "knife",
+          "reversed": false
+        }
+      ],
+      "closed": false
+    }
+  ]
+}

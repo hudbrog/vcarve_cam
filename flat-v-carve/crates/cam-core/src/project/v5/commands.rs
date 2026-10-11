@@ -380,6 +380,45 @@ pub fn replace_artwork(
     CommandOutcome::commit(candidate, vec![AffectedEntity::ArtworkItem(id.clone())])
 }
 
+/// Add a headless sketch, including an empty or unsatisfied draft. Structural
+/// errors reject the transaction; machining readiness is reported in `issues`.
+pub fn add_sketch(
+    job: &CamJobV5,
+    name: String,
+    sketch: crate::sketch::SketchDocument,
+    interpretation: SvgInterpretation,
+    placement: Placement,
+) -> Result<CommandOutcome> {
+    let id = fresh_id(&reserved_item_ids(job), &id_base_from_filename(&name));
+    let mut candidate = job.clone();
+    candidate.artwork.push(super::ArtworkItem {
+        id: id.clone(),
+        name,
+        content: ArtworkContent::Sketch(sketch),
+        import_settings: interpretation,
+        placement,
+    });
+    CommandOutcome::commit(candidate, vec![AffectedEntity::ArtworkItem(id)])
+}
+
+/// Atomically apply authored coordinates/constraints. Only currently bound
+/// selections with equal explicit provenance advance to the new revision.
+/// Anchors advance only when their complete source boundary is unchanged;
+/// changed boundaries require an explicit anchor reassignment.
+pub fn apply_sketch(
+    job: &CamJobV5,
+    id: &ArtworkItemId,
+    sketch: crate::sketch::SketchDocument,
+) -> Result<CommandOutcome> {
+    Ok(apply_sketch_with_report(job, id, sketch)?.outcome)
+}
+
+mod sketch_lifecycle;
+pub use sketch_lifecycle::{
+    BindingChange, BindingImpact, OutputChange, OutputImpact, SketchApplyOutcome,
+    SketchApplyReport, apply_sketch_with_report,
+};
+
 /// Remove one item. Its references stay in the document as typed dangling
 /// references with their owner IDs; inspection reports them until they are
 /// reassigned or reattached.

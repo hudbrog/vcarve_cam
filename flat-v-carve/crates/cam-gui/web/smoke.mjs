@@ -67,6 +67,9 @@ const send = (method, params = {}) => new Promise((resolve,reject) => {
 await new Promise(resolve => socket.addEventListener('open', resolve));
 socket.addEventListener('message', event => {
   const payload = JSON.parse(event.data);
+  if ((process.argv.includes('--sketch') || process.argv.includes('--sketch-constraints') || process.argv.includes('--sketch-lifecycle')) && payload.method === 'Page.javascriptDialogOpening' && payload.params.type === 'beforeunload') {
+    void send('Page.handleJavaScriptDialog',{accept:true});
+  }
   if (payload.method === 'Runtime.consoleAPICalled' && payload.params.type === 'error') {
     problems.push(`console.error: ${payload.params.args.map(a => a.value ?? a.description ?? '').join(' ')}`);
   }
@@ -264,7 +267,22 @@ try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
   if(process.argv.includes('--trace-io'))await evaluate(`(()=>{globalThis.GUI_IO_TRACE=[];const original=globalThis.CAM_GUI.receive_event;globalThis.CAM_GUI.receive_event=text=>{try{const event=JSON.parse(text);if(event.Io)globalThis.GUI_IO_TRACE.push(event.Io);}catch{}return original(text);};})()`);
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  if(process.argv.includes('--pocket')) {
+  if(process.argv.includes('--sketch-ux')) {
+    const {sketchUxScenario}=await import('./sketch-ux-scenario.mjs');
+    await sketchUxScenario({control,state,waitFor,send,evaluate,sleep,record,screenshot,pressKey,click,path,out,chooseFile});
+  } else if(process.argv.includes('--sketch-performance')) {
+    const {sketchPerformanceScenario}=await import('./sketch-performance-scenario.mjs');
+    await sketchPerformanceScenario({send,state,record,out,path});
+  } else if(process.argv.includes('--sketch-lifecycle')) {
+    const {sketchLifecycleScenario}=await import('./sketch-lifecycle-scenario.mjs');
+    await sketchLifecycleScenario({control,state,waitFor,send,evaluate,sleep,record,screenshot,pressKey,click,path,out,chooseFile});
+  } else if(process.argv.includes('--sketch-constraints')) {
+    const {constraintScenario}=await import('./constraint-scenario.mjs');
+    await constraintScenario({control,state,waitFor,send,evaluate,sleep,record,screenshot,pressKey,click,path,out,chooseFile});
+  } else if(process.argv.includes('--sketch')) {
+    const {sketchScenario}=await import('./sketch-scenario.mjs');
+    await sketchScenario({control,state,waitFor,send,evaluate,sleep,record,screenshot,pressKey,click,path,out,chooseFile});
+  } else if(process.argv.includes('--pocket')) {
     const {pocketScenario}=await import('./pocket-scenario.mjs');
     await pocketScenario({control,edit,state,waitFor,send,evaluate,sleep,record,screenshot,readFileSync,pressKey,path,out,chooseFile});
   } else if(process.argv.includes('--exception-review')) {

@@ -14,6 +14,7 @@ pub mod project;
 mod routing;
 pub mod sequence;
 pub mod setup;
+pub mod sketch;
 pub mod spike;
 pub mod stock;
 pub mod svg;

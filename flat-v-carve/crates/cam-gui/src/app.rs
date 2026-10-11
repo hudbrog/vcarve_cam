@@ -27,6 +27,8 @@ mod operation_list;
 mod resource_ui;
 #[path = "resume.rs"]
 mod resume;
+#[path = "sketch_ui.rs"]
+mod sketch_ui;
 #[path = "source_identity.rs"]
 pub(crate) mod source_identity;
 #[cfg(all(feature = "ui-review", not(target_arch = "wasm32")))]
@@ -686,6 +688,8 @@ pub struct App {
     artwork_rejections: Vec<String>,
     resources: crate::resources::Editor,
     resource_page: Option<ResourcePage>,
+    sketch: Option<crate::sketch::Editor>,
+    sketch_impact: Option<cam_core::project::v5::commands::SketchApplyReport>,
     resource_request: Option<(u64, ResourceIntent)>,
     resource_import_stamp: Option<String>,
     profile_io_revision: Option<u64>,
@@ -771,6 +775,8 @@ impl Default for App {
             artwork_rejections: vec![],
             resources: Default::default(),
             resource_page: None,
+            sketch: None,
+            sketch_impact: None,
             resource_request: None,
             resource_import_stamp: None,
             profile_io_revision: None,
@@ -866,6 +872,7 @@ impl App {
     fn changed(&mut self, ctx: &egui::Context) {
         self.revision += 1;
         self.issues.clear();
+        self.sketch_impact = None;
         self.prepared = None;
         self.view.stale_knife_evidence();
         if let Some(document) = &mut self.document {
@@ -1849,6 +1856,11 @@ impl App {
                 }
             }
         });
+        if self.sketch.is_some() {
+            self.sketch_workspace(ctx);
+            self.finish_frame(ctx);
+            return;
+        }
         if self.io.is_none()
             && !self.ime
             && !self.library_open()
@@ -1875,10 +1887,18 @@ impl App {
         }
         self.commands(ctx);
         self.navigator(ctx);
+        if self.sketch.is_some() {
+            ctx.request_repaint();
+            return;
+        }
         self.issue_panel(ctx);
         self.view.result_current = self.current();
         if self.resource_page.is_none() {
             self.inspector(ctx);
+        }
+        if self.sketch.is_some() {
+            ctx.request_repaint();
+            return;
         }
         let resource_presented = self.resource_page.is_some();
         self.resource_windows(ctx);
@@ -2103,13 +2123,18 @@ impl App {
                 self.port.drop_file(id, files[0].clone(), ctx.clone());
             }
         }
+        self.finish_frame(ctx);
+    }
+    fn finish_frame(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         let workspace = self.workspace();
-        if self.document.is_some() && self.last_workspace.as_ref() != Some(&workspace) {
+        if (self.document.is_some() || self.last_workspace.is_some())
+            && self.last_workspace.as_ref() != Some(&workspace)
+        {
             self.last_workspace = Some(workspace);
             self.recovery.changed(now);
         }
-        if self.recovery.due(now) && self.document.is_some() {
+        if self.recovery.due(now) && (self.document.is_some() || self.last_workspace.is_some()) {
             self.recovery.pending = Some(self.recovery.edit);
             self.port.save_recovery(
                 self.recovery.edit,
@@ -2134,7 +2159,7 @@ impl App {
         let stock_transfer = self.view.last_stock_transfer();
         let display = self.view.display_probe();
         let renderer = self.view.renderer_probe();
-        crate::viewport::probe::publish(json!({"planScope":self.plan_scope,"activeScope":self.active.as_ref().and(self.active_scope.as_ref()),"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"busy":self.busy,"queued":self.pending.as_ref().map(Pending::label),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"requestedStock":self.view.requested_stock_prefix(),"stockTransferBytes":stock_transfer.0,"stockReplayed":stock_transfer.1,"timelineRows":self.view.timeline_rows(),"display":display,"renderer":renderer,"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
+        crate::viewport::probe::publish(json!({"sketchImpact":self.sketch_impact,"sketch":self.sketch.as_ref().map(|s|s.canvas_probe()),"planScope":self.plan_scope,"activeScope":self.active.as_ref().and(self.active_scope.as_ref()),"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"busy":self.busy,"queued":self.pending.as_ref().map(Pending::label),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"requestedStock":self.view.requested_stock_prefix(),"stockTransferBytes":stock_transfer.0,"stockReplayed":stock_transfer.1,"timelineRows":self.view.timeline_rows(),"display":display,"renderer":renderer,"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
     }
     fn save_output(&mut self, ctx: &egui::Context) {
         if let Some((prepared, revision)) = &self.prepared

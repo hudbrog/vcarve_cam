@@ -72,6 +72,14 @@ fn target_in(job: &CamJobV5, path: &str, owner: Option<&str>) -> Option<(usize, 
     if local.starts_with("chains[") {
         return Some((2, "Unresolved knife selections".into()));
     }
+    if local.starts_with("points[") {
+        return Some((2, "Unresolved drill selections".into()));
+    }
+    if local == "start"
+        && crate::session::kind(job, operation) == Some(crate::session::OperationKind::DragKnife)
+    {
+        return Some((2, "Knife start".into()));
+    }
     if local.starts_with("components[") {
         return Some((2, "Unresolved selections".into()));
     }
@@ -187,6 +195,20 @@ fn target_in(job: &CamJobV5, path: &str, owner: Option<&str>) -> Option<(usize, 
 }
 
 impl App {
+    pub(super) fn reveal_issue(
+        &mut self,
+        issue: &cam_core::operations::LocatedDiagnostic,
+        ctx: &egui::Context,
+    ) {
+        if let Some((tab, label)) = self.document.as_ref().and_then(|d| {
+            issue
+                .field_path
+                .as_deref()
+                .and_then(|p| target_in(&d.job, p, issue.operation_id.as_deref()))
+        }) {
+            self.open_issue(issue, tab, label, ctx);
+        }
+    }
     pub(super) fn planning_limit_reached(&self) -> bool {
         self.issues
             .iter()

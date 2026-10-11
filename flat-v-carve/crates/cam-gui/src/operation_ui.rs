@@ -109,6 +109,7 @@ fn tab_for_operation_control(kind: Option<crate::session::OperationKind>, label:
             Some(115..=119) => 2,
             Some(_) => 2,
             None if label.contains("Holes")
+                || label == "Unresolved drill selections"
                 || label.contains("marker")
                 || label.contains("Marker")
                 || label.contains("point")

@@ -15,6 +15,12 @@ are available in Git history rather than maintained alongside the code.
 | [UI assets](ui-asset-manifest.md) | Procedural artwork and visual conventions |
 | [Backlog](backlog.md) | Unfinished work and explicit optional extensions |
 
+[Artwork sketcher discovery and plan](artwork-sketcher-plan.md) records the shared
+artwork model and native/browser editor delivered in milestones 1–3, including
+constraint authoring, driving/reference dimensions and interactive Arael solving.
+The [feasibility results](artwork-sketcher-feasibility.md) record the executed
+Arael/PlaneGCS native/browser comparison and geometry/reference experiments.
+
 For running, building and testing, use the
 [workspace README](../../flat-v-carve/README.md) and
 [GUI README](../../flat-v-carve/crates/cam-gui/README.md). Fixture READMEs remain

@@ -13,6 +13,13 @@ try {
   await init();
   if (gui.protocol() !== 'cam-gui-retained-5') throw new Error('UI/worker protocol mismatch; reload matching assets.');
   globalThis.CAM_GUI = gui;
+  // A sketch is an isolated draft. Keep tab close/reload from silently
+  // discarding edits made since the last asynchronous recovery write.
+  window.addEventListener('beforeunload',event=>{
+    if(JSON.parse(gui.probe_state() || '{}').sketch) {
+      event.preventDefault();event.returnValue='';
+    }
+  });
   // Admit the whole drop before eframe asynchronously reads each File. Without
   // this guard a multi-file drop can arrive as separate one-file Rust frames.
   window.addEventListener('drop',event=>{

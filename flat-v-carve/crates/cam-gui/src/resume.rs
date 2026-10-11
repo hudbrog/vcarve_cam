@@ -41,6 +41,7 @@ impl App {
             view.prefix = *prefix;
         }
         Workspace {
+            sketch: self.sketch.as_ref().map(|s| s.saved.clone()),
             inspector: self.inspector_tab,
             operation_tab: self.operation_tab,
             operation_scroll: self.operation_scroll,
@@ -63,7 +64,11 @@ impl App {
         }
     }
     pub fn recovery_snapshot(&self) -> Option<Snapshot> {
-        let mut snapshot = self.document.as_ref()?.snapshot();
+        let mut snapshot = self
+            .document
+            .as_ref()
+            .map(Document::snapshot)
+            .unwrap_or_else(|| Document::new(crate::operation_authoring::empty_job()).snapshot());
         snapshot.workspace = self.workspace();
         snapshot.undo = self.undo.clone();
         snapshot.redo = self.redo.clone();
@@ -118,6 +123,7 @@ impl App {
         self.undo = snapshot.undo;
         self.redo = snapshot.redo;
         let workspace = snapshot.workspace;
+        self.sketch = workspace.sketch.map(crate::sketch::Editor::new);
         self.saved_job_hash = workspace.saved_job_hash.clone();
         self.view.artwork.selected = workspace.selected_artwork;
         self.view.artwork.mode = workspace.gesture;
@@ -447,7 +453,10 @@ mod tests {
         }
         assert_eq!(app.undo.len(), 32);
         let cam_core::project::v5::ArtworkContent::Svg(source) =
-            &mut app.document.as_mut().unwrap().job.artwork[0].content;
+            &mut app.document.as_mut().unwrap().job.artwork[0].content
+        else {
+            panic!("expected SVG fixture")
+        };
         source.svg.push_str(&" ".repeat(1_000_000));
         for _ in 0..20 {
             app.remember();

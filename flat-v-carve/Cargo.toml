@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/cam-core", "crates/cam-gui", "crates/cam-service", "crates/cam-app", "crates/cam-server"]
+members = ["crates/cam-core", "crates/cam-sketch-solver", "crates/cam-gui", "crates/cam-service", "crates/cam-app", "crates/cam-server"]
 resolver = "3"
 
 [workspace.package]
@@ -17,6 +17,17 @@ serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
 roxmltree = "=0.21.1"
 svgtypes = "=0.16.1"
 sha2 = "=0.10.9"
+arael = { git = "https://github.com/harakas/arael", rev = "18d86e1fda91814a4a42d00001f3e8461c638bb4" }
+arael-sketch-solver = { git = "https://github.com/harakas/arael", rev = "18d86e1fda91814a4a42d00001f3e8461c638bb4" }
+
+[profile.dev.package.arael-macros]
+opt-level = 3
+[profile.dev.package.arael-sym]
+opt-level = 3
+[profile.release.package.arael-macros]
+opt-level = 3
+[profile.release.package.arael-sym]
+opt-level = 3
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

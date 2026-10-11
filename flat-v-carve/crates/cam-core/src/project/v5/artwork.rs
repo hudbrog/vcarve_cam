@@ -1,5 +1,5 @@
-//! Document-level artwork resolution (plan section 22.4): per-item import
-//! through the one existing SVG importer, and the combined owner-qualified
+//! Document-level artwork resolution (plan section 22.4): SVG and sketch
+//! materialization through shared geometry machinery, and the owner-qualified
 //! catalogue the UI picks from. This module is the single boundary that
 //! turns an [`ArtworkItem`] into catalogue geometry; reference inspection
 //! and the H2 document commands both consume it, so there is no second SVG
@@ -21,24 +21,44 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
-/// Build one item's catalogue by reassembling a temporary frozen-schema-4
-/// import job around the item's snapshot, interpretation and placement. This
-/// keeps the contour/chain ID derivation and fingerprint algorithm in one
-/// authority (plan section 22.2: reassemble `ImportOptions` only here).
+/// Derive one item's catalogue through the common materialization boundary.
 pub fn item_catalogue(item: &ArtworkItem) -> Result<ContourCatalogue> {
-    let snapshot = match &item.content {
-        super::ArtworkContent::Svg(snapshot) => snapshot.clone(),
-    };
-    let job = crate::project::CamJob {
-        name: String::new(),
-        source: Some(snapshot),
-        import: item.import_options(),
-        setup: Default::default(),
-        tools: vec![],
-        operations: vec![],
-        tolerances: Default::default(),
-    };
-    ContourCatalogue::build(&job)
+    Ok(materialize_item(item, None)?.catalogue)
+}
+
+/// Export one source in its own page frame, without its setup placement.
+/// SVG sources retain their exact bytes. Sketches must pass the same numeric
+/// and topology gates as machining before producing a geometry snapshot.
+pub fn export_svg(item: &ArtworkItem) -> Result<String> {
+    match &item.content {
+        super::ArtworkContent::Svg(source) => Ok(source.svg.clone()),
+        super::ArtworkContent::Sketch(sketch) => {
+            crate::sketch::export::to_svg(sketch, &item.import_options())
+        }
+    }
+}
+
+/// Shared boundary for catalogue picking and planner filled-region selection.
+/// Loading or planning an item only checks accepted coordinates; it never solves.
+pub fn materialize_item(
+    item: &ArtworkItem,
+    selection: Option<&[String]>,
+) -> Result<crate::sketch::materialize::MaterializedArtwork> {
+    let options = item.import_options();
+    match &item.content {
+        super::ArtworkContent::Svg(source) => {
+            let geometry = crate::svg::import_svg(&source.svg, &options, selection)?;
+            let catalogue = ContourCatalogue::from_geometry(&geometry, &options)?;
+            Ok(crate::sketch::materialize::MaterializedArtwork {
+                geometry,
+                catalogue,
+                provenance: vec![],
+            })
+        }
+        super::ArtworkContent::Sketch(sketch) => {
+            crate::sketch::materialize::materialize(sketch, &options, selection)
+        }
+    }
 }
 
 /// Axis-aligned bounds in setup coordinates.

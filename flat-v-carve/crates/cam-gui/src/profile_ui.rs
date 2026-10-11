@@ -903,7 +903,10 @@ impl App {
                 .unwrap_or_else(|| wire.into())
         };
         self.operation_group(ui, "Start & entry", true, |app, ui| {
-            help::label(ui, "Cut start");
+            // Diagnostics can reveal this group for either an automatic or
+            // an unresolved anchored start.
+            let heading = ui.scope(|ui| help::label(ui, "Cut start"));
+            observe_control("Profile start", heading.response.rect);
             let anchored = matches!(start, StartSelectionV5::Anchor(_));
             if anchored {
                 let row = row.clone().expect("an anchored start has a row");

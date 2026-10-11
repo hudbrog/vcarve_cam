@@ -321,6 +321,30 @@ struct Reader {
     stylesheet: Stylesheet,
 }
 
+/// Reuse the importer's curvature-bounded sampler for authored circular arcs.
+/// Keeping the center parameterization avoids SVG endpoint-to-center ambiguity
+/// near semicircles or when solved wire joins have a small residual.
+pub(crate) fn flatten_circular_arc(
+    center: Point,
+    radius: f64,
+    start: f64,
+    sweep: f64,
+    tolerance: f64,
+) -> Result<Vec<Point>> {
+    let mut f = Flattener::new(Matrix::ID, tolerance);
+    f.push(Point::new(
+        center.x + radius * start.cos(),
+        center.y + radius * start.sin(),
+    ))?;
+    f.ellipse(
+        center,
+        [Point::new(radius, 0.), Point::new(0., radius)],
+        start,
+        sweep,
+    )?;
+    Ok(f.points)
+}
+
 pub fn import_svg(
     source: &str,
     options: &ImportOptions,

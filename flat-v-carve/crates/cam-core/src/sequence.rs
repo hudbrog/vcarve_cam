@@ -1642,6 +1642,9 @@ fn semantic_scope_inputs<'a>(
         .iter()
         .filter_map(|id| job.artwork.iter().find(|item| item.id.0 == *id))
         .map(|item| {
+            if let crate::project::v5::ArtworkContent::Sketch(sketch) = &item.content {
+                sketch.require_valid_solution()?;
+            }
             Ok((
                 item.id.0.as_str(),
                 item.source_revision()

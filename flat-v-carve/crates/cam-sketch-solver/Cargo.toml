@@ -1,0 +1,22 @@
+[package]
+name = "cam-sketch-solver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+cam-core = { path = "../cam-core" }
+arael.workspace = true
+arael-sketch-solver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.128"
+
+[lints]
+workspace = true
