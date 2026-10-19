@@ -180,7 +180,7 @@ impl App {
             if response.lost_focus() {
                 self.edit_group = None;
             }
-            if let Err(error) = Draft::parse(&text) {
+            if let Some(error) = self.document.as_ref().unwrap().field_error(field) {
                 ui.colored_label(Color32::from_rgb(176, 42, 35), error);
             }
         }
@@ -244,7 +244,7 @@ impl App {
                     let rect = CONTROLS.with(|c| c.borrow().get(&label).copied());
                     if let Some([x0,y0,x1,y1]) = rect { ui.scroll_to_rect(egui::Rect::from_min_max(egui::pos2(x0,y0),egui::pos2(x1,y1)), Some(egui::Align::Center)); self.issue_focus = None; }
                 }
-                if self.document.as_ref().is_some_and(Document::pending){ui.colored_label(Color32::from_rgb(164,83,12),"Complete partial fields before generation or job save. Recovery keeps the raw text.");}
+                if let Some(message) = self.document.as_ref().and_then(Document::pending_message){ui.colored_label(Color32::from_rgb(164,83,12),message);}
             });
             observe_control("Inspector viewport",area.inner_rect);
             if operation {

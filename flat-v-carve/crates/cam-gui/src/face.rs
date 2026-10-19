@@ -66,6 +66,9 @@ pub fn set(
     field: usize,
     v: Option<f64>,
 ) -> Result<(), String> {
+    if matches!(field, 76 | 77) && v.is_some_and(|number| number < 0.) {
+        return Err("Overrun must be zero or positive. Use Pass entry to choose the starting side, or Start at… for a signed coordinate.".into());
+    }
     if field == 6 {
         job.setup.stock.thickness_mm = v;
         return Ok(());

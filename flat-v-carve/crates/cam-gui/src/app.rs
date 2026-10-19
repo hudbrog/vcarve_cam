@@ -538,6 +538,53 @@ impl Document {
         self.job = candidate;
         Ok(())
     }
+    /// Whether the selected field's text differs from its committed value.
+    pub(super) fn field_pending(&self, field: usize) -> bool {
+        Draft::parse(&self.text(field)).ok() != Some(self.field_value(field))
+    }
+
+    /// Reconstruct feedback from retained text, including after recovery or
+    /// another edit replaces the status line. Only uncommitted fields need
+    /// validation; replaying on a copy never changes the user's document.
+    pub(super) fn field_error(&self, field: usize) -> Option<String> {
+        if !self.field_pending(field) {
+            return None;
+        }
+        let text = self.text(field);
+        if let Err(error) = Draft::parse(&text) {
+            return Some(error.into());
+        }
+        Some(
+            self.clone()
+                .edit(field, text)
+                .err()
+                .unwrap_or_else(|| "Value has not been applied; re-enter it to commit.".into()),
+        )
+    }
+
+    pub(super) fn pending_message(&self) -> Option<String> {
+        if !self.pending() {
+            return None;
+        }
+        let fields = crate::authoring::FIELDS
+            .iter()
+            .copied()
+            .filter(|&field| {
+                crate::authoring::active_in(&self.job, &self.raw.operation, field)
+                    && self.field_pending(field)
+            })
+            .map(|field| FIELDS[field])
+            .collect::<Vec<_>>();
+        let detail = if fields.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", fields.join(", "))
+        };
+        Some(format!(
+            "Correct invalid or incomplete fields before generation or job save{detail}. Recovery keeps your entries."
+        ))
+    }
+
     pub fn pending(&self) -> bool {
         let scalar_pending = crate::authoring::FIELDS
             .iter()
@@ -545,10 +592,7 @@ impl Document {
                 !matches!(f, 26..=29)
                     && crate::authoring::active_in(&self.job, &self.raw.operation, f)
             })
-            .any(|&field| {
-                let text = self.text(field);
-                Draft::parse(&text).ok() != Some(value(&self.job, &self.raw.operation, field))
-            });
+            .any(|&field| self.field_pending(field));
         scalar_pending
             || self.job.artwork.iter().any(|item| {
                 (26..=29).any(|f| {

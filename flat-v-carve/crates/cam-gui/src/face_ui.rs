@@ -103,6 +103,7 @@ impl App {
                 .pattern;
         self.operation_group(ui, "Direction & entry", true, |app, ui| {
             help::label(ui, "Travel overrun");
+            ui.small("Entry and exit overruns are distances: enter zero or a positive value. Choose the starting side under Pass entry; use Start at… for a signed coordinate.");
             ui.small("Entry/exit overrun is travel beyond the requested coverage. Overhang is allowed travel; it is not a claim that material outside the request is faced.");
             app.operation_numbers(ui, ctx, &[76, 77]);
             ui.separator();
@@ -272,7 +273,7 @@ impl App {
                         observe_control("Use entry travel", response.rect);
                         if response.clicked() {
                             let id = self.operation_id();
-                            self.edit_job(ctx, &[], move |job| {
+                            self.edit_job(ctx, &[76], move |job| {
                                 face::set(job, &id, 76, Some(travel))
                             });
                         }
@@ -281,7 +282,7 @@ impl App {
                         observe_control("Use entry position", response.rect);
                         if response.clicked() {
                             let id = self.operation_id();
-                            self.edit_job(ctx, &[], move |job| {
+                            self.edit_job(ctx, &[109], move |job| {
                                 face::set(job, &id, 109, Some(required))
                             });
                         }
@@ -599,6 +600,128 @@ mod tests {
                 !doc.pending(),
                 "{choice} must allow generation without switching operations"
             );
+        }
+    }
+
+    #[test]
+    fn rejected_face_overrun_stays_explained_until_corrected() {
+        let (mut app, id) = configured_face();
+        let ctx = egui::Context::default();
+        for field in [76, 77] {
+            let doc = app.document.as_mut().unwrap();
+            let before = face::value(&doc.job, &id, field);
+            let error = doc.edit(field, "-50".into()).unwrap_err();
+            assert!(error.contains("zero or positive"), "{error}");
+            assert_eq!(face::value(&doc.job, &id, field), before);
+            // A successful edit elsewhere must not hide the rejected value.
+            doc.edit(8, "0.5".into()).unwrap();
+            assert!(doc.pending_message().unwrap().contains(FIELDS[field]));
+            let snapshot = doc.snapshot();
+            snapshot.validate().unwrap();
+            app.document = Some(Document {
+                job: engine::open(snapshot.job.as_ref().unwrap()).unwrap(),
+                raw: snapshot.draft,
+                finish_draft: snapshot.finish_draft,
+            });
+            let output = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.numbers(ui, ctx, &[field]);
+                });
+            });
+            assert!(output.shapes.iter().any(|clipped| {
+                matches!(&clipped.shape, egui::Shape::Text(text) if text.galley.text().contains("zero or positive"))
+            }), "the reason must remain visible after recovery");
+            let doc = app.document.as_mut().unwrap();
+            assert_eq!(doc.text(field), "-50");
+            for text in ["0", "50"] {
+                doc.edit(field, text.into()).unwrap();
+                assert!(doc.field_error(field).is_none());
+                assert!(!doc.pending());
+                assert!(doc.pending_message().is_none());
+            }
+        }
+        let doc = app.document.as_mut().unwrap();
+        face::set_entry(&mut doc.job, &id, FaceEntry::At { coordinate_mm: 0. }).unwrap();
+        doc.edit(109, "-50".into()).unwrap();
+        doc.edit(87, "-1".into()).unwrap();
+        assert!(!doc.pending(), "signed positions and depths remain valid");
+        assert_eq!(face::value(&doc.job, &id, 109), Some(-50.));
+        assert_eq!(face::value(&doc.job, &id, 87), Some(-1.));
+    }
+
+    #[test]
+    fn face_entry_assistance_replaces_the_retained_text() {
+        for (field, choice) in [(76, "Use entry travel"), (109, "Use entry position")] {
+            let (mut app, id) = configured_face();
+            let ctx = egui::Context::default();
+            let doc = app.document.as_mut().unwrap();
+            // Facing a smaller rectangle can put an otherwise valid entry
+            // inside the physical stock, so the panel offers a clearing entry.
+            face::set_area(
+                &mut doc.job,
+                &id,
+                FaceArea::Rectangle {
+                    rect: RectXY {
+                        min_x_mm: 20.,
+                        min_y_mm: 20.,
+                        width_mm: 60.,
+                        length_mm: 20.,
+                    },
+                },
+            )
+            .unwrap();
+            doc.edit(76, "0".into()).unwrap();
+            if field == 109 {
+                face::set_entry(&mut doc.job, &id, FaceEntry::At { coordinate_mm: 0. }).unwrap();
+                doc.edit(109, "15".into()).unwrap();
+            } else {
+                doc.edit(76, "-50".into()).unwrap_err();
+            }
+            let preview = cam_core::project::v5::inspection::face_entry_preview(&doc.job, &id)
+                .unwrap()
+                .unwrap();
+            assert!(preview.clearances.iter().flatten().any(|&v| v < 0.));
+            let (position, travel) = preview.clearing.unwrap();
+            let expected = if field == 76 { travel } else { position };
+            let frame = |app: &mut App, events| {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1200., 1500.),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default()
+                            .show(ctx, |ui| app.face_entry_choice(ui, ctx));
+                    },
+                );
+            };
+            for _ in 0..3 {
+                frame(&mut app, vec![]);
+            }
+            let [x0, y0, x1, y1] = CONTROLS.with(|c| c.borrow()[choice]);
+            let pos = egui::pos2((x0 + x1) / 2., (y0 + y1) / 2.);
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            let doc = app.document.as_ref().unwrap();
+            assert_eq!(face::value(&doc.job, &id, field), Some(expected));
+            assert_eq!(Draft::parse(&doc.text(field)).unwrap(), Some(expected));
+            assert!(!doc.pending(), "{choice} must clear its superseded draft");
         }
     }
 
