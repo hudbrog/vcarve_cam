@@ -119,6 +119,13 @@ impl SketchDocument {
             }
             label(&w.label)?;
             for e in &w.edges {
+                if reference_entity(&e.entity_id).is_some() {
+                    return Err(located(
+                        "SKETCH_OPERAND",
+                        &w.id,
+                        "origin and axes cannot be wire edges",
+                    ));
+                }
                 if matches!(
                     self.entity(&e.entity_id)?.geometry,
                     SketchGeometry::Point { .. }
@@ -149,6 +156,20 @@ impl SketchDocument {
                 ));
             }
             use ConstraintKind::*;
+            let finite_axis = match &c.definition {
+                Length { line, .. } | Midpoint { line, .. } => reference_entity(line).is_some(),
+                EqualLength { a, b } => {
+                    reference_entity(a).is_some() || reference_entity(b).is_some()
+                }
+                _ => false,
+            };
+            if finite_axis {
+                return Err(located(
+                    "SKETCH_OPERAND",
+                    &c.id,
+                    "axes are infinite references with no length or midpoint",
+                ));
+            }
             match &c.definition {
                 Coincident { a, b }
                 | Distance { a, b, .. }
@@ -193,6 +214,13 @@ impl SketchDocument {
                 }
                 Fixed { entity, target } => {
                     let current = &self.entity(entity)?.geometry;
+                    if reference_entity(entity).is_some() && current != target {
+                        return Err(located(
+                            "SKETCH_OPERAND",
+                            &c.id,
+                            "origin and axes are fixed construction geometry",
+                        ));
+                    }
                     if std::mem::discriminant(current) != std::mem::discriminant(target) {
                         return Err(located(
                             "SKETCH_OPERAND",
@@ -203,7 +231,14 @@ impl SketchDocument {
                     finite(target)?;
                 }
                 FixedPoint { point, position } => {
-                    self.point(point)?;
+                    let current = self.point(point)?;
+                    if reference_entity(&point.entity_id).is_some() && current != *position {
+                        return Err(located(
+                            "SKETCH_OPERAND",
+                            &c.id,
+                            "origin and axes are fixed construction geometry",
+                        ));
+                    }
                     finite(&SketchGeometry::Point {
                         position: *position,
                     })?;

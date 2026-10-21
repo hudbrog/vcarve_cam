@@ -16,6 +16,60 @@ pub const MAX_COORDINATE_MM: f64 = 100_000.;
 pub const RESIDUAL_TOLERANCE_MM: f64 = 1e-6;
 pub const MAX_SKETCH_BYTES: usize = 2_000_000;
 
+// Built-in references cannot collide with authored IDs (which forbid '@'). They
+// are immutable local construction geometry, never stored as entities or wires.
+pub const ORIGIN_ID: &str = "@origin";
+pub const X_AXIS_ID: &str = "@x_axis";
+pub const Y_AXIS_ID: &str = "@y_axis";
+
+pub fn reference_entities() -> &'static [Entity; 3] {
+    static REFERENCES: std::sync::LazyLock<[Entity; 3]> = std::sync::LazyLock::new(|| {
+        [
+            (
+                ORIGIN_ID,
+                "Origin",
+                SketchGeometry::Point {
+                    position: Point::new(0., 0.),
+                },
+            ),
+            (
+                X_AXIS_ID,
+                "X axis",
+                SketchGeometry::Line {
+                    start: Point::new(0., 0.),
+                    end: Point::new(1., 0.),
+                },
+            ),
+            (
+                Y_AXIS_ID,
+                "Y axis",
+                SketchGeometry::Line {
+                    start: Point::new(0., 0.),
+                    end: Point::new(0., 1.),
+                },
+            ),
+        ]
+        .map(|(id, label, geometry)| Entity {
+            id: id.into(),
+            label: Some(label.into()),
+            construction: true,
+            geometry,
+        })
+    });
+    &REFERENCES
+}
+
+pub fn reference_entity(id: &str) -> Option<&'static Entity> {
+    reference_entities().iter().find(|e| e.id == id)
+}
+
+pub fn origin_ref() -> PointRef {
+    PointRef {
+        entity_id: ORIGIN_ID.into(),
+        point: PointRole::Position,
+    }
+}
+
 pub(crate) fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("sketch")
 }
@@ -354,9 +408,8 @@ impl SketchDocument {
         Ok(joints)
     }
     pub fn entity(&self, id: &str) -> Result<&Entity> {
-        self.entities
-            .iter()
-            .find(|e| e.id == id)
+        reference_entity(id)
+            .or_else(|| self.entities.iter().find(|e| e.id == id))
             .ok_or_else(|| located("SKETCH_REFERENCE", id, "unknown sketch entity"))
     }
     pub fn point(&self, r: &PointRef) -> Result<Point> {

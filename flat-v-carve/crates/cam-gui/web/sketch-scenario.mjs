@@ -18,7 +18,8 @@ export async function sketchScenario({control,state,waitFor,send,evaluate,sleep,
   await draw('Polyline',[[85,50],[95,50],[95,65],[85,65],[85,50]]);
   await button('Sketch construction');await draw('Line',[[15,15],[70,65]]);await button('Sketch construction');
   await draw('Point',[[20,20]]);
-  let s=await state();assert(model(s).entities.length===13,'all drawing tools publish entities');assert(model(s).constraints.length===0,'snapping introduced a constraint');
+  let s=await state();assert(model(s).entities.length===13,'all drawing tools publish entities');assert(model(s).constraints.length===4,'only the rectangle should introduce constraints');
+  assert(model(s).constraints.filter(c=>c.definition.kind==='horizontal').length===2&&model(s).constraints.filter(c=>c.definition.kind==='vertical').length===2,'rectangle must retain its shape');
   assert(isDeepStrictEqual(s.job,original.job),'local draft mutated the job');
   record('seven drawing tools; connected wires; construction excluded from machining',s.sketch);
   await button('Sketch Select');await point(30,40);

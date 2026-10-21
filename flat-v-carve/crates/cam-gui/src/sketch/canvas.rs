@@ -65,8 +65,8 @@ impl Editor {
             })
             .map(|e| constraints::Operand::Entity(e.id.clone()))
             .collect();
-        if !additive {
-            self.pick_operand(None, false);
+        if !additive && !self.pick_operand(None, false) {
+            return;
         }
         for operand in hits {
             if !self.saved.constraint_form.operands.contains(&operand) {
@@ -80,6 +80,7 @@ impl Editor {
             .model
             .entities
             .iter()
+            .chain(reference_entities())
             .filter(|e| self.selected.contains(&e.id))
             .flat_map(|e| geometry_points(&e.geometry, 32))
             .collect();
@@ -92,7 +93,7 @@ impl Editor {
         );
         self.view.auto_fit = false;
     }
-    fn hit_operand(&self, p: Point, radius: f64) -> Option<constraints::Operand> {
+    pub(super) fn hit_operand(&self, p: Point, radius: f64) -> Option<constraints::Operand> {
         self.saved
             .model
             .entities
@@ -120,7 +121,25 @@ impl Editor {
             .filter(|(d, _)| *d <= radius)
             .min_by(|(a, _), (b, _)| a.total_cmp(b))
             .map(|(_, p)| constraints::Operand::Point(p))
+            .or_else(|| {
+                (p.distance(Point::new(0., 0.)) <= radius)
+                    .then(|| constraints::Operand::Point(origin_ref()))
+            })
             .or_else(|| self.hit(p, radius).map(constraints::Operand::Entity))
+            .or_else(|| {
+                if p.y.abs().min(p.x.abs()) <= radius {
+                    Some(constraints::Operand::Entity(
+                        if p.y.abs() <= p.x.abs() {
+                            X_AXIS_ID
+                        } else {
+                            Y_AXIS_ID
+                        }
+                        .into(),
+                    ))
+                } else {
+                    None
+                }
+            })
     }
     pub fn snap(&self, point: Point, radius: f64, exclude: &BTreeSet<String>) -> Option<Snap> {
         if !self.snapping {
@@ -249,17 +268,33 @@ impl Editor {
                 && let Some(p) = world
             {
                 if response.double_clicked() {
-                    let hit = self.hit(p, 8. / self.view.scale);
+                    let hit = self
+                        .hit_operand(p, 8. / self.view.scale)
+                        .map(|o| o.entity().to_owned());
                     self.select_wire(hit.as_deref(), ui.input(|i| i.modifiers.shift));
                 } else {
-                    self.pick_operand(
-                        self.hit_operand(p, 8. / self.view.scale),
-                        ui.input(|i| i.modifiers.shift),
-                    );
+                    let mut operand = self.hit_operand(p, 8. / self.view.scale);
+                    // At overlapping geometry, Shift-click can add the origin
+                    // after the authored endpoint without deselecting that point.
+                    if ui.input(|i| i.modifiers.shift)
+                        && p.distance(Point::new(0., 0.)) <= 8. / self.view.scale
+                        && operand
+                            .as_ref()
+                            .is_some_and(|o| self.saved.constraint_form.operands.contains(o))
+                        && !self
+                            .saved
+                            .constraint_form
+                            .operands
+                            .contains(&constraints::Operand::Point(origin_ref()))
+                    {
+                        operand = Some(constraints::Operand::Point(origin_ref()));
+                    }
+                    self.pick_operand(operand, ui.input(|i| i.modifiers.shift));
                 }
             }
             if response.drag_started_by(egui::PointerButton::Primary)
                 && let Some(p) = ui.input(|i| i.pointer.press_origin())
+                && self.finish_dimension_edit()
             {
                 let start = self.view.world(rect, p);
                 if let Some(operand) = self.hit_operand(start, 8. / self.view.scale) {
@@ -268,6 +303,9 @@ impl Editor {
                     }
                     let mut subjects = Vec::new();
                     for operand in &self.saved.constraint_form.operands {
+                        if reference_entity(operand.entity()).is_some() {
+                            continue;
+                        }
                         match operand {
                             constraints::Operand::Point(p) => subjects.push(p.clone()),
                             constraints::Operand::Entity(id) => {
@@ -501,23 +539,46 @@ impl Editor {
                 );
             }
         }
-        for (p, q, color) in [
+        for (id, p, q, color) in [
             (
+                X_AXIS_ID,
                 Point::new(a.x, 0.),
                 Point::new(b.x, 0.),
                 Color32::from_rgb(191, 119, 119),
             ),
             (
+                Y_AXIS_ID,
                 Point::new(0., a.y),
                 Point::new(0., b.y),
                 Color32::from_rgb(110, 160, 121),
             ),
         ] {
+            let selected = self.selected.contains(id);
             painter.line_segment(
                 [self.view.screen(rect, p), self.view.screen(rect, q)],
-                Stroke::new(1., color),
+                Stroke::new(
+                    if selected { 3. } else { 1. },
+                    if selected { theme::ACCENT } else { color },
+                ),
+            );
+            painter.text(
+                self.view.screen(rect, q) + egui::vec2(-12., 12.),
+                egui::Align2::RIGHT_TOP,
+                if id == X_AXIS_ID { "X" } else { "Y" },
+                egui::FontId::proportional(12.),
+                color,
             );
         }
+        let origin = self.view.screen(rect, Point::new(0., 0.));
+        painter.circle_filled(
+            origin,
+            3.5,
+            if self.selected.contains(ORIGIN_ID) {
+                theme::ACCENT
+            } else {
+                theme::TEXT
+            },
+        );
     }
     fn paint_geometry(
         &self,

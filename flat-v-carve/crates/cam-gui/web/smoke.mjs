@@ -267,7 +267,16 @@ try {
   await waitFor(s=>s.gui2,'GUI2 first frame');
   if(process.argv.includes('--trace-io'))await evaluate(`(()=>{globalThis.GUI_IO_TRACE=[];const original=globalThis.CAM_GUI.receive_event;globalThis.CAM_GUI.receive_event=text=>{try{const event=JSON.parse(text);if(event.Io)globalThis.GUI_IO_TRACE.push(event.Io);}catch{}return original(text);};})()`);
   await send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:out});
-  if(process.argv.includes('--sketch-ux')) {
+  if(process.argv.includes('--sketch-shortcuts')) {
+    const {sketchShortcutsScenario}=await import('./sketch-shortcuts-scenario.mjs');
+    await sketchShortcutsScenario({control,state,waitFor,send,evaluate,sleep,record,screenshot,pressKey,click,path,out,chooseFile});
+  } else if(process.argv.includes('--sketch-hotkeys')) {
+    const {sketchHotkeysScenario}=await import('./sketch-hotkeys-scenario.mjs');
+    await sketchHotkeysScenario({control,state,waitFor,send,evaluate,sleep,record,screenshot,pressKey,click,path,out,chooseFile});
+  } else if(process.argv.includes('--sketch-basics')) {
+    const {sketchBasicsScenario}=await import('./sketch-basics-scenario.mjs');
+    await sketchBasicsScenario({control,state,waitFor,send,evaluate,sleep,record,screenshot,pressKey,click,path,out,chooseFile});
+  } else if(process.argv.includes('--sketch-ux')) {
     const {sketchUxScenario}=await import('./sketch-ux-scenario.mjs');
     await sketchUxScenario({control,state,waitFor,send,evaluate,sleep,record,screenshot,pressKey,click,path,out,chooseFile});
   } else if(process.argv.includes('--sketch-performance')) {

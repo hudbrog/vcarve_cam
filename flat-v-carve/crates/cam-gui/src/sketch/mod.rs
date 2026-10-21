@@ -1,6 +1,8 @@
 //! Local sketch transactions with Arael solving. Only Apply crosses into the job.
 mod canvas;
 mod constraints;
+mod shortcut_actions;
+mod shortcuts;
 mod solve;
 #[cfg(test)]
 mod tests;
@@ -28,11 +30,10 @@ impl SavedDraft {
         if self.name.len() > 1000
             || self.constraint_form.value.len() > 128
             || self.constraint_form.operands.len() > MAX_ENTITIES * 4
-            || self
-                .constraint_form
-                .operands
-                .iter()
-                .any(|o| o.entity().len() > 80 || !cam_core::preview::valid_id(o.entity()))
+            || self.constraint_form.operands.iter().any(|o| {
+                reference_entity(o.entity()).is_none()
+                    && (o.entity().len() > 80 || !cam_core::preview::valid_id(o.entity()))
+            })
             || self
                 .constraint_form
                 .editing
@@ -109,7 +110,9 @@ pub struct Editor {
     pub show_constraints: bool,
     pub show_geometry: bool,
     pub dimension_filter: u8,
-    pub(super) shortcut_prefix: Option<(egui::Key, f64)>,
+    pub(super) shortcut_prefix: Option<(Vec<egui::Key>, f64)>,
+    pub show_shortcuts: bool,
+    pub(super) new_dimensions_reference: bool,
     pub(super) box_start: Option<egui::Pos2>,
     pub(super) focus_dimension: bool,
     solver: solve::Solver,
@@ -140,6 +143,8 @@ impl Editor {
             show_geometry: false,
             dimension_filter: 0,
             shortcut_prefix: None,
+            show_shortcuts: false,
+            new_dimensions_reference: false,
             box_start: None,
             focus_dimension: false,
             solver: Default::default(),
@@ -165,6 +170,9 @@ impl Editor {
         }
     }
     pub fn set_tool(&mut self, tool: Tool) {
+        if tool != Tool::Select && !self.finish_dimension_edit() {
+            return;
+        }
         self.cancel_gesture();
         self.tool = tool;
         self.shortcut_prefix = None;
@@ -233,6 +241,15 @@ impl Editor {
         }
     }
     pub fn select_wire(&mut self, id: Option<&str>, additive: bool) {
+        if !self.finish_dimension_edit() {
+            return;
+        }
+        if let Some(id) = id
+            && let Some(reference) = reference_entity(id)
+        {
+            self.pick_operand(Some(constraints::Operand::reference(reference)), additive);
+            return;
+        }
         let group = id.map(|id| self.group(id)).unwrap_or_default();
         let remove = additive && group.iter().all(|id| self.selected.contains(id));
         if !additive {
@@ -252,6 +269,8 @@ impl Editor {
             .map(constraints::Operand::Entity)
             .collect();
         self.saved.constraint_form.editing = None;
+        self.saved.constraint_form.value.clear();
+        self.saved.constraint_form.changed = false;
     }
     fn group(&self, id: &str) -> BTreeSet<String> {
         self.saved
@@ -313,6 +332,13 @@ impl Editor {
     }
     fn require_wire_selection(&self) -> Result<(), String> {
         if self
+            .selected
+            .iter()
+            .any(|id| reference_entity(id).is_some())
+        {
+            return Err("Origin and axes are fixed construction geometry; they cannot be deleted or converted.".into());
+        }
+        if self
             .saved
             .constraint_form
             .operands
@@ -335,7 +361,7 @@ impl Editor {
     }
     #[cfg(test)]
     pub fn translate(&mut self, origin: &SketchDocument, delta: Point) -> Result<(), String> {
-        self.guard_selection()?;
+        self.require_wire_selection()?;
         let mut next = origin.clone();
         for e in &mut next.entities {
             if !self.selected.contains(&e.id) {
@@ -356,7 +382,7 @@ impl Editor {
                 SketchGeometry::Point { position } => move_point(position),
             }
         }
-        next.validate_structure().map_err(|e| e.to_string())?;
+        next.require_valid_solution().map_err(|e| e.to_string())?;
         self.saved.model = next;
         Ok(())
     }
@@ -426,9 +452,23 @@ impl Editor {
         let before = self.saved.model.clone();
         let mut edges = vec![];
         let mut entities = vec![];
+        let mut constraints = vec![];
+        let rectangle = self.tool == Tool::Rectangle && closed && geometries.len() == 4;
         let wire_id = self.id("w")?;
         for geometry in geometries {
             let id = self.id("e")?;
+            if rectangle {
+                let (start, end) = geometry.line().ok_or("Rectangle needs line edges")?;
+                constraints.push(Constraint {
+                    id: self.id("c")?,
+                    reference: false,
+                    definition: if start.y == end.y {
+                        ConstraintKind::Horizontal { line: id.clone() }
+                    } else {
+                        ConstraintKind::Vertical { line: id.clone() }
+                    },
+                });
+            }
             if !matches!(geometry, SketchGeometry::Point { .. }) {
                 edges.push(WireEdge {
                     entity_id: id.clone(),
@@ -443,6 +483,9 @@ impl Editor {
             });
         }
         self.saved.model.entities.extend(entities);
+        // Corner coincidence is already enforced by the closed wire. H/V leaves
+        // width, height and position free while preserving the rectangle shape.
+        self.saved.model.constraints.extend(constraints);
         if !edges.is_empty() {
             self.saved.model.wires.push(Wire {
                 id: wire_id.clone(),

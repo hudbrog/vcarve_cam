@@ -16,6 +16,154 @@ fn editor() -> Editor {
 fn click(e: &mut Editor, x: f64, y: f64) {
     e.click(Point::new(x, y)).unwrap();
 }
+fn dimension_frame(e: &mut Editor, ctx: &egui::Context, events: Vec<egui::Event>) {
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(640., 900.),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ctx| {
+            e.dimension_keys(ctx);
+            e.shortcuts(ctx);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                e.constraint_panel(ui);
+            });
+        },
+    );
+}
+fn dimension_key(e: &mut Editor, ctx: &egui::Context, key: egui::Key) {
+    let mut events = vec![egui::Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }];
+    if key == egui::Key::D {
+        events.push(egui::Event::Text("d".into()));
+    }
+    dimension_frame(e, ctx, events);
+    dimension_frame(
+        e,
+        ctx,
+        vec![egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+}
+#[test]
+fn dimension_hotkey_focus_commit_next_selection_enter_escape_and_invalid_input() {
+    use constraints::Operand;
+    let mut e = editor();
+    e.set_tool(Tool::Rectangle);
+    click(&mut e, 0., 0.);
+    click(&mut e, 20., 10.);
+    e.set_tool(Tool::Select);
+    let a = Operand::Entity(e.saved.model.entities[0].id.clone());
+    let b = Operand::Entity(e.saved.model.entities[1].id.clone());
+    e.pick_operand(Some(a.clone()), false);
+    let ctx = egui::Context::default();
+    dimension_frame(&mut e, &ctx, vec![]);
+    dimension_key(&mut e, &ctx, egui::Key::D);
+    assert_eq!(e.saved.constraint_form.value, "20");
+    assert!(ctx.wants_keyboard_input());
+    dimension_frame(&mut e, &ctx, vec![egui::Event::Text("40".into())]);
+    assert_eq!(
+        e.saved.constraint_form.value, "40",
+        "D must select the entire current value"
+    );
+    assert!(e.pick_operand(Some(b.clone()), false));
+    assert!(matches!(&e.saved.model.constraints[4].definition,
+        ConstraintKind::Length { line, value_mm } if line == a.entity() && *value_mm == 40.));
+    assert_eq!(e.history_counts().0, 2);
+    // A real next-geometry click also transfers keyboard focus away from the field.
+    ctx.memory_mut(|m| m.surrender_focus(egui::Id::new("sketch-dimension-value")));
+    dimension_key(&mut e, &ctx, egui::Key::D);
+    dimension_frame(&mut e, &ctx, vec![egui::Event::Text("30".into())]);
+    dimension_key(&mut e, &ctx, egui::Key::Enter);
+    assert_eq!(e.saved.model.constraints.len(), 6);
+    assert!(!ctx.wants_keyboard_input());
+    dimension_key(&mut e, &ctx, egui::Key::D);
+    assert!(
+        e.saved.constraint_form.editing.is_some(),
+        "D reopens an existing dimension"
+    );
+    dimension_frame(&mut e, &ctx, vec![egui::Event::Text("bad".into())]);
+    assert!(!e.pick_operand(Some(a.clone()), false));
+    assert_eq!(e.saved.constraint_form.operands, vec![b]);
+    assert_eq!(e.saved.constraint_form.value, "bad");
+    assert!(e.message.contains("finite"));
+    dimension_key(&mut e, &ctx, egui::Key::Escape);
+    assert_eq!(e.saved.constraint_form.value, "30");
+    assert!(!e.saved.constraint_form.changed);
+    assert!(e.pick_operand(Some(a), false));
+    dimension_key(&mut e, &ctx, egui::Key::D);
+    dimension_frame(&mut e, &ctx, vec![egui::Event::Text("45".into())]);
+    dimension_key(&mut e, &ctx, egui::Key::Enter);
+    assert_eq!(
+        e.saved.model.constraints.len(),
+        6,
+        "Editing must not duplicate a dimension"
+    );
+    assert_eq!(e.history_counts().0, 4);
+    e.undo();
+    assert!(matches!(
+        e.saved.model.constraints[4].definition,
+        ConstraintKind::Length { value_mm: 40., .. }
+    ));
+    e.undo();
+    assert_eq!(e.saved.model.constraints.len(), 5);
+}
+#[test]
+fn contextual_dimensions_cover_curves_angles_axes_and_command_first_selection() {
+    use constraints::{Choice, Operand};
+    let mut e = editor();
+    e.set_tool(Tool::Circle);
+    click(&mut e, 10., 10.);
+    click(&mut e, 12., 10.);
+    e.set_tool(Tool::Arc);
+    for (x, y) in [(20., 0.), (25., 5.), (30., 0.)] {
+        click(&mut e, x, y);
+    }
+    for (index, choice, value) in [(0, Choice::Diameter, 4.), (1, Choice::Radius, 5.)] {
+        e.pick_operand(
+            Some(Operand::Entity(e.saved.model.entities[index].id.clone())),
+            false,
+        );
+        e.dimension_shortcut();
+        assert_eq!(e.saved.constraint_form.choice, choice);
+        assert!((e.saved.constraint_form.value.parse::<f64>().unwrap() - value).abs() < 1e-8);
+        e.store_constraint().unwrap();
+    }
+    e.pick_operand(Some(Operand::Entity(X_AXIS_ID.into())), false);
+    e.pick_operand(Some(Operand::Entity(Y_AXIS_ID.into())), true);
+    e.dimension_shortcut();
+    assert_eq!(e.saved.constraint_form.choice, Choice::Angle);
+    // Discard this pending fixed-reference measurement and assemble a new form.
+    e.saved.constraint_form = Default::default();
+    e.choose_constraint(Choice::HorizontalDistance);
+    e.saved.constraint_form.value = "8".into();
+    e.saved.constraint_form.changed = true;
+    let center = PointRef {
+        entity_id: e.saved.model.entities[0].id.clone(),
+        point: PointRole::Center,
+    };
+    assert!(e.pick_operand(Some(Operand::Point(center)), false));
+    assert!(e.pick_operand(Some(Operand::Entity(Y_AXIS_ID.into())), true));
+    assert!(e.finish_dimension_edit());
+    assert!(
+        matches!(&e.saved.model.constraints.last().unwrap().definition,
+        ConstraintKind::HorizontalDistance { b, value_mm:8., .. } if b.entity_id==Y_AXIS_ID)
+    );
+}
 fn materialized(e: &Editor) -> cam_core::sketch::materialize::MaterializedArtwork {
     materialize_item(
         &ArtworkItem {
@@ -337,4 +485,159 @@ fn solved_drag_is_one_undo_step_and_escape_restores_the_whole_transaction() {
     e.poll_solver(&ctx);
     assert_eq!(e.saved.model, moved);
     assert_eq!(e.history_counts().0, count + 1);
+}
+
+#[test]
+fn rectangle_shape_survives_drag_and_constraints_share_its_undo_transaction() {
+    let mut e = editor();
+    let ctx = egui::Context::default();
+    e.set_tool(Tool::Rectangle);
+    click(&mut e, 2., 3.);
+    click(&mut e, 22., 13.);
+    e.poll_solver(&ctx);
+    assert_eq!(e.saved.model.constraints.len(), 4);
+    assert_eq!(
+        e.solver.outcome.as_ref().unwrap().degrees_of_freedom,
+        Some(4)
+    );
+    assert_eq!(e.history_counts(), (1, 0));
+    e.undo();
+    assert!(e.saved.model.entities.is_empty() && e.saved.model.constraints.is_empty());
+    e.redo();
+    let p = PointRef {
+        entity_id: e.saved.model.entities[1].id.clone(),
+        point: PointRole::End,
+    };
+    e.start_drag(Point::new(22., 13.), vec![p.clone()]);
+    e.drag_to(Point::new(28., 19.));
+    e.drag.as_mut().unwrap().released = true;
+    e.poll_solver(&ctx);
+    assert!(e.solver.outcome.as_ref().unwrap().accepted);
+    assert!(
+        e.saved
+            .model
+            .point(&p)
+            .unwrap()
+            .distance(Point::new(28., 19.))
+            < 1e-3
+    );
+    e.saved.model.require_valid_solution().unwrap();
+    for (a, b) in e.saved.model.wire_joints().unwrap() {
+        assert!(
+            e.saved
+                .model
+                .point(&a)
+                .unwrap()
+                .distance(e.saved.model.point(&b).unwrap())
+                < 1e-6
+        );
+    }
+    assert_eq!(e.history_counts().0, 2);
+    materialized(&e);
+}
+
+#[test]
+fn fixed_references_are_selectable_recoverable_and_cannot_be_deleted_or_dragged() {
+    use constraints::{Form, Operand};
+    let mut e = editor();
+    for (position, expected) in [
+        (Point::new(0., 0.), Operand::Point(origin_ref())),
+        (Point::new(500., 0.), Operand::Entity(X_AXIS_ID.into())),
+        (Point::new(0., -500.), Operand::Entity(Y_AXIS_ID.into())),
+    ] {
+        assert_eq!(e.hit_operand(position, 0.1), Some(expected.clone()));
+        e.pick_operand(Some(expected), false);
+        assert!(e.delete().unwrap_err().contains("fixed"));
+        assert!(e.toggle_construction().unwrap_err().contains("fixed"));
+        let restored: SavedDraft =
+            serde_json::from_str(&serde_json::to_string(&e.saved).unwrap()).unwrap();
+        restored.validate().unwrap();
+    }
+    e.start_drag(Point::new(0., 0.), vec![origin_ref()]);
+    assert!(e.drag.is_none());
+    assert_eq!(e.history_counts(), (0, 0));
+    e.saved.constraint_form = Form {
+        operands: vec![Operand::Entity("@unknown".into())],
+        ..Default::default()
+    };
+    assert!(e.saved.validate().is_err());
+}
+
+#[test]
+fn distance_resolves_current_line_selection_and_axis_offsets_roundtrip_for_editing() {
+    use constraints::{Choice, Form, Operand};
+    let ctx = egui::Context::default();
+    for (choice, value) in [
+        (Choice::Distance, 5.),
+        (Choice::HorizontalDistance, -3.),
+        (Choice::VerticalDistance, 4.),
+    ] {
+        let mut e = editor();
+        e.set_tool(Tool::Line);
+        click(&mut e, 10., 10.);
+        click(&mut e, 7., 14.);
+        // Choosing the command first or using the dropdown bypasses choose_constraint.
+        e.saved.constraint_form.choice = choice;
+        e.pick_operand(
+            Some(Operand::Entity(e.saved.model.entities[0].id.clone())),
+            false,
+        );
+        e.store_constraint().unwrap();
+        e.poll_solver(&ctx);
+        assert!(e.solver.outcome.as_ref().unwrap().accepted);
+        let k = &e.saved.model.constraints[0].definition;
+        assert!((e.saved.model.evaluate(k).unwrap().1.unwrap() - value).abs() < 1e-6);
+        if choice == Choice::Distance {
+            assert!(matches!(k, ConstraintKind::Length { .. }));
+        }
+    }
+    let mut e = editor();
+    e.set_tool(Tool::Point);
+    click(&mut e, 3., 4.);
+    let p = PointRef {
+        entity_id: e.saved.model.entities[0].id.clone(),
+        point: PointRole::Position,
+    };
+    for (axis, value, reverse) in [(X_AXIS_ID, "-8", false), (Y_AXIS_ID, "12", true)] {
+        let mut operands = vec![Operand::Point(p.clone()), Operand::Entity(axis.into())];
+        if reverse {
+            operands.reverse();
+        }
+        e.saved.constraint_form = Form {
+            choice: Choice::Distance,
+            operands,
+            value: value.into(),
+            ..Default::default()
+        };
+        e.store_constraint().unwrap();
+        e.poll_solver(&ctx);
+        assert!(e.solver.outcome.as_ref().unwrap().accepted);
+        let id = e.saved.model.constraints.last().unwrap().id.clone();
+        e.edit_constraint(&id);
+        assert_eq!(
+            e.saved.constraint_form.operands[1],
+            Operand::Entity(axis.into())
+        );
+        e.saved.constraint_form.reference = true;
+        e.store_constraint().unwrap();
+        e.poll_solver(&ctx);
+        let restored: SavedDraft =
+            serde_json::from_str(&serde_json::to_string(&e.saved).unwrap()).unwrap();
+        restored.validate().unwrap();
+        e.saved.constraint_form.reference = false;
+        e.store_constraint().unwrap();
+        e.poll_solver(&ctx);
+    }
+    assert!(
+        e.saved
+            .model
+            .point(&p)
+            .unwrap()
+            .distance(Point::new(12., -8.))
+            < 1e-6
+    );
+    assert_eq!(
+        e.solver.outcome.as_ref().unwrap().degrees_of_freedom,
+        Some(0)
+    );
 }

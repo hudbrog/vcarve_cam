@@ -183,6 +183,14 @@ impl Editor {
     }
     pub(super) fn start_drag(&mut self, anchor: Point, subjects: Vec<PointRef>) {
         self.cancel_gesture();
+        let subjects: Vec<_> = subjects
+            .into_iter()
+            .filter(|p| cam_core::sketch::reference_entity(&p.entity_id).is_none())
+            .collect();
+        if subjects.is_empty() {
+            self.message = "Origin and axes are fixed construction geometry.".into();
+            return;
+        }
         self.invalidate_solve();
         self.solver.dirty = false;
         self.drag = Some(Drag {

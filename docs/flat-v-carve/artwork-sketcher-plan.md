@@ -607,3 +607,119 @@ Reproducible evidence (paths relative to `flat-v-carve/`):
 
 The user-facing workflow, shortcuts, dimensions, save/reopen instructions and
 limits are documented in `crates/cam-gui/README.md`, under **Sketch artwork**.
+
+## Rectangle and reference usability follow-up — 2026-10-14
+
+New rectangles now save two horizontal and two vertical constraints in their
+creation transaction. Closed-wire joins supply corner coincidence, leaving four
+DOF (position, width and height). Dragging respects the rectangle shape. Existing
+sketches retain their original constraints.
+
+The origin and axes are immutable local construction references, selectable on
+the canvas and in Geometry list. Reserved IDs `@origin`, `@x_axis`, and `@y_axis`
+resolve through the shared model and solver; authored IDs cannot contain `@`.
+They are never serialized into the entity list, wired, or materialized into CAM
+geometry. The axes use fixed unit direction segments internally as infinite
+supporting lines; they cannot have length/equal-length/midpoint constraints.
+Unknown references and attempts to redefine or drag them are rejected.
+
+Distance resolves the current selection at submission time, including the
+dropdown and command-first use: one line gives length, two points give distance,
+and point + axis gives a signed perpendicular offset in either selection order.
+Horizontal/vertical distance accepts one line (end minus start). A single point
+measures from the origin. Reference dimensions and recovered forms preserve
+these operands. The selection hint stays in the form instead of appearing as a
+red error during normal dimension entry.
+
+Validation: 238 GUI library tests, 69 core library tests (one ignored), 17 core
+sketch artwork tests, and 11 solver adapter tests passed. After the final hint
+and axis-validation changes, all 23 focused GUI sketch tests and the 17/11 core
+and solver tests passed again. Workspace Clippy with warnings denied, formatting
+and diff checks passed. These are targeted regression checks, not a rerun of the
+entire milestone 5 performance qualification.
+
+Final browser build `0a80ba85ac29` passed the new `--sketch-basics` scenario and
+the existing drawing, UX and constraint scenarios in Edge/WebGPU with the
+production WASM Worker. Coverage includes origin coincidence, both axis offset
+selection orders, command-first line dimensions, local undo, driving/reference
+edits, dragging, diagnostics, worker retry, save/reopen and CAM contour selection.
+Evidence directories under `artifacts/gui/browser-smoke/`:
+
+- `2026-10-14T19-23-50.830Z`: UX.
+- `2026-10-14T19-23-50.832Z`: drawing and CAM selection.
+- `2026-10-14T19-25-07.682Z`: rectangle/origin/axes and saved roundtrip.
+- `2026-10-14T19-26-55.569Z`: constraint editing and dragging.
+
+The normal native app was also exercised: rectangle creation (four constraints,
+four DOF), shape-preserving corner drag, selected-edge Distance, Apply and native
+Save As, followed by reopening the saved model in the final executable. The
+fixed origin was selected, located and protected against dragging. The browser
+job with origin/axis constraints opened and solved fully constrained in native;
+editing its Y-axis offset used the native solver process. Native evidence and
+the independently packaged executable are under `artifacts/sketch-usability/`.
+The initial native drawing/save build SHA256 was
+`796086400071e844cc41bc675f7c9bdb3932ab0df6d4f98ea9f34343b7a9c965`;
+the final executable used for reopening and references is
+`b2802230eb4fc14906bccc5c7b868547061833ae769a459ae3f4007c7e815064`.
+The usual `artifacts/gui/native/cam-gui.exe` remained locked by an existing user
+session, so the verified final build is `artifacts/sketch-usability/native/cam-gui.exe`.
+
+## Rapid dimension entry follow-up — 2026-10-16
+
+Bare D and the visible **Dimension · D** tool infer line length, circle diameter,
+arc radius, angle between two line bodies, or point/axis distance. Valid selections
+open the current value with keyboard focus and the whole value selected. Existing
+dimensions with the same kind and operands reopen rather than adding duplicate
+equations. Explicit tools and K,D remain available.
+
+Enter saves the dimension locally. Changing the primary geometry selection or
+opening another constraint commits the previous value before replacing operands.
+Invalid values retain the previous selection and focus the field for correction.
+Escape in the field discards the pending value, restoring the stored dimension
+when editing one. These commits retain local undo and the existing asynchronous
+solver/Apply boundary. Shift-click still assembles operands for a new constraint.
+
+Validation: all 240 GUI library tests passed, as did workspace Clippy with warnings
+denied, formatting and diff checks. Browser build `7e24acc0ec4c` passed three real
+Edge/WebGPU scenarios with the production WASM Worker. Evidence under
+`artifacts/gui/browser-smoke/`:
+
+- `2026-10-16T05-01-04.918Z`: new hotkey workflow, canvas/list commits, invalid
+  values, Enter/Escape, existing-dimension reuse, diameter, Apply/save/reopen.
+- `2026-10-16T05-01-50.946Z`: existing UX/selection/reopening/failure-retry scenario.
+- `2026-10-16T05-02-55.921Z`: rectangle/origin/axes and saved-reference scenario.
+
+The normal Windows app launched successfully and was exercised through its actual
+UI: new rectangle, edge selection, bare D, typing without another click or Ctrl+A,
+clicking the next edge to commit width 45 mm (3 DOF), D and Enter to commit height
+35 mm (2 DOF), reopening that dimension with D, Escape discarding a pending 99,
+Apply and native Save As. The saved JSON contains the four rectangle constraints
+and two length constraints, and independently measured edges are 45/35/45/35 mm.
+Native screenshots, accessibility evidence, saved job and packaged executable are
+under `artifacts/sketch-hotkeys/`. The standard `artifacts/gui/native/cam-gui.exe`
+was updated too. Executable SHA256:
+`2740dd1f1841baeb2e10979b8dbc4fbea1b6cd5e0685c45591884fd70378cc6b`.
+
+## Shortcut compatibility follow-up — 2026-10-21
+
+The editor now maps the FreeCAD 1.1.4 default command accelerators through one
+catalogue shared by dispatch, tooltips and an in-app reference. It lists 87
+bindings: 36 supported equivalents and 51 commands whose tools are unavailable.
+The [complete compatibility catalogue](freecad-sketcher-shortcuts.md) documents
+selection requirements, missing tools, contextual keys and the pinned sources.
+
+Contextual commands include automatic H/V, equal lengths/radii, coincidence and
+point-on-object, midpoint/symmetry, tangency/collinearity, radius/diameter, X/Y
+position locking, driving/reference conversion, origin/axis selection and removal
+of axis alignment. Multi-key routing handles shared prefixes, text-field focus,
+timeouts and unavailable commands without invoking unrelated bare-letter actions.
+
+Validation recorded on October 16: all 245 GUI library tests and workspace Clippy
+with warnings denied passed. The native release built and launched; computer-use
+testing was then stopped with Escape. Native and browser workflow qualification
+of this expanded shortcut set remains unfinished. Earlier workflow evidence above
+applies to the respective earlier builds, not this expanded set.
+
+The standard native package was rebuilt on October 19 and its checksum verified:
+`artifacts/gui/native/cam-gui.exe`, SHA256
+`c924dfafc15976d5f06bb5054b5042f8b1ce55d7eac4b4f73a8af5eba693703e`.

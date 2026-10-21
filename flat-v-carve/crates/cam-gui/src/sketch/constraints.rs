@@ -7,6 +7,13 @@ pub enum Operand {
     Point(PointRef),
 }
 impl Operand {
+    pub fn reference(e: &Entity) -> Self {
+        if e.id == ORIGIN_ID {
+            Self::Point(origin_ref())
+        } else {
+            Self::Entity(e.id.clone())
+        }
+    }
     pub fn entity(&self) -> &str {
         match self {
             Self::Entity(id) => id,
@@ -118,7 +125,10 @@ impl Choice {
             Self::Fixed => "Select one entity body. Locks its current geometry.",
             Self::FixedPoint => "Select one endpoint or centre. Locks its current position.",
             Self::HorizontalDistance | Self::VerticalDistance => {
-                "Select two points (A, then B). Signed distance is A − B."
+                "Select a line, two points, or a point and the perpendicular axis. Line distance is end − start; point distance is A − B."
+            }
+            Self::Distance => {
+                "Select a line for its length, two points, or a point and an axis. Axis offsets are signed (+X / +Y)."
             }
             _ => "Select two points (A, then B).",
         }
@@ -157,7 +167,15 @@ impl Form {
             Choice::Symmetry => 3,
             _ => 2,
         };
-        if self.operands.len() != count {
+        let distance = matches!(
+            self.choice,
+            Choice::Distance | Choice::HorizontalDistance | Choice::VerticalDistance
+        );
+        if if distance {
+            !(1..=2).contains(&self.operands.len())
+        } else {
+            self.operands.len() != count
+        } {
             return Err(self.choice.hint().into());
         }
         let value = if self.choice.dimension() && !self.reference && !self.value.trim().is_empty() {
@@ -217,21 +235,9 @@ impl Form {
                 b: point(1)?,
                 line: entity(2)?,
             },
-            Choice::Distance => K::Distance {
-                a: point(0)?,
-                b: point(1)?,
-                value_mm: value,
-            },
-            Choice::HorizontalDistance => K::HorizontalDistance {
-                a: point(0)?,
-                b: point(1)?,
-                value_mm: value,
-            },
-            Choice::VerticalDistance => K::VerticalDistance {
-                a: point(0)?,
-                b: point(1)?,
-                value_mm: value,
-            },
+            Choice::Distance | Choice::HorizontalDistance | Choice::VerticalDistance => {
+                self.distance_definition(model, value)?
+            }
             Choice::Length => K::Length {
                 line: entity(0)?,
                 value_mm: value,
@@ -270,6 +276,70 @@ impl Form {
         }
         Ok(k)
     }
+    // Resolve from the current selection at submission time, so the tools,
+    // shortcuts and dropdown support both select-first and command-first use.
+    fn distance_definition(
+        &self,
+        model: &SketchDocument,
+        value_mm: f64,
+    ) -> Result<ConstraintKind, String> {
+        use ConstraintKind as K;
+        let mut choice = self.choice;
+        let (a, b) = match self.operands.as_slice() {
+            [Operand::Entity(line)] if reference_entity(line).is_none() => {
+                model
+                    .line(line)
+                    .map_err(|_| self.choice.hint().to_owned())?;
+                if choice == Choice::Distance {
+                    return Ok(K::Length {
+                        line: line.clone(),
+                        value_mm,
+                    });
+                }
+                (
+                    PointRef {
+                        entity_id: line.clone(),
+                        point: PointRole::End,
+                    },
+                    PointRef {
+                        entity_id: line.clone(),
+                        point: PointRole::Start,
+                    },
+                )
+            }
+            [Operand::Point(a), Operand::Point(b)] => (a.clone(), b.clone()),
+            [Operand::Point(a)] if reference_entity(&a.entity_id).is_none() => {
+                (a.clone(), origin_ref())
+            }
+            [Operand::Point(p), Operand::Entity(axis)]
+            | [Operand::Entity(axis), Operand::Point(p)]
+                if axis == X_AXIS_ID || axis == Y_AXIS_ID =>
+            {
+                let normal = if axis == X_AXIS_ID {
+                    Choice::VerticalDistance
+                } else {
+                    Choice::HorizontalDistance
+                };
+                if choice != Choice::Distance && choice != normal {
+                    return Err("Use vertical distance to the X axis, or horizontal distance to the Y axis.".into());
+                }
+                choice = normal;
+                (
+                    p.clone(),
+                    PointRef {
+                        entity_id: axis.clone(),
+                        point: PointRole::Start,
+                    },
+                )
+            }
+            _ => return Err(self.choice.hint().into()),
+        };
+        Ok(match choice {
+            Choice::HorizontalDistance => K::HorizontalDistance { a, b, value_mm },
+            Choice::VerticalDistance => K::VerticalDistance { a, b, value_mm },
+            _ => K::Distance { a, b, value_mm },
+        })
+    }
     fn from_constraint(c: &Constraint) -> Self {
         use ConstraintKind as K;
         let e = |s: &String| Operand::Entity(s.clone());
@@ -288,8 +358,28 @@ impl Form {
             K::Midpoint { point, line } => (Choice::Midpoint, vec![p(point), e(line)]),
             K::Symmetry { a, b, line } => (Choice::Symmetry, vec![p(a), p(b), e(line)]),
             K::Distance { a, b, .. } => (Choice::Distance, vec![p(a), p(b)]),
-            K::HorizontalDistance { a, b, .. } => (Choice::HorizontalDistance, vec![p(a), p(b)]),
-            K::VerticalDistance { a, b, .. } => (Choice::VerticalDistance, vec![p(a), p(b)]),
+            K::HorizontalDistance { a, b, .. } => (
+                Choice::HorizontalDistance,
+                vec![
+                    p(a),
+                    if b.entity_id == Y_AXIS_ID && b.point == PointRole::Start {
+                        e(&b.entity_id)
+                    } else {
+                        p(b)
+                    },
+                ],
+            ),
+            K::VerticalDistance { a, b, .. } => (
+                Choice::VerticalDistance,
+                vec![
+                    p(a),
+                    if b.entity_id == X_AXIS_ID && b.point == PointRole::Start {
+                        e(&b.entity_id)
+                    } else {
+                        p(b)
+                    },
+                ],
+            ),
             K::Length { line, .. } => (Choice::Length, vec![e(line)]),
             K::Radius { curve, .. } => (Choice::Radius, vec![e(curve)]),
             K::Diameter { curve, .. } => (Choice::Diameter, vec![e(curve)]),
@@ -352,11 +442,124 @@ fn edit_value(choice: Choice, value: f64) -> String {
     }
 }
 impl Editor {
-    pub(super) fn pick_operand(&mut self, operand: Option<Operand>, additive: bool) {
+    fn dimension_field() -> egui::Id {
+        egui::Id::new("sketch-dimension-value")
+    }
+    /// Commit before changing the operands, never after: the value belongs to
+    /// the old selection. Incomplete command-first forms can still pick operands.
+    pub(super) fn finish_dimension_edit(&mut self) -> bool {
+        let form = &self.saved.constraint_form;
+        if !form.changed || !form.choice.dimension() {
+            return true;
+        }
+        let mut measured = form.clone();
+        measured.value.clear();
+        if measured.definition(&self.saved.model).is_err() {
+            return true;
+        }
+        if let Err(e) = self.store_constraint() {
+            self.message = e;
+            self.show_constraints = true;
+            self.focus_dimension = true;
+            return false;
+        }
+        self.focus_dimension = false;
+        true
+    }
+    pub fn dimension_shortcut(&mut self) {
+        let choice = match self.saved.constraint_form.operands.as_slice() {
+            [Operand::Entity(id)] => match self.saved.model.entity(id).map(|e| &e.geometry) {
+                Ok(SketchGeometry::Circle { .. }) => Choice::Diameter,
+                Ok(SketchGeometry::Arc { .. }) => Choice::Radius,
+                _ => Choice::Distance,
+            },
+            [Operand::Entity(a), Operand::Entity(b)]
+                if self.saved.model.line(a).is_ok() && self.saved.model.line(b).is_ok() =>
+            {
+                Choice::Angle
+            }
+            _ => Choice::Distance,
+        };
+        self.choose_constraint(choice);
+    }
+    pub(super) fn prepare_dimension(&mut self) {
+        self.focus_dimension = true;
+        let Ok(mut definition) = self.saved.constraint_form.definition(&self.saved.model) else {
+            return;
+        };
+        // Reopening the same dimension must not introduce a duplicate equation.
+        set_value(&mut definition, 0.);
+        if let Some(c) = self.saved.model.constraints.iter().find(|c| {
+            let mut candidate = c.definition.clone();
+            set_value(&mut candidate, 0.);
+            candidate == definition
+        }) {
+            self.saved.constraint_form = Form::from_constraint(c);
+            self.focus_dimension = !c.reference;
+        } else if let Ok(k) = self.saved.constraint_form.definition(&self.saved.model)
+            && let Some(value) = dimension_value(&k)
+        {
+            // Normalize contextual Distance to its actual kind and operands.
+            self.saved.constraint_form = Form::from_constraint(&Constraint {
+                id: String::new(),
+                reference: self.saved.constraint_form.reference,
+                definition: k,
+            });
+            self.saved.constraint_form.editing = None;
+            self.saved.constraint_form.value = edit_value(self.saved.constraint_form.choice, value);
+            self.saved.constraint_form.changed = true;
+            self.focus_dimension = !self.saved.constraint_form.reference;
+        }
+    }
+    pub fn dimension_keys(&mut self, ctx: &egui::Context) {
+        let id = Self::dimension_field();
+        // egui clears focus for Escape at the beginning of the frame.
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if !ctx.memory(|m| m.has_focus(id) || (escape && m.had_focus_last_frame(id))) {
+            return;
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            let form = &self.saved.constraint_form;
+            let stored = form
+                .editing
+                .as_ref()
+                .and_then(|id| self.saved.model.constraints.iter().find(|c| &c.id == id));
+            if let Some(c) = stored {
+                self.saved.constraint_form = Form::from_constraint(c);
+            } else {
+                self.saved.constraint_form.value.clear();
+                self.saved.constraint_form.changed = false;
+            }
+            self.message.clear();
+            self.focus_dimension = false;
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+            match self.store_constraint() {
+                Ok(()) => {
+                    self.focus_dimension = false;
+                    ctx.memory_mut(|m| m.surrender_focus(id));
+                }
+                Err(e) => {
+                    self.message = e;
+                    self.focus_dimension = true;
+                }
+            }
+        }
+    }
+    pub(super) fn pick_operand(&mut self, operand: Option<Operand>, additive: bool) -> bool {
+        if (!additive || self.saved.constraint_form.editing.is_some())
+            && !self.finish_dimension_edit()
+        {
+            return false;
+        }
         let form = &mut self.saved.constraint_form;
+        if form.editing.take().is_some() {
+            form.value.clear();
+            form.changed = false;
+            form.reference = false;
+        }
         if !additive {
             form.operands.clear();
-            form.editing = None;
         }
         if let Some(o) = operand {
             if let Some(i) = form.operands.iter().position(|v| v == &o) {
@@ -370,6 +573,7 @@ impl Editor {
             .iter()
             .map(|o| o.entity().to_owned())
             .collect();
+        true
     }
     pub fn store_constraint(&mut self) -> Result<(), String> {
         self.cancel_gesture();
@@ -406,6 +610,9 @@ impl Editor {
         Ok(())
     }
     pub fn edit_constraint(&mut self, id: &str) {
+        if !self.finish_dimension_edit() {
+            return;
+        }
         self.cancel_gesture();
         if let Some(c) = self.saved.model.constraints.iter().find(|c| c.id == id) {
             self.saved.constraint_form = Form::from_constraint(c);
@@ -415,7 +622,7 @@ impl Editor {
                 .collect();
             self.show_constraints = true;
             self.tool = Tool::Select;
-            self.focus_dimension = c.definition.is_dimension();
+            self.focus_dimension = c.definition.is_dimension() && !c.reference;
         }
     }
     pub fn remove_constraint(&mut self, id: &str) -> Result<(), String> {
@@ -448,6 +655,9 @@ impl Editor {
             .collect();
     }
     pub(super) fn operand_label(&self, o: &Operand) -> String {
+        if let Some(e) = reference_entity(o.entity()) {
+            return e.label.clone().unwrap_or_else(|| e.id.clone());
+        }
         let Some((i, e)) = self
             .saved
             .model
@@ -552,15 +762,28 @@ impl Editor {
                 ui.small("Reference dimensions measure geometry and do not constrain it.");
             } else {
                 ui.horizontal(|ui| {
-                    let r = ui.add(
+                    let mut output =
                         egui::TextEdit::singleline(&mut self.saved.constraint_form.value)
+                            .id(Self::dimension_field())
                             .desired_width(110.)
                             .char_limit(128)
-                            .hint_text("Current value"),
-                    );
+                            .hint_text("Current value")
+                            .show(ui);
+                    let r = &output.response;
                     observe_control("Constraint value", r.rect);
                     if self.focus_dimension {
                         r.request_focus();
+                        r.scroll_to_me(Some(egui::Align::Center));
+                        output
+                            .state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(
+                                    self.saved.constraint_form.value.chars().count(),
+                                ),
+                            )));
+                        output.state.store(ui.ctx(), r.id);
                         self.focus_dimension = false;
                     }
                     if r.changed() {
@@ -572,6 +795,7 @@ impl Editor {
                         "mm"
                     });
                 });
+                ui.small("Enter or select next geometry to save · Esc to discard value");
             }
         }
         let editing = self.saved.constraint_form.editing.clone();

@@ -68,6 +68,18 @@ an open path. Arc takes start, a point along the arc, then end. Point creates a
 reference point with no cutting geometry. Construction creates dashed geometry
 excluded from machining.
 
+Rectangle adds horizontal and vertical constraints automatically. Its connected
+corners stay joined, leaving position, width and height free until dimensioned.
+Dragging a corner preserves the rectangular shape. These constraints are created
+and undone with the rectangle; existing sketches are not retroactively changed.
+
+The origin and X/Y axes are fixed construction references. Click them on the
+canvas or select **Origin**, **X axis**, or **Y axis** at the top of Geometry list.
+For example, select a corner, Shift-select Origin, then choose Coincident to
+anchor that corner at zero. When an endpoint overlaps the origin, Shift-click it
+again to add Origin, or use the list. These references cannot be moved, deleted,
+or converted to cutting geometry.
+
 Snap shows its target beside the cursor. Snap and Grid snap can be switched off;
 the grid spacing is editable in millimetres. Snapping does not add constraints.
 Click selects an individual edge or point; Shift-click adds/removes items.
@@ -87,21 +99,31 @@ it. Constraint filters show All, Dimensions, or Problems. Panel visibility is
 remembered when reopening sketches in the same app session; widths are resizable.
 At small window sizes the tools and lists scroll.
 
-FreeCAD-style sequences are pressed in order, not held together. After G or K,
+FreeCAD 1.1.4 default sequences are pressed in order, not held together. After a prefix,
 the footer shows available continuations. Escape cancels a sequence; an unfinished
-sequence expires after two seconds. Tool shortcuts do not run inside text fields.
+sequence expires after two seconds. C waits 0.7 seconds for the C,C alternative.
+Tool shortcuts do not run inside text fields. **Shortcuts** in the tools panel lists
+every default command binding and its availability. See the complete
+[compatibility catalogue](../../../docs/flat-v-carve/freecad-sketcher-shortcuts.md)
+for missing tools and selection limitations.
 
 | Command | Shortcut |
 | --- | --- |
+| Contextual dimension (length / diameter / radius / angle / distance) | D |
 | Line / Polyline / Rectangle / Circle / Point | G,L / G,M / G,R / G,C / G,Y |
 | Three-point arc | G,3,A |
 | Construction (selected complete wires, or new geometry) | G,N |
-| Horizontal / Vertical / Coincident | H / V / C |
-| Parallel / Perpendicular / Equal length / Tangent / Symmetry | P / N / E / T / S |
-| Point on line / signed X distance / signed Y distance | O / L / I |
+| Auto horizontal/vertical / Horizontal / Vertical / Coincident | A / H / V / C (strict: C,C) |
+| Parallel / Perpendicular / Equal length or radius / Tangent or collinear / Symmetry or midpoint | P / N / E / T / S |
+| Point on line or circle / signed X distance / signed Y distance | O / L / I |
 | Distance between points, or length of selected line | K,D |
 | Radius / Diameter / Angle / Fix entity | K,R / K,O / K,A / K,B |
-| Switch driving/reference in the current dimension form | K,X, then Add/Update |
+| Automatic circle diameter / arc radius | R or K,S |
+| Lock point position with X/Y dimensions | K,L |
+| Switch selected dimension driving/reference, or new dimension mode | K,X (leave the value field with Tab first) |
+| Toggle origin / horizontal axis / vertical axis in selection | Z,O / Z,H / Z,V |
+| Select geometry belonging to the current constraint / remove selected lines' H/V constraints | Z,E / Z,R |
+| Select all authored geometry | Ctrl+A |
 
 **Apply sketch** validates the output and makes one job undo transaction.
 **Cancel sketch** leaves the committed artwork intact. Apply reports invalid
@@ -117,6 +139,27 @@ otherwise follow its selection hint and use **Add constraint**. Dimension tools
 open a value form. Double-click a canvas dimension label or click its list row to edit
 or remove it; use **Update constraint** to commit form changes. **Clear operands**
 discards the form edit. Remove related constraints before deleting a wire.
+
+For rapid dimensioning, select geometry and press bare **D**. A line gets a length,
+a circle a diameter, an arc a radius, two line bodies an angle, and point selections
+a distance (including point-to-axis offsets). The value field opens with its current
+value selected: just type the replacement. **Enter** or selecting the next geometry
+saves the value to the local sketch and starts solving; press **D** again for the
+next selection. An existing dimension of the same kind and operands reopens instead
+of adding a duplicate. **Escape** in the value field discards the pending value.
+Invalid input keeps the original selection and field open for correction. These
+commits are local undo steps; **Apply sketch** still commits the artwork to the job.
+The explicit dimension tools and **K,D** sequence remain available.
+
+**Distance** accepts a selected line for its length, two points for their distance,
+or a point and an axis for its perpendicular offset. Select a corner and Shift-click
+an axis (either selection order works): the X axis gives a signed Y offset, and
+the Y axis gives a signed X offset. Positive values mean above/right of the axis;
+negative values mean below/left. A single selected point measures from the origin.
+Horizontal/vertical distance also accepts one line, measuring end minus start.
+These selections work through the tools, shortcuts and constraint dropdown,
+whether the selection or command comes first. Leave a dimension value blank to
+use the current measurement.
 
 Available constraints include coincident, horizontal/vertical, parallel,
 perpendicular, equal length/radius, tangent, point on line/circle, midpoint,
@@ -173,6 +216,10 @@ selection identities.
 Tests: `cargo test -p cam-gui --lib sketch` and, with browser assets built and
 the development server running, `node crates/cam-gui/web/smoke.mjs --sketch`.
 Use `--sketch-constraints` for the browser constraint/drag/recovery scenario.
+Use `--sketch-hotkeys` for bare D, immediate value replacement, committing on next
+canvas/list selection, Enter/Escape, invalid input, existing dimensions and save/reopen.
+Use `--sketch-basics` for rectangle constraints, fixed origin/axes, contextual
+distances and saved reference roundtrips through the real browser solver Worker.
 Use `--sketch-ux` for independent selection/lists, shortcuts, reopening, dimension
 labels and solver failure/retry. Use `--sketch-performance` for production WASM
 worker measurements; `node scripts/qualify-sketch-native.mjs` measures the release

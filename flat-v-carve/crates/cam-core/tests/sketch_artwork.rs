@@ -53,6 +53,86 @@ fn rectangle() -> SketchDocument {
         ..Default::default()
     }
 }
+
+#[test]
+fn builtin_references_roundtrip_without_entering_cam_geometry_and_are_immutable() {
+    let mut d = rectangle();
+    let baseline = artwork::materialize_item(&item(d.clone()), None).unwrap();
+    d.constraints.push(Constraint {
+        id: "offset".into(),
+        reference: false,
+        definition: ConstraintKind::HorizontalDistance {
+            a: PointRef {
+                entity_id: "a".into(),
+                point: PointRole::Start,
+            },
+            b: PointRef {
+                entity_id: Y_AXIS_ID.into(),
+                point: PointRole::Start,
+            },
+            value_mm: 2.,
+        },
+    });
+    d.require_valid_solution().unwrap();
+    let roundtrip: SketchDocument =
+        serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+    assert_eq!(d, roundtrip);
+    let result = artwork::materialize_item(&item(roundtrip), None).unwrap();
+    assert_eq!(result.provenance, baseline.provenance);
+    let contours = |m: &cam_core::sketch::materialize::MaterializedArtwork| {
+        m.catalogue
+            .contours
+            .iter()
+            .map(|c| (c.id.clone(), c.vertices.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(contours(&result), contours(&baseline));
+    assert_eq!(
+        result.catalogue.points.len(),
+        baseline.catalogue.points.len()
+    );
+    assert_eq!(
+        result.catalogue.open_chains.len(),
+        baseline.catalogue.open_chains.len()
+    );
+    assert_eq!(d.entities.len(), 4);
+    assert_eq!(d.point(&origin_ref()).unwrap(), Point::new(0., 0.));
+    let mut invalid = d.clone();
+    invalid.wires[0].edges[0].entity_id = X_AXIS_ID.into();
+    assert!(invalid.validate_structure().is_err());
+    let mut invalid = d.clone();
+    invalid.entities.push(reference_entities()[0].clone());
+    assert!(invalid.validate_structure().is_err());
+    for definition in [
+        ConstraintKind::Length {
+            line: X_AXIS_ID.into(),
+            value_mm: 1.,
+        },
+        ConstraintKind::FixedPoint {
+            point: origin_ref(),
+            position: Point::new(1., 0.),
+        },
+        ConstraintKind::Fixed {
+            entity: X_AXIS_ID.into(),
+            target: SketchGeometry::Line {
+                start: Point::new(2., 0.),
+                end: Point::new(3., 0.),
+            },
+        },
+        ConstraintKind::PointOnLine {
+            point: origin_ref(),
+            line: "@unknown".into(),
+        },
+    ] {
+        let mut invalid = d.clone();
+        invalid.constraints.push(Constraint {
+            id: "invalid".into(),
+            reference: false,
+            definition,
+        });
+        assert!(invalid.validate_structure().is_err());
+    }
+}
 fn circle(doc: &mut SketchDocument, id: &str, x: f64, y: f64, r: f64) {
     doc.entities.push(entity(
         id,

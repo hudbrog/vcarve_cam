@@ -64,6 +64,78 @@ fn accepted(d: &SketchDocument) -> SketchDocument {
 }
 
 #[test]
+fn builtin_origin_and_infinite_axes_are_fixed_solver_references() {
+    let mut d = SketchDocument {
+        entities: vec![point("p", 8., 6.)],
+        ..Default::default()
+    };
+    assert_eq!(solve(&d).unwrap().degrees_of_freedom, Some(2));
+    add(
+        &mut d,
+        ConstraintKind::Coincident {
+            a: pos("p"),
+            b: origin_ref(),
+        },
+    );
+    let r = solve(&d).unwrap();
+    assert!(r.accepted());
+    assert_eq!(r.degrees_of_freedom, Some(0));
+    assert!(
+        r.candidate
+            .point(&pos("p"))
+            .unwrap()
+            .distance(Point::new(0., 0.))
+            < 1e-6
+    );
+    assert_eq!(r.candidate.entities.len(), 1);
+    assert!(
+        cam_sketch_solver::solve_drag_with_cancel(
+            &d,
+            &[cam_sketch_solver::DragPoint {
+                point: origin_ref(),
+                target: Point::new(20., 20.)
+            }],
+            || false
+        )
+        .is_err()
+    );
+    d.constraints.clear();
+    add(
+        &mut d,
+        ConstraintKind::HorizontalDistance {
+            a: pos("p"),
+            b: p(Y_AXIS_ID, PointRole::Start),
+            value_mm: 123.,
+        },
+    );
+    add(
+        &mut d,
+        ConstraintKind::VerticalDistance {
+            a: pos("p"),
+            b: p(X_AXIS_ID, PointRole::Start),
+            value_mm: -56.,
+        },
+    );
+    let d = accepted(&d);
+    assert!(d.point(&pos("p")).unwrap().distance(Point::new(123., -56.)) < 1e-6);
+    let mut d = SketchDocument {
+        entities: vec![point("p", 100., 4.)],
+        ..Default::default()
+    };
+    add(
+        &mut d,
+        ConstraintKind::PointOnLine {
+            point: pos("p"),
+            line: X_AXIS_ID.into(),
+        },
+    );
+    let d = accepted(&d);
+    assert!(d.point(&pos("p")).unwrap().y.abs() < 1e-6);
+    assert!(d.point(&pos("p")).unwrap().x > 1.);
+    assert_eq!(d.point(&origin_ref()).unwrap(), Point::new(0., 0.));
+}
+
+#[test]
 fn wire_connectivity_fixed_point_and_driving_resize_are_solved_together() {
     let mut d = SketchDocument {
         entities: vec![

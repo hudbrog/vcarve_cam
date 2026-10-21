@@ -12,7 +12,7 @@ use cam_core::{
     geometry::{Diagnostic, Point as CamPoint, Result},
     sketch::{
         ConstraintKind as K, PointRef, PointRole, SketchDocument, SketchGeometry as Geometry,
-        ValidationReport,
+        ValidationReport, reference_entities, reference_entity,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -71,14 +71,14 @@ impl Model {
             handles: BTreeMap::new(),
             points: BTreeMap::new(),
         };
-        for e in &doc.entities {
+        for e in doc.entities.iter().chain(reference_entities()) {
             // Conflicting fixed targets remain in the independent validation.
             let target = doc.constraints.iter().find_map(|c| match &c.definition {
                 K::Fixed { entity, target } if entity == &e.id => Some(target),
                 _ => None,
             });
             let g = target.unwrap_or(&e.geometry);
-            let fixed = target.is_some();
+            let fixed = target.is_some() || reference_entity(&e.id).is_some();
             let h = match *g {
                 Geometry::Point { position } => {
                     let p = vect2d::new(position.x, position.y);
@@ -157,6 +157,11 @@ impl Model {
         }
         let p = doc.point(r)?;
         let point = self.sketch.add_point(vect2d::new(p.x, p.y));
+        if reference_entity(&r.entity_id).is_some() {
+            self.sketch.points[point].pos = Param::fixed(vect2d::new(p.x, p.y));
+            self.points.insert(r.clone(), point);
+            return Ok(point);
+        }
         match self.handles[&r.entity_id] {
             Handle::Line(line) => match r.point {
                 PointRole::Start => self.sketch.coincident_lp1.push(cross!(CoincidentLP1 {
@@ -460,6 +465,9 @@ pub fn solve_drag_with_cancel(
         return Err(error("too many drag targets"));
     }
     for t in targets {
+        if reference_entity(&t.point.entity_id).is_some() {
+            return Err(error("origin and axes cannot be dragged"));
+        }
         doc.point(&t.point)?;
         if [t.target.x, t.target.y]
             .iter()

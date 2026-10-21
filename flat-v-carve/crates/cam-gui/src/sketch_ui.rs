@@ -288,7 +288,10 @@ impl App {
         {
             editor.message="Apply or Cancel the sketch before opening or saving a job. The draft remains open.".into();
         }
-        if !self.ime && !ctx.wants_keyboard_input() {
+        if !self.ime {
+            editor.dimension_keys(ctx);
+        }
+        if !self.ime && !ctx.wants_keyboard_input() && !editor.show_shortcuts {
             if ctx.input_mut(|i| {
                 i.consume_key(
                     egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
@@ -318,6 +321,7 @@ impl App {
         } else {
             editor.shortcut_prefix_clear();
         }
+        editor.shortcuts_window(ctx);
         egui::TopBottomPanel::top("sketch-header").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Sketch");
@@ -807,9 +811,11 @@ mod tests {
         control(&mut app, &ctx, "Sketch Select");
         control(&mut app, &ctx, "Constraints & dimensions");
         point(&mut app, &ctx, 45., 10.);
+        control(&mut app, &ctx, "Constraint kind");
+        control(&mut app, &ctx, "Constraint kind Distance");
         control(&mut app, &ctx, "Add constraint");
         let editor = app.sketch.as_ref().unwrap();
-        assert_eq!(editor.saved.model.constraints.len(), 1);
+        assert_eq!(editor.saved.model.constraints.len(), 5);
         assert!(editor.solver_status().contains("Underconstrained"));
         control(&mut app, &ctx, "Apply sketch");
         assert!(app.sketch.is_none());
