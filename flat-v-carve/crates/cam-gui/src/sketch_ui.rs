@@ -474,6 +474,7 @@ mod tests {
             panic!()
         };
         let anchor = ContourAnchorV5 {
+            id: None,
             geometry: s.contours[1].geometry.clone(),
             source_geometry_fingerprint: catalogue
                 .contour("contour-plate")

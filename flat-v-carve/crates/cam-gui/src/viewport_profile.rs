@@ -91,40 +91,27 @@ impl Viewport {
                         .filter_map(|point| Some([point[0].as_f64()?, point[1].as_f64()?]))
                         .map(|xy| project(xy, 0.04))
                         .collect();
-                    if points.len() != 4 {
+                    if points.len() < 4 || !points.len().is_multiple_of(2) {
                         continue;
                     }
-                    out.triangles.push(crate::compute::Vertex {
-                        position: points[0],
-                        color: BRIDGE_FILL,
-                    });
-                    out.triangles.push(crate::compute::Vertex {
-                        position: points[1],
-                        color: BRIDGE_FILL,
-                    });
-                    out.triangles.push(crate::compute::Vertex {
-                        position: points[2],
-                        color: BRIDGE_FILL,
-                    });
-                    out.triangles.push(crate::compute::Vertex {
-                        position: points[0],
-                        color: BRIDGE_FILL,
-                    });
-                    out.triangles.push(crate::compute::Vertex {
-                        position: points[2],
-                        color: BRIDGE_FILL,
-                    });
-                    out.triangles.push(crate::compute::Vertex {
-                        position: points[3],
-                        color: BRIDGE_FILL,
-                    });
-                    for index in 0..4 {
+                    // Triangulate matched strip cells. A fan across the full
+                    // polygon would fill across the inside of a curved tab.
+                    let n = points.len();
+                    for i in 0..n / 2 - 1 {
+                        for index in [i, i + 1, n - 2 - i, i, n - 2 - i, n - 1 - i] {
+                            out.triangles.push(crate::compute::Vertex {
+                                position: points[index],
+                                color: BRIDGE_FILL,
+                            });
+                        }
+                    }
+                    for index in 0..n {
                         out.lines.push(crate::compute::Vertex {
                             position: points[index],
                             color: BRIDGE_LINE,
                         });
                         out.lines.push(crate::compute::Vertex {
-                            position: points[(index + 1) % 4],
+                            position: points[(index + 1) % n],
                             color: BRIDGE_LINE,
                         });
                     }
@@ -235,7 +222,7 @@ impl Viewport {
     fn anchor_ring(&self, scope: &str) -> Option<Vec<[f64; 2]>> {
         self.profile_contours
             .iter()
-            .find(|contour| contour.wire_id == scope)
+            .find(|contour| contour.wire_id == crate::profile::anchor_contour_scope(scope))
             .map(|contour| contour.anchor_ring.clone())
     }
 

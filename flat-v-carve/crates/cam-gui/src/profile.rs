@@ -711,7 +711,7 @@ pub enum AnchorKind {
 /// parameterizes, so its text and its gestures stay attached to that anchor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AnchorRow {
-    /// Draft-store scope: the anchor's contour wire ID.
+    /// Draft-store scope: contour plus independent tab identity.
     pub scope: String,
     /// Position in the document's manual-anchor list (tab anchors only).
     pub index: usize,
@@ -729,6 +729,33 @@ pub fn anchor_scope(reference: &v5::GeometryRef) -> String {
         reference.kind,
         &reference.local_geometry_id,
     )
+}
+
+fn tab_scope(anchor: &ContourAnchorV5, anchors: &[ContourAnchorV5]) -> String {
+    let wire = anchor_scope(&anchor.geometry);
+    match &anchor.id {
+        Some(id) => format!("{wire}#tab=id-{id}"),
+        // Keep existing draft keys for the old editor's one-tab-per-contour
+        // documents. Imported lists with several legacy tabs still need
+        // distinct scopes; all newly authored tabs carry stable IDs.
+        None if anchors
+            .iter()
+            .filter(|a| a.id.is_none() && a.geometry == anchor.geometry)
+            .count()
+            == 1 =>
+        {
+            wire
+        }
+        None => format!(
+            "{wire}#tab=legacy-{:016x}",
+            anchor.fraction_along_source_contour.to_bits()
+        ),
+    }
+}
+
+/// Contour addressed by a start scope or an individual tab scope.
+pub fn anchor_contour_scope(scope: &str) -> &str {
+    scope.rsplit_once("#tab=").map_or(scope, |(wire, _)| wire)
 }
 
 pub fn start_row(job: &CamJobV5, operation_id: &str) -> Option<AnchorRow> {
@@ -757,7 +784,7 @@ pub fn tab_rows(job: &CamJobV5, operation_id: &str) -> Vec<AnchorRow> {
             .iter()
             .enumerate()
             .map(|(index, anchor)| AnchorRow {
-                scope: anchor_scope(&anchor.geometry),
+                scope: tab_scope(anchor, anchors),
                 index,
                 reference: anchor.geometry.clone(),
                 fraction: anchor.fraction_along_source_contour,
@@ -839,16 +866,11 @@ pub fn set_anchor_fraction(
             else {
                 return Err("Choose manual tab placement before moving a tab".into());
             };
-            let mut moved = false;
-            for anchor in anchors.iter_mut() {
-                if anchor_scope(&anchor.geometry) == scope {
-                    anchor.fraction_along_source_contour = fraction;
-                    moved = true;
-                }
-            }
-            if !moved {
-                return Err("That tab anchor no longer exists".into());
-            }
+            let index = anchors
+                .iter()
+                .position(|anchor| tab_scope(anchor, anchors) == scope)
+                .ok_or("That tab anchor no longer exists")?;
+            anchors[index].fraction_along_source_contour = fraction;
         }
     }
     Ok(())
@@ -873,6 +895,7 @@ pub fn bind_anchor(
         return Err("Anchors address closed contours".into());
     }
     Ok(ContourAnchorV5 {
+        id: None,
         geometry: entry.reference.clone(),
         source_geometry_fingerprint: entry.source_fingerprint.clone(),
         fraction_along_source_contour: fraction,
@@ -904,9 +927,7 @@ pub fn set_start(
     Ok(())
 }
 
-/// Add one manual tab anchor on a selected contour. Manual placement carries
-/// one anchor per contour; use the automatic count for several tabs around a
-/// single contour.
+/// Add an independently editable manual tab on a selected contour.
 pub fn add_tab_anchor(
     job: &mut CamJobV5,
     operation_id: &str,
@@ -914,7 +935,7 @@ pub fn add_tab_anchor(
     fraction: f64,
 ) -> Result<(), String> {
     let selection = selection(job, operation_id);
-    let anchor = bind_anchor(job, operation_id, wire_id, fraction)?;
+    let mut anchor = bind_anchor(job, operation_id, wire_id, fraction)?;
     if !selection.iter().any(|row| row.reference == anchor.geometry) {
         return Err("Choose a selected contour for the tab".into());
     }
@@ -923,12 +944,20 @@ pub fn add_tab_anchor(
     let TabPlacementV5::Manual { anchors } = &mut tabs.placement else {
         return Err("Choose manual tab placement before adding one".into());
     };
-    if anchors
-        .iter()
-        .any(|existing| existing.geometry == anchor.geometry)
-    {
-        return Err("That contour already carries a manual tab; move or remove it".into());
+    if anchors.iter().any(|existing| {
+        existing.geometry == anchor.geometry
+            && (existing.fraction_along_source_contour - fraction).abs() < 1e-9
+    }) {
+        return Err(
+            "There is already a manual tab at that position; move it or choose another position"
+                .into(),
+        );
     }
+    anchor.id = (1..).map(|n| format!("tab-{n}")).find(|id| {
+        anchors
+            .iter()
+            .all(|existing| existing.id.as_ref() != Some(id))
+    });
     anchors.push(anchor);
     Ok(())
 }
@@ -943,11 +972,11 @@ pub fn remove_tab_anchor(
     let TabPlacementV5::Manual { anchors } = &mut tabs.placement else {
         return Err("Manual tab placement is not selected".into());
     };
-    let before = anchors.len();
-    anchors.retain(|anchor| anchor_scope(&anchor.geometry) != scope);
-    if anchors.len() == before {
-        return Err("That tab anchor no longer exists".into());
-    }
+    let index = anchors
+        .iter()
+        .position(|anchor| tab_scope(anchor, anchors) == scope)
+        .ok_or("That tab anchor no longer exists")?;
+    anchors.remove(index);
     Ok(())
 }
 

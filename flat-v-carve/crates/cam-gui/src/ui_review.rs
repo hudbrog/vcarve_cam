@@ -134,6 +134,7 @@ pub fn run(args: &[OsString]) -> eframe::Result {
                     .geometry
                     .clone();
                 settings.start = StartSelectionV5::Anchor(Box::new(ContourAnchorV5 {
+                    id: None,
                     source_geometry_fingerprint: catalogue
                         .contour(&reference.local_geometry_id)
                         .unwrap()

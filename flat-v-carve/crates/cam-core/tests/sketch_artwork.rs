@@ -314,6 +314,7 @@ fn start_and_manual_tabs_advance_only_on_unchanged_boundaries() {
         panic!()
     };
     let anchor = v5::ContourAnchorV5 {
+        id: None,
         geometry: s.contours[0].geometry.clone(),
         source_geometry_fingerprint: m
             .catalogue
@@ -661,6 +662,7 @@ fn apply_preserves_proven_selections_but_never_stale_or_changed_anchors() {
         panic!()
     };
     s.start = v5::StartSelectionV5::Anchor(Box::new(v5::ContourAnchorV5 {
+        id: None,
         geometry: s.contours[0].geometry.clone(),
         source_geometry_fingerprint: before
             .catalogue

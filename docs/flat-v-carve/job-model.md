@@ -44,6 +44,11 @@ Viewport click/Shift-click applies operation-owned commands. Hidden/locked
 artwork is not assignable through picking. Manual contour anchors retain their
 source binding and must be reattached when that binding becomes invalid.
 
+Profile tabs can follow straight or curved contours. Each manual tab has its
+own optional editor ID, allowing several tabs on one contour to be moved or
+removed independently; older anchors without IDs still load. Generated bridge
+footprints follow the curve and are protected during both roughing and finishing.
+
 Stock resizing uses an explicit anchor. Stock and artwork are not moved by
 changing a cutter, facing margin or display setting. Geometry outside the stock
 is reported, not silently repositioned. Coordinate transformations are defined

@@ -338,7 +338,9 @@ impl App {
         let id = document.raw.operation.clone();
         let contours = self.view.profile_contours();
         let point_of = |scope: &str, fraction: f64| {
-            let contour = contours.iter().find(|contour| contour.wire_id == scope)?;
+            let contour = contours
+                .iter()
+                .find(|contour| contour.wire_id == profile::anchor_contour_scope(scope))?;
             profile::ring_point(&contour.anchor_ring, fraction)
         };
         let mut out = vec![];
@@ -613,7 +615,7 @@ impl App {
 
     /// Tabs (GUI8b): visible material bridges that keep the part in the stock.
     /// Automatic placement states a count or a spacing; manual placement
-    /// anchors one tab per selected contour at an explicit source fraction,
+    /// anchors each tab at an explicit source fraction,
     /// which is the numeric equivalent of dragging its marker in the viewport.
     fn profile_tabs(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let id = self.operation_id();
@@ -631,7 +633,7 @@ impl App {
         let owner_of = |wire: &str| {
             contours
                 .iter()
-                .find(|contour| contour.wire_id == wire)
+                .find(|contour| contour.wire_id == profile::anchor_contour_scope(wire))
                 .map(|contour| {
                     format!(
                         "{} / {}",
@@ -704,7 +706,7 @@ impl App {
                 app.operation_numbers(ui, ctx, &[95, 96]);
                 ui.small("Give a count or a spacing between tabs; a count takes precedence. The planner distributes them around each selected contour and reports what it placed.");
             } else {
-                ui.small("Each manual tab is anchored on one selected contour. Use automatic placement for several tabs around a single contour.");
+                ui.small("Add as many tabs as needed on each selected contour. Each tab can be moved or removed independently.");
                 if rows.is_empty() {
                     ui.label("No manual tabs yet.");
                 }
@@ -765,19 +767,16 @@ impl App {
                     }
                     ui.separator();
                 }
-                let anchored: Vec<String> = rows.iter().map(|row| row.scope.clone()).collect();
                 let available: Vec<&crate::profile::Contour> = selection
                     .iter()
                     .filter_map(|row| {
                         let wire = profile::anchor_scope(&row.reference);
-                        (!anchored.contains(&wire))
-                            .then(|| contours.iter().find(|c| c.wire_id == wire))
-                            .flatten()
+                        contours.iter().find(|c| c.wire_id == wire)
                     })
                     .collect();
                 let menu = ui.menu_button("Add tab on…", |ui| {
                     if available.is_empty() {
-                        ui.label("Every selected contour already carries a manual tab.");
+                        ui.label("Select a contour before adding a manual tab.");
                         return;
                     }
                     ui.small("Choose a contour and a starting position; the tab can then be dragged in the viewport or typed exactly.");
@@ -1320,7 +1319,7 @@ mod tests {
             .clone();
         let scope = crate::profile::anchor_scope(&scope);
         crate::profile::add_tab_anchor(&mut doc.job, &id, &scope, 0.5).unwrap();
-        scope
+        crate::profile::tab_rows(&doc.job, &id)[0].scope.clone()
     }
 
     #[test]
@@ -1410,6 +1409,67 @@ mod tests {
             "0.5".into(),
         );
         assert!(invalid.validate_job(&doc.job).is_err());
+    }
+
+    #[test]
+    fn tabs_on_the_same_contour_have_separate_fields_and_viewport_markers() {
+        let mut app = app();
+        app.operation_tab = 2;
+        let first = manual_tabs(&mut app);
+        let doc = app.document.as_mut().unwrap();
+        let id = doc.raw.operation.clone();
+        crate::profile::add_tab_anchor(
+            &mut doc.job,
+            &id,
+            crate::profile::anchor_contour_scope(&first),
+            0.25,
+        )
+        .unwrap();
+        let rows = crate::profile::tab_rows(&doc.job, &id);
+        let markers = app.profile_candidates();
+        assert_eq!(markers.len(), 2);
+        assert_ne!(markers[0].scope, markers[1].scope);
+        assert_ne!(markers[0].point, markers[1].point);
+        for marker in &markers {
+            let row = rows.iter().find(|row| row.scope == marker.scope).unwrap();
+            assert_eq!(
+                app.view.profile_anchor_point(&row.scope, row.fraction),
+                Some(marker.point)
+            );
+        }
+        let controls = render(&mut app, &egui::Context::default());
+        for row in &rows {
+            assert!(controls.contains_key(&format!("Anchor Tab anchor fraction {}", row.scope)));
+        }
+    }
+
+    #[test]
+    fn legacy_manual_tab_keeps_its_draft_scope_when_another_tab_is_added() {
+        let mut app = app();
+        let first = manual_tabs(&mut app);
+        let wire = crate::profile::anchor_contour_scope(&first).to_string();
+        let doc = app.document.as_mut().unwrap();
+        let id = doc.raw.operation.clone();
+        let settings = crate::profile::settings_in_mut(&mut doc.job, &id).unwrap();
+        let cam_core::project::v5::TabPlacementV5::Manual { anchors } =
+            &mut settings.tabs.as_mut().unwrap().placement
+        else {
+            panic!()
+        };
+        anchors[0].id = None;
+        assert!(
+            doc.edit_anchor(&wire, 97, "-".into(), AnchorKind::Tab)
+                .is_err()
+        );
+        crate::profile::add_tab_anchor(&mut doc.job, &id, &wire, 0.25).unwrap();
+        doc.prune_scoped_drafts();
+        assert_eq!(crate::profile::tab_rows(&doc.job, &id)[0].scope, wire);
+        assert!(doc.pending());
+        doc.edit_anchor(&wire, 97, "0.4".into(), AnchorKind::Tab)
+            .unwrap();
+        assert!(!doc.pending());
+        let rows = crate::profile::tab_rows(&doc.job, &id);
+        assert_eq!((rows[0].fraction, rows[1].fraction), (0.4, 0.25));
     }
 
     #[test]

@@ -311,6 +311,10 @@ impl GeometryRef {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContourAnchorV5 {
+    /// Stable editor identity for independently editable manual tabs.
+    /// Older documents and start anchors can omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub geometry: GeometryRef,
     pub source_geometry_fingerprint: String,
     /// Fraction in [0,1) along the source contour.
@@ -319,6 +323,16 @@ pub struct ContourAnchorV5 {
 
 impl ContourAnchorV5 {
     fn validate(&self) -> Result<()> {
+        if self
+            .id
+            .as_ref()
+            .is_some_and(|id| !crate::preview::valid_id(id))
+        {
+            return Err(error(
+                "PROJECT_PARAMETER",
+                "anchor ID must be a valid identifier",
+            ));
+        }
         self.geometry.validate()?;
         if self.source_geometry_fingerprint.trim().is_empty() {
             return Err(error(
@@ -1070,8 +1084,14 @@ fn validate_tabs(tabs: &TabSettingsV5) -> Result<()> {
         number(*spacing, "tabs.placement.spacing_mm", true)?;
     }
     if let TabPlacementV5::Manual { anchors } = &tabs.placement {
+        let mut ids = std::collections::BTreeSet::new();
         for anchor in anchors {
             anchor.validate()?;
+            if let Some(id) = &anchor.id
+                && !ids.insert(id)
+            {
+                return Err(error("PROJECT_PARAMETER", "manual tab IDs must be unique"));
+            }
         }
     }
     Ok(())

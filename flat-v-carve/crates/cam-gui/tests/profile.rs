@@ -425,15 +425,15 @@ fn tabs_hold_material_and_follow_their_manual_anchors() {
     let rows = profile::tab_rows(&manual, &id);
     assert_eq!(rows.len(), 1, "one manual anchor");
     assert!(rows[0].resolved, "the anchor resolves against its source");
-    assert_eq!(rows[0].scope, outer.wire_id);
-    // The same anchor cannot be added twice to one contour.
+    assert_eq!(profile::anchor_contour_scope(&rows[0].scope), outer.wire_id);
+    // The same position cannot be added twice to one contour.
     assert!(
         profile::tab_anchor(
             &manual,
             &id,
             &TabAnchorAction::Add {
                 wire_id: outer.wire_id.clone(),
-                fraction: 0.4,
+                fraction: 0.125,
             },
         )
         .is_err()
@@ -441,7 +441,7 @@ fn tabs_hold_material_and_follow_their_manual_anchors() {
     let first = placements(&generate(&mut service, &manual)).clone();
     assert_eq!(first.len(), 1);
     // Moving the anchor moves the generated bridge.
-    profile::set_anchor_fraction(&mut manual, &id, AnchorKind::Tab, &outer.wire_id, 0.625).unwrap();
+    profile::set_anchor_fraction(&mut manual, &id, AnchorKind::Tab, &rows[0].scope, 0.625).unwrap();
     let moved = placements(&generate(&mut service, &manual)).clone();
     assert_eq!(moved.len(), 1);
     assert_ne!(
@@ -453,7 +453,7 @@ fn tabs_hold_material_and_follow_their_manual_anchors() {
         &manual,
         &id,
         &TabAnchorAction::Remove {
-            scope: outer.wire_id.clone(),
+            scope: rows[0].scope.clone(),
         },
     )
     .unwrap();
@@ -485,6 +485,114 @@ fn tabs_hold_material_and_follow_their_manual_anchors() {
         "{}",
         meta.report["gui2"]["generationIssues"]
     );
+}
+
+#[test]
+fn sketch_circle_supports_four_automatic_and_independent_manual_tabs() {
+    use cam_core::{
+        geometry::Point,
+        sketch::{Entity, SketchDocument, SketchGeometry, Wire, WireEdge},
+    };
+    let mut job = profile_job();
+    let id = job.operations[0].id.clone();
+    job.artwork.clear();
+    job.artwork.push(v5::ArtworkItem {
+        id: v5::ArtworkItemId("circle-sketch".into()),
+        name: "Circle".into(),
+        content: v5::ArtworkContent::Sketch(SketchDocument {
+            entities: vec![Entity {
+                id: "circle".into(),
+                label: None,
+                construction: false,
+                geometry: SketchGeometry::Circle {
+                    center: Point::new(25., 25.),
+                    radius_mm: 20.,
+                },
+            }],
+            wires: vec![Wire {
+                id: "circle".into(),
+                label: None,
+                closed: true,
+                edges: vec![WireEdge {
+                    entity_id: "circle".into(),
+                    reversed: false,
+                }],
+            }],
+            ..Default::default()
+        }),
+        import_settings: Default::default(),
+        placement: Default::default(),
+    });
+    let contour = profile::contours(&job).unwrap().remove(0);
+    job = profile::select_in(
+        &job,
+        &id,
+        &[profile::SelectionRow {
+            reference: contour.reference,
+            side: ContourSide::Inside,
+            traversal: None,
+        }],
+    )
+    .unwrap();
+    profile::set_tabs_enabled(&mut job, &id, true).unwrap();
+    for (field, value) in [(93, 2.), (94, 5.), (95, 4.)] {
+        job = app::set_value(&job, &id, field, Some(value)).unwrap();
+    }
+    let mut service = Retained::new();
+    let automatic = generate(&mut service, &job);
+    assert_eq!(placements(&automatic).len(), 4, "{}", automatic.report);
+    profile::set_tab_placement_mode(&mut job, &id, false).unwrap();
+    for fraction in [0., 0.25, 0.5, 0.75] {
+        job = profile::tab_anchor(
+            &job,
+            &id,
+            &TabAnchorAction::Add {
+                wire_id: contour.wire_id.clone(),
+                fraction,
+            },
+        )
+        .unwrap();
+    }
+    let rows = profile::tab_rows(&job, &id);
+    assert_eq!(rows.len(), 4);
+    assert_eq!(
+        rows.iter()
+            .map(|row| &row.scope)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4
+    );
+    let manual = generate(&mut service, &job);
+    assert_eq!(placements(&manual).len(), 4, "{}", manual.report);
+    assert_eq!(manual.report["gui2"]["checks"]["exportReady"], true);
+    let mut doc = app::Document::new(job.clone());
+    doc.edit_anchor(&rows[1].scope, 97, "0.3".into(), AnchorKind::Tab)
+        .unwrap();
+    let moved = profile::tab_rows(&doc.job, &id);
+    assert_eq!(
+        moved.iter().map(|r| r.fraction).collect::<Vec<_>>(),
+        [0., 0.3, 0.5, 0.75]
+    );
+    assert!(!doc.pending());
+    // A pending value on another tab stays with that tab after a deletion.
+    assert!(
+        doc.edit_anchor(&rows[2].scope, 97, "-".into(), AnchorKind::Tab)
+            .is_err()
+    );
+    profile::remove_tab_anchor(&mut doc.job, &id, &rows[0].scope).unwrap();
+    doc.prune_scoped_drafts();
+    assert_eq!(profile::tab_rows(&doc.job, &id)[1].scope, rows[2].scope);
+    assert_eq!(doc.anchor_text(&rows[2].scope, 97, Some(0.5)), "-");
+    assert!(doc.pending());
+    doc.edit_anchor(&rows[2].scope, 97, "0.5".into(), AnchorKind::Tab)
+        .unwrap();
+    assert!(!doc.pending());
+    let reopened = session::open(&doc.job.to_json().unwrap()).unwrap();
+    assert_eq!(
+        profile::tab_rows(&reopened, &id),
+        profile::tab_rows(&doc.job, &id)
+    );
+    assert_eq!(placements(&generate(&mut service, &reopened)).len(), 3);
 }
 
 #[test]

@@ -1441,6 +1441,14 @@ pub(crate) fn plan(
             if !forward {
                 vertices.reverse();
             }
+            if anchor_point.is_none()
+                && let Some(tab) = tabs
+                && let Some(anchors) = tab_anchors.get(&contour.id)
+                && !anchors.is_empty()
+            {
+                let seam = tabs::manual_seam(&vertices, anchors, tab.width_mm.expect("checked"));
+                reposition_seam(&mut vertices, seam);
+            }
             let perimeter = vertices
                 .windows(2)
                 .map(|w| w[0].distance(w[1]))
@@ -1474,8 +1482,13 @@ pub(crate) fn plan(
                 Some(tab) => tabs::resolve_spans(
                     tab,
                     &vertices,
+                    &contour.vertices,
                     perimeter,
-                    offset,
+                    if entry_side == ContourSide::On {
+                        0.
+                    } else {
+                        offset
+                    },
                     radius,
                     margin,
                     tab_top_z.expect("set when tabs are configured"),
@@ -1654,7 +1667,7 @@ pub(crate) fn plan(
             ),
             None => entry.traversal == Some(TraversalDirection::Forward),
         };
-        let rough = match build_loops(
+        let mut rough = match build_loops(
             contour,
             entry.side,
             radius + rough_allowance,
@@ -1733,6 +1746,73 @@ pub(crate) fn plan(
             }
             None => vec![],
         };
+        if !finish.is_empty() {
+            // Finishing defines the retained bridge geometry. Reproject its
+            // protected strips onto the rough paths in XY: equal arc lengths
+            // on different offsets do not describe the same curved bridge.
+            let footprints: Vec<_> = finish
+                .iter()
+                .flat_map(|cut_loop| {
+                    cut_loop.tab_spans.iter().filter_map(|span| {
+                        tabs::span_footprint(
+                            &cut_loop.vertices,
+                            cut_loop.perimeter_mm,
+                            span.bridge,
+                            radius + margin,
+                            margin,
+                        )
+                        .map(|footprint| (footprint, span.top_z))
+                    })
+                })
+                .collect();
+            for cut_loop in &mut rough {
+                cut_loop.tab_spans.clear();
+                for (footprint, top_z) in &footprints {
+                    let Some(restricted) =
+                        tabs::protected_interval(&cut_loop.vertices, footprint, radius + margin)
+                    else {
+                        continue;
+                    };
+                    if (restricted.0 <= 1e-9 || restricted.1 >= cut_loop.perimeter_mm - 1e-9)
+                        && tabs::protected_interval(
+                            &[cut_loop.vertices[0]],
+                            footprint,
+                            radius + margin / 2.,
+                        )
+                        .is_some()
+                    {
+                        return Ok(incomplete(vec![issue(
+                            "PROFILE_TAB_NO_SPACE",
+                            "a finishing tab reaches the roughing entry; move the tab or choose another start",
+                            operation_id,
+                        )]));
+                    }
+                    if restricted.0 < ramp_on_loop_max - 1e-9 {
+                        return Ok(incomplete(vec![issue(
+                            "PROFILE_RAMP_NO_SPACE",
+                            "the roughing ramp would cross a finishing tab bridge; move the tab or shorten the ramp",
+                            operation_id,
+                        )]));
+                    }
+                    if (lead_in_len > 0.
+                        && restricted.1 > cut_loop.perimeter_mm - lead_in_len + 1e-9)
+                        || (lead_out_len > 0.
+                            && restricted.0 < ramp_on_loop_max + lead_out_len - 1e-9)
+                    {
+                        return Ok(incomplete(vec![issue(
+                            "PROFILE_LEAD_NO_SPACE",
+                            "a roughing lead would cross a finishing tab bridge; move the tab or shorten the lead",
+                            operation_id,
+                        )]));
+                    }
+                    cut_loop.tab_spans.push(tabs::TabSpan {
+                        bridge: restricted,
+                        restricted,
+                        top_z: *top_z,
+                    });
+                }
+            }
+        }
         work.push(ContourWork { rough, finish });
     }
 
@@ -1827,12 +1907,17 @@ pub(crate) fn plan(
         path_control: PathControlIntent::UseMachineProfile,
     };
     // Resolved placements are stored in the plan so the preview shows exactly
-    // what was generated (plan section 10.3). Rough and finishing loops share
-    // the same protected footprints; the rough loops report them, with the
-    // bridge cross-section as an exact overlay quad (plan section 15.3).
+    // what was generated (plan section 10.3). The final cutting loops define
+    // the footprints protected by both roughing and finishing.
     let tab_placements: Vec<TabPlacementOutput> = work
         .iter()
-        .flat_map(|contour_work| &contour_work.rough)
+        .flat_map(|contour_work| {
+            if contour_work.finish.is_empty() {
+                &contour_work.rough
+            } else {
+                &contour_work.finish
+            }
+        })
         .flat_map(|cut_loop| {
             cut_loop
                 .tab_spans
@@ -1849,6 +1934,7 @@ pub(crate) fn plan(
                         cut_loop.perimeter_mm,
                         span.bridge,
                         radius + margin,
+                        margin,
                     )
                     .unwrap_or_default(),
                 })

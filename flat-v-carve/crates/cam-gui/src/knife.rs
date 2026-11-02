@@ -404,6 +404,7 @@ pub fn set_start_in(
             .chain(&reference.local_geometry_id)
             .ok_or("Missing chain")?;
         StartSelectionV5::Anchor(Box::new(ContourAnchorV5 {
+            id: None,
             geometry: reference.clone(),
             source_geometry_fingerprint: contour.source_fingerprint.clone(),
             fraction_along_source_contour: fraction,

@@ -286,27 +286,130 @@ fn impossible_tab_count_reports_the_deficit() {
     );
 }
 
-/// Curved contours have no sufficiently long straight span in this release:
-/// a located error, not a tab on a corner.
+/// The original circle failure: four tabs must span many flattened edges,
+/// in both compensation directions, and retain their full curved footprints.
 #[test]
-fn curved_contour_cannot_host_straight_span_tabs() {
-    let op = profile_op(
-        "profile-1",
-        "cut-0-outer",
-        3.,
-        Some(0.2),
-        tabs(Some(1), 2., 5.),
-    );
-    let plan = OperationPlan::plan_job(&job(CIRCLE_SVG, op), &PlanLimits::default()).unwrap();
-    assert_eq!(
-        plan.operation_results[0].generation_status,
-        GenerationStatus::Incomplete
-    );
-    assert!(
-        plan.generation_diagnostics
-            .iter()
-            .any(|d| d.code == "PROFILE_TAB_NO_SPACE" && d.message.contains("cut-0-outer"))
-    );
+fn circular_contours_hold_four_automatic_tabs() {
+    for (side, direction) in [
+        (ContourSide::Inside, CutDirection::Climb),
+        (ContourSide::Outside, CutDirection::Climb),
+        (ContourSide::Inside, CutDirection::Conventional),
+        (ContourSide::Outside, CutDirection::Conventional),
+        (ContourSide::On, CutDirection::Climb),
+    ] {
+        for finish in [false, true] {
+            let mut op = profile_op(
+                "profile-1",
+                "cut-0-outer",
+                3.,
+                Some(0.2),
+                tabs(Some(4), 2., 5.),
+            );
+            if let OperationSettings::Profile(s) = &mut op.settings {
+                s.contours[0].side = side;
+                s.direction = Some(direction);
+                s.contours[0].traversal = Some(cam_core::project::TraversalDirection::Forward);
+                s.finish = cam_core::project::ProfileFinishSettings {
+                    enabled: finish,
+                    radial_allowance_mm: Some(if side == ContourSide::On { 0. } else { 0.5 }),
+                    feed_mm_min: Some(200.),
+                };
+            }
+            let mut document = job(CIRCLE_SVG, op);
+            document.setup.stock.xy.as_mut().unwrap().width_mm = 50.;
+            document.setup.stock.xy.as_mut().unwrap().length_mm = 50.;
+            let plan = OperationPlan::plan_job(&document, &PlanLimits::default()).unwrap();
+            assert_eq!(
+                plan.operation_results[0].generation_status,
+                GenerationStatus::Complete,
+                "{side:?}: {:?}",
+                plan.generation_diagnostics
+            );
+            assert!(cam_core::checks::check_plan(&plan).unwrap().export_ready);
+            assert_curved_bridges(&plan, 4);
+        }
+    }
+}
+
+fn assert_curved_bridges(plan: &OperationPlan, count: usize) {
+    let placements = &plan.operation_results[0]
+        .named_outputs
+        .iter()
+        .find(|o| o.kind == "profile_tabs")
+        .unwrap()
+        .tab_placements;
+    assert_eq!(placements.len(), count);
+    let history = plan.stock_history(None).unwrap();
+    for tab in placements {
+        let n = tab.footprint_mm.len();
+        assert!(n > 4, "curved tab must publish its curved strip");
+        assert!((tab.bridge_end_mm - tab.bridge_start_mm - 5.).abs() < 1e-6);
+        for i in 0..n / 2 {
+            let a = tab.footprint_mm[i];
+            let b = tab.footprint_mm[n - 1 - i];
+            for t in [0.01, 0.25, 0.5, 0.75, 0.99] {
+                let p = Point::new(a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
+                let top = history.material_top_at(p).unwrap();
+                assert!(top >= tab.top_z_mm - 1e-6, "tab undercut at {p:?}: {top}");
+            }
+        }
+    }
+    assert!(plan.motions.iter().any(|m| m.end.z < -8.));
+}
+
+#[test]
+fn circular_contours_hold_four_manual_tabs_including_the_source_seam() {
+    for (side, direction) in [
+        (ContourSide::Inside, CutDirection::Climb),
+        (ContourSide::Outside, CutDirection::Climb),
+        (ContourSide::Inside, CutDirection::Conventional),
+        (ContourSide::Outside, CutDirection::Conventional),
+        (ContourSide::On, CutDirection::Climb),
+    ] {
+        for finish in [false, true] {
+            let mut op = profile_op(
+                "profile-1",
+                "cut-0-outer",
+                2.,
+                Some(0.2),
+                tabs(Some(4), 2., 5.),
+            );
+            let mut document = job(CIRCLE_SVG, op.clone());
+            let catalogue = cam_core::contours::ContourCatalogue::build(&document).unwrap();
+            let contour = catalogue.contour("cut-0-outer").unwrap();
+            if let OperationSettings::Profile(s) = &mut op.settings {
+                s.contours[0].side = side;
+                s.direction = Some(direction);
+                s.contours[0].traversal = Some(cam_core::project::TraversalDirection::Forward);
+                s.finish = cam_core::project::ProfileFinishSettings {
+                    enabled: finish,
+                    radial_allowance_mm: Some(if side == ContourSide::On { 0. } else { 0.5 }),
+                    feed_mm_min: Some(200.),
+                };
+                s.tabs.as_mut().unwrap().placement = TabPlacement::Manual {
+                    anchors: [0., 0.25, 0.5, 0.75]
+                        .into_iter()
+                        .map(|fraction| ContourAnchor {
+                            contour_id: contour.id.clone(),
+                            source_geometry_fingerprint: contour.source_fingerprint.clone(),
+                            fraction_along_source_contour: fraction,
+                        })
+                        .collect(),
+                };
+            }
+            document.operations[0] = op;
+            document.setup.stock.xy.as_mut().unwrap().width_mm = 50.;
+            document.setup.stock.xy.as_mut().unwrap().length_mm = 50.;
+            let plan = OperationPlan::plan_job(&document, &PlanLimits::default()).unwrap();
+            assert_eq!(
+                plan.operation_results[0].generation_status,
+                GenerationStatus::Complete,
+                "{side:?}: {:?}",
+                plan.generation_diagnostics
+            );
+            assert_curved_bridges(&plan, 4);
+        }
+    }
 }
 
 /// Manual anchors (source-geometry fingerprints) map onto the compensated
