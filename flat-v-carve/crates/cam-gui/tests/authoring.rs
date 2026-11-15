@@ -25,6 +25,72 @@ fn new_svg_has_origin_start_and_planning_defaults_without_invented_cutting_value
 }
 
 #[test]
+fn new_job_then_add_svg_generates_without_reentering_clearance_and_start() {
+    for action in [
+        session::ArtworkCommand::Add {
+            filename: "new-carving.svg".into(),
+            svg: SVG.into(),
+        },
+        session::ArtworkCommand::AddMany {
+            files: vec![cam_gui_runtime::platform::SvgFile {
+                filename: "new-carving.svg".into(),
+                content: Ok(SVG.into()),
+            }],
+        },
+    ] {
+        let mut service = Retained::new();
+        let empty = operation_authoring::empty_job();
+        let (imported, _) = session::execute(
+            &mut service,
+            Command::artwork(empty.to_json().unwrap(), action),
+        )
+        .unwrap();
+        let artwork = session::open(&imported.job).unwrap();
+        let (added, _) = session::execute(
+            &mut service,
+            Command::Operation {
+                action: operation_authoring::add(Kind::FlatVcarve, &artwork),
+                job: imported.job,
+            },
+        )
+        .unwrap();
+        let mut doc = configure_carving(session::open(&added.job).unwrap());
+        authoring::set_mode(&mut doc.job, FlatVcarveMode::Combined);
+        for (field, value) in [
+            (3, "1000"),
+            (21, "300"),
+            (20, "1"),
+            (22, "12000"),
+            (46, "1"),
+        ] {
+            doc.edit(field, value.into()).unwrap();
+        }
+        settings_mut(&mut doc.job).vbit.spindle_direction = Some(SpindleDirection::Clockwise);
+        authoring::tool_mut(&mut doc.job, true)
+            .unwrap()
+            .capabilities
+            .plunge_capable = Some(true);
+        let (generated, _) =
+            session::execute(&mut service, Command::generate(doc.job.to_json().unwrap())).unwrap();
+        assert_eq!(
+            generated.report["gui2"]["kind"], "generated",
+            "{}",
+            generated.report["gui2"]["issues"]
+        );
+        assert!(generated.motions > 0);
+        assert_eq!(generated.report["gui2"]["checks"]["exportReady"], true);
+        assert_eq!(
+            generated.report["gui2"]["generationIssues"],
+            serde_json::json!([])
+        );
+
+        let direct = authoring::import_svg("new-carving.svg".into(), SVG.into()).unwrap();
+        assert_eq!(artwork.setup, direct.setup);
+        assert_eq!(artwork.tolerances, direct.tolerances);
+    }
+}
+
+#[test]
 fn gui3_policy_fields_preserve_siblings_and_portable_inactive_finish() {
     let mut doc = configured();
     authoring::set_mode(&mut doc.job, FlatVcarveMode::Combined);
@@ -249,7 +315,11 @@ fn carving_job(filename: &str, svg: &str) -> v5::CamJobV5 {
 }
 
 fn configured() -> Document {
-    let mut doc = Document::new(carving_job("new-carving.svg", SVG));
+    configure_carving(carving_job("new-carving.svg", SVG))
+}
+
+fn configure_carving(job: v5::CamJobV5) -> Document {
+    let mut doc = Document::new(job);
     // A new carve starts combined; this fixture is the reviewed
     // endmill-only configuration, and the tests that need the combined
     // program switch to it and finish the V-bit values explicitly.
@@ -273,7 +343,6 @@ fn configured() -> Document {
         (4, "0.1"),
         (5, "0.1"),
         (6, "10"),
-        (7, "5"),
         (8, "0.5"),
         (9, "1"),
         (2, "1200"),
@@ -287,8 +356,6 @@ fn configured() -> Document {
         (19, "5"),
         (23, "0.01"),
         (25, "0.05"),
-        (30, "0"),
-        (31, "0"),
         (40, "-20"),
         (41, "-20"),
         (42, "80"),

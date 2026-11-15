@@ -17,6 +17,8 @@ use cam_core::{
 
 const RECT_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="30mm" viewBox="0 0 40 30"><path id="pocket" fill-rule="evenodd" d="M5 5h30v20h-30z"/></svg>"#;
 const CIRCLE_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="50mm" height="50mm" viewBox="0 0 50 50"><circle id="cut" cx="25" cy="25" r="20"/></svg>"#;
+// Reduced to the profile outline from the reported back-panel project.
+const BACK_PANEL_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="260mm" height="280mm" viewBox="0 0 260 280"><path d="M 10,280.393 H 250 V 10 H 10 Z" fill="none" stroke="#000000" stroke-width="0.3" id="cut" transform="matrix(0.99999168,0,0,0.99999168,-4.8499181,-4.8499181)"/></svg>"##;
 
 fn endmill() -> JobTool {
     JobTool {
@@ -284,6 +286,97 @@ fn impossible_tab_count_reports_the_deficit() {
         "{}",
         diagnostic.message
     );
+}
+
+#[test]
+fn twelve_tabs_fit_the_back_panel_outline() {
+    for direction in [CutDirection::Conventional, CutDirection::Climb] {
+        for finish in [false, true] {
+            let mut op = profile_op(
+                "profile-1",
+                "cut-chain-0-outline",
+                3.,
+                None,
+                tabs(Some(12), 2., 6.),
+            );
+            if let OperationSettings::Profile(s) = &mut op.settings {
+                s.direction = Some(direction);
+                s.finish = cam_core::project::ProfileFinishSettings {
+                    enabled: finish,
+                    radial_allowance_mm: Some(0.5),
+                    feed_mm_min: Some(200.),
+                };
+            }
+            let mut document = job(BACK_PANEL_SVG, op);
+            document.import.geometry_tolerance_mm = 0.001;
+            document.setup.stock.thickness_mm = Some(18.);
+            document.setup.stock.xy = Some(RectXY {
+                min_x_mm: 0.,
+                min_y_mm: 0.,
+                width_mm: 260.,
+                length_mm: 280.,
+            });
+            document.tools[0].geometry =
+                Some(ToolGeometry::Endmill(cam_core::project::EndmillGeometry {
+                    diameter_mm: 6.,
+                    cutting_length_mm: 32.,
+                }));
+            let plan = OperationPlan::plan_job(&document, &PlanLimits::default()).unwrap();
+            assert_eq!(
+                plan.operation_results[0].generation_status,
+                GenerationStatus::Complete,
+                "{:?}",
+                plan.generation_diagnostics
+            );
+            let placements = &plan.operation_results[0]
+                .named_outputs
+                .iter()
+                .find(|o| o.kind == "profile_tabs")
+                .unwrap()
+                .tab_placements;
+            assert_eq!(placements.len(), 12);
+            assert!(
+                placements
+                    .iter()
+                    .all(|tab| (tab.bridge_end_mm - tab.bridge_start_mm - 6.).abs() < 1e-6)
+            );
+            assert!(
+                placements
+                    .iter()
+                    .all(|tab| tab.restricted_end_mm - tab.restricted_start_mm < 13.)
+            );
+            assert!(cam_core::checks::check_plan(&plan).unwrap().export_ready);
+            let history = plan.stock_history(None).unwrap();
+            for tab in placements {
+                assert_eq!(tab.footprint_mm.len(), 4);
+                let [a, b, c, d] = tab.footprint_mm.as_slice() else {
+                    unreachable!()
+                };
+                for along in [0.01, 0.5, 0.99] {
+                    let left = Point::new(a.0 + along * (b.0 - a.0), a.1 + along * (b.1 - a.1));
+                    let right = Point::new(d.0 + along * (c.0 - d.0), d.1 + along * (c.1 - d.1));
+                    for across in [0.1, 0.5, 0.9] {
+                        let p = left.lerp(right, across);
+                        if (0. ..=260.).contains(&p.x) && (0. ..=280.).contains(&p.y) {
+                            let top = history.material_top_at(p).unwrap();
+                            assert!(top >= tab.top_z_mm - 1e-6, "tab undercut at {p:?}: {top}");
+                        }
+                    }
+                }
+            }
+            // The long spaces between the bridges still cut through the 18 mm stock.
+            let deep_travel: f64 = plan
+                .motions
+                .iter()
+                .filter(|m| m.start.z < -16. && m.end.z < -16.)
+                .map(|m| (m.end.x - m.start.x).hypot(m.end.y - m.start.y))
+                .sum();
+            assert!(
+                deep_travel > 800.,
+                "only {deep_travel} mm reached full depth"
+            );
+        }
+    }
 }
 
 /// The original circle failure: four tabs must span many flattened edges,

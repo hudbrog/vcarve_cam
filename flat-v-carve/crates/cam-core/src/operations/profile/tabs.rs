@@ -586,6 +586,10 @@ pub(crate) fn protected_interval(
     footprint: &[(f64, f64)],
     radius: f64,
 ) -> Option<(f64, f64)> {
+    // Clipping includes a cutter-radius margin already. Boundary-only
+    // contacts do not remove bridge material, and floating-point remnants
+    // at the seam must not turn [0, 0] plus a tail interval into [0, perimeter].
+    const CONTACT_EPS_MM: f64 = 1e-9;
     let half = footprint.len() / 2;
     let mut interval: Option<(f64, f64)> = None;
     let mut walked = 0.;
@@ -615,10 +619,13 @@ pub(crate) fn protected_interval(
                 let d = cell[(k + 1) % 4];
                 let dx = d.0 - c.0;
                 let dy = d.1 - c.1;
-                let value = sign * (dx * (a.y - c.1) - dy * (a.x - c.0)) + radius * dx.hypot(dy);
-                let slope = sign * (dx * (b.y - a.y) - dy * (b.x - a.x));
+                let edge_length = dx.hypot(dy);
+                // Work in millimeters so the contact tolerance is independent
+                // of the footprint edge length.
+                let value = sign * (dx * (a.y - c.1) - dy * (a.x - c.0)) / edge_length + radius;
+                let slope = sign * (dx * (b.y - a.y) - dy * (b.x - a.x)) / edge_length;
                 if slope.abs() < 1e-12 {
-                    if value < 0. {
+                    if value <= CONTACT_EPS_MM {
                         hi = -1.;
                         break;
                     }
@@ -628,7 +635,9 @@ pub(crate) fn protected_interval(
                     hi = hi.min(-value / slope);
                 }
             }
-            if lo <= hi {
+            // A singleton is the caller's explicit seam-clearance probe.
+            // Traversal edges must intersect over a nonzero path length.
+            if lo <= hi && (vertices.len() == 1 || (hi - lo) * len > CONTACT_EPS_MM) {
                 let start = walked + lo * len;
                 let end = walked + hi * len;
                 interval = Some(match interval {
@@ -640,4 +649,54 @@ pub(crate) fn protected_interval(
         walked += len;
     }
     interval
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seam_tangencies_do_not_expand_a_tab_around_the_loop() {
+        let vertices = [
+            Point::new(0., 0.),
+            Point::new(100., 0.),
+            Point::new(100., 100.),
+            Point::new(0., 100.),
+        ];
+        // The closing edge approaches the seam under this tab. The outgoing
+        // edge lies on the dilated footprint's boundary, without entering it.
+        for rounding in [0., -1e-13, 1e-13] {
+            let footprint = [
+                (-3., 9. + rounding),
+                (-3., 3. + rounding),
+                (3., 3. + rounding),
+                (3., 9. + rounding),
+            ];
+            let (start, end) = protected_interval(&vertices, &footprint, 3.).unwrap();
+            assert!(
+                (start - 388.).abs() < 1e-9 && (end - 400.).abs() < 1e-9,
+                "contact must stay on the tail: {start}..{end}"
+            );
+            assert!(protected_interval(&vertices[..1], &footprint, 3.).is_none());
+        }
+    }
+
+    #[test]
+    fn a_real_seam_overlap_remains_protected() {
+        let vertices = [
+            Point::new(0., 0.),
+            Point::new(100., 0.),
+            Point::new(100., 100.),
+            Point::new(0., 100.),
+        ];
+        let footprint = [(-3., 8.99), (-3., 2.99), (3., 2.99), (3., 8.99)];
+        assert_eq!(
+            protected_interval(&vertices, &footprint, 3.),
+            Some((0., 400.))
+        );
+        assert_eq!(
+            protected_interval(&vertices[..1], &footprint, 3.),
+            Some((0., 0.))
+        );
+    }
 }

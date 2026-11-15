@@ -79,7 +79,14 @@ pub fn empty_job() -> CamJobV5 {
     CamJobV5 {
         schema_version: 5,
         name: "New job".into(),
-        setup: Default::default(),
+        // Match a fresh SVG import before any artwork or operation is added.
+        // Keep these authoring defaults out of deserialization so reopening
+        // a job preserves any values the operator explicitly left unset.
+        setup: cam_core::project::SetupSettings {
+            clearance_above_stock_mm: Some(5.),
+            start_xy_mm: Some(cam_core::geometry::Point::new(0., 0.)),
+            ..Default::default()
+        },
         artwork: vec![],
         tools: vec![],
         operations: vec![],
