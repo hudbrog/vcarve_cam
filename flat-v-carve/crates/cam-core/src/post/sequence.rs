@@ -16,7 +16,7 @@ use crate::{
         ExecutionStage, GenerationStatus, ProcessIntent, ProcessSpindle, SequencePlan, StageRole,
         TrustedSequencePlan,
     },
-    toolpath::{Interpolation, PlannedMotion},
+    toolpath::{Interpolation, MotionEffect, PlannedMotion},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -735,7 +735,8 @@ impl PreparedExecution {
             .any(|stage| stage.role == StageRole::Knife);
         let mut places = profile.decimal_places;
         loop {
-            let preserved = motions_preserved(plan, places);
+            let preserved = motions_preserved(plan, places)
+                && plot_gaps_preserved(plan, self.machine_offset_mm, places);
             let mut programs = vec![];
             let mut decoded_stream = DecodedProgram {
                 motions: vec![],
@@ -2178,6 +2179,27 @@ fn scalar(v: f64) -> Result<String> {
         ));
     }
     Ok(v.to_string())
+}
+
+/// Even when every draw move survives rounding, a stroke can round back onto
+/// its starting point. Keep open stroke endpoints distinct in emitted XY.
+fn plot_gaps_preserved(plan: &dyn SequencePlan, offset: [f64; 3], places: usize) -> bool {
+    for stage in plan.stages().iter().filter(|s| s.role == StageRole::Plot) {
+        let (start, end) = stage.motion_range;
+        for stroke in plan.motions()[start..end].chunk_by(|a, b| a.pass_id == b.pass_id) {
+            let mut draws = stroke.iter().filter(|m| m.effect == MotionEffect::PenTrace);
+            if let Some(first) = draws.next() {
+                let last = draws.next_back().unwrap_or(first);
+                if first.start.xy() != last.end.xy()
+                    && machine_position(first.start, offset, places).xy()
+                        == machine_position(last.end, offset, places).xy()
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 fn motions_preserved(plan: &dyn SequencePlan, places: usize) -> bool {

@@ -869,6 +869,13 @@ pub struct PlotSettingsV5 {
     pub lower_feed_mm_min: Option<f64>,
     #[serde(default)]
     pub compression_mm: f64,
+    /// Distance to leave undrawn at the end of each closed stroke, in setup mm.
+    #[serde(default, skip_serializing_if = "zero_gap")]
+    pub closure_gap_mm: f64,
+}
+
+fn zero_gap(gap: &f64) -> bool {
+    *gap == 0.
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1305,6 +1312,7 @@ impl CamJobV5 {
                     number(s.draw_feed_mm_min, "plot.draw_feed_mm_min", true)?;
                     number(s.lower_feed_mm_min, "plot.lower_feed_mm_min", true)?;
                     number(Some(s.compression_mm), "plot.compression_mm", false)?;
+                    number(Some(s.closure_gap_mm), "plot.closure_gap_mm", false)?;
                     (None, None)
                 }
                 OperationSettingsV5::DragKnife(settings) => {

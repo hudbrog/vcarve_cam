@@ -16,6 +16,7 @@ const DRAWING: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" he
 <path id="a" fill="none" stroke="black" d="M2 5H10"/>
 <path id="b" fill="none" stroke="black" d="M10 5V10"/>
 <path id="box" fill="none" stroke="black" d="M10.002 10h5v5h-5Z"/>
+<circle id="circle" cx="20" cy="15" r="5" fill="none" stroke="black"/>
 <path id="cross" fill="none" stroke="black" d="M8 8h4"/>
 </svg>"#;
 
@@ -47,6 +48,70 @@ fn selected(names: &[&str]) -> CamJobV5 {
 
 fn plan(job: &CamJobV5) -> OperationPlanV5 {
     OperationPlanV5::plan_job_v5(job, &ReadinessScope::AllEnabled, &PlanLimits::default()).unwrap()
+}
+
+fn set_gap(job: &mut CamJobV5, gap: f64) {
+    let OperationSettingsV5::CenterlinePlot(s) = &mut job.operations[0].settings else {
+        unreachable!()
+    };
+    s.closure_gap_mm = gap;
+}
+
+fn drawn_length(p: &OperationPlanV5) -> f64 {
+    p.motions
+        .iter()
+        .filter(|m| m.effect == MotionEffect::PenTrace)
+        .map(|m| m.start.xy().distance(m.end.xy()))
+        .sum()
+}
+
+#[test]
+fn circle_gap_is_measured_along_the_placed_stroke_and_ends_with_a_vertical_lift() {
+    let mut job = selected(&["circle"]);
+    job.artwork[0].placement.scale = 0.75;
+    let old_json = job.to_json().unwrap();
+    assert!(!old_json.contains("closure_gap_mm"));
+    let full = plan(&CamJobV5::from_json(&old_json).unwrap());
+    set_gap(&mut job, 0.2);
+    let trimmed = plan(&CamJobV5::from_json(&job.to_json().unwrap()).unwrap());
+    assert!(check_plan_v5(&trimmed).unwrap().export_ready);
+    assert!((drawn_length(&full) - drawn_length(&trimmed) - 0.2).abs() < 1e-9);
+    let lift = trimmed.motions.last().unwrap();
+    assert_eq!(lift.purpose, MotionPurpose::Clearance);
+    assert_eq!(lift.start.xy(), lift.end.xy());
+    assert_eq!(lift.start, trimmed.motions[trimmed.motions.len() - 2].end);
+    assert_ne!(lift.end.xy(), full.motions.last().unwrap().end.xy());
+}
+
+#[test]
+fn gap_can_consume_whole_edges_but_must_leave_a_drawable_loop() {
+    let mut job = selected(&["box"]);
+    let length = drawn_length(&plan(&job));
+    for (gap, count) in [(0.2, 4), (5., 3), (6.2, 3), (19., 1)] {
+        set_gap(&mut job, gap);
+        let p = plan(&job);
+        assert!(check_plan_v5(&p).unwrap().export_ready);
+        assert!((drawn_length(&p) - (length - gap)).abs() < 1e-9);
+        assert_eq!(
+            p.motions
+                .iter()
+                .filter(|m| m.effect == MotionEffect::PenTrace)
+                .count(),
+            count
+        );
+    }
+    for gap in [length, length + 1.] {
+        set_gap(&mut job, gap);
+        let p = plan(&job);
+        assert!(
+            p.generation_diagnostics
+                .iter()
+                .any(|i| i.code == "PLOT_CLOSURE_GAP")
+        );
+        assert!(!check_plan_v5(&p).unwrap().export_ready);
+    }
+    set_gap(&mut job, -0.2);
+    assert!(job.validate_structure().is_err());
 }
 
 #[test]
@@ -139,6 +204,33 @@ fn linuxcnc_exports_one_continuous_run_for_touching_paths() {
             .unwrap();
         assert_eq!(decoded.motions.len(), trusted.plan().motions.len());
     }
+}
+
+#[test]
+fn exported_coordinates_keep_a_small_closure_gap_open() {
+    let mut job = selected(&["box"]);
+    set_gap(&mut job, 0.02);
+    let mut profile =
+        SequenceProfile::from_json(include_str!("../../../fixtures/gui2/machine.json")).unwrap();
+    profile.tools.truncate(1);
+    profile.tools[0].tool_id = "pen".into();
+    profile.decimal_places = 1;
+    let job = v5::machine::apply_machine_configuration(&job, &profile, "Plotter")
+        .unwrap()
+        .job;
+    let profile = v5::machine::resolve_sequence_profile(&job, &ReadinessScope::AllEnabled).unwrap();
+    let trusted = TrustedPlanV5::from_generated(plan(&job));
+    let prepared = PreparedExecution::prepare(&trusted, &profile).unwrap();
+    let output = prepared.export(&trusted, &profile).unwrap();
+    let places = output.report.output_decimal_places;
+    assert_eq!(places, 2);
+    let decoded = prepared
+        .decode_program(trusted.plan(), places, &output.program.gcode)
+        .unwrap();
+    let start = decoded.motions.first().unwrap().end.xy();
+    let lift = decoded.motions.last().unwrap();
+    assert_eq!(lift.start.unwrap().xy(), lift.end.xy());
+    assert!((lift.end.xy().distance(start) - 0.02).abs() < 1e-9);
 }
 
 #[test]
@@ -332,6 +424,21 @@ fn closed_chain_can_continue_at_its_seam_after_rotation() {
     assert_eq!(m.len(), 5);
     assert_eq!(m[0].start, m[3].end);
     assert_eq!(m[3].id + 1, m[4].id);
+
+    set_gap(&mut job, 0.2);
+    let trimmed = plan(&job);
+    assert!(check_plan_v5(&trimmed).unwrap().export_ready);
+    let tail = trimmed
+        .motions
+        .iter()
+        .find(|m| m.pass_id == 1 && m.effect == MotionEffect::PenTrace)
+        .unwrap();
+    assert_eq!((tail.start, tail.end), (m[4].start, m[4].end));
+    let transfer = &trimmed.motions[tail.id - 3..tail.id];
+    assert_eq!(transfer[0].start.xy(), transfer[0].end.xy());
+    assert!((transfer[1].start.xy().distance(transfer[1].end.xy()) - 0.2).abs() < 1e-9);
+    assert_eq!((transfer[1].start.z, transfer[1].end.z), (5., 5.));
+    assert_eq!(transfer[2].purpose, MotionPurpose::Entry);
 }
 
 #[test]

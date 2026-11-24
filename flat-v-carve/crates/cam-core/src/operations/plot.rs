@@ -1,8 +1,8 @@
 //! Trace ordered, placed artwork chains with a passive Z-lift pen.
 use super::{LocatedDiagnostic, PlanContext};
 use crate::{
-    contours::ContourCatalogue,
-    geometry::{Diagnostic, Result},
+    contours::{Contour, ContourCatalogue},
+    geometry::{Diagnostic, Point, Result},
     motion::Position,
     project::{
         ToolGeometry,
@@ -45,6 +45,55 @@ pub(crate) fn missing_fields(
         need("lower_feed_mm_min", "Set the pen lowering feed");
     }
     fields
+}
+
+/// Endpoints in drawing order. Walk backwards from the seam so even a small
+/// gap on a long polyline is measured directly, without subtracting totals.
+fn stroke_ends(chain: &Contour, gap: f64) -> Result<impl Iterator<Item = Point> + '_> {
+    let vertices = &chain.vertices;
+    let first = vertices[0];
+    let ends = |keep: usize, last: Option<Point>| vertices[1..keep].iter().copied().chain(last);
+    if gap == 0. || (!chain.closed && vertices.last() != Some(&first)) {
+        return Ok(ends(vertices.len(), chain.closed.then_some(first)));
+    }
+
+    let too_long = || {
+        Diagnostic::new(
+            "PLOT_CLOSURE_GAP",
+            format!(
+                "Closure gap must be shorter than the {:.6} mm loop '{}'",
+                chain.perimeter_mm, chain.id
+            ),
+        )
+    };
+    if gap >= chain.perimeter_mm {
+        return Err(too_long());
+    }
+    let mut remaining = gap;
+    let mut end = first;
+    for (i, &start) in vertices.iter().enumerate().rev() {
+        let length = start.distance(end);
+        if remaining <= length {
+            let tip = if remaining == length {
+                start
+            } else {
+                end.lerp(start, remaining / length)
+            };
+            if tip == first {
+                return Err(Diagnostic::new(
+                    "PLOT_CLOSURE_GAP",
+                    format!(
+                        "Choose a different closure gap for '{}'. The stroke still ends at its starting point.",
+                        chain.id
+                    ),
+                ));
+            }
+            return Ok(ends(i + 1, (tip != start).then_some(tip)));
+        }
+        remaining -= length;
+        end = start;
+    }
+    Err(too_long())
 }
 
 pub(crate) fn plan(
@@ -112,6 +161,10 @@ pub(crate) fn plan(
                 ),
             ));
         }
+        let ends = match stroke_ends(chain, s.closure_gap_mm) {
+            Ok(ends) => ends,
+            Err(issue) => return Ok(incomplete_with(id, issue)),
+        };
         let first = chain.vertices[0];
         let mut pos = cursor.unwrap_or(Position::new(first, clearance));
         let continue_drawing = pos == Position::new(first, contact);
@@ -163,10 +216,9 @@ pub(crate) fn plan(
                 s.lower_feed_mm_min,
             );
         }
-        for &p in chain.vertices[1..]
-            .iter()
-            .chain(chain.closed.then_some(&first))
-        {
+        let mut end = first;
+        for p in ends {
+            end = p;
             move_to(
                 Position::new(p, contact),
                 MotionPurpose::Draw,
@@ -176,11 +228,6 @@ pub(crate) fn plan(
             );
         }
         if index + 1 == s.chains.len() {
-            let end = if chain.closed {
-                first
-            } else {
-                *chain.vertices.last().unwrap()
-            };
             move_to(
                 Position::new(end, clearance),
                 MotionPurpose::Clearance,
@@ -274,16 +321,16 @@ pub(crate) fn verify(
         let chain = chains
             .get(id.as_str())
             .ok_or_else(|| error("Selected plot geometry is missing"))?;
-        let (&first, rest) = chain
+        let &first = chain
             .vertices
-            .split_first()
+            .first()
             .ok_or_else(|| error("Empty plot chain"))?;
-        let points = rest.iter().chain(chain.closed.then_some(&first));
+        let points = stroke_ends(chain, settings.closure_gap_mm)?;
         let mut start = first;
         if previous_end != Some(start) {
             expected_entries += 1;
         }
-        for &end in points {
+        for end in points {
             if end == start {
                 continue;
             }

@@ -53,7 +53,7 @@ impl App {
                     Ok(())
                 });
             }
-            self.operation_numbers(ui, ctx, &[2, 10, 126]);
+            self.operation_numbers(ui, ctx, &[2, 10, 126, 127]);
         }
         if !self.operation_section_visible(0) {
             return;

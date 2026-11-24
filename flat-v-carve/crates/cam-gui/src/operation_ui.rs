@@ -105,7 +105,9 @@ fn tab_for_operation_control(kind: Option<crate::session::OperationKind>, label:
             _ => 1,
         },
         Some(OperationKind::CenterlinePlot) => usize::from(
-            matches!(field, Some(2 | 10 | 126)) || label.contains("feed") || label == "Pen tool",
+            matches!(field, Some(2 | 10 | 126..=127))
+                || label.contains("feed")
+                || label == "Pen tool",
         ),
         Some(OperationKind::Drill) => match field {
             Some(111..=114) => 1,

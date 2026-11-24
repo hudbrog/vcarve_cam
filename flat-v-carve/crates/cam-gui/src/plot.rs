@@ -24,6 +24,7 @@ pub(crate) fn value(job: &CamJobV5, id: &str, field: usize) -> Option<f64> {
         2 => s.draw_feed_mm_min,
         10 => s.lower_feed_mm_min,
         126 => Some(s.compression_mm),
+        127 => Some(s.closure_gap_mm),
         6 => job.setup.stock.thickness_mm,
         _ => crate::authoring::value_in(job, id, field),
     }
@@ -38,6 +39,7 @@ pub(crate) fn set(
         2 => settings_mut(job, id)?.draw_feed_mm_min = value,
         10 => settings_mut(job, id)?.lower_feed_mm_min = value,
         126 => settings_mut(job, id)?.compression_mm = value.unwrap_or(0.),
+        127 => settings_mut(job, id)?.closure_gap_mm = value.unwrap_or(0.),
         6 => job.setup.stock.thickness_mm = value,
         _ => return crate::authoring::set_in(job, id, field, value),
     }

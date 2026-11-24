@@ -1360,6 +1360,7 @@ pub fn add_operation(
                 chains: vec![],
                 tool_id,
                 compression_mm: 0.,
+                closure_gap_mm: 0.,
                 draw_feed_mm_min: None,
                 lower_feed_mm_min: None,
             })

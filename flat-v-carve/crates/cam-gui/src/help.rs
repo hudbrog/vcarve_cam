@@ -331,6 +331,7 @@ const FIELD_HELP: [&str; FIELDS.len()] = [
     "Pocket bottom offset from the selected reference. Use a negative offset from operation top for pocket depth; all selected regions share this bottom.",
     "Radius of the cutter-center helix path. Swept diameter equals tool diameter plus twice this radius. It must be smaller than the tool radius to avoid a central plug, and the whole entry must fit within each pocket.",
     "Extra downward Z travel after the pen touches the stock top, in mm. Zero stops at the surface. Set this for the spring travel of the fitted pen holder.",
+    "Length in mm to leave undrawn at the end of each closed stroke. Try 0.2 mm for a fineliner. Zero draws the full loop.",
 ];
 
 #[cfg(test)]

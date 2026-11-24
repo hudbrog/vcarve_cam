@@ -10,7 +10,7 @@ use cam_service::retained::Retained;
 
 #[test]
 fn editor_selection_and_generated_preview_keep_pen_down_at_the_join() {
-    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20"><path id="a" fill="none" stroke="black" d="M1 1L10 1"/><path id="b" fill="none" stroke="black" d="M10 1L10 9"/></svg>"#;
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20"><path id="a" fill="none" stroke="black" d="M1 1L10 1"/><path id="b" fill="none" stroke="black" d="M10 1L10 9"/><path id="c" fill="none" stroke="black" d="M11 2h4v4h-4Z"/></svg>"#;
     let job = v5::authoring::from_svg("drawing.svg".into(), svg.into(), 0.001).unwrap();
     let job =
         operation_authoring::apply(&job, operation_authoring::add(Kind::CenterlinePlot, &job))
@@ -19,6 +19,7 @@ fn editor_selection_and_generated_preview_keep_pen_down_at_the_join() {
     doc.edit(2, "300".into()).unwrap();
     doc.edit(10, "80".into()).unwrap();
     doc.edit(126, "0.2".into()).unwrap();
+    doc.edit(127, "0.2".into()).unwrap();
     let refs = knife::chains(&doc.job)
         .unwrap()
         .into_iter()
@@ -54,7 +55,10 @@ fn editor_selection_and_generated_preview_keep_pen_down_at_the_join() {
         .enumerate()
         .filter(|(_, m)| m.kind == "draw")
         .collect();
-    assert_eq!(strokes.len(), 2);
+    assert_eq!(strokes.len(), 6);
+    let first = strokes[2].1;
+    let last = strokes[5].1;
+    assert!(((last.x1 - first.x0).hypot(last.y1 - first.y0) - 0.2).abs() < 1e-6);
     assert_eq!(strokes[1].0, strokes[0].0 + 1);
     assert!(strokes.iter().all(|(_, m)| m.feed_mm_min == Some(300.)));
 }
