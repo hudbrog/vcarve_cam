@@ -444,11 +444,20 @@ fn curve_and_input_limits_fail_explicitly() {
     );
     let collapsed = svg(r#"<path d="M10 10H10.000001V20H10Z"/>"#);
     assert_eq!(
-        import_svg(&collapsed, &ImportOptions::default(), None)
-            .unwrap_err()
-            .code,
+        import_svg(
+            &collapsed,
+            &ImportOptions {
+                ticks_per_mm: Some(10_000.),
+                ..Default::default()
+            },
+            None
+        )
+        .unwrap_err()
+        .code,
         "QUANTIZATION_COLLAPSE"
     );
+    let resolved = import_svg(&collapsed, &ImportOptions::default(), None).unwrap();
+    near(resolved.selected.area_mm2(), 0.00001, 1e-12);
 }
 
 #[test]
@@ -473,9 +482,16 @@ fn distinct_sources_cannot_gain_a_contact_silently_when_snapped() {
         r#"<rect id="a" x="10" y="10" width="10" height="10"/><rect id="b" x="20.000001" y="10" width="10" height="10"/>"#,
     );
     assert_eq!(
-        import_svg(&raw, &ImportOptions::default(), None)
-            .unwrap_err()
-            .code,
+        import_svg(
+            &raw,
+            &ImportOptions {
+                ticks_per_mm: Some(10_000.),
+                ..Default::default()
+            },
+            None
+        )
+        .unwrap_err()
+        .code,
         "QUANTIZATION_TOPOLOGY"
     );
     let fine = ImportOptions {
@@ -485,6 +501,56 @@ fn distinct_sources_cannot_gain_a_contact_silently_when_snapped() {
     let g = import_svg(&raw, &fine, None).unwrap();
     assert_eq!(g.selected.component_count(), 2);
     near(g.selected.area_mm2(), 200., 1e-7);
+    let automatic = import_svg(&raw, &ImportOptions::default(), None).unwrap();
+    assert_eq!(automatic.grid, g.grid);
+    assert_eq!(automatic.selected.component_count(), 2);
+    assert!(
+        automatic
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "SVG_GRID_REFINED")
+    );
+
+    let too_close = raw.replace("20.000001", "20.0000000001");
+    assert_eq!(
+        import_svg(&too_close, &ImportOptions::default(), None)
+            .unwrap_err()
+            .code,
+        "QUANTIZATION_TOPOLOGY"
+    );
+}
+
+#[test]
+fn relative_decimal_commands_return_to_an_explicitly_closed_seam() {
+    let d = "M1 10 h.6 v1 l-.4 -.5 -.2 -.5";
+    let closed = read(&format!(r#"<path d="{d} Z"/>"#));
+    assert_eq!(closed.chains[0].points.len(), 4);
+    assert!(closed.chains[0].closed);
+    assert_eq!(closed.grid.scale(), 10_000.);
+    near(closed.selected.area_mm2(), 0.35, 1e-12);
+
+    let open = read(
+        r#"<path fill="none" stroke="black" d="M1 10 h.6 v1 l-.4 -.5 L1.0000000000000002 10"/>"#,
+    );
+    assert_eq!(open.chains[0].points.len(), 5);
+    assert!(!open.chains[0].closed);
+}
+
+#[test]
+fn relative_commands_preserve_an_endpoint_contact_inside_a_nonadjacent_edge() {
+    let relative = read(r#"<path d="M10 90 h10 v.6 l-4 -.4 -4 -.2 z"/>"#);
+    let absolute = read(r#"<path d="M10 90 H20 V90.6 L16 90.2 12 90 Z"/>"#);
+    assert_eq!(relative.chains[0].points, absolute.chains[0].points);
+    assert_eq!(relative.selected.rings_mm(), absolute.selected.rings_mm());
+    near(relative.selected.area_mm2(), 2., 1e-12);
+
+    let crossing = svg(r#"<path d="M10 90 h10 v.6 l-4 -.4 -4 -.20000000001 z"/>"#);
+    assert_eq!(
+        import_svg(&crossing, &ImportOptions::default(), None)
+            .unwrap_err()
+            .code,
+        "QUANTIZATION_TOPOLOGY"
+    );
 }
 
 #[test]

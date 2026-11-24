@@ -79,9 +79,19 @@ const TIP_BLEND_HEADROOM_SHARE: f64 = 2.;
 /// An alignment/contact swivel whose sweep is this close to 180 degrees is
 /// equally ambiguous and is rejected rather than arbitrarily sided.
 const AMBIGUOUS_ALIGNMENT_DEG: f64 = 0.5;
-/// Total adaptive-integration steps the replay may spend before it reports
-/// budget exhaustion (inconclusive, never success; plan section 12.5).
-const REPLAY_STEP_BUDGET: usize = 2_000_000;
+const MIN_REPLAY_STEP_BUDGET: usize = 2_000_000;
+
+pub(crate) fn replay_step_budget(motions: &[PlannedMotion]) -> usize {
+    // The adaptive integrator charges eight units per step attempt. Allow
+    // sixteen attempts per contact motion on dense jobs, with a hard cap.
+    let contacts = motions
+        .iter()
+        .filter(|m| m.effect == MotionEffect::KnifeTrace)
+        .count();
+    contacts
+        .saturating_mul(16 * 8)
+        .clamp(MIN_REPLAY_STEP_BUDGET, 16_000_000)
+}
 
 fn incomplete(issues: Vec<PlanIssue>) -> PlannedOperation {
     PlannedOperation {
@@ -249,6 +259,10 @@ fn angle_of(v: Point) -> f64 {
     v.y.atan2(v.x)
 }
 
+fn alignment_is_ambiguous(turn_deg: f64) -> bool {
+    (180. - turn_deg.abs()).abs() < AMBIGUOUS_ALIGNMENT_DEG
+}
+
 /// Signed turn between two unit tangents, normalized to (-180, 180] degrees.
 fn signed_turn_deg(t_in: Point, t_out: Point) -> f64 {
     let cross = t_in.x * t_out.y - t_in.y * t_out.x;
@@ -303,21 +317,42 @@ fn tip_polyline(
     vertices: &[Point],
     closed: bool,
     overlap_mm: f64,
+    near_zero_mm: f64,
     chain_id: &str,
 ) -> Result<Vec<Point>> {
     let mut path = vertices.to_vec();
     if !closed {
         return Ok(path);
     }
-    path.push(vertices[0]);
+    // Keep the selected seam, but trim a sub-budget backtrack at either
+    // side of it before computing travel and overlap from that same seam.
+    let seam = path[0];
+    while path.len() > 3 {
+        let last = path[path.len() - 1];
+        let second = path[1];
+        let incoming = seam.distance(last);
+        let outgoing = seam.distance(second);
+        let shorter = incoming.min(outgoing);
+        let turn = signed_turn_deg(
+            Point::new(seam.x - last.x, seam.y - last.y),
+            Point::new(second.x - seam.x, second.y - seam.y),
+        );
+        if shorter > near_zero_mm || (shorter > RESERVE_MM && turn.abs() <= AMBIGUOUS_REVERSAL_DEG)
+        {
+            break;
+        }
+        if incoming <= outgoing {
+            path.pop();
+        } else {
+            path.remove(1);
+        }
+    }
+    let count = path.len();
+    path.push(seam);
     if overlap_mm <= RESERVE_MM {
         return Ok(path);
     }
-    let perimeter: f64 = vertices
-        .iter()
-        .zip(vertices.iter().cycle().skip(1))
-        .map(|(a, b)| a.distance(*b))
-        .sum();
+    let perimeter: f64 = path.windows(2).map(|pair| pair[0].distance(pair[1])).sum();
     if overlap_mm >= perimeter - RESERVE_MM {
         return Err(error(
             "KNIFE_CLOSURE_RANGE",
@@ -327,11 +362,10 @@ fn tip_polyline(
         ));
     }
     let mut remaining = overlap_mm;
-    let count = vertices.len();
     let mut index = 0usize;
     while remaining > RESERVE_MM {
-        let a = vertices[index % count];
-        let b = vertices[(index + 1) % count];
+        let a = path[index % count];
+        let b = path[(index + 1) % count];
         let length = a.distance(b);
         if length <= RESERVE_MM {
             index += 1;
@@ -551,7 +585,7 @@ fn build_path(
     simplify_mm: f64,
     corner_threshold_deg: f64,
 ) -> Result<KnifePath> {
-    let mut tip = tip_polyline(vertices, closed, overlap_mm, chain_id)?;
+    let mut tip = tip_polyline(vertices, closed, overlap_mm, near_zero_mm, chain_id)?;
     clean_degenerate_segments(&mut tip, closed, near_zero_mm);
     let simplification = simplify_tip(
         chain_id,
@@ -960,6 +994,20 @@ impl<'a> Emitter<'a> {
         layer: usize,
         intended: IntendedTip,
     ) {
+        // An arc shorter than the programmable chord reserve still carries
+        // its endpoint and modeled heading into the independent tip replay.
+        let mut interpolation = interpolation;
+        if let Interpolation::ArcFeed(arc) = interpolation
+            && start.xy().distance(arc.center) > crate::checks::ARC_RESERVE_MM
+        {
+            let chord = start.xy().distance(end.xy());
+            if chord <= 1e-12 {
+                return;
+            }
+            if chord <= crate::checks::ARC_RESERVE_MM {
+                interpolation = Interpolation::LinearFeed;
+            }
+        }
         self.motions.push(PlannedMotion {
             id: self.next_id,
             operation_id: self.operation_id.into(),
@@ -1256,17 +1304,49 @@ pub(crate) fn plan(
                 operation_id,
             )]));
         }
-        let corner_threshold = settings.corner_threshold_deg.expect("checked above");
-        match build_path(
-            &chain.id,
-            &vertices,
-            chain.closed,
-            overlap,
-            d,
-            near_zero,
-            simplify,
-            corner_threshold,
-        ) {
+        let build = |vertices: &[Point]| {
+            build_path(
+                &chain.id,
+                vertices,
+                chain.closed,
+                overlap,
+                d,
+                near_zero,
+                simplify,
+                corner_threshold,
+            )
+        };
+        let carried = paths.last().map_or(heading, KnifePath::last_heading);
+        let mut path = build(&vertices);
+        if chain.closed
+            && anchored
+                .as_ref()
+                .is_none_or(|anchor| anchor.contour_id != chain.id)
+            && let Ok(original) = &path
+            && alignment_is_ambiguous(
+                normalize_angle(original.first_heading - carried).to_degrees(),
+            )
+        {
+            // Change only an automatic start. A cyclic rotation preserves the
+            // drawn direction. Prefer the in-stock edge needing the least turn.
+            let best = vertices
+                .iter()
+                .zip(vertices.iter().cycle().skip(1))
+                .enumerate()
+                .filter(|(_, (a, b))| point_in_stock(ctx, **a) && a.distance(**b) > near_zero)
+                .map(|(i, (a, b))| {
+                    let trailing = (a.y - b.y).atan2(a.x - b.x);
+                    (i, normalize_angle(trailing - carried).abs())
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((index, turn)) = best
+                && !alignment_is_ambiguous(turn.to_degrees())
+            {
+                vertices.rotate_left(index);
+                path = build(&vertices);
+            }
+        }
+        match path {
             Ok(path) => paths.push(path),
             Err(diag) => {
                 return Ok(incomplete(vec![issue(
@@ -1344,11 +1424,11 @@ pub(crate) fn plan(
                 Point::new(heading.cos(), heading.sin()),
                 Point::new(target_heading.cos(), target_heading.sin()),
             );
-            if (align_turn.abs() - 180.).abs() < AMBIGUOUS_ALIGNMENT_DEG {
+            if alignment_is_ambiguous(align_turn) {
                 return Ok(incomplete(vec![issue(
                     "KNIFE_ALIGNMENT_UNAVAILABLE",
                     format!(
-                        "chain '{chain_id}': the carried heading ({:.1} deg) opposes the first cut ({:.1} deg) within {AMBIGUOUS_ALIGNMENT_DEG} deg; the alignment swivel direction is ambiguous",
+                        "chain '{chain_id}': the carried heading ({:.1} deg) opposes the first cut ({:.1} deg) within {AMBIGUOUS_ALIGNMENT_DEG} deg, so alignment is ambiguous. Choose another start edge or endpoint, or change the preceding chain order.",
                         heading_deg(heading),
                         heading_deg(target_heading),
                     ),
@@ -1643,12 +1723,13 @@ pub(crate) fn plan(
     // Independent kinematic replay (plan section 12.5): an engineering gate
     // on the emitted holder polyline, not a display derivation from the
     // modeled headings.
+    let step_budget = replay_step_budget(&emitter.motions);
     let outcome = replay(
         &emitter.motions,
         d,
         &emitter.intended,
         tolerance,
-        REPLAY_STEP_BUDGET,
+        step_budget,
     );
     match outcome.status {
         ReplayStatus::BudgetExhausted => {
@@ -1656,7 +1737,7 @@ pub(crate) fn plan(
                 "KNIFE_REPLAY_BUDGET",
                 format!(
                     "the independent knife replay exhausted its {}-step integration budget; the result is inconclusive, not truncated",
-                    REPLAY_STEP_BUDGET
+                    step_budget
                 ),
                 operation_id,
             )]);

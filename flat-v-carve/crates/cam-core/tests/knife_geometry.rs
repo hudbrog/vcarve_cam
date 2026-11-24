@@ -753,6 +753,79 @@ fn sub_tolerance_needles_are_cleaned_not_rejected() {
 }
 
 #[test]
+fn closed_seam_backtrack_is_trimmed_within_budget_before_overlap() {
+    let ring = r#"<path id="s" fill="none" stroke="black" d="M10 10 H20 V20 H10 L10.001 10 Z"/>"#;
+    for overlap in [0., 2.] {
+        let mut settings = knife_settings(&["s-chain-0"]);
+        settings.closure_overlap_mm = Some(overlap);
+        let plan = complete_plan(ring, settings);
+        let mut cuts = knife_motions(&plan)
+            .iter()
+            .filter(|m| m.layer == 0 && m.purpose == MotionPurpose::KnifeCut);
+        let first = cuts.next().unwrap();
+        assert_eq!(first.start.xy(), Point::new(11., 20.));
+        let length: f64 = std::iter::once(first)
+            .chain(cuts)
+            .map(|m| m.start.xy().distance(m.end.xy()))
+            .sum();
+        assert!(close(length, 40. + overlap, 1e-8));
+    }
+    let resolvable = ring.replace("10.001", "10.5");
+    let plan = OperationPlan::plan_job(
+        &job(&resolvable, knife_settings(&["s-chain-0"])),
+        &PlanLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        plan.generation_diagnostics[0].code,
+        "KNIFE_CORNER_AMBIGUOUS"
+    );
+}
+
+#[test]
+fn opposed_entry_rotates_an_automatic_closed_chain_and_preserves_manual_starts() {
+    let paths = r#"<path id="a" fill="none" stroke="black" d="M5 5 H10"/><path id="b" fill="none" stroke="black" d="M20 10 H10 V20 H20 Z"/>"#;
+    let mut settings = knife_settings(&["a-chain-0", "b-chain-0"]);
+    let plan = complete_plan(paths, settings.clone());
+    let first = knife_motions(&plan)
+        .iter()
+        .find(|m| {
+            m.contour_id.as_deref() == Some("b-chain-0") && m.purpose == MotionPurpose::KnifeCut
+        })
+        .unwrap();
+    assert_eq!(first.start.xy(), Point::new(11., 10.));
+    assert_eq!(first.end.xy(), Point::new(21., 10.));
+
+    let catalogue = ContourCatalogue::build(&job(paths, settings.clone())).unwrap();
+    let chain = catalogue.chain("b-chain-0").unwrap();
+    settings.start = StartSelection::Anchor(Box::new(ContourAnchor {
+        contour_id: chain.id.clone(),
+        source_geometry_fingerprint: chain.source_fingerprint.clone(),
+        fraction_along_source_contour: 0.125,
+    }));
+    let plan = OperationPlan::plan_job(&job(paths, settings), &PlanLimits::default()).unwrap();
+    assert_eq!(
+        plan.generation_diagnostics[0].code,
+        "KNIFE_ALIGNMENT_UNAVAILABLE"
+    );
+}
+
+#[test]
+fn sub_reserve_pivot_chord_passes_basic_checks_and_replay() {
+    let path = r#"<path id="cut" fill="none" stroke="black" d="M5 15 L20 15 35 14.9988"/>"#;
+    let mut settings = knife_settings(&["cut-chain-0"]);
+    settings.path_simplification_mm = Some(0.);
+    let plan = complete_plan_with_offset(path, settings, 0.01);
+    assert!(check_plan(&plan).unwrap().export_ready);
+    assert!(knife_motions(&plan).iter().any(|m| {
+        m.purpose == MotionPurpose::KnifeCut
+            && m.interpolation == Interpolation::LinearFeed
+            && (1e-12..=cam_core::checks::ARC_RESERVE_MM)
+                .contains(&m.start.xy().distance(m.end.xy()))
+    }));
+}
+
+#[test]
 fn missing_settings_are_located_not_defaulted() {
     let mut settings = knife_settings(&["cut-chain-0"]);
     settings.alignment.initial_heading_deg = None;

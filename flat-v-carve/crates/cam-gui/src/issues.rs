@@ -251,7 +251,7 @@ impl App {
                 RichText::new(if limited {
                     "Planning limit reached — toolpath is incomplete".into()
                 } else {
-                    format!("Settings need attention · {}", self.issues.len())
+                    format!("Issues to review · {}", self.issues.len())
                 }).strong(),
             );
             if limited {
@@ -319,6 +319,20 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_result_reports_planner_and_basic_check_reasons_with_their_owner() {
+        let reply = json!({
+            "generationIssues": [{"operationId": "knife-1", "code":"KNIFE_ALIGNMENT_UNAVAILABLE","message":"Ambiguous entry"}],
+            "checks": {"exportReady":false, "findings":[{"operationId":"knife-2","stageId":"knife-2-knife","code":"PLAN_ARC_GEOMETRY","message":"motion 1863 starts and ends at the same point"}]}
+        });
+        let issues: Vec<_> = generated_issues(&reply).collect();
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].operation_id.as_deref(), Some("knife-1"));
+        assert_eq!(issues[1].operation_id.as_deref(), Some("knife-2"));
+        assert_eq!(issues[1].code, "PLAN_ARC_GEOMETRY");
+        assert!(issues[1].message.contains("1863"));
+    }
 
     #[test]
     fn diagnostic_selects_its_owner_before_focusing_and_preserves_drafts() {

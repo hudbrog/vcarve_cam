@@ -129,29 +129,36 @@ fn placed_overlapping_artwork_unions_on_the_finest_selected_grid() {
         .unwrap()
         .job;
     job.artwork[1].placement.origin_mm.x = 5.;
-    job.artwork[1].import_settings.geometry_tolerance_mm = 0.0005;
-    let catalogue = v5::inspect_artwork(&job).unwrap();
-    let picks: Vec<_> = catalogue
-        .items
-        .iter()
-        .flat_map(|item| &item.entries)
-        .filter(|e| e.kind == GeometryRefKind::FilledComponent)
-        .map(|e| GeometryPick {
-            artwork_item_id: e.reference.artwork_item_id.clone(),
-            kind: e.kind,
-            local_geometry_id: e.reference.local_geometry_id.clone(),
-        })
-        .collect();
-    job = commands::set_component_selection(&job, "pocket-1", &picks)
-        .unwrap()
-        .job;
-    let refs = settings(&mut job).components.clone();
-    let resolved = v5::resolve::resolve_filled_region(&job, &refs, &catalogue).unwrap();
-    assert_eq!(refs.len(), 4);
-    assert_eq!(resolved.region.component_count(), 2);
-    assert_eq!(resolved.region.hole_count(), 1);
-    assert!((resolved.region.area_mm2() - 1750.).abs() < 0.01);
-    assert_eq!(resolved.grid_tolerance_mm, 0.0005);
+    for (tolerance, ticks, expected_scale) in [
+        (0.0005, None, 100_000.),
+        (0.001, Some(1_000_000.), 1_000_000.),
+    ] {
+        job.artwork[1].import_settings.geometry_tolerance_mm = tolerance;
+        job.artwork[1].import_settings.ticks_per_mm = ticks;
+        let catalogue = v5::inspect_artwork(&job).unwrap();
+        let picks: Vec<_> = catalogue
+            .items
+            .iter()
+            .flat_map(|item| &item.entries)
+            .filter(|e| e.kind == GeometryRefKind::FilledComponent)
+            .map(|e| GeometryPick {
+                artwork_item_id: e.reference.artwork_item_id.clone(),
+                kind: e.kind,
+                local_geometry_id: e.reference.local_geometry_id.clone(),
+            })
+            .collect();
+        job = commands::set_component_selection(&job, "pocket-1", &picks)
+            .unwrap()
+            .job;
+        let refs = settings(&mut job).components.clone();
+        let resolved = v5::resolve::resolve_filled_region(&job, &refs, &catalogue).unwrap();
+        assert_eq!(refs.len(), 4);
+        assert_eq!(resolved.region.component_count(), 2);
+        assert_eq!(resolved.region.hole_count(), 1);
+        assert!((resolved.region.area_mm2() - 1750.).abs() < 0.01);
+        assert_eq!(resolved.grid_tolerance_mm, tolerance);
+        assert_eq!(resolved.region.grid().scale(), expected_scale);
+    }
 }
 
 #[test]

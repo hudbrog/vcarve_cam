@@ -479,9 +479,16 @@ impl Viewport {
             return;
         };
         if !self.export_ready() {
+            let issue = self
+                .scene
+                .as_ref()
+                .and_then(|s| crate::app::generated_issues(&s.meta.report["gui2"]).next());
             ui.colored_label(
                 Color32::from_rgb(164, 83, 12),
-                "Generation is incomplete or basic checks failed. This result cannot be exported.",
+                match issue {
+                    Some(issue) => format!("Export blocked · {} · {}", issue.code, issue.message),
+                    None => "Export blocked · generation or basic checks are incomplete.".into(),
+                },
             );
         }
         let pos = StagePosition::at(&plan.stages, self.stock_prefix);

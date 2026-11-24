@@ -27,9 +27,9 @@ pub const KNIFE_EVIDENCE_SCHEMA_VERSION: u32 = 1;
 /// detail under an explicit budget; the bound can limit detail, never turn
 /// a required replay failure into success).
 pub const KNIFE_EVIDENCE_MAX_SAMPLES: usize = 20_000;
-/// Integration step budget for one emitted replay; exhaustion is
-/// inconclusive and blocks output rather than truncating it.
-pub const EMITTED_REPLAY_STEP_BUDGET: usize = 2_000_000;
+/// Minimum integration budget for emitted replay. Exhaustion remains
+/// inconclusive and blocks output.
+pub const EMITTED_REPLAY_STEP_BUDGET: usize = super::MIN_REPLAY_STEP_BUDGET;
 
 fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("knife-evidence")
@@ -297,7 +297,7 @@ pub fn build_evidence(
         plan,
         prepared,
         decoded,
-        EMITTED_REPLAY_STEP_BUDGET,
+        super::replay_step_budget(plan.motions()),
         sample_budget,
     )?;
     let status = match replay.outcome.status {

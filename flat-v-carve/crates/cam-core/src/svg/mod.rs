@@ -475,11 +475,10 @@ pub fn import_svg(
             p.x.abs().max(p.y.abs())
         })
         .fold(0., f64::max);
-    let grid = match options.ticks_per_mm {
+    let initial_grid = match options.ticks_per_mm {
         Some(s) => Grid::with_scale(options.geometry_tolerance_mm, extent, s)?,
         None => Grid::new(options.geometry_tolerance_mm, extent)?,
     };
-    let mut sources = vec![];
     let page_paths: Vec<_> = reader
         .shapes
         .iter()
@@ -490,58 +489,57 @@ pub fn import_svg(
         .flatten()
         .map(|p| p.x.abs().max(p.y.abs()))
         .fold(0., f64::max);
-    let automatic_source_grid = Grid::new(
-        options.geometry_tolerance_mm / (2. * options.placement.scale),
-        page_extent,
-    )?;
-    let source_grid = Grid::with_scale(
-        options.geometry_tolerance_mm / (2. * options.placement.scale),
-        page_extent,
-        automatic_source_grid
-            .scale()
-            .max(grid.scale() * options.placement.scale * 2.),
-    )?;
-    Region::check_snapping(source_grid, &page_paths)?;
-    let mut placed_paths = vec![];
-    for shape in reader.shapes {
-        let region = Region::from_filled_paths(source_grid, &shape.rings, shape.rule)
-            .map_err(|d| d.source(&shape.id))?;
-        for d in region.diagnostics() {
-            reader.diagnostics.push(d.clone().source(&shape.id));
-        }
-        if region.rings().is_empty() {
-            return Err(error("SVG_EMPTY_FILL","fill resolution produced no area; remove intentionally cancelling contours or use a finer precision").source(&shape.id));
-        }
-        // IDs are assigned in page coordinates, before rotating/moving the workpiece.
-        for (index, page_component) in region.components().into_iter().enumerate() {
-            let rings: Vec<Vec<_>> = page_component
-                .rings_mm()
-                .iter()
-                .map(|ring| ring.iter().map(|&p| placement.apply(p)).collect())
-                .collect();
-            let geometry = Region::from_filled_paths(grid, &rings, WindingRule::Nonzero)
-                .map_err(|d| d.source(&shape.id))?;
-            if geometry.component_count() != 1
-                || geometry.hole_count() != page_component.hole_count()
+    let source_tolerance = options.geometry_tolerance_mm / (2. * options.placement.scale);
+    let automatic_source_grid = Grid::new(source_tolerance, page_extent)?;
+    let grid_pair = |grid: Grid| {
+        let source_grid = Grid::with_scale(
+            source_tolerance,
+            page_extent,
+            automatic_source_grid
+                .scale()
+                .max(grid.scale() * options.placement.scale * 2.),
+        )?;
+        Ok((grid, source_grid))
+    };
+    let (mut grid, mut source_grid) = grid_pair(initial_grid)?;
+    let (sources, diagnostics) = loop {
+        match resolve_fills(&reader.shapes, &page_paths, placement, source_grid, grid) {
+            Ok(fills) => break fills,
+            Err(d)
+                if options.ticks_per_mm.is_none()
+                    && matches!(
+                        d.code.as_str(),
+                        "QUANTIZATION_TOPOLOGY"
+                            | "QUANTIZATION_ORIENTATION"
+                            | "QUANTIZATION_COLLAPSE"
+                            | "SVG_PLACEMENT_TOPOLOGY"
+                    ) =>
             {
-                return Err(error(
-                    "SVG_PLACEMENT_TOPOLOGY",
-                    "placement snapping changed component or hole topology",
-                )
-                .source(&shape.id));
+                // Retry the same flattened paths on the next decimal grid. Both
+                // coordinate ranges must fit before attempting another arrangement.
+                let next = Grid::with_scale(grid.tolerance_mm(), extent, grid.scale() * 10.)
+                    .and_then(grid_pair);
+                let Ok(pair) = next else { return Err(d) };
+                (grid, source_grid) = pair;
             }
-            placed_paths.extend(rings);
-            sources.push(SourceComponent {
-                id: format!("{}::{index}", shape.id),
-                source_id: shape.id.clone(),
-                label: shape.label.clone(),
-                group: shape.group.clone(),
-                paint: shape.paint,
-                geometry,
-            });
+            Err(d) => return Err(d),
         }
+    };
+    drop(page_paths);
+    drop(reader.shapes);
+    reader.diagnostics.extend(diagnostics);
+    if grid != initial_grid {
+        reader.diagnostics.push(
+            error(
+                "SVG_GRID_REFINED",
+                format!(
+                    "refined the import grid to {} ticks/mm to preserve boundary topology",
+                    grid.scale()
+                ),
+            )
+            .warning(),
+        );
     }
-    Region::check_snapping(grid, &placed_paths)?;
     // Centerline chains: page-space, in document and subpath order, one ID
     // per subpath. They never pass through region resolution.
     let mut chains = vec![];
@@ -660,6 +658,59 @@ pub fn import_svg(
         bounds,
         diagnostics: reader.diagnostics,
     })
+}
+
+fn resolve_fills(
+    shapes: &[RawShape],
+    page_paths: &[Vec<Point>],
+    placement: Matrix,
+    source_grid: Grid,
+    grid: Grid,
+) -> Result<(Vec<SourceComponent>, Vec<Diagnostic>)> {
+    let mut sources = vec![];
+    let mut diagnostics = vec![];
+    Region::check_snapping(source_grid, page_paths)?;
+    let mut placed_paths = vec![];
+    for shape in shapes {
+        let region = Region::from_filled_paths(source_grid, &shape.rings, shape.rule)
+            .map_err(|d| d.source(&shape.id))?;
+        for d in region.diagnostics() {
+            diagnostics.push(d.clone().source(&shape.id));
+        }
+        if region.rings().is_empty() {
+            return Err(error("SVG_EMPTY_FILL","fill resolution produced no area; remove intentionally cancelling contours or use a finer precision").source(&shape.id));
+        }
+        // IDs are assigned in page coordinates, before rotating/moving the workpiece.
+        for (index, page_component) in region.components().into_iter().enumerate() {
+            let rings: Vec<Vec<_>> = page_component
+                .rings_mm()
+                .iter()
+                .map(|ring| ring.iter().map(|&p| placement.apply(p)).collect())
+                .collect();
+            let geometry = Region::from_filled_paths(grid, &rings, WindingRule::Nonzero)
+                .map_err(|d| d.source(&shape.id))?;
+            if geometry.component_count() != 1
+                || geometry.hole_count() != page_component.hole_count()
+            {
+                return Err(error(
+                    "SVG_PLACEMENT_TOPOLOGY",
+                    "placement snapping changed component or hole topology",
+                )
+                .source(&shape.id));
+            }
+            placed_paths.extend(rings);
+            sources.push(SourceComponent {
+                id: format!("{}::{index}", shape.id),
+                source_id: shape.id.clone(),
+                label: shape.label.clone(),
+                group: shape.group.clone(),
+                paint: shape.paint,
+                geometry,
+            });
+        }
+    }
+    Region::check_snapping(grid, &placed_paths)?;
+    Ok((sources, diagnostics))
 }
 
 pub(super) fn number(s: &str) -> Result<f64> {

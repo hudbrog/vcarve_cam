@@ -40,6 +40,25 @@ mod workspace_route;
 mod workspace_ui;
 use workspace_route::ResourcePage;
 
+pub(crate) fn generated_issues(
+    reply: &Value,
+) -> impl Iterator<Item = cam_core::operations::LocatedDiagnostic> + '_ {
+    reply["generationIssues"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(reply["checks"]["findings"].as_array().into_iter().flatten())
+        .filter_map(|issue| {
+            Some(cam_core::operations::LocatedDiagnostic {
+                code: issue["code"].as_str()?.to_owned(),
+                message: issue["message"].as_str()?.to_owned(),
+                operation_id: issue["operationId"].as_str().map(str::to_owned),
+                tool_id: None,
+                field_path: None,
+            })
+        })
+}
+
 // Read-only widget geometry for real-browser pointer tests of the canvas.
 // No command or document mutation is exposed by this probe.
 thread_local! {static CONTROLS: std::cell::RefCell<std::collections::BTreeMap<String,[f32;4]>> = const {std::cell::RefCell::new(std::collections::BTreeMap::new())};}
@@ -1615,18 +1634,7 @@ impl App {
                     self.plan_fingerprint =
                         reply["executionFingerprint"].as_str().map(str::to_owned);
                     self.prepared = None;
-                    self.issues = reply["generationIssues"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .map(|i| cam_core::operations::LocatedDiagnostic {
-                            code: i["code"].as_str().unwrap_or("GENERATION").into(),
-                            message: i["message"].as_str().unwrap_or("Generation issue").into(),
-                            operation_id: i["operation_id"].as_str().map(str::to_owned),
-                            tool_id: None,
-                            field_path: None,
-                        })
-                        .collect();
+                    self.issues = generated_issues(reply).collect();
                     self.status = if self.planning_limit_reached() {
                         format!(
                             "Planning limit reached · {} motions retained · toolpath is incomplete; see warning below",
@@ -1646,7 +1654,7 @@ impl App {
                     self.view.load_scene(Ok((meta, payload)));
                     if revalidated {
                         self.view.seek(previous_prefix);
-                        if !self.planning_limit_reached() {
+                        if self.view.export_ready() {
                             self.status="Retained carving still matches the machining inputs. Output settings will be checked when preparing.".into();
                         }
                     }

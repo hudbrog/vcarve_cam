@@ -4,6 +4,54 @@ use svgtypes::{PathParser, PathSegment as S};
 
 pub(super) const MAX_VERTICES: usize = 2_000_000;
 
+/// Carry the low part of each relative sum into the next command. Rounding
+/// each step independently can turn an endpoint on a line into a crossing.
+#[derive(Clone, Copy, Default)]
+struct PathCoordinate {
+    value: f64,
+    residual: f64,
+}
+
+impl PathCoordinate {
+    fn resolve(self, absolute: bool, operand: f64) -> Self {
+        if absolute {
+            return Self {
+                value: operand,
+                residual: 0.,
+            };
+        }
+        let sum = self.value + operand;
+        // TwoSum recovers the rounding error even when the offset is larger
+        // than the current coordinate or nearly cancels it.
+        let added = sum - self.value;
+        let error = (self.value - (sum - added)) + (operand - added) + self.residual;
+        let value = sum + error;
+        Self {
+            value,
+            residual: error - (value - sum),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct PathPosition {
+    x: PathCoordinate,
+    y: PathCoordinate,
+}
+
+impl PathPosition {
+    fn resolve(self, absolute: bool, x: f64, y: f64) -> Self {
+        Self {
+            x: self.x.resolve(absolute, x),
+            y: self.y.resolve(absolute, y),
+        }
+    }
+
+    fn point(self) -> Point {
+        Point::new(self.x.value, self.y.value)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Matrix(pub [f64; 6]);
 impl Matrix {
@@ -103,7 +151,19 @@ impl Flattener {
         if self.points.is_empty() {
             return;
         }
-        let coincident = self.points.first() == self.points.last();
+        let first = self.points[0];
+        let last = self.points[self.points.len() - 1];
+        // Summing relative SVG commands can miss the authored start by a few
+        // floating-point steps. An explicit Z would then add a spurious tiny
+        // edge across the first segment. Keep open endpoints as drawn.
+        let within_roundoff = |a: f64, b: f64| {
+            (a - b).abs() <= (16. * f64::EPSILON * a.abs().max(b.abs()).max(1.)).min(self.tolerance)
+        };
+        let coincident = first == last
+            || (explicit
+                && self.points.len() > 3
+                && within_roundoff(first.x, last.x)
+                && within_roundoff(first.y, last.y));
         let closed = explicit || coincident;
         if closed && coincident && self.points.len() > 1 {
             self.points.pop();
@@ -267,8 +327,8 @@ impl Flattener {
         Ok(parsed.chains)
     }
     fn path_impl(mut self, data: &str) -> Result<Self> {
-        let mut current = Point::new(0., 0.);
-        let mut start = current;
+        let mut cursor = PathPosition::default();
+        let mut start = cursor;
         let mut cubic_control = None;
         let mut quadratic_control = None;
         let mut command_count = 0;
@@ -278,25 +338,20 @@ impl Flattener {
                 return Err(error("SVG_PATH_LIMIT", "too many path commands"));
             }
             let command = command.map_err(|e| error("SVG_PATH_SYNTAX", format!("{e}")))?;
-            let point = |abs: bool, x: f64, y: f64| {
-                if abs {
-                    Point::new(x, y)
-                } else {
-                    Point::new(current.x + x, current.y + y)
-                }
-            };
+            let current = cursor.point();
+            let point = |abs, x, y| cursor.resolve(abs, x, y).point();
             let mut next_cubic = None;
             let mut next_quad = None;
             match command {
                 S::MoveTo { abs, x, y } => {
                     self.finish(false);
-                    current = point(abs, x, y);
-                    start = current;
-                    self.push(self.matrix.apply(current))?;
+                    cursor = cursor.resolve(abs, x, y);
+                    start = cursor;
+                    self.push(self.matrix.apply(cursor.point()))?;
                 }
                 S::ClosePath { .. } => {
                     self.finish(true);
-                    current = start;
+                    cursor = start;
                 }
                 other => {
                     if self.points.is_empty() {
@@ -304,16 +359,16 @@ impl Flattener {
                     }
                     match other {
                         S::LineTo { abs, x, y } => {
-                            current = point(abs, x, y);
-                            self.push(self.matrix.apply(current))?;
+                            cursor = cursor.resolve(abs, x, y);
+                            self.push(self.matrix.apply(cursor.point()))?;
                         }
                         S::HorizontalLineTo { abs, x } => {
-                            current = Point::new(if abs { x } else { current.x + x }, current.y);
-                            self.push(self.matrix.apply(current))?;
+                            cursor.x = cursor.x.resolve(abs, x);
+                            self.push(self.matrix.apply(cursor.point()))?;
                         }
                         S::VerticalLineTo { abs, y } => {
-                            current = Point::new(current.x, if abs { y } else { current.y + y });
-                            self.push(self.matrix.apply(current))?;
+                            cursor.y = cursor.y.resolve(abs, y);
+                            self.push(self.matrix.apply(cursor.point()))?;
                         }
                         S::CurveTo {
                             abs,
@@ -326,44 +381,44 @@ impl Flattener {
                         } => {
                             let p1 = point(abs, x1, y1);
                             let p2 = point(abs, x2, y2);
-                            let p3 = point(abs, x, y);
+                            cursor = cursor.resolve(abs, x, y);
+                            let p3 = cursor.point();
                             self.cubic([current, p1, p2, p3].map(|p| self.matrix.apply(p)), 0)?;
                             next_cubic = Some(p2);
-                            current = p3;
                         }
                         S::SmoothCurveTo { abs, x2, y2, x, y } => {
                             let p1 = cubic_control.map_or(current, |p: Point| {
                                 Point::new(2. * current.x - p.x, 2. * current.y - p.y)
                             });
                             let p2 = point(abs, x2, y2);
-                            let p3 = point(abs, x, y);
+                            cursor = cursor.resolve(abs, x, y);
+                            let p3 = cursor.point();
                             self.cubic([current, p1, p2, p3].map(|p| self.matrix.apply(p)), 0)?;
                             next_cubic = Some(p2);
-                            current = p3;
                         }
                         S::Quadratic { abs, x1, y1, x, y } => {
                             let p1 = point(abs, x1, y1);
-                            let p2 = point(abs, x, y);
+                            cursor = cursor.resolve(abs, x, y);
+                            let p2 = cursor.point();
                             self.cubic(
                                 [current, current.lerp(p1, 2. / 3.), p2.lerp(p1, 2. / 3.), p2]
                                     .map(|p| self.matrix.apply(p)),
                                 0,
                             )?;
                             next_quad = Some(p1);
-                            current = p2;
                         }
                         S::SmoothQuadratic { abs, x, y } => {
                             let p1 = quadratic_control.map_or(current, |p: Point| {
                                 Point::new(2. * current.x - p.x, 2. * current.y - p.y)
                             });
-                            let p2 = point(abs, x, y);
+                            cursor = cursor.resolve(abs, x, y);
+                            let p2 = cursor.point();
                             self.cubic(
                                 [current, current.lerp(p1, 2. / 3.), p2.lerp(p1, 2. / 3.), p2]
                                     .map(|p| self.matrix.apply(p)),
                                 0,
                             )?;
                             next_quad = Some(p1);
-                            current = p2;
                         }
                         S::EllipticalArc {
                             abs,
@@ -375,16 +430,15 @@ impl Flattener {
                             x,
                             y,
                         } => {
-                            let end = point(abs, x, y);
+                            cursor = cursor.resolve(abs, x, y);
                             self.arc(
                                 current,
-                                end,
+                                cursor.point(),
                                 Point::new(rx, ry),
                                 x_axis_rotation,
                                 large_arc,
                                 sweep,
                             )?;
-                            current = end;
                         }
                         _ => unreachable!(),
                     }

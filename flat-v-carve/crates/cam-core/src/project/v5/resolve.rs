@@ -252,17 +252,16 @@ pub fn resolve_filled_region(
             geometry.flattening_bound_mm + geometry.source_snap_bound_mm,
         ));
     }
-    // Reconcile onto one grid: the finest selected tolerance. Items sharing
-    // a tolerance share the identical grid by construction (the grid scale
-    // depends on the tolerance only), so equal-tolerance unions never regrid
-    // and a single-item selection returns that item's region unchanged.
+    // A fine feature or an explicit scale can give two items at the same
+    // tolerance different grids. Preserve the finest resolved spacing.
     let finest = imported
         .iter()
         .map(|(tolerance, _, _)| *tolerance)
         .fold(f64::INFINITY, f64::min);
+    let first_grid = imported[0].1.grid();
     let distinct = imported
         .iter()
-        .any(|(tolerance, _, _)| (*tolerance - finest).abs() > 1e-12);
+        .any(|(_, region, _)| region.grid() != first_grid);
     // The engine input carries the worst import error beside the region, so a
     // cross-item union reports a source bound that covers every contributor.
     let source_error_mm = imported
@@ -307,10 +306,20 @@ pub fn resolve_filled_region(
             .iter()
             .flat_map(|b| [b.max.x.abs(), b.max.y.abs(), b.min.x.abs(), b.min.y.abs()])
             .fold(0., f64::max);
-        let grid = Grid::new(finest, extent)?;
+        let scale = imported
+            .iter()
+            .map(|(_, region, _)| region.grid().scale())
+            .fold(1., f64::max);
+        let grid = Grid::with_scale(finest, extent, scale)?;
         imported
             .into_iter()
-            .map(|(_, region, _)| Region::from_rings(grid, &region.rings_mm()))
+            .map(|(_, region, _)| {
+                if region.grid() == grid {
+                    Ok(region)
+                } else {
+                    Region::from_rings(grid, &region.rings_mm())
+                }
+            })
             .collect::<Result<Vec<_>>>()?
     };
     let region = if regions.len() == 1 {

@@ -765,7 +765,7 @@ impl PreparedExecution {
                     plan,
                     self,
                     &decoded_stream,
-                    crate::operations::drag_knife::evidence::EMITTED_REPLAY_STEP_BUDGET,
+                    crate::operations::drag_knife::replay_step_budget(plan.motions()),
                 )?)
             } else {
                 None
