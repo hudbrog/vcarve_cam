@@ -64,6 +64,16 @@ impl App {
         observe_control("Paths to plot", paths.rect);
         if chains.is_empty() {
             ui.label("Add SVG or sketch paths to select centerlines.");
+        } else {
+            let idle = self.active.is_none();
+            let all = ui.add_enabled(idle, egui::Button::new("Select all"));
+            observe_control("Select all plot paths", all.rect);
+            if all.clicked() {
+                selected = chains.iter().map(|chain| chain.reference.clone()).collect();
+            }
+            if idle && let Some(chosen) = source_identity::select_chain_group(ui, &chains) {
+                selected = chosen;
+            }
         }
         egui::ScrollArea::vertical()
             .id_salt("plot-paths")
@@ -132,6 +142,96 @@ impl App {
                     references: selected,
                 },
                 ctx,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operation_authoring::{self, Kind};
+
+    #[test]
+    fn plot_bulk_buttons_select_all_paths_or_replace_them_with_one_layer() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="20mm" height="20mm" viewBox="0 0 20 20" fill="none" stroke="black">
+            <g inkscape:label="Ink" inkscape:groupmode="layer">
+                <path id="a" d="M1 1h3"/><path id="b" d="M4 1v3"/>
+            </g>
+            <g inkscape:label="Guides" inkscape:groupmode="layer"><path id="c" d="M2 2h5"/></g>
+            <path id="d" d="M8 8v2"/>
+        </svg>"#;
+        let artwork = crate::authoring::import_svg("layers.svg".into(), svg.into()).unwrap();
+        let job = operation_authoring::apply(
+            &artwork,
+            operation_authoring::add(Kind::CenterlinePlot, &artwork),
+        )
+        .unwrap();
+        let preview = engine::run(Command::Preview {
+            job: job.to_json().unwrap(),
+            have_artwork: None,
+        })
+        .unwrap();
+        let mut app = App {
+            document: Some(Document::new(job)),
+            inspector_tab: 2,
+            operation_tab: 0,
+            ..Default::default()
+        };
+        app.view.load_scene(Ok(preview));
+        app.port.use_inline_compute();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut App, events| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 900.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.inspector(ctx),
+            );
+        };
+        for (label, expected) in [
+            (
+                "Select all plot paths",
+                vec!["a-chain-0", "b-chain-0", "c-chain-0", "d-chain-0"],
+            ),
+            ("Select all in Ink", vec!["a-chain-0", "b-chain-0"]),
+            ("Select all in Guides", vec!["c-chain-0"]),
+        ] {
+            frame(&mut app, vec![]);
+            frame(&mut app, vec![]);
+            let [left, top, right, bottom] = control_rect(label).expect(label);
+            let pos = egui::pos2((left + right) * 0.5, (top + bottom) * 0.5);
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            app.poll(&ctx);
+            let doc = app.document.as_ref().unwrap();
+            let selected = &crate::plot::settings(&doc.job, &doc.raw.operation)
+                .unwrap()
+                .chains;
+            assert_eq!(
+                selected
+                    .iter()
+                    .map(|r| r.local_geometry_id.as_str())
+                    .collect::<Vec<_>>(),
+                expected,
+                "{label}"
             );
         }
     }

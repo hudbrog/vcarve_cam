@@ -221,21 +221,10 @@ impl App {
             if button(ui, "Clear knife selection", self.active.is_none()).clicked() {
                 selected.clear();
             }
-            if self.active.is_none() {
-                let rows: Vec<source_identity::SourceRow<'_, cam_core::project::v5::GeometryRef>> =
-                    chains
-                        .iter()
-                        .map(|chain| source_identity::SourceRow {
-                            value: chain.reference.clone(),
-                            label: chain.label.as_deref(),
-                            group: chain.group.as_deref(),
-                            paint: chain.paint,
-                            id: &chain.reference.local_geometry_id,
-                        })
-                        .collect();
-                if let Some(chosen) = source_identity::select_all(ui, &rows) {
-                    selected = chosen;
-                }
+            if self.active.is_none()
+                && let Some(chosen) = source_identity::select_chain_group(ui, &chains)
+            {
+                selected = chosen;
             }
             let list = egui::ScrollArea::vertical()
                 .id_salt("knife-geometry-list")
@@ -253,13 +242,7 @@ impl App {
                         ui.strong(&item.name);
                         for chain in local {
                             let mut on = selected.contains(&chain.reference);
-                            let row = source_identity::SourceRow {
-                                value: chain.reference.clone(),
-                                label: chain.label.as_deref(),
-                                group: chain.group.as_deref(),
-                                paint: chain.paint,
-                                id: &chain.reference.local_geometry_id,
-                            };
+                            let row = source_identity::chain_row(chain);
                             let response = ui
                                 .horizontal(|ui| {
                                     let response = ui.add_enabled(

@@ -23,6 +23,18 @@ pub struct SourceRow<'a, T> {
     pub id: &'a str,
 }
 
+pub(super) fn chain_row(
+    chain: &crate::knife::Chain,
+) -> SourceRow<'_, &cam_core::project::v5::GeometryRef> {
+    SourceRow {
+        value: &chain.reference,
+        label: chain.label.as_deref(),
+        group: chain.group.as_deref(),
+        paint: chain.paint,
+        id: &chain.reference.local_geometry_id,
+    }
+}
+
 /// What a row is called: the element's own label, else its layer, else its id.
 /// The id is always shown afterwards, so a name is never a substitute for the
 /// stable address a saved selection uses.
@@ -118,6 +130,14 @@ pub fn select_all<T: Clone>(ui: &mut egui::Ui, rows: &[SourceRow<'_, T>]) -> Opt
         }
     });
     chosen
+}
+
+pub fn select_chain_group(
+    ui: &mut egui::Ui,
+    chains: &[crate::knife::Chain],
+) -> Option<Vec<cam_core::project::v5::GeometryRef>> {
+    let rows: Vec<_> = chains.iter().map(chain_row).collect();
+    select_all(ui, &rows).map(|chosen| chosen.into_iter().cloned().collect())
 }
 
 #[cfg(test)]

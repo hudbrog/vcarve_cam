@@ -21,7 +21,7 @@ Use the catalogue's tolerance-bounded polylines for the first release. Keep spin
 
 ## Editor and export
 
-Choose **Operations → Add Centerline Plot**. In **Paths**, select the artwork chains and set the drawing order with the up and down arrows. In **Pen**, choose the job pen and enter drawing and lowering feeds in mm/min. A new operation creates a passive Pen tool. Its feeds belong to the operation. Changing the pen clears its feeds and compression so the replacement holder can be calibrated separately.
+Choose **Operations → Add Centerline Plot**. In **Paths**, check individual paths, choose **Select all** to include every path, or choose **Select all in** a named layer to select just its paths. Bulk selection replaces the drawing order with the matching paths in list order. Use the up and down arrows to reorder them. In **Pen**, choose the job pen and enter drawing and lowering feeds in mm/min. A new operation creates a passive Pen tool. Its feeds belong to the operation. Changing the pen clears its feeds and compression so the replacement holder can be calibrated separately.
 
 Map the pen's job-tool ID in the applied machine configuration, then generate the job or a prefix ending at the plot. The preview shows ink on the drawing surface and clearance travel in a different color. Playback retains the commanded Z, including spring compression. Export supports one LinuxCNC program or sequential files. The emitted bytes are checked against the retained motions, including the lifts, working heights and passive process state.
 
