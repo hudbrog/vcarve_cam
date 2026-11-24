@@ -98,7 +98,12 @@ impl Viewport {
             .iter()
             .map(|c| c.reference.clone())
             .chain(self.profile_contours.iter().map(|c| c.reference.clone()))
-            .chain(self.knife_chains.iter().map(|c| c.reference.clone()))
+            .chain(
+                self.knife_chains
+                    .iter()
+                    .filter(|c| !self.plot_selected || !c.undrawable_for_plot)
+                    .map(|c| c.reference.clone()),
+            )
             .chain(self.drill_points.iter().map(|p| p.reference.clone()))
             .collect()
     }
@@ -244,7 +249,8 @@ impl Viewport {
                     let mut nearest = None;
                     let mut distance = 8.;
                     for chain in self.knife_chains.iter().filter(|c| {
-                        !self.artwork.hidden.contains(&c.reference.artwork_item_id.0)
+                        (!self.plot_selected || !c.undrawable_for_plot)
+                            && !self.artwork.hidden.contains(&c.reference.artwork_item_id.0)
                             && !self.artwork.locked.contains(&c.reference.artwork_item_id.0)
                     }) {
                         for i in 0..chain

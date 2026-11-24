@@ -66,6 +66,61 @@ fn drawn_length(p: &OperationPlanV5) -> f64 {
 }
 
 #[test]
+fn plot_selection_rejects_zero_length_paths_and_cleanup_only_removes_current_matches() {
+    let mut job = selected(&[]);
+    let v5::ArtworkContent::Svg(svg) = &mut job.artwork[0].content else {
+        unreachable!()
+    };
+    svg.svg = svg.svg.replace(
+        "</svg>",
+        r#"<polyline id="dot" points="1,1 1,1" fill="none" stroke="black"/></svg>"#,
+    );
+    let catalogue = v5::inspect_artwork(&job).unwrap();
+    let dot = catalogue.items[0]
+        .entries
+        .iter()
+        .find(|e| e.is_undrawable_plot_path())
+        .unwrap()
+        .reference
+        .clone();
+    let pick = GeometryPick {
+        artwork_item_id: dot.artwork_item_id.clone(),
+        kind: dot.kind,
+        local_geometry_id: dot.local_geometry_id.clone(),
+    };
+    assert!(
+        commands::set_chain_selection(&job, "plot", &[pick])
+            .unwrap_err()
+            .message
+            .contains("no drawable path")
+    );
+    let mut stale = dot.clone();
+    stale.source_revision.content_digest = "0".repeat(64);
+    let OperationSettingsV5::CenterlinePlot(s) = &mut job.operations[0].settings else {
+        unreachable!()
+    };
+    s.chains = vec![stale.clone(), dot.clone()];
+    let repaired = commands::remove_undrawable_plot_paths(&job, "plot")
+        .unwrap()
+        .job;
+    let OperationSettingsV5::CenterlinePlot(s) = &repaired.operations[0].settings else {
+        unreachable!()
+    };
+    assert_eq!(s.chains, vec![stale]);
+    let OperationSettingsV5::CenterlinePlot(s) = &mut job.operations[0].settings else {
+        unreachable!()
+    };
+    s.chains = vec![dot];
+    let repaired = commands::remove_undrawable_plot_paths(&job, "plot")
+        .unwrap()
+        .job;
+    let OperationSettingsV5::CenterlinePlot(s) = &repaired.operations[0].settings else {
+        unreachable!()
+    };
+    assert!(s.chains.is_empty());
+}
+
+#[test]
 fn circle_gap_is_measured_along_the_placed_stroke_and_ends_with_a_vertical_lift() {
     let mut job = selected(&["circle"]);
     job.artwork[0].placement.scale = 0.75;

@@ -246,7 +246,7 @@ impl ArtworkItem {
 /// Identity of an item's exact embedded content and interpretation at the
 /// time geometry was assigned. Stored inside every [`GeometryRef`] so a
 /// replaced source keeps its references dangling until explicitly reattached.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceRevision {
     pub content_digest: String,
@@ -254,7 +254,7 @@ pub struct SourceRevision {
 }
 
 /// Which local geometry space a reference addresses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GeometryRefKind {
     /// A filled component of the item's fill import (Flat V-carve selection).
@@ -271,7 +271,7 @@ pub enum GeometryRefKind {
 /// The canonical document representation of one selected geometry (plan
 /// section 22.3): an owning artwork item, the local geometry space and ID,
 /// and the source revision the selection was made against.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GeometryRef {
     pub artwork_item_id: ArtworkItemId,

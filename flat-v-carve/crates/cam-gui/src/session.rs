@@ -267,6 +267,7 @@ pub enum ArtworkCommand {
     PlotSelection {
         references: Vec<v5::GeometryRef>,
     },
+    RemoveUndrawablePlotPaths,
     KnifeSelection {
         references: Vec<v5::GeometryRef>,
     },
@@ -409,6 +410,14 @@ fn artwork_command(
             return Ok((
                 crate::knife::set_start_in(job, &target, reference.as_ref(), fraction)?,
                 json!({"kind":"knife_start"}),
+            ));
+        }
+        ArtworkCommand::RemoveUndrawablePlotPaths => {
+            let outcome =
+                commands::remove_undrawable_plot_paths(job, &target).map_err(|e| e.to_string())?;
+            return Ok((
+                outcome.job,
+                json!({"kind":"plot_selection","issues":outcome.issues}),
             ));
         }
         ArtworkCommand::PlotSelection { references } => {

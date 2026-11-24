@@ -60,18 +60,43 @@ impl App {
         }
         let previous = selected.clone();
         let chains = self.view.knife_chains();
+        let drawable = chains.iter().filter(|c| !c.undrawable_for_plot);
+        let undrawable: std::collections::HashSet<_> = chains
+            .iter()
+            .filter(|c| c.undrawable_for_plot)
+            .map(|c| &c.reference)
+            .collect();
+        let invalid_count = selected.iter().filter(|r| undrawable.contains(*r)).count();
+        let idle = self.active.is_none();
         let paths = ui.heading("Paths to plot");
         observe_control("Paths to plot", paths.rect);
-        if chains.is_empty() {
-            ui.label("Add SVG or sketch paths to select centerlines.");
+        if invalid_count > 0 {
+            ui.label(format!(
+                "Selected paths with zero drawable length ({invalid_count})"
+            ));
+            if button(ui, "Remove undrawable paths", idle).clicked() {
+                self.artwork_command(engine::ArtworkCommand::RemoveUndrawablePlotPaths, ctx);
+                return;
+            }
+        } else if !undrawable.is_empty() {
+            ui.small(format!(
+                "Skipped paths with zero drawable length ({})",
+                undrawable.len()
+            ));
+        }
+        if undrawable.len() == chains.len() {
+            ui.label("No drawable centerlines. Add SVG or sketch paths to plot.");
         } else {
-            let idle = self.active.is_none();
             let all = ui.add_enabled(idle, egui::Button::new("Select all"));
             observe_control("Select all plot paths", all.rect);
             if all.clicked() {
-                selected = chains.iter().map(|chain| chain.reference.clone()).collect();
+                selected = drawable
+                    .clone()
+                    .map(|chain| chain.reference.clone())
+                    .collect();
             }
-            if idle && let Some(chosen) = source_identity::select_chain_group(ui, &chains) {
+            if idle && let Some(chosen) = source_identity::select_chain_group(ui, drawable.clone())
+            {
                 selected = chosen;
             }
         }
@@ -79,9 +104,10 @@ impl App {
             .id_salt("plot-paths")
             .max_height(180.)
             .show(ui, |ui| {
-                for chain in chains.iter() {
+                let checked: std::collections::HashSet<_> = previous.iter().collect();
+                for chain in drawable {
                     let reference = &chain.reference;
-                    let mut on = selected.contains(reference);
+                    let mut on = checked.contains(reference);
                     let label = format!(
                         "{} / {}",
                         reference.artwork_item_id.0,
@@ -157,16 +183,34 @@ mod tests {
         let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="20mm" height="20mm" viewBox="0 0 20 20" fill="none" stroke="black">
             <g inkscape:label="Ink" inkscape:groupmode="layer">
                 <path id="a" d="M1 1h3"/><path id="b" d="M4 1v3"/>
+                <polyline id="dot" points="3,3 3,3"/>
             </g>
             <g inkscape:label="Guides" inkscape:groupmode="layer"><path id="c" d="M2 2h5"/></g>
             <path id="d" d="M8 8v2"/>
         </svg>"#;
         let artwork = crate::authoring::import_svg("layers.svg".into(), svg.into()).unwrap();
-        let job = operation_authoring::apply(
+        let mut job = operation_authoring::apply(
             &artwork,
             operation_authoring::add(Kind::CenterlinePlot, &artwork),
         )
         .unwrap();
+        // Existing jobs could already contain zero-length selections, including
+        // alongside an operator's custom drawing order.
+        let chains = crate::knife::chains(&job).unwrap();
+        let operation = job.operations[0].id.clone();
+        crate::plot::settings_mut(&mut job, &operation)
+            .unwrap()
+            .chains = ["b-chain-0", "dot-chain-0", "a-chain-0"]
+            .iter()
+            .map(|id| {
+                chains
+                    .iter()
+                    .find(|c| c.reference.local_geometry_id == *id)
+                    .unwrap()
+                    .reference
+                    .clone()
+            })
+            .collect();
         let preview = engine::run(Command::Preview {
             job: job.to_json().unwrap(),
             have_artwork: None,
@@ -195,6 +239,7 @@ mod tests {
             );
         };
         for (label, expected) in [
+            ("Remove undrawable paths", vec!["b-chain-0", "a-chain-0"]),
             (
                 "Select all plot paths",
                 vec!["a-chain-0", "b-chain-0", "c-chain-0", "d-chain-0"],

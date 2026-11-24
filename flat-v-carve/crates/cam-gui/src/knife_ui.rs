@@ -222,7 +222,7 @@ impl App {
                 selected.clear();
             }
             if self.active.is_none()
-                && let Some(chosen) = source_identity::select_chain_group(ui, &chains)
+                && let Some(chosen) = source_identity::select_chain_group(ui, chains.iter())
             {
                 selected = chosen;
             }

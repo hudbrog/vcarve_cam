@@ -302,6 +302,8 @@ pub fn import_svg(filename: String, svg: String) -> Result<CamJobV5, String> {
 pub struct Chain {
     pub reference: GeometryRef,
     pub closed: bool,
+    #[serde(default)]
+    pub(crate) undrawable_for_plot: bool,
     pub vertices: Vec<[f64; 2]>,
     /// The element's own `inkscape:label`, when the editor recorded one.
     pub label: Option<String>,
@@ -333,6 +335,7 @@ pub fn chains_of(catalogue: &artwork::CombinedCatalogue) -> Vec<Chain> {
                 Some(Chain {
                     reference: entry.reference.clone(),
                     closed: contour.closed,
+                    undrawable_for_plot: entry.is_undrawable_plot_path(),
                     vertices: contour.vertices.iter().map(|p| [p.x, p.y]).collect(),
                     label: entry.label.clone(),
                     group: entry.group.clone(),

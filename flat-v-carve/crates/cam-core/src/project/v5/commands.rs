@@ -449,13 +449,12 @@ pub fn place_artwork(
 }
 
 /// Resolve one pick against the combined catalogue and bind the item's
-/// current revision, returning the canonical reference plus the geometry's
-/// current fingerprint for anchor construction.
-fn bind_pick(
-    catalogue: &artwork::CombinedCatalogue,
+/// current revision. The entry also supplies its fingerprint for anchor construction.
+fn bind_pick<'a>(
+    catalogue: &'a artwork::CombinedCatalogue,
     pick: &artwork::GeometryPick,
     context: &str,
-) -> Result<(GeometryRef, String)> {
+) -> Result<&'a artwork::CatalogueEntry> {
     let item = catalogue.item(&pick.artwork_item_id).ok_or_else(|| {
         command_error(format!(
             "{context} addresses unknown artwork item '{}'",
@@ -468,8 +467,7 @@ fn bind_pick(
             pick.artwork_item_id.0
         )));
     }
-    let entry = item
-        .entries
+    item.entries
         .iter()
         .find(|entry| {
             entry.kind == pick.kind && entry.reference.local_geometry_id == pick.local_geometry_id
@@ -481,8 +479,7 @@ fn bind_pick(
                 pick.local_geometry_id,
                 pick.artwork_item_id.0
             ))
-        })?;
-    Ok((entry.reference.clone(), entry.source_fingerprint.clone()))
+        })
 }
 
 fn operation_index(job: &CamJobV5, operation_id: &str) -> Result<usize> {
@@ -517,7 +514,8 @@ pub fn set_component_selection(
                 pick,
                 &format!("operation '{operation_id}' components[{index}]"),
             )?
-            .0,
+            .reference
+            .clone(),
         );
     }
     let index = operation_index(job, operation_id)?;
@@ -549,7 +547,9 @@ pub fn replace_component_reference(
         return Err(command_error("Replacement must be a filled component"));
     }
     let catalogue = artwork::inspect_artwork(job)?;
-    let bound = bind_pick(&catalogue, replacement, "replacement")?.0;
+    let bound = bind_pick(&catalogue, replacement, "replacement")?
+        .reference
+        .clone();
     let index = operation_index(job, operation_id)?;
     let mut candidate = job.clone();
     let components = match &mut candidate.operations[index].settings {
@@ -624,7 +624,8 @@ pub fn set_contour_selection(
                 &pick.geometry,
                 &format!("operation '{operation_id}' contours[{index}]"),
             )?
-            .0,
+            .reference
+            .clone(),
             side: pick.side,
             traversal: pick.traversal,
         });
@@ -652,6 +653,11 @@ pub fn set_chain_selection(
     chains: &[artwork::GeometryPick],
 ) -> Result<CommandOutcome> {
     let catalogue = artwork::inspect_artwork(job)?;
+    let operation = operation_index(job, operation_id)?;
+    let plot = matches!(
+        job.operations[operation].settings,
+        OperationSettingsV5::CenterlinePlot(_)
+    );
     let mut bound = Vec::with_capacity(chains.len());
     for (index, pick) in chains.iter().enumerate() {
         if pick.kind != GeometryRefKind::Centerline {
@@ -662,18 +668,21 @@ pub fn set_chain_selection(
                 kind_name(pick.kind)
             )));
         }
-        bound.push(
-            bind_pick(
-                &catalogue,
-                pick,
-                &format!("operation '{operation_id}' chains[{index}]"),
-            )?
-            .0,
-        );
+        let entry = bind_pick(
+            &catalogue,
+            pick,
+            &format!("operation '{operation_id}' chains[{index}]"),
+        )?;
+        if plot && entry.is_undrawable_plot_path() {
+            return Err(command_error(format!(
+                "Plot chain '{}' has no drawable path",
+                entry.wire_id
+            )));
+        }
+        bound.push(entry.reference.clone());
     }
-    let index = operation_index(job, operation_id)?;
     let mut candidate = job.clone();
-    match &mut candidate.operations[index].settings {
+    match &mut candidate.operations[operation].settings {
         OperationSettingsV5::CenterlinePlot(settings) => settings.chains = bound,
         OperationSettingsV5::DragKnife(settings) => settings.chains = bound,
         _ => {
@@ -682,6 +691,33 @@ pub fn set_chain_selection(
             )));
         }
     }
+    CommandOutcome::commit(
+        candidate,
+        vec![AffectedEntity::Operation(operation_id.into())],
+    )
+}
+
+/// Clean an existing plot selection without rebinding its references. A stale
+/// reference still needs its own repair even when its local ID is reused.
+pub fn remove_undrawable_plot_paths(job: &CamJobV5, operation_id: &str) -> Result<CommandOutcome> {
+    let operation = operation_index(job, operation_id)?;
+    let mut candidate = job.clone();
+    let OperationSettingsV5::CenterlinePlot(settings) =
+        &mut candidate.operations[operation].settings
+    else {
+        return Err(command_error("Select a Centerline Plot operation"));
+    };
+    let catalogue = artwork::inspect_artwork(job)?;
+    let undrawable: std::collections::HashSet<_> = catalogue
+        .items
+        .iter()
+        .flat_map(|item| &item.entries)
+        .filter(|entry| entry.is_undrawable_plot_path())
+        .map(|entry| &entry.reference)
+        .collect();
+    settings
+        .chains
+        .retain(|reference| !undrawable.contains(reference));
     CommandOutcome::commit(
         candidate,
         vec![AffectedEntity::Operation(operation_id.into())],
@@ -800,7 +836,7 @@ pub fn reattach_anchor(
         )));
     }
     let catalogue = artwork::inspect_artwork(job)?;
-    let (geometry, fingerprint) = bind_pick(
+    let entry = bind_pick(
         &catalogue,
         pick,
         &format!("operation '{operation_id}' anchor"),
@@ -808,8 +844,8 @@ pub fn reattach_anchor(
     let index = operation_index(job, operation_id)?;
     let mut candidate = job.clone();
     let rebuild = |anchor: &mut ContourAnchorV5| {
-        anchor.geometry = geometry.clone();
-        anchor.source_geometry_fingerprint = fingerprint.clone();
+        anchor.geometry = entry.reference.clone();
+        anchor.source_geometry_fingerprint = entry.source_fingerprint.clone();
         if let Some(fraction) = fraction {
             anchor.fraction_along_source_contour = fraction;
         }

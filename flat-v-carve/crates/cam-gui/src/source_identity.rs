@@ -132,11 +132,11 @@ pub fn select_all<T: Clone>(ui: &mut egui::Ui, rows: &[SourceRow<'_, T>]) -> Opt
     chosen
 }
 
-pub fn select_chain_group(
+pub fn select_chain_group<'a>(
     ui: &mut egui::Ui,
-    chains: &[crate::knife::Chain],
+    chains: impl Iterator<Item = &'a crate::knife::Chain>,
 ) -> Option<Vec<cam_core::project::v5::GeometryRef>> {
-    let rows: Vec<_> = chains.iter().map(chain_row).collect();
+    let rows: Vec<_> = chains.map(chain_row).collect();
     select_all(ui, &rows).map(|chosen| chosen.into_iter().cloned().collect())
 }
 

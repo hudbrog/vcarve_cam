@@ -2723,6 +2723,44 @@ mod tests {
     }
 
     #[test]
+    fn plot_viewport_picks_the_line_but_skips_the_zero_length_polyline() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20" fill="none" stroke="black"><polyline id="dot" points="5,10 5,10"/><path id="line" d="M12 10h4"/></svg>"#;
+        let job = crate::authoring::import_svg("plot.svg".into(), svg.into()).unwrap();
+        let mut view = Viewport::default();
+        view.load_scene(crate::session::run(crate::session::Command::Preview {
+            job: job.to_json().unwrap(),
+            have_artwork: None,
+        }));
+        view.plot_selected = true;
+        view.artwork.enabled = true;
+        view.camera.set_tilt(0.);
+        view.camera.yaw = 0.;
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&mut view, &ctx, vec![]);
+        }
+        let rect = viewport_rect();
+        let bounds = view.scene.as_ref().unwrap().meta.bounds;
+        for (x, expected) in [(5., None), (14., Some("line-chain-0"))] {
+            let point = crate::artwork_view::screen_point(
+                view.camera(rect),
+                bounds,
+                rect,
+                cam_core::geometry::Point::new(x, 10.),
+            );
+            click(&mut view, &ctx, point);
+            let events = view.take_artwork_events();
+            let picked = events.iter().find_map(|event| match event {
+                ArtworkEvent::ChainSelection(refs) => {
+                    refs.first().map(|r| r.local_geometry_id.as_str())
+                }
+                _ => None,
+            });
+            assert_eq!(picked, expected);
+        }
+    }
+
+    #[test]
     fn knife_shift_click_extends_live_selection_while_the_scene_is_retained() {
         let job = include_str!("../../../fixtures/gui6/knife.job.json").to_owned();
         let scene = crate::session::execute(

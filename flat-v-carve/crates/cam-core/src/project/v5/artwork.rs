@@ -186,6 +186,13 @@ pub struct CatalogueEntry {
     pub vertices: usize,
 }
 
+impl CatalogueEntry {
+    pub fn is_undrawable_plot_path(&self) -> bool {
+        self.kind == GeometryRefKind::Centerline
+            && !crate::operations::plot::drawable(self.closed, self.vertices, self.perimeter_mm)
+    }
+}
+
 /// One user-facing drillable marker: display metadata, the setup-space
 /// center and the marker diameter. Analytic circle markers measure exactly;
 /// derived centroid markers carry the area-equivalent diameter. The diameter

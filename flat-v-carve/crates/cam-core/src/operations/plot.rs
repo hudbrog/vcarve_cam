@@ -96,6 +96,10 @@ fn stroke_ends(chain: &Contour, gap: f64) -> Result<impl Iterator<Item = Point> 
     Err(too_long())
 }
 
+pub(crate) fn drawable(closed: bool, vertices: usize, perimeter_mm: f64) -> bool {
+    vertices >= if closed { 3 } else { 2 } && perimeter_mm > 0.
+}
+
 pub(crate) fn plan(
     ctx: &PlanContext,
     id: &str,
@@ -130,12 +134,14 @@ pub(crate) fn plan(
                 ),
             ));
         };
-        if chain.vertices.len() < if chain.closed { 3 } else { 2 } || chain.perimeter_mm <= 0. {
+        if !drawable(chain.closed, chain.vertices.len(), chain.perimeter_mm) {
             return Ok(incomplete_with(
                 id,
                 Diagnostic::new(
                     "PLOT_DEGENERATE_CHAIN",
-                    format!("Plot chain '{wire}' has no drawable path"),
+                    format!(
+                        "Plot chain '{wire}' has no drawable path. Use Remove undrawable paths in the Paths tab."
+                    ),
                 ),
             ));
         }
