@@ -373,6 +373,50 @@ fn many_small_curve_turns_keep_compensation_and_tip_accuracy() {
 }
 
 #[test]
+fn smooth_arc_samples_share_cuts_while_a_shallow_authored_corner_still_swivels() {
+    let svg = r#"<path id="cut" fill="none" stroke="black" d="M12 5 A7 7 0 0 1 19 12 L21 22"/>"#;
+    let mut settings = knife_settings(&["cut-chain-0"]);
+    settings.corner_threshold_deg = Some(1.);
+    let offset = 0.01;
+    let merged = complete_plan_with_offset(svg, settings.clone(), offset);
+    settings.path_simplification_mm = Some(0.);
+    let exact = complete_plan_with_offset(svg, settings, offset);
+    assert!(merged.motions.len() < exact.motions.len() / 2);
+
+    let center = setup_point(12., 12.);
+    let corner = setup_point(19., 12.);
+    let mut merged_cuts = 0;
+    for motion in knife_motions(&merged).iter().filter(|m| m.layer == 0) {
+        if motion.purpose == MotionPurpose::KnifeSwivel
+            && let Interpolation::ArcFeed(arc) = motion.interpolation
+        {
+            assert!(arc.center.distance(corner) < 1e-9);
+        }
+        if motion.purpose == MotionPurpose::KnifeCut
+            && let Some((a, b)) = motion.blade_heading_deg
+            && a != b
+        {
+            assert_eq!(motion.interpolation, Interpolation::LinearFeed);
+            for (pivot, heading) in [(motion.start, a), (motion.end, b)] {
+                let tip = knife_tip(pivot.xy(), heading, offset);
+                assert!((tip.distance(center) - 7.).abs() < 1e-8);
+            }
+            merged_cuts += 1;
+        }
+    }
+    assert!(merged_cuts > 3);
+    assert!(knife_motions(&merged).iter().any(|m| {
+        m.purpose == MotionPurpose::KnifeSwivel &&
+            matches!(m.interpolation, Interpolation::ArcFeed(arc) if arc.center.distance(corner) < 1e-9)
+    }));
+    assert!(knife_motions(&exact).iter().all(|m| {
+        m.purpose != MotionPurpose::KnifeCut
+            || m.interpolation != Interpolation::LinearFeed
+            || m.blade_heading_deg.is_some_and(|(a, b)| a == b)
+    }));
+}
+
+#[test]
 fn concave_right_turn_swivels_clockwise_around_the_corner() {
     // Incoming +X, outgoing -Y: a -90-degree (clockwise) swivel. Tip corner
     // (15,25); holder endpoints (16,25) and (15,24).

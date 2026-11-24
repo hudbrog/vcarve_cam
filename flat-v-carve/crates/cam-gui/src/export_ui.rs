@@ -214,7 +214,7 @@ fn draw_motion_histogram(ui: &mut egui::Ui, label: &str, profile: &Value) {
     };
     ui.add_space(4.);
     ui.small(format!(
-        "{label} · {moves} moves ({arcs} arcs) · median {median:.4} mm · {:.0}% under {MICRO_MOVE_MM} mm",
+        "{label} · {moves} moves ({arcs} arcs) · {total} XY feed moves · median {median:.4} mm · {:.0}% under {MICRO_MOVE_MM} mm",
         share * 100.
     ));
     let width = ui.available_width().min(460.);

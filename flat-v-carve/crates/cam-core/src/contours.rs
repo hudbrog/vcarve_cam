@@ -31,7 +31,7 @@ const FINGERPRINT_STEP_MM: f64 = 0.01;
 /// them.
 const CHAIN_SIMPLIFY_BUDGET_FRACTION: f64 = 4.;
 /// Turns sharper than this are corners and always survive simplification.
-const CHAIN_CORNER_TURN_DEG: f64 = 30.;
+pub(crate) const CHAIN_CORNER_TURN_DEG: f64 = 30.;
 
 /// Contour IDs use the document's identifier alphabet. The importer's
 /// component IDs (`source::index`) are normalized into it deterministically
@@ -93,6 +93,8 @@ pub struct Contour {
     /// vertices for open chains. Traversal direction for cutting is chosen by
     /// the planner and never inferred from this winding.
     pub vertices: Vec<Point>,
+    /// SVG command boundaries in setup space, when the chain includes curve samples.
+    pub(crate) command_vertices: Option<Vec<Point>>,
     pub perimeter_mm: f64,
     /// The same ring in placement-independent page space, rotated to its
     /// deterministic canonical start (closed contours) or in source order
@@ -290,6 +292,7 @@ impl ContourCatalogue {
                 perimeter_mm: perimeter(&outer_setup),
                 source_fingerprint: fingerprint(&outer_page),
                 vertices: outer_setup,
+                command_vertices: None,
                 page_vertices: outer_page,
                 placement: placement.clone(),
             });
@@ -307,6 +310,7 @@ impl ContourCatalogue {
                     perimeter_mm: perimeter(&setup),
                     source_fingerprint: fingerprint(&page_ring),
                     vertices: setup,
+                    command_vertices: None,
                     page_vertices: page_ring,
                     placement: placement.clone(),
                 });
@@ -347,6 +351,10 @@ impl ContourCatalogue {
                 role: ContourRole::Open,
                 parent_contour_id: None,
                 perimeter_mm: perimeter_of(&vertices, chain.closed),
+                command_vertices: chain
+                    .command_vertices
+                    .as_ref()
+                    .map(|indices| indices.iter().map(|&i| placed[i]).collect()),
                 source_fingerprint: fingerprint(&page_vertices),
                 vertices,
                 page_vertices,
@@ -397,6 +405,7 @@ impl ContourCatalogue {
                 role: ContourRole::Outer,
                 parent_contour_id: None,
                 perimeter_mm: perimeter_of(&vertices, true),
+                command_vertices: None,
                 source_fingerprint: fingerprint(&page_vertices),
                 vertices,
                 page_vertices,

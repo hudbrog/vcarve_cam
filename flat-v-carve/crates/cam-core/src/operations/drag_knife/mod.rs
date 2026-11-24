@@ -29,7 +29,7 @@ use crate::{
     toolpath::{Interpolation, MotionEffect, MotionPurpose, PlannedMotion},
 };
 use replay::{IntendedTip, ReplayStatus, replay};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 fn error(code: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, message).at_stage("drag_knife")
@@ -81,16 +81,25 @@ const TIP_BLEND_HEADROOM_SHARE: f64 = 2.;
 const AMBIGUOUS_ALIGNMENT_DEG: f64 = 0.5;
 const MIN_REPLAY_STEP_BUDGET: usize = 2_000_000;
 
+fn is_curve_chord(motion: &PlannedMotion) -> bool {
+    motion.purpose == MotionPurpose::KnifeCut
+        && motion.interpolation == Interpolation::LinearFeed
+        && motion.blade_heading_deg.is_some_and(|(a, b)| a != b)
+        && motion.start.xy().distance(motion.end.xy()) > crate::checks::ARC_RESERVE_MM
+}
+
 pub(crate) fn replay_step_budget(motions: &[PlannedMotion]) -> usize {
-    // The adaptive integrator charges eight units per step attempt. Allow
-    // sixteen attempts per contact motion on dense jobs, with a hard cap.
+    // The integrator charges eight units per attempted step. On an aligned
+    // cut the blade is already at equilibrium. On a curve chord its heading
+    // changes along the line and needs smaller adaptive steps.
     let contacts = motions
         .iter()
         .filter(|m| m.effect == MotionEffect::KnifeTrace)
         .count();
-    contacts
-        .saturating_mul(16 * 8)
-        .clamp(MIN_REPLAY_STEP_BUDGET, 16_000_000)
+    let chords = motions.iter().filter(|m| is_curve_chord(m)).count();
+    let base = contacts.saturating_mul(16 * 8).min(16_000_000);
+    let additional = chords.saturating_mul((256 - 16) * 8).min(32_000_000);
+    (base + additional).max(MIN_REPLAY_STEP_BUDGET)
 }
 
 fn incomplete(issues: Vec<PlanIssue>) -> PlannedOperation {
@@ -274,9 +283,15 @@ fn signed_turn_deg(t_in: Point, t_out: Point) -> f64 {
 /// One element of the ideal holder path.
 #[derive(Clone, Copy, Debug)]
 enum PathElement {
-    /// The tip travels `from` -> `to` along unit tangent `t`; the holder
-    /// rides the parallel line `d` ahead of the tip.
-    Line { from: Point, to: Point, t: Point },
+    /// The target tip segment is `from` to `to`. The holder travels from
+    /// `from + d*start_t` to `to + d*t`. A curve chord carries the preceding
+    /// tangent at its start. An exactly compensated line has equal tangents.
+    Line {
+        from: Point,
+        to: Point,
+        start_t: Point,
+        t: Point,
+    },
     /// The tip stays planted at `center` while the holder pivots on the
     /// radius-`d` arc around it, starting at angle `psi_start` (the incoming
     /// travel direction) by the signed `sweep_rad` (the corner's turn).
@@ -298,6 +313,30 @@ struct KnifePath {
     /// What the tip simplification removed on this chain and how far it
     /// moved those vertices (plan section 12.4 step 2b).
     simplification: TipSimplification,
+}
+
+/// Authored SVG joins in setup space. Cleanup, ring rotation and overlap
+/// copy the vertices, so their exact coordinates also identify repeated joins.
+struct CurveJoins {
+    authored: Option<HashSet<(u64, u64)>>,
+    chord_budget_mm: f64,
+}
+
+impl CurveJoins {
+    fn key(p: Point) -> (u64, u64) {
+        let bits = |x: f64| if x == 0. { 0 } else { x.to_bits() };
+        (bits(p.x), bits(p.y))
+    }
+
+    fn smooth_sample(&self, p: Point, seam: Point, turn_deg: f64) -> bool {
+        // Keep the seam and abrupt turns (including near-cusps on a Bézier).
+        p != seam
+            && turn_deg.abs() < crate::contours::CHAIN_CORNER_TURN_DEG
+            && self
+                .authored
+                .as_ref()
+                .is_some_and(|set| !set.contains(&Self::key(p)))
+    }
 }
 
 /// Measured result of merging near-collinear tip vertices on one chain.
@@ -453,8 +492,8 @@ fn clean_degenerate_segments(points: &mut Vec<Point>, closed: bool, budget_mm: f
 /// twice over. This removes the vertices the import tolerance already allows
 /// to move, and with them the moves that carried them. It is bounded by
 /// `budget_mm` — named by the operation, or the planner's declared share of
-/// the motion tolerance — and a turn at or above `corner_threshold_deg` is a
-/// corner that always survives, so no swivel is merged away. The first vertex
+/// the motion tolerance. Authored turns at or above `corner_threshold_deg`
+/// survive. Samples inside a regular SVG curve may merge. The first vertex
 /// (the chain start, or the closed ring's seam) and the last (the open end,
 /// or the seam's repeat) are never removed.
 ///
@@ -469,6 +508,7 @@ fn simplify_tip(
     closed: bool,
     budget_mm: f64,
     corner_threshold_deg: f64,
+    joins: &CurveJoins,
 ) -> Result<TipSimplification> {
     let before = points.len();
     let mut evidence = TipSimplification {
@@ -495,7 +535,9 @@ fn simplify_tip(
             Point::new(next.x - candidate.x, next.y - candidate.y),
         )
         .abs();
-        if turn >= corner_threshold_deg {
+        if (joins.authored.is_some() && candidate == points[0])
+            || (turn >= corner_threshold_deg && !joins.smooth_sample(candidate, points[0], turn))
+        {
             keep[index] = true;
         }
     }
@@ -584,6 +626,7 @@ fn build_path(
     near_zero_mm: f64,
     simplify_mm: f64,
     corner_threshold_deg: f64,
+    joins: &CurveJoins,
 ) -> Result<KnifePath> {
     let mut tip = tip_polyline(vertices, closed, overlap_mm, near_zero_mm, chain_id)?;
     clean_degenerate_segments(&mut tip, closed, near_zero_mm);
@@ -593,6 +636,7 @@ fn build_path(
         closed,
         simplify_mm,
         corner_threshold_deg,
+        joins,
     )?;
     let mut elements = vec![];
     let mut previous_tangent: Option<Point> = None;
@@ -604,6 +648,7 @@ fn build_path(
             continue;
         }
         let t = Point::new((to.x - from.x) / length, (to.y - from.y) / length);
+        let mut start_t = t;
         if let Some(t_in) = previous_tangent {
             let turn = signed_turn_deg(t_in, t);
             if turn.abs() > AMBIGUOUS_REVERSAL_DEG {
@@ -617,13 +662,30 @@ fn build_path(
                     ),
                 ));
             }
-            elements.push(PathElement::Arc {
-                center: from,
-                psi_start: angle_of(t_in),
-                sweep_rad: turn.to_radians(),
-            });
+            // At an interior sample of a smooth curve, carry the incoming
+            // pivot into the next cut if the entire adjustment fits within
+            // its chord budget. Both modeled endpoints still address the
+            // original tip segment. Replay measures the intervening tip.
+            let pivot_adjustment = blade_offset_mm * t_in.distance(t);
+            if joins.smooth_sample(from, tip[0], turn)
+                && pivot_adjustment <= joins.chord_budget_mm
+                && length >= 2. * blade_offset_mm
+            {
+                start_t = t_in;
+            } else {
+                elements.push(PathElement::Arc {
+                    center: from,
+                    psi_start: angle_of(t_in),
+                    sweep_rad: turn.to_radians(),
+                });
+            }
         }
-        elements.push(PathElement::Line { from, to, t });
+        elements.push(PathElement::Line {
+            from,
+            to,
+            start_t,
+            t,
+        });
         previous_tangent = Some(t);
     }
     // Closure (plan section 12.4 step 6): with an overlap the seam corner is
@@ -1100,6 +1162,51 @@ pub(crate) fn plan(
     prior_motions: &[PlannedMotion],
     geometry: &PlannerGeometry,
 ) -> Result<PlannedOperation> {
+    // The stock-prefix proof after milling assumes exact, planted swivels.
+    let allow_curve_chords = settings.path_simplification_mm != Some(0.)
+        && !prior_motions
+            .iter()
+            .any(|m| m.effect == MotionEffect::MillingSweep);
+    let generate = |allow| {
+        plan_chains(
+            ctx,
+            operation_id,
+            settings,
+            published_faces,
+            prior_motions,
+            geometry,
+            allow,
+        )
+    };
+    let candidate = generate(allow_curve_chords)?;
+    // A different first/last tangent can affect a required entry or corner.
+    // Retry the original compensated geometry when a candidate cannot be verified.
+    if allow_curve_chords
+        && candidate.issues.iter().any(|i| {
+            matches!(
+                i.code.as_str(),
+                "KNIFE_ALIGNMENT_UNAVAILABLE"
+                    | "KNIFE_CORNER_AMBIGUOUS"
+                    | "KNIFE_REPLAY_BUDGET"
+                    | "KNIFE_TIP_ERROR"
+            )
+        })
+    {
+        generate(false)
+    } else {
+        Ok(candidate)
+    }
+}
+
+fn plan_chains(
+    ctx: &PlanContext,
+    operation_id: &str,
+    settings: &DragKnifeSettings,
+    published_faces: &BTreeMap<String, crate::operations::PublishedFace>,
+    prior_motions: &[PlannedMotion],
+    geometry: &PlannerGeometry,
+    allow_curve_chords: bool,
+) -> Result<PlannedOperation> {
     let missing = missing_fields_ctx(
         ctx,
         operation_id,
@@ -1267,6 +1374,16 @@ pub(crate) fn plan(
     let mut paths = vec![];
     for chain in &selected {
         let mut vertices = chain.vertices.clone();
+        let joins = CurveJoins {
+            authored: chain
+                .command_vertices
+                .as_ref()
+                .filter(|_| allow_curve_chords && simplify > 0.)
+                .map(|points| points.iter().copied().map(CurveJoins::key).collect()),
+            chord_budget_mm: linearization_error
+                .min((tolerance - simplify).max(0.))
+                .min(simplify),
+        };
         if let Some(anchor) = &anchored
             && anchor.contour_id == chain.id
         {
@@ -1314,6 +1431,7 @@ pub(crate) fn plan(
                 near_zero,
                 simplify,
                 corner_threshold,
+                &joins,
             )
         };
         let carried = paths.last().map_or(heading, KnifePath::last_heading);
@@ -1556,7 +1674,12 @@ pub(crate) fn plan(
             };
             for element in &path.elements {
                 match *element {
-                    PathElement::Line { from, to, t } => {
+                    PathElement::Line {
+                        from,
+                        to,
+                        start_t,
+                        t,
+                    } => {
                         let end = Position {
                             x: to.x + d * t.x,
                             y: to.y + d * t.y,
@@ -1575,7 +1698,10 @@ pub(crate) fn plan(
                             position,
                             end,
                             Some(cutting_feed),
-                            Some((heading_deg(travel_heading), heading_deg(travel_heading))),
+                            Some((
+                                heading_deg(angle_of(Point::new(-start_t.x, -start_t.y))),
+                                heading_deg(travel_heading),
+                            )),
                             Some(chain_id.clone()),
                             ctx.pass,
                             ctx.layer,
@@ -1724,11 +1850,23 @@ pub(crate) fn plan(
     // on the emitted holder polyline, not a display derivation from the
     // modeled headings.
     let step_budget = replay_step_budget(&emitter.motions);
+    let max_removed_deviation = paths
+        .iter()
+        .map(|p| p.simplification.max_removed_deviation_mm)
+        .fold(0., f64::max);
+    let used_chords = allow_curve_chords && emitter.motions.iter().any(is_curve_chord);
+    let replay_tolerance = if used_chords {
+        linearization_error
+            .min(simplify)
+            .min(tolerance - max_removed_deviation)
+    } else {
+        tolerance
+    };
     let outcome = replay(
         &emitter.motions,
         d,
         &emitter.intended,
-        tolerance,
+        replay_tolerance,
         step_budget,
     );
     match outcome.status {
@@ -1748,7 +1886,7 @@ pub(crate) fn plan(
             "KNIFE_TIP_ERROR",
             format!(
                 "the replayed blade tip deviates {:.4} mm from the intended tip path (budget {:.4} mm, heading error {:.3} deg)",
-                outcome.max_tip_deviation_mm, tolerance, outcome.max_heading_error_deg
+                outcome.max_tip_deviation_mm, replay_tolerance, outcome.max_heading_error_deg
             ),
             operation_id,
         )])),
@@ -1760,10 +1898,7 @@ pub(crate) fn plan(
                 tolerance_mm: simplify,
                 vertices_before: paths.iter().map(|p| p.simplification.vertices_before).sum(),
                 vertices_after: paths.iter().map(|p| p.simplification.vertices_after).sum(),
-                max_removed_deviation_mm: paths
-                    .iter()
-                    .map(|p| p.simplification.max_removed_deviation_mm)
-                    .fold(0., f64::max),
+                max_removed_deviation_mm: max_removed_deviation,
             };
             Ok(PlannedOperation {
                 named_outputs: vec![NamedOutput {
@@ -1788,7 +1923,15 @@ pub(crate) fn plan(
                     intent: ProcessIntent {
                         spindle: ProcessSpindle::Off,
                         coolant: CoolantIntent::Off,
-                        path_control: blend_intent(tolerance, outcome.max_tip_deviation_mm),
+                        path_control: blend_intent(
+                            tolerance,
+                            outcome.max_tip_deviation_mm
+                                + if used_chords {
+                                    max_removed_deviation
+                                } else {
+                                    0.
+                                },
+                        ),
                     },
                 }],
                 motions: emitter.motions,

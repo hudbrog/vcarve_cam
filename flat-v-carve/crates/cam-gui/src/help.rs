@@ -269,7 +269,7 @@ const FIELD_HELP: [&str; 126] = [
     "Maximum depth increment allowed by this tool assignment, in millimeters. Applying a knife profile copies this limit.",
     "Requested depth increment between knife passes, in millimeters. The planner checks it against the tool assignment limit.",
     "Blade engagement below the operation top while swiveling, in millimeters. Lifting completely clear cannot establish passive heading.",
-    "Corner angle threshold in degrees used by the knife planner to choose supported corner handling.",
+    "A turn at or above this angle calls for a planted swivel at the configured swivel depth. With path simplification enabled, the planner can combine short adjustments along a smooth SVG curve within the motion tolerance.",
     "Optional additional through-cut allowance in millimeters. Leave blank when no extra allowance is intended; confirm physical backing separately.",
     "Optional overlap length in millimeters past closure on a closed knife chain. Open chains do not receive artificial closing segments.",
     "Explicit initial blade heading in degrees counterclockwise from +X, pointing from pivot toward tip. It must match the physical blade alignment.",

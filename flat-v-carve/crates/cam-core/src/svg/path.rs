@@ -101,6 +101,9 @@ impl Matrix {
 pub(super) struct ChainPoints {
     pub closed: bool,
     pub points: Vec<Point>,
+    /// For tessellated curves, distinguish authored joins from inserted samples.
+    /// A chain made entirely of straight edges needs no index.
+    pub command_vertices: Option<Vec<usize>>,
 }
 
 pub(super) struct Flattener {
@@ -112,6 +115,8 @@ pub(super) struct Flattener {
     /// used for.
     pub chains: Vec<ChainPoints>,
     pub total: usize,
+    command_vertices: Vec<usize>,
+    has_curve_samples: bool,
 }
 impl Flattener {
     pub fn new(matrix: Matrix, tolerance: f64) -> Self {
@@ -121,6 +126,8 @@ impl Flattener {
             points: vec![],
             chains: vec![],
             total: 0,
+            command_vertices: vec![],
+            has_curve_samples: false,
         }
     }
     pub fn push(&mut self, p: Point) -> Result<()> {
@@ -168,8 +175,11 @@ impl Flattener {
         if closed && coincident && self.points.len() > 1 {
             self.points.pop();
         }
+        let mut commands = std::mem::take(&mut self.command_vertices);
+        commands.retain(|&i| i < self.points.len());
         self.chains.push(ChainPoints {
             closed,
+            command_vertices: std::mem::take(&mut self.has_curve_samples).then_some(commands),
             points: std::mem::take(&mut self.points),
         });
     }
@@ -348,6 +358,7 @@ impl Flattener {
                     cursor = cursor.resolve(abs, x, y);
                     start = cursor;
                     self.push(self.matrix.apply(cursor.point()))?;
+                    self.command_vertices.push(0);
                 }
                 S::ClosePath { .. } => {
                     self.finish(true);
@@ -356,7 +367,9 @@ impl Flattener {
                 other => {
                     if self.points.is_empty() {
                         self.push(self.matrix.apply(current))?;
+                        self.command_vertices.push(0);
                     }
+                    let before = self.points.len();
                     match other {
                         S::LineTo { abs, x, y } => {
                             cursor = cursor.resolve(abs, x, y);
@@ -441,6 +454,10 @@ impl Flattener {
                             )?;
                         }
                         _ => unreachable!(),
+                    }
+                    if self.points.len() > before {
+                        self.has_curve_samples |= self.points.len() - before > 1;
+                        self.command_vertices.push(self.points.len() - 1);
                     }
                 }
             }

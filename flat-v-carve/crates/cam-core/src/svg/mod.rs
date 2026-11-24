@@ -233,6 +233,8 @@ pub struct SourceChain {
     pub paint: Option<SourcePaint>,
     pub closed: bool,
     pub points: Vec<Point>,
+    #[serde(skip)]
+    pub(crate) command_vertices: Option<Vec<usize>>,
 }
 /// An analytic marker point captured from a `<circle>` or `<ellipse>`
 /// element: the exact center and radii, in page millimetres, before
@@ -295,6 +297,7 @@ struct RawChain {
     paint: Option<SourcePaint>,
     closed: bool,
     points: Vec<Point>,
+    command_vertices: Option<Vec<usize>>,
 }
 struct RawPoint {
     id: String,
@@ -560,6 +563,7 @@ pub fn import_svg(
             paint: chain.paint,
             closed: chain.closed,
             points: chain.points,
+            command_vertices: chain.command_vertices,
         });
     }
     // Analytic marker points: one per circle/ellipse element, page space, in
@@ -1078,6 +1082,7 @@ impl Reader {
                 paint,
                 closed: chain.closed,
                 points: chain.points.clone(),
+                command_vertices: chain.command_vertices.clone(),
             });
         }
         // The fill reading: the same subpaths taken as rings. A renderer closes
@@ -1173,6 +1178,7 @@ impl Reader {
                 };
                 vec![ChainPoints {
                     closed: false,
+                    command_vertices: None,
                     points: vec![
                         transform.apply(Point::new(at("x1")?, at("y1")?)),
                         transform.apply(Point::new(at("x2")?, at("y2")?)),
@@ -1189,6 +1195,7 @@ impl Reader {
                 }
                 vec![ChainPoints {
                     closed: false,
+                    command_vertices: None,
                     points: list,
                 }]
             }
@@ -1207,6 +1214,7 @@ impl Reader {
                 }
                 vec![ChainPoints {
                     closed: true,
+                    command_vertices: None,
                     points: list,
                 }]
             }
@@ -1239,6 +1247,7 @@ impl Reader {
                 f.points.pop();
                 Ok(vec![ChainPoints {
                     closed: true,
+                    command_vertices: Some(vec![0]),
                     points: f.points,
                 }])
             }
@@ -1257,6 +1266,7 @@ impl Reader {
                 if rx == 0. || ry == 0. {
                     return Ok(vec![ChainPoints {
                         closed: true,
+                        command_vertices: None,
                         points: [
                             Point::new(x, y),
                             Point::new(x + w, y),
