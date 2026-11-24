@@ -22,15 +22,15 @@ build/test commands and [Windows setup](flat-v-carve/README.md#windows-setup).
 
 Jobs embed SVG artwork and their tool/machine settings in one schema-5 document.
 Planning records ordered motions and stock history. Export checks the retained
-plan and emitted numeric program under an explicit LinuxCNC machine contract;
-detailed stock-quality analysis and display simulation have separate guarantees.
+plan and emitted numeric program under a LinuxCNC or Grbl 1.1 machine contract.
+Detailed stock-quality analysis and display simulation have separate guarantees.
 Actual controller qualification and a measured machining trial remain open.
 
 Start with the [documentation index](docs/flat-v-carve/README.md):
 
 - [Architecture](docs/flat-v-carve/architecture.md) and [technical design](docs/flat-v-carve/technical-design.md)
 - [Job and operation contracts](docs/flat-v-carve/job-model.md) and [GUI architecture](docs/flat-v-carve/gui-architecture.md)
-- [Tool library](docs/flat-v-carve/tool-library.md) and [LinuxCNC output](docs/flat-v-carve/linuxcnc.md)
+- [Tool library](docs/flat-v-carve/tool-library.md) and controller output for [LinuxCNC](docs/flat-v-carve/linuxcnc.md) and [Grbl 1.1](docs/flat-v-carve/grbl.md)
 - [Remaining work](docs/flat-v-carve/backlog.md)
 
 Completed plans and review logs are preserved in Git history. Fixture

@@ -478,7 +478,7 @@ impl App {
         }
     }
     pub(super) fn import_machine(&mut self, json: &str) {
-        match cam_core::post::sequence::SequenceProfile::from_json(json) {
+        match cam_core::post::machine::MachineProfile::from_json(json) {
             Ok(mut machine) => {
                 self.resources.error = None;
                 if self
@@ -486,14 +486,18 @@ impl App {
                     .draft
                     .machines
                     .iter()
-                    .any(|m| m.id == machine.id)
+                    .any(|m| m.id() == machine.id())
                 {
-                    machine.id = unique(
+                    machine.set_id(unique(
                         "machine",
-                        self.resources.draft.machines.iter().map(|m| m.id.clone()),
-                    );
+                        self.resources
+                            .draft
+                            .machines
+                            .iter()
+                            .map(|m| m.id().to_owned()),
+                    ));
                 }
-                self.resources.machine = machine.id.clone();
+                self.resources.machine = machine.id().to_owned();
                 self.resources.draft.machines.push(machine);
                 self.resources.dirty = true;
                 self.resources.status =
@@ -1095,16 +1099,68 @@ impl App {
             .draft
             .machines
             .iter()
-            .position(|m| m.id == self.resources.machine)
+            .position(|m| m.id() == self.resources.machine)
         else {
             return;
         };
         let mut machine = self.resources.draft.machines[index].clone();
-        machine_form(ui, &mut machine, &mut self.resources);
-        for error in crate::resources::machine_problems(&machine) {
+        match &mut machine {
+            cam_core::post::machine::MachineProfile::LinuxCnc(p) => {
+                machine_form(ui, p, &mut self.resources)
+            }
+            cam_core::post::machine::MachineProfile::Grbl(p) => {
+                let key = format!("machine/{}", p.id);
+                ui.heading("Grbl 1.1");
+                self.resources.dirty |= ui
+                    .checkbox(
+                        &mut p.counterclockwise_spindle,
+                        "Spindle supports counterclockwise rotation",
+                    )
+                    .changed();
+                self.resources.dirty |= select(
+                    ui,
+                    "Work offset",
+                    &mut p.work_offset,
+                    &["G54", "G55", "G56", "G57", "G58", "G59"].map(|s| (s, s.to_owned())),
+                );
+                required(
+                    ui,
+                    "Configuration clearance",
+                    &format!("{key}/clearance"),
+                    &mut p.clearance_z_mm,
+                    &mut self.resources,
+                );
+                let mut places = p.decimal_places as u32;
+                ui.horizontal(|ui| {
+                    ui.label("Decimal places");
+                    self.resources.dirty |= ui
+                        .add(egui::DragValue::new(&mut places).range(0..=9))
+                        .changed();
+                });
+                p.decimal_places = places as usize;
+                required(
+                    ui,
+                    "Configuration spinup seconds",
+                    &format!("{key}/spinup"),
+                    &mut p.spindle_spinup_seconds,
+                    &mut self.resources,
+                );
+                self.resources.dirty |= select(
+                    ui,
+                    "Coolant",
+                    &mut p.coolant,
+                    &[
+                        ("Off", cam_core::post::Coolant::Off),
+                        ("Flood", cam_core::post::Coolant::Flood),
+                    ],
+                );
+                ui.label("Fit the named tool and touch off Z before each file.");
+            }
+        }
+        for error in crate::resources::profile_problems(&machine) {
             ui.colored_label(Color32::DARK_RED, error);
         }
-        self.resources.machine = machine.id.clone();
+        self.resources.machine = machine.id().to_owned();
         self.resources.draft.machines[index] = machine.clone();
     }
     /// The tool the selected operation's assignment currently addresses,
@@ -1131,7 +1187,20 @@ impl App {
             return;
         };
         let before = machine.clone();
-        if !output {
+        if !output && machine.controller == cam_core::post::machine::Controller::Grbl11 {
+            select(
+                ui,
+                "Job work offset",
+                &mut machine.work_offset,
+                &["G54", "G55", "G56", "G57", "G58", "G59"].map(|s| (s, Some(s.to_owned()))),
+            );
+            select(
+                ui,
+                "Job coolant",
+                &mut machine.coolant,
+                &[("Off", Some(Coolant::Off)), ("Flood", Some(Coolant::Flood))],
+            );
+        } else if !output {
             select(
                 ui,
                 "Job work offset",

@@ -38,6 +38,57 @@ fn run_ok(command: &mut Command) -> String {
 }
 
 #[test]
+fn grbl_applied_profile_round_trips_and_exports_through_the_cli() {
+    use sha2::{Digest, Sha256};
+    let scratch = Scratch::new("grbl");
+    let job = scratch.0.join("job.json");
+    let profile = fixture("fixtures/gui2/grbl-machine.json");
+    run_ok(
+        cam()
+            .args(["collection", "apply-machine"])
+            .arg(fixture("fixtures/pocket/two-pockets.job.json"))
+            .arg("--profile")
+            .arg(&profile)
+            .args(["--name", "Grbl", "--output"])
+            .arg(&job),
+    );
+    let snapshot = json(&job);
+    assert_eq!(snapshot["machine_configuration"]["controller"], "grbl11");
+    assert!(snapshot["machine_configuration"].get("m6").is_none());
+    let resolved = scratch.0.join("resolved.json");
+    run_ok(
+        cam()
+            .args(["collection", "resolve-profile"])
+            .arg(&job)
+            .arg("--output")
+            .arg(&resolved),
+    );
+    assert_eq!(json(&resolved), json(&profile));
+    let dir = scratch.0.join("out");
+    let operation_id = snapshot["operations"][0]["id"].as_str().unwrap();
+    run_ok(
+        cam()
+            .args(["collection", "export"])
+            .arg(&job)
+            .args(["--through", operation_id, "--layout", "one", "--output"])
+            .arg(&dir),
+    );
+    let manifest = json(&dir.join("manifest.json"));
+    let program = fs::read(dir.join("sequence.nc")).unwrap();
+    assert_eq!(
+        manifest["files"][0]["sha256"],
+        format!("{:x}", Sha256::digest(&program))
+    );
+    assert_eq!(manifest["manualSetup"]["workOffset"], "G54");
+    let code = std::str::from_utf8(&program).unwrap();
+    assert!(code.starts_with("M5\nM9\nG21 G17 G90 G94\nG54\nG0 Z5\n"));
+    assert!(
+        code.lines()
+            .any(|l| l.starts_with("G2 ") || l.starts_with("G3 "))
+    );
+}
+
+#[test]
 fn a_stored_document_exports_retained_files_matching_their_manifest() {
     let s = Scratch::new("export");
     // The stored document is already the one document model, and the fixture

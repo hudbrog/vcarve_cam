@@ -1,6 +1,47 @@
 use super::*;
 use crate::{ui_theme as theme, ui_widgets};
 
+pub(super) fn save_payload(prepared: &Value) -> Result<(String, Vec<u8>), String> {
+    use std::io::{Cursor, Write};
+    let Some(files) = prepared["files"].as_array() else {
+        let f = &prepared["file"];
+        return Ok((
+            f["filename"].as_str().ok_or("Missing filename")?.to_owned(),
+            f["gcode"]
+                .as_str()
+                .ok_or("Missing checked bytes")?
+                .as_bytes()
+                .to_vec(),
+        ));
+    };
+    let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let mut add = |name: &str, data: &[u8]| -> Result<(), String> {
+        archive
+            .start_file(name, options)
+            .map_err(|e| e.to_string())?;
+        archive.write_all(data).map_err(|e| e.to_string())
+    };
+    for f in files {
+        add(
+            f["filename"].as_str().ok_or("Missing filename")?,
+            f["gcode"]
+                .as_str()
+                .ok_or("Missing checked bytes")?
+                .as_bytes(),
+        )?;
+    }
+    for key in ["manifest", "report"] {
+        let data = serde_json::to_string_pretty(&prepared["bundle"][key])
+            .map_err(|e| e.to_string())?
+            + "\n";
+        add(&format!("{key}.json"), data.as_bytes())?;
+    }
+    let bytes = archive.finish().map_err(|e| e.to_string())?.into_inner();
+    Ok(("grbl-programs.zip".into(), bytes))
+}
+
 /// The manifest, not current selection or enabled operations, owns output scope.
 fn prepared_stage_ids(prepared: &Value) -> Vec<&str> {
     prepared["bundle"]["manifest"]["files"]
@@ -51,15 +92,19 @@ fn prepared_summary(
                 .as_deref()
                 .unwrap_or("Work offset unset")
         ));
-        ui.small(match machine.length_compensation {
-            Some(cam_core::post::LengthCompensation::ToolTable) => {
-                "Length compensation: tool table"
-            }
-            Some(cam_core::post::LengthCompensation::MacroManaged) => {
-                "Length compensation: macro managed"
-            }
-            None => "Length compensation: unset",
-        });
+        if let Some(instructions) = manifest["manualSetup"]["instructions"].as_str() {
+            ui.label(instructions);
+        } else {
+            ui.small(match machine.length_compensation {
+                Some(cam_core::post::LengthCompensation::ToolTable) => {
+                    "Length compensation: tool table"
+                }
+                Some(cam_core::post::LengthCompensation::MacroManaged) => {
+                    "Length compensation: macro managed"
+                }
+                None => "Length compensation: unset",
+            });
+        }
     }
     ui.add_space(4.);
     ui.strong("Included stages · execution order");
@@ -93,7 +138,14 @@ fn prepared_summary(
                 role
             ));
             observe_control(&format!("Export stage {id}"), row.rect);
-            ui.small(format!("{} · T{} / H{}", tool.map(|t| t.name.as_str()).unwrap_or(&stage.tool_id), mapping.and_then(|m| m.tool_number).map(|n| n.to_string()).unwrap_or_else(|| "—".into()), mapping.and_then(|m| m.length_offset_number).map(|n| n.to_string()).unwrap_or_else(|| "—".into()))).on_hover_text(format!("Stage: {id}\nJob tool: {}\nRead-only applied mapping; H is used only with tool-table compensation.", stage.tool_id));
+            if manifest["manualSetup"].is_object() {
+                ui.small(format!(
+                    "Tool: {}",
+                    tool.map(|t| t.name.as_str()).unwrap_or(&stage.tool_id)
+                ));
+            } else {
+                ui.small(format!("{} · T{} / H{}", tool.map(|t| t.name.as_str()).unwrap_or(&stage.tool_id), mapping.and_then(|m| m.tool_number).map(|n| n.to_string()).unwrap_or_else(|| "—".into()), mapping.and_then(|m| m.length_offset_number).map(|n| n.to_string()).unwrap_or_else(|| "—".into()))).on_hover_text(format!("Stage: {id}\nJob tool: {}\nRead-only applied mapping; H is used only with tool-table compensation.", stage.tool_id));
+            }
         } else {
             ui.label(format!("{:02} · {id}", index + 1));
         }
@@ -315,11 +367,22 @@ impl App {
                         ui.small("When validation finishes, choose Save as… to select a destination.");
                     } else if let Some((prepared, _)) = prepared {
                         ui.colored_label(theme::SUCCESS, RichText::new("Ready to save").size(20.).strong());
-                        ui.label(format!(
-                            "{} · {} bytes",
-                            prepared["file"]["filename"].as_str().unwrap_or("G-code program"),
-                            prepared["file"]["byteLength"],
-                        ));
+                        if let Some(files) = prepared["files"].as_array() {
+                            ui.label(format!("Grbl bundle · {} program files, manifest and report", files.len()));
+                            for file in prepared["bundle"]["manifest"]["files"].as_array().into_iter().flatten() {
+                                ui.small(format!(
+                                    "{} · {}",
+                                    file["filename"].as_str().unwrap_or(""),
+                                    file["toolId"].as_str().unwrap_or("")
+                                ));
+                            }
+                        } else {
+                            ui.label(format!(
+                                "{} · {} bytes",
+                                prepared["file"]["filename"].as_str().unwrap_or("G-code program"),
+                                prepared["file"]["byteLength"],
+                            ));
+                        }
                         ui.add_space(8.);
                         prepared_summary(ui, prepared, self.document.as_ref().map(|d| &d.job), inspection.as_ref());
                         ui.strong("Validation results");
@@ -351,7 +414,7 @@ impl App {
                         }
                         ui.add_space(8.);
                         ui.collapsing("Technical details", |ui| {
-                            ui.small(format!("SHA256 {}", prepared["file"]["sha256"].as_str().unwrap_or("")));
+                            ui.small(format!("SHA256 {}", prepared["bundle"]["report"]["programSha256"].as_str().unwrap_or("")));
                             motion_histograms(ui, report);
                             ui.add_space(8.);
                             ui.add(egui::Label::new(RichText::new(serde_json::to_string_pretty(report).unwrap()).monospace()).wrap());
@@ -418,6 +481,35 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grbl_zip_preserves_every_checked_file_and_retries_identically() {
+        use std::io::Read;
+        let prepared = json!({"files":[{"filename":"01-tool.nc","gcode":"G54\nM2\n"},{"filename":"02-tool.nc","gcode":"G55\nM2\n"}],
+            "bundle":{"manifest":{"files":[{"toolId":"mill"},{"toolId":"vbit"}]},"report":{"motionCount":12}}});
+        let (name, bytes) = save_payload(&prepared).unwrap();
+        assert_eq!(name, "grbl-programs.zip");
+        assert_eq!(bytes, save_payload(&prepared).unwrap().1);
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            archive.file_names().collect::<Vec<_>>(),
+            ["01-tool.nc", "02-tool.nc", "manifest.json", "report.json"]
+        );
+        for f in prepared["files"].as_array().unwrap() {
+            let mut data = String::new();
+            archive
+                .by_name(f["filename"].as_str().unwrap())
+                .unwrap()
+                .read_to_string(&mut data)
+                .unwrap();
+            assert_eq!(data, f["gcode"].as_str().unwrap());
+        }
+        for key in ["manifest", "report"] {
+            let value: Value =
+                serde_json::from_reader(archive.by_name(&format!("{key}.json")).unwrap()).unwrap();
+            assert_eq!(value, prepared["bundle"][key]);
+        }
+    }
 
     fn exporting() -> App {
         App {

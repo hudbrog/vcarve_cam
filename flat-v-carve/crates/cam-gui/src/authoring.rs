@@ -396,6 +396,14 @@ pub fn active(job: &CamJobV5, field: usize) -> bool {
 }
 
 pub fn active_in(job: &CamJobV5, operation_id: &str, field: usize) -> bool {
+    if matches!(field, 32 | 33 | 36 | 38 | 39)
+        && job
+            .machine_configuration
+            .as_ref()
+            .is_some_and(|m| !m.controller.is_linuxcnc())
+    {
+        return false;
+    }
     if job.operations.is_empty() || operation_id.is_empty() {
         return matches!(field, 6 | 7 | 23 | 25..=31 | 34..=36 | 40..=45);
     }

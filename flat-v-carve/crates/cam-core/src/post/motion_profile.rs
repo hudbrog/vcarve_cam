@@ -204,9 +204,11 @@ pub struct StageMotionProfile {
     pub stage_id: String,
     pub operation_id: String,
     pub role: StageRole,
-    pub tool_number: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_number: Option<u32>,
     pub motion_range: (usize, usize),
-    pub path_control: PathControl,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_control: Option<PathControl>,
     pub profile: MotionLengthProfile,
 }
 
@@ -231,17 +233,38 @@ impl MotionProfileReport {
         decimal_places_requested: usize,
         decimal_places_written: usize,
     ) -> Self {
+        Self::from_stages(
+            stages
+                .iter()
+                .map(|s| (&s.stage, Some(s.tool_number), Some(s.process.path_control))),
+            motions,
+            decimal_places_requested,
+            decimal_places_written,
+        )
+    }
+
+    pub(super) fn from_stages<'a>(
+        stages: impl Iterator<
+            Item = (
+                &'a crate::sequence::ExecutionStage,
+                Option<u32>,
+                Option<PathControl>,
+            ),
+        >,
+        motions: &[PlannedMotion],
+        decimal_places_requested: usize,
+        decimal_places_written: usize,
+    ) -> Self {
         let stages = stages
-            .iter()
-            .map(|stage| {
-                let (first, end) = stage.stage.motion_range;
+            .map(|(stage, tool_number, path_control)| {
+                let (first, end) = stage.motion_range;
                 StageMotionProfile {
-                    stage_id: stage.stage.stage_id.clone(),
-                    operation_id: stage.stage.operation_id.clone(),
-                    role: stage.stage.role,
-                    tool_number: stage.tool_number,
+                    stage_id: stage.stage_id.clone(),
+                    operation_id: stage.operation_id.clone(),
+                    role: stage.role,
+                    tool_number,
                     motion_range: (first, end),
-                    path_control: stage.process.path_control,
+                    path_control,
                     profile: MotionLengthProfile::of(motions.get(first..end).unwrap_or_default()),
                 }
             })
@@ -276,7 +299,7 @@ impl MotionProfileReport {
             // A knife stage that blends is a deliberate, verified relaxation
             // of exact path: say so, with the deviation it was allowed.
             if stage.role == StageRole::Knife
-                && let PathControl::Blend { tolerance_mm, .. } = stage.path_control
+                && let Some(PathControl::Blend { tolerance_mm, .. }) = stage.path_control
             {
                 observations.push(observation(
                     "EXPORT_KNIFE_BLENDED_PATH",
@@ -292,7 +315,7 @@ impl MotionProfileReport {
             if !profile.is_micro_move_bound() {
                 continue;
             }
-            let exact = stage.path_control == PathControl::ExactPath;
+            let exact = stage.path_control == Some(PathControl::ExactPath);
             observations.push(observation(
                 if exact {
                     "EXPORT_EXACT_PATH_MICRO_MOVES"

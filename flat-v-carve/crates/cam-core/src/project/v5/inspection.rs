@@ -90,6 +90,11 @@ pub struct MappingRowReadout {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineReadout {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::post::machine::Controller::is_linuxcnc"
+    )]
+    pub controller: crate::post::machine::Controller,
     pub origin: Option<ConfigurationOrigin>,
     pub work_offset: Option<String>,
     pub clearance_z_mm: Option<f64>,
@@ -410,6 +415,7 @@ pub fn machine_readout(job: &CamJobV5) -> MachineReadout {
     match &job.machine_configuration {
         None => MachineReadout::default(),
         Some(configuration) => MachineReadout {
+            controller: configuration.controller,
             origin: Some(configuration.origin.clone()),
             work_offset: configuration.work_offset.clone(),
             clearance_z_mm: configuration.clearance_z_mm,

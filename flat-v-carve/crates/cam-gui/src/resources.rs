@@ -1,7 +1,7 @@
 //! Reusable resources have their own revision, editing buffer and persistence.
 //! The portable job receives copies only through explicit core commands.
 use cam_core::{
-    post::sequence::SequenceProfile,
+    post::{machine::MachineProfile, sequence::SequenceProfile},
     project::v5::{
         self, CamJobV5, commands,
         resources::{self as core, AssignmentRole},
@@ -65,6 +65,18 @@ pub fn machine_problems(machine: &SequenceProfile) -> Vec<String> {
     issues
 }
 
+pub fn profile_problems(profile: &MachineProfile) -> Vec<String> {
+    match profile {
+        MachineProfile::Grbl(p) => p
+            .validate()
+            .err()
+            .map(|e| e.to_string())
+            .into_iter()
+            .collect(),
+        MachineProfile::LinuxCnc(p) => machine_problems(p),
+    }
+}
+
 /// A new editable configuration, with no invented machine-specific M6 claims.
 pub fn new_machine(id: String) -> SequenceProfile {
     use cam_core::post::{Coolant, LengthCompensation, M6Contract, M6Return, PathControl};
@@ -99,7 +111,7 @@ pub struct Catalog {
     pub schema: u32,
     pub id: String,
     pub library: ToolLibrary,
-    pub machines: Vec<SequenceProfile>,
+    pub machines: Vec<MachineProfile>,
 }
 impl Catalog {
     pub fn empty(id: String) -> Self {
@@ -120,11 +132,11 @@ impl Catalog {
         }
         let mut ids = BTreeSet::new();
         for machine in &self.machines {
-            let problems = machine_problems(machine);
+            let problems = profile_problems(machine);
             if !problems.is_empty() {
-                return Err(format!("Machine {}: {}", machine.id, problems.join("\n")));
+                return Err(format!("Machine {}: {}", machine.id(), problems.join("\n")));
             }
-            if !ids.insert(&machine.id) {
+            if !ids.insert(machine.id()) {
                 return Err("Duplicate machine configuration ID".into());
             }
         }
@@ -228,7 +240,7 @@ pub enum ResourceCommand {
         tool: v5::JobToolV5,
     },
     Machine {
-        profile: SequenceProfile,
+        profile: MachineProfile,
     },
 }
 impl ResourceCommand {
@@ -541,9 +553,7 @@ impl ResourceCommand {
                 candidate.validate_structure().map_err(|e| e.to_string())?;
                 return Ok(candidate);
             }
-            Self::Machine { profile } => {
-                v5::machine::apply_machine_configuration(job, &profile, &profile.id)
-            }
+            Self::Machine { profile } => v5::machine::apply_profile(job, &profile, profile.id()),
         };
         result.map(|r| r.job).map_err(|e| e.to_string())
     }

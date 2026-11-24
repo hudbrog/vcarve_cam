@@ -617,6 +617,13 @@ pub struct ConfigurationOrigin {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppliedMachineConfiguration {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::post::machine::Controller::is_linuxcnc"
+    )]
+    pub controller: crate::post::machine::Controller,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub counterclockwise_spindle: bool,
     pub origin: ConfigurationOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_offset: Option<String>,

@@ -260,6 +260,8 @@ fn provenance_and_machine_configuration_round_trip() {
         });
     }
     job.machine_configuration = Some(AppliedMachineConfiguration {
+        controller: Default::default(),
+        counterclockwise_spindle: false,
         origin: ConfigurationOrigin {
             configuration_id: "machine-1".into(),
             name: "Shop router".into(),
@@ -306,6 +308,8 @@ fn provenance_and_machine_configuration_round_trip() {
 fn machine_mapping_dangling_rows_are_inspection_issues() {
     let mut job = full_v5_job();
     job.machine_configuration = Some(AppliedMachineConfiguration {
+        controller: Default::default(),
+        counterclockwise_spindle: false,
         origin: ConfigurationOrigin {
             configuration_id: "machine-1".into(),
             name: "Shop router".into(),

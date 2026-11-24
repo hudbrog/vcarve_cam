@@ -14,7 +14,10 @@ use cam_core::{
     checks::check_plan_v5,
     geometry::{Diagnostic, Result},
     operations::drag_knife::evidence::{KNIFE_EVIDENCE_MAX_SAMPLES, build_evidence},
-    post::sequence::{OutputLayout, PreparedExecution, SequenceProfile},
+    post::{
+        machine::MachineProfile,
+        sequence::{OutputLayout, PreparedExecution},
+    },
     project::v5::{
         self, CAM_JOB_V5_SCHEMA_VERSION, CamJobV5,
         commands::AffectedEntity,
@@ -243,12 +246,12 @@ fn parse_library(value: &Value) -> Result<ToolLibrary> {
     ToolLibrary::from_json(&raw)
 }
 
-fn parse_profile(value: &Value) -> Result<SequenceProfile> {
+fn parse_profile(value: &Value) -> Result<MachineProfile> {
     let raw = value.to_string();
     if raw.len() > crate::export::PROFILE_BYTES {
         return Err(error("COLLECTION_PROFILE_LIMIT", "profile exceeds 64 KB"));
     }
-    SequenceProfile::from_json(&raw)
+    MachineProfile::from_json(&raw)
 }
 
 fn affected_value(entity: &AffectedEntity) -> Value {
@@ -512,8 +515,7 @@ pub fn execute(command: CollectionCommand) -> Result<Value> {
         } => {
             let job = parse_job(&job)?;
             let profile = parse_profile(&profile)?;
-            let outcome =
-                machine::apply_machine_configuration(&job, &profile, &configuration_name)?;
+            let outcome = machine::apply_profile(&job, &profile, &configuration_name)?;
             command_projection(&outcome.job, &outcome.issues, &outcome.affected)
         }
         CollectionCommand::SetToolMapping {
@@ -529,7 +531,7 @@ pub fn execute(command: CollectionCommand) -> Result<Value> {
         }
         CollectionCommand::ResolveProfile { job, scope } => {
             let job = parse_job(&job)?;
-            let profile = machine::resolve_sequence_profile(&job, &scope.readiness())?;
+            let profile = machine::resolve_profile(&job, &scope.readiness())?;
             Ok(json!({
                 "profile": profile,
                 "scope": scope,
@@ -585,6 +587,7 @@ pub fn execute(command: CollectionCommand) -> Result<Value> {
             "engineVersion": ENGINE_VERSION,
             "operationKinds": ["flat_vcarve", "face", "profile", "drag_knife"],
             "planScopes": ["all_enabled", "through_operation"],
+            "controllers": ["linuxcnc","grbl11"],
             "outputLayouts": ["one_program", "sequential_files"],
             "features": {
                 "artworkCollection": true,

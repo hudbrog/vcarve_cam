@@ -172,14 +172,14 @@ impl App {
             .draft
             .machines
             .iter()
-            .any(|m| m.id == self.resources.machine)
+            .any(|m| m.id() == self.resources.machine)
         {
             self.resources.machine = self
                 .resources
                 .draft
                 .machines
                 .first()
-                .map(|m| m.id.clone())
+                .map(|m| m.id().to_owned())
                 .unwrap_or_default();
         }
     }
@@ -301,6 +301,13 @@ impl App {
                 if !valid {
                     ui.small("Use letters, numbers, hyphens or underscores.");
                 }
+                let grbl = action(
+                    ui,
+                    "Create Grbl 1.1 machine",
+                    "New Grbl 1.1 profile",
+                    valid && count < 100,
+                )
+                .clicked();
                 if action(
                     ui,
                     "Create machine",
@@ -308,6 +315,7 @@ impl App {
                     valid && count < 100,
                 )
                 .clicked()
+                    || grbl
                 {
                     let requested = self.resources.new_machine_id.clone();
                     let id = if self
@@ -315,20 +323,32 @@ impl App {
                         .draft
                         .machines
                         .iter()
-                        .any(|m| m.id == requested)
+                        .any(|m| m.id() == requested)
                     {
                         unique(
                             &requested,
-                            self.resources.draft.machines.iter().map(|m| m.id.clone()),
+                            self.resources
+                                .draft
+                                .machines
+                                .iter()
+                                .map(|m| m.id().to_owned()),
                         )
                     } else {
                         requested
                     };
                     self.resources.machine = id.clone();
-                    self.resources
-                        .draft
-                        .machines
-                        .push(crate::resources::new_machine(id));
+                    self.resources.draft.machines.push(if grbl {
+                        let mut p = cam_core::post::machine::MachineProfile::from_json(
+                            include_str!("../../../fixtures/gui2/grbl-machine.json"),
+                        )
+                        .expect("built-in Grbl profile");
+                        p.set_id(id);
+                        p
+                    } else {
+                        cam_core::post::machine::MachineProfile::LinuxCnc(
+                            crate::resources::new_machine(id),
+                        )
+                    });
                     self.resources.dirty = true;
                     self.resources.search[1].clear();
                     ui.close();
@@ -375,14 +395,20 @@ impl App {
                 .draft
                 .machines
                 .iter()
-                .filter(|m| m.id.to_lowercase().contains(&query))
+                .filter(|m| m.id().to_lowercase().contains(&query))
                 .map(|m| {
-                    let summary = if m.validate_shape().is_ok() {
-                        format!("LinuxCNC · {}", m.work_offset)
-                    } else {
-                        "Needs setup".into()
+                    let summary = match m {
+                        cam_core::post::machine::MachineProfile::Grbl(p) => {
+                            format!("Grbl 1.1 · {}", p.work_offset)
+                        }
+                        cam_core::post::machine::MachineProfile::LinuxCnc(p)
+                            if p.validate_shape().is_ok() =>
+                        {
+                            format!("LinuxCNC · {}", p.work_offset)
+                        }
+                        _ => "Needs setup".into(),
                     };
-                    (m.id.clone(), m.id.clone(), summary)
+                    (m.id().to_owned(), m.id().to_owned(), summary)
                 })
                 .collect()
         } else {
@@ -494,8 +520,8 @@ impl App {
                 .draft
                 .machines
                 .iter()
-                .find(|m| m.id == self.resources.machine)
-                .map(|m| m.id.clone())
+                .find(|m| m.id() == self.resources.machine)
+                .map(|m| m.id().to_owned())
         } else {
             self.resources
                 .draft
@@ -527,14 +553,18 @@ impl App {
                                 .draft
                                 .machines
                                 .iter()
-                                .find(|m| m.id == self.resources.machine)
+                                .find(|m| m.id() == self.resources.machine)
                                 .cloned()
                             {
-                                m.id = unique(
-                                    &m.id,
-                                    self.resources.draft.machines.iter().map(|m| m.id.clone()),
-                                );
-                                self.resources.machine = m.id.clone();
+                                m.set_id(unique(
+                                    m.id(),
+                                    self.resources
+                                        .draft
+                                        .machines
+                                        .iter()
+                                        .map(|m| m.id().to_owned()),
+                                ));
+                                self.resources.machine = m.id().to_owned();
                                 self.resources.draft.machines.push(m);
                                 self.resources.dirty = true;
                                 self.resources.search[1].clear();
@@ -613,7 +643,7 @@ impl App {
         } else if self.resources.conflict.is_some() {
             ui.small("Stored revision available to compare in Library actions.");
         } else if self.machines_open() {
-            ui.small("Using a profile copies its settings into this job. Set tool numbers in the job's Machine panel.");
+            ui.small("Using a profile copies its settings into this job. The controller determines how tools are selected.");
         } else {
             self.resource_role(ui);
         }
@@ -653,7 +683,7 @@ impl App {
                         .draft
                         .machines
                         .iter()
-                        .any(|m| m.id == self.resources.machine)
+                        .any(|m| m.id() == self.resources.machine)
                 } else {
                     fits
                 };
@@ -693,7 +723,7 @@ impl App {
                         if let Some(profile) = catalog
                             .machines
                             .iter()
-                            .find(|m| m.id == self.resources.machine)
+                            .find(|m| m.id() == self.resources.machine)
                             .cloned()
                         {
                             self.resource_command(R::Machine { profile }, ctx);
@@ -829,16 +859,20 @@ impl App {
         let Some(job) = self.document.as_ref().map(|d| &d.job) else {
             return;
         };
-        match cam_core::project::v5::machine::resolve_sequence_profile(
+        match cam_core::project::v5::machine::resolve_profile(
             job,
             &cam_core::project::v5::ReadinessScope::AllEnabled,
         ) {
             Ok(mut m) => {
-                m.id = unique(
+                m.set_id(unique(
                     "machine",
-                    self.resources.draft.machines.iter().map(|m| m.id.clone()),
-                );
-                self.resources.machine = m.id.clone();
+                    self.resources
+                        .draft
+                        .machines
+                        .iter()
+                        .map(|m| m.id().to_owned()),
+                ));
+                self.resources.machine = m.id().to_owned();
                 self.resources.draft.machines.push(m);
                 self.resources.dirty = true;
                 self.resources.search[1].clear();

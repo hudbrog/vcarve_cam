@@ -23,6 +23,7 @@ use crate::{
     geometry::{Diagnostic, Result},
     post::{
         LengthCompensation,
+        machine::{Controller, GrblProfile, MachineProfile},
         sequence::{SEQUENCE_PROFILE_SCHEMA_VERSION, SequenceProfile, SequenceToolMapping},
     },
     sequence::{scoped_enabled_operations_v5, tool_ids_of_v5},
@@ -68,6 +69,8 @@ pub fn apply_machine_configuration(
         .collect();
     let mut candidate = job.clone();
     candidate.machine_configuration = Some(AppliedMachineConfiguration {
+        controller: Controller::Linuxcnc,
+        counterclockwise_spindle: false,
         origin: ConfigurationOrigin {
             configuration_id: profile.id.clone(),
             name: configuration_name.to_string(),
@@ -86,6 +89,110 @@ pub fn apply_machine_configuration(
         tools,
     });
     CommandOutcome::commit(candidate, vec![AffectedEntity::MachineConfiguration])
+}
+
+pub fn apply_profile(
+    job: &CamJobV5,
+    profile: &MachineProfile,
+    name: &str,
+) -> Result<CommandOutcome> {
+    let p = match profile {
+        MachineProfile::LinuxCnc(p) => return apply_machine_configuration(job, p, name),
+        MachineProfile::Grbl(p) => p,
+    };
+    p.validate()?;
+    if job
+        .setup
+        .clearance_above_stock_mm
+        .is_some_and(|value| value != p.clearance_z_mm)
+    {
+        return Err(Diagnostic::new(
+            "MACHINE_CLEARANCE_CONFLICT",
+            "Grbl profile clearance differs from setup",
+        )
+        .at_stage("machine"));
+    }
+    let mut candidate = job.clone();
+    candidate.machine_configuration = Some(AppliedMachineConfiguration {
+        controller: Controller::Grbl11,
+        counterclockwise_spindle: p.counterclockwise_spindle,
+        origin: ConfigurationOrigin {
+            configuration_id: p.id.clone(),
+            name: name.into(),
+        },
+        work_offset: Some(p.work_offset.clone()),
+        clearance_z_mm: Some(p.clearance_z_mm),
+        decimal_places: Some(p.decimal_places),
+        program_start_position_mm: None,
+        length_compensation: None,
+        path_control: None,
+        m6: None,
+        tools: Vec::new(),
+        spindle_spinup_seconds: Some(p.spindle_spinup_seconds),
+        rapid_rate_mm_min: p.rapid_rate_mm_min,
+        holder: p.holder.clone(),
+        coolant: Some(p.coolant),
+    });
+    CommandOutcome::commit(candidate, vec![AffectedEntity::MachineConfiguration])
+}
+
+pub fn resolve_profile(job: &CamJobV5, scope: &ReadinessScope) -> Result<MachineProfile> {
+    let Some(c) = job
+        .machine_configuration
+        .as_ref()
+        .filter(|c| c.controller == Controller::Grbl11)
+    else {
+        return resolve_sequence_profile(job, scope).map(MachineProfile::LinuxCnc);
+    };
+    scoped_enabled_operations_v5(job, scope)?;
+    let missing = |field| {
+        Diagnostic::new(
+            "MACHINE_CONFIGURATION_INCOMPLETE",
+            format!("Grbl profile requires {field}"),
+        )
+        .at_stage("machine")
+    };
+    if c.length_compensation.is_some()
+        || c.m6.is_some()
+        || c.path_control.is_some()
+        || !c.tools.is_empty()
+        || c.program_start_position_mm.is_some()
+    {
+        return Err(machine_error(
+            "Grbl manual tool setup cannot use LinuxCNC mappings, compensation, path control, M6 or a fixed program start",
+        ));
+    }
+    let p = GrblProfile {
+        controller: c.controller,
+        counterclockwise_spindle: c.counterclockwise_spindle,
+        schema_version: SEQUENCE_PROFILE_SCHEMA_VERSION,
+        id: c.origin.configuration_id.clone(),
+        work_offset: c
+            .work_offset
+            .clone()
+            .ok_or_else(|| missing("work_offset"))?,
+        clearance_z_mm: c.clearance_z_mm.ok_or_else(|| missing("clearance_z_mm"))?,
+        decimal_places: c.decimal_places.ok_or_else(|| missing("decimal_places"))?,
+        spindle_spinup_seconds: c
+            .spindle_spinup_seconds
+            .ok_or_else(|| missing("spindle_spinup_seconds"))?,
+        coolant: c.coolant.ok_or_else(|| missing("coolant"))?,
+        holder: c.holder.clone(),
+        rapid_rate_mm_min: c.rapid_rate_mm_min,
+    };
+    if job
+        .setup
+        .clearance_above_stock_mm
+        .is_some_and(|v| v != p.clearance_z_mm)
+    {
+        return Err(Diagnostic::new(
+            "MACHINE_CLEARANCE_CONFLICT",
+            "Grbl profile clearance differs from setup",
+        )
+        .at_stage("machine"));
+    }
+    p.validate()?;
+    Ok(MachineProfile::Grbl(p))
 }
 
 /// Set one job tool's controller mapping exactly: `Some`/`None` are absolute
@@ -110,6 +217,11 @@ pub fn set_tool_mapping(
         .machine_configuration
         .as_mut()
         .ok_or_else(|| machine_error("the job has no applied machine configuration"))?;
+    if configuration.controller == Controller::Grbl11 {
+        return Err(machine_error(
+            "Grbl uses physical job tool IDs and manual touch-off",
+        ));
+    }
     let row = AppliedToolMapping {
         job_tool_id: job_tool_id.to_string(),
         tool_number,
@@ -152,6 +264,9 @@ pub fn resolve_sequence_profile(job: &CamJobV5, scope: &ReadinessScope) -> Resul
         )
         .at_stage("machine")
     })?;
+    if configuration.controller != Controller::Linuxcnc {
+        return Err(machine_error("this workflow requires a LinuxCNC profile"));
+    }
     let mut missing = vec![];
     if configuration.work_offset.is_none() {
         missing.push("work_offset");

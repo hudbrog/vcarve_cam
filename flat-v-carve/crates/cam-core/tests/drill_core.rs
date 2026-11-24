@@ -463,6 +463,16 @@ fn the_export_emits_expanded_moves_and_verifies_the_dwell_readback() {
         },
     };
     let trusted = TrustedPlan::from_plan(&plan).unwrap();
+    let grbl =
+        serde_json::from_str(include_str!("../../../fixtures/gui2/grbl-machine.json")).unwrap();
+    let drill_bundle = cam_core::post::grbl::export_bundle(
+        &trusted,
+        &grbl,
+        cam_core::post::sequence::OutputLayout::OneProgram,
+    )
+    .unwrap();
+    let drill_code = &drill_bundle.files[0].gcode;
+    assert!(drill_code.contains("G4 P0.5\n") && drill_code.contains("G1 X10 Y15 Z-8 F120"));
     let prepared = PreparedExecution::prepare(&trusted, &profile).unwrap();
     let export = prepared.export(&trusted, &profile).unwrap();
     let gcode = &export.program.gcode;

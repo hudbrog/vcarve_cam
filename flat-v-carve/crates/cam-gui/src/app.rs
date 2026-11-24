@@ -2223,22 +2223,22 @@ impl App {
         let stock_transfer = self.view.last_stock_transfer();
         let display = self.view.display_probe();
         let renderer = self.view.renderer_probe();
-        crate::viewport::probe::publish(json!({"sketchImpact":self.sketch_impact,"sketch":self.sketch.as_ref().map(|s|s.canvas_probe()),"planScope":self.plan_scope,"activeScope":self.active.as_ref().and(self.active_scope.as_ref()),"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"busy":self.busy,"queued":self.pending.as_ref().map(Pending::label),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"requestedStock":self.view.requested_stock_prefix(),"stockTransferBytes":stock_transfer.0,"stockReplayed":stock_transfer.1,"timelineRows":self.view.timeline_rows(),"display":display,"renderer":renderer,"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["file"]["sha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
+        crate::viewport::probe::publish(json!({"sketchImpact":self.sketch_impact,"sketch":self.sketch.as_ref().map(|s|s.canvas_probe()),"planScope":self.plan_scope,"activeScope":self.active.as_ref().and(self.active_scope.as_ref()),"exportReady":self.view.export_ready(),"inspection":self.view.inspection_snapshot(),"issues":self.issues,"visibleMotions":self.view.visible_motion_range(),"bounds":self.view.scene_bounds(),"picked":self.view.artwork.selected,"gesture":self.view.artwork.mode,"controls":CONTROLS.with(|c|c.borrow().clone()),"gui2":true,"resources":resources_probe,"workspace":self.workspace(),"undo":self.undo.len(),"redo":self.redo.len(),"status":self.status,"revision":self.revision,"active":self.active.is_some(),"busy":self.busy,"queued":self.pending.as_ref().map(Pending::label),"motions":self.view.motion_count(),"stockPrefix":self.view.stock_prefix(),"requestedStock":self.view.requested_stock_prefix(),"stockTransferBytes":stock_transfer.0,"stockReplayed":stock_transfer.1,"timelineRows":self.view.timeline_rows(),"display":display,"renderer":renderer,"current":self.current(),"prepared":self.prepared.is_some(),"preparedSha256":self.prepared.as_ref().map(|(p,_)|p["bundle"]["report"]["programSha256"].clone()),"job":job_probe,"pending":self.document.as_ref().is_some_and(Document::pending),"recovery":self.recovery.status}).to_string());
     }
     fn save_output(&mut self, ctx: &egui::Context) {
         if let Some((prepared, revision)) = &self.prepared
             && *revision == self.revision
         {
-            self.save(
-                prepared["file"]["filename"].as_str().unwrap().into(),
-                prepared["file"]["gcode"]
-                    .as_str()
-                    .unwrap()
-                    .as_bytes()
-                    .to_vec(),
-                None,
-                ctx,
-            );
+            match export_ui::save_payload(prepared) {
+                Ok((name, bytes)) => self.save(name, bytes, None, ctx),
+                Err(error) => {
+                    self.status = error.clone();
+                    if let Some(dialog) = &mut self.export_dialog {
+                        dialog.saving = false;
+                        dialog.error = Some(error);
+                    }
+                }
+            }
         }
     }
     fn save_job(&mut self, ctx: &egui::Context) {

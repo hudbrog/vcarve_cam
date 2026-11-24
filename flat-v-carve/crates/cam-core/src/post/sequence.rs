@@ -219,7 +219,10 @@ pub struct BundleManifestFile {
     pub sha256: String,
     pub byte_length: usize,
     pub stage_ids: Vec<String>,
-    pub tool_number: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_id: Option<String>,
     /// This file's global `[first, end)` motion span within the plan.
     pub motion_range: (usize, usize),
     /// The files that must run before this one, in order.
@@ -239,6 +242,8 @@ pub struct SequenceBundleManifest {
     pub schema_version: u32,
     pub engine_version: String,
     pub layout: OutputLayout,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_setup: Option<super::grbl::ManualSetup>,
     pub plan_fingerprint: String,
     pub profile_fingerprint: String,
     pub process_fingerprint: String,
@@ -451,92 +456,52 @@ pub fn apply_legacy_profile(profile: &LinuxCncProfile, job: &CamJob) -> Result<C
     Ok(applied)
 }
 
-fn stage_intent(plan: &dyn SequencePlan, stage: &ExecutionStage) -> Result<ProcessIntent> {
-    // Walk execution in order; the intent immediately preceding this stage's
-    // RunStage is the one that applies to it.
-    let mut pending: Option<ProcessIntent> = None;
-    for item in plan.execution() {
-        match item {
-            crate::sequence::ExecutionItem::ToolChange { .. } => {}
-            crate::sequence::ExecutionItem::SetProcessIntent { intent } => {
-                pending = Some(intent.clone());
-            }
-            crate::sequence::ExecutionItem::RunStage { stage_id } => {
-                if stage_id == &stage.stage_id {
-                    return pending.ok_or_else(|| {
-                        error(
-                            "PROCESS_SPINDLE_STATE",
-                            format!("stage '{}' has no process intent", stage.stage_id),
-                        )
-                    });
-                }
-            }
-        }
-    }
-    Err(error(
-        "PROCESS_SPINDLE_STATE",
-        format!("stage '{}' never runs", stage.stage_id),
-    ))
-}
-
 fn resolve_process(
     stage: &ExecutionStage,
     intent: &ProcessIntent,
     profile: &SequenceProfile,
 ) -> Result<PreparedProcess> {
-    let spindle = match &intent.spindle {
-        ProcessSpindle::Off => PreparedSpindle::Off,
-        ProcessSpindle::Milling { rpm, direction } => match direction {
-            Some(JobSpindleDirection::Clockwise) => PreparedSpindle::On {
-                rpm: *rpm,
-                direction: SpindleDirection::Clockwise,
-            },
-            Some(JobSpindleDirection::Counterclockwise) => PreparedSpindle::On {
-                rpm: *rpm,
-                direction: SpindleDirection::Counterclockwise,
-            },
-            None => {
-                return Err(error(
-                    "PROCESS_SPINDLE_STATE",
-                    format!(
-                        "milling stage '{}' has no resolved spindle direction; apply a machine profile to the job and replan",
-                        stage.stage_id
-                    ),
-                ));
-            }
-        },
-    };
     Ok(PreparedProcess {
-        spindle,
-        coolant: match stage.role {
-            // Knife stages always run coolant off and exact path (plan
-            // sections 12.5 and 14.4): no machine-profile coolant or blend
-            // tolerance may leak into swivel geometry.
-            StageRole::Knife | StageRole::Plot => Coolant::Off,
-            _ => profile.coolant,
-        },
-        path_control: match stage.role {
-            // Knife stages run the machine profile's path control only inside
-            // the deviation the planner verified with its own tip replay; an
-            // intent that did not ask for a bound stays exact path (plan
-            // sections 12.5 and 14.4).
-            StageRole::Plot => PathControl::ExactPath,
-            StageRole::Knife => knife_path_control(&intent.path_control, profile)?,
-            _ => profile.path_control,
+        spindle: resolve_spindle(intent, &stage.stage_id)?,
+        coolant: resolve_coolant(intent, profile.coolant),
+        path_control: match intent.path_control {
+            crate::sequence::PathControlIntent::UseMachineProfile => profile.path_control,
+            crate::sequence::PathControlIntent::ExactPath => PathControl::ExactPath,
+            crate::sequence::PathControlIntent::BlendWithin { tolerance_mm } => {
+                bounded_path_control(tolerance_mm, profile)?
+            }
         },
     })
 }
 
-/// Resolve a knife stage's path control: the profile's blend, bounded by the
-/// deviation the plan verified, or exact path.
-fn knife_path_control(
-    intent: &crate::sequence::PathControlIntent,
-    profile: &SequenceProfile,
-) -> Result<PathControl> {
-    let crate::sequence::PathControlIntent::BlendWithin { tolerance_mm } = intent else {
-        return Ok(PathControl::ExactPath);
-    };
-    if !tolerance_mm.is_finite() || *tolerance_mm <= 0. {
+pub(super) fn resolve_coolant(intent: &ProcessIntent, profile: Coolant) -> Coolant {
+    match intent.coolant {
+        crate::sequence::CoolantIntent::Off => Coolant::Off,
+        crate::sequence::CoolantIntent::UseMachineProfile => profile,
+    }
+}
+
+pub(super) fn resolve_spindle(intent: &ProcessIntent, stage_id: &str) -> Result<PreparedSpindle> {
+    Ok(match &intent.spindle {
+        ProcessSpindle::Off => PreparedSpindle::Off,
+        ProcessSpindle::Milling { rpm, direction } => PreparedSpindle::On {
+            rpm: *rpm,
+            direction: match direction {
+                Some(JobSpindleDirection::Clockwise) => SpindleDirection::Clockwise,
+                Some(JobSpindleDirection::Counterclockwise) => SpindleDirection::Counterclockwise,
+                None => {
+                    return Err(error(
+                        "PROCESS_SPINDLE_STATE",
+                        format!("stage '{stage_id}' has no resolved spindle direction"),
+                    ));
+                }
+            },
+        },
+    })
+}
+
+fn bounded_path_control(tolerance_mm: f64, profile: &SequenceProfile) -> Result<PathControl> {
+    if !tolerance_mm.is_finite() || tolerance_mm <= 0. {
         return Err(error(
             "PROCESS_PATH_CONTROL",
             "a knife stage's verified blend bound must be finite and positive",
@@ -609,8 +574,9 @@ impl PreparedExecution {
             }
         }
         let mut stages = vec![];
-        for stage in plan.stages() {
-            let process = resolve_process(stage, &stage_intent(plan, stage)?, profile)?;
+        for run in super::machine::stage_runs(plan)? {
+            let stage = run.stage;
+            let process = resolve_process(stage, &run.intent, profile)?;
             stages.push(PreparedStage {
                 stage: stage.clone(),
                 process,
@@ -665,30 +631,6 @@ impl PreparedExecution {
         })
     }
 
-    /// Stage-index groups of [`PreparedStage`]s per file for a layout: one
-    /// group covering everything, or one group per run of contiguous stages
-    /// on the same tool. Adjacent same-tool stages share a file; a recurring
-    /// tool gets its own later file in execution order (plan section 14.5).
-    fn file_groups(&self, layout: OutputLayout) -> Vec<(usize, usize)> {
-        let count = self.stages.len();
-        match layout {
-            OutputLayout::OneProgram => vec![(0, count)],
-            OutputLayout::SequentialFiles => {
-                let mut groups = vec![];
-                let mut start = 0;
-                for index in 1..=count {
-                    let same_tool = index < count
-                        && self.stages[index].stage.tool_id == self.stages[start].stage.tool_id;
-                    if !same_tool {
-                        groups.push((start, index));
-                        start = index;
-                    }
-                }
-                groups
-            }
-        }
-    }
-
     /// A copy of this preparation restricted to `self.stages[range]`, so a
     /// bundle file containing only those stages decodes against exactly the
     /// bridges, length-compensation and tool expectations it contains.
@@ -728,7 +670,7 @@ impl PreparedExecution {
                 ));
             }
         }
-        let groups = self.file_groups(layout);
+        let groups = file_groups(plan.stages(), layout);
         let has_knife = plan
             .stages()
             .iter()
@@ -776,23 +718,34 @@ impl PreparedExecution {
                 .as_ref()
                 .is_none_or(|replay| replay.outcome.status == ReplayStatus::Within);
             if preserved && replay_ok {
-                return Ok(self.finish_bundle(
+                return Ok(finish_bundle(
                     plan,
                     layout,
                     programs,
                     &groups,
-                    replay.map(|replay| KnifeReplaySummary {
-                        status: match replay.outcome.status {
-                            ReplayStatus::Within => KnifeReplayStatus::Within,
-                            ReplayStatus::Exceeded => KnifeReplayStatus::Exceeded,
-                            ReplayStatus::BudgetExhausted => KnifeReplayStatus::BudgetExhausted,
-                        },
-                        max_tip_deviation_mm: replay.outcome.max_tip_deviation_mm,
-                        max_heading_error_deg: replay.outcome.max_heading_error_deg,
-                        tip_budget_mm: replay.tip_budget_mm,
-                    }),
-                    places,
-                    profile.decimal_places,
+                    BundleVerification {
+                        knife_replay: replay.map(|replay| KnifeReplaySummary {
+                            status: match replay.outcome.status {
+                                ReplayStatus::Within => KnifeReplayStatus::Within,
+                                ReplayStatus::Exceeded => KnifeReplayStatus::Exceeded,
+                                ReplayStatus::BudgetExhausted => KnifeReplayStatus::BudgetExhausted,
+                            },
+                            max_tip_deviation_mm: replay.outcome.max_tip_deviation_mm,
+                            max_heading_error_deg: replay.outcome.max_heading_error_deg,
+                            tip_budget_mm: replay.tip_budget_mm,
+                        }),
+                        motion_profile: super::motion_profile::MotionProfileReport::of(
+                            &self.stages,
+                            plan.motions(),
+                            profile.decimal_places,
+                            places,
+                        ),
+                        profile_fingerprint: &self.profile_fingerprint,
+                        process_fingerprint: &self.process_fingerprint,
+                        machine_offset_mm: self.machine_offset_mm,
+                        basic_checks: self.basic_checks.clone(),
+                    },
+                    None,
                 ));
             }
             if places >= 9 {
@@ -824,101 +777,6 @@ impl PreparedExecution {
                 });
             }
             places += 1;
-        }
-    }
-
-    /// Build the manifest and aggregate report of fully checked files.
-    #[allow(clippy::too_many_arguments)]
-    fn finish_bundle(
-        &self,
-        plan: &dyn SequencePlan,
-        layout: OutputLayout,
-        programs: Vec<SequenceProgram>,
-        groups: &[(usize, usize)],
-        knife_replay: Option<KnifeReplaySummary>,
-        places: usize,
-        requested_places: usize,
-    ) -> SequenceBundle {
-        let mut entries = vec![];
-        let mut previous_names = vec![];
-        for (index, (program, &(start, end))) in programs.iter().zip(groups).enumerate() {
-            let sha256 = format!("{:x}", Sha256::digest(program.gcode.as_bytes()));
-            let stages = &self.stages[start..end];
-            entries.push(BundleManifestFile {
-                order: index + 1,
-                filename: program.filename.clone(),
-                sha256: sha256.clone(),
-                byte_length: program.gcode.len(),
-                stage_ids: stages.iter().map(|s| s.stage.stage_id.clone()).collect(),
-                tool_number: stages[0].tool_number,
-                motion_range: (
-                    stages[0].stage.motion_range.0,
-                    stages[stages.len() - 1].stage.motion_range.1,
-                ),
-                runs_after: previous_names.clone(),
-                stock_through_operation: stages[stages.len() - 1].stage.operation_id.clone(),
-            });
-            previous_names.push(program.filename.clone());
-        }
-        // The aggregate digest binds the exact bytes: a single file is its
-        // own digest (byte-identical behavior with the one-program export);
-        // several files hash their ordered per-file digests.
-        let program_sha256 = match programs.as_slice() {
-            [one] => format!("{:x}", Sha256::digest(one.gcode.as_bytes())),
-            many => {
-                let mut hash = Sha256::new();
-                for program in many {
-                    hash.update(
-                        format!("{:x}", Sha256::digest(program.gcode.as_bytes())).as_bytes(),
-                    );
-                }
-                format!("{:x}", hash.finalize())
-            }
-        };
-        let manifest = SequenceBundleManifest {
-            artifact_kind: "sequence_export_manifest".into(),
-            schema_version: 1,
-            engine_version: env!("CARGO_PKG_VERSION").into(),
-            layout,
-            plan_fingerprint: self.plan_fingerprint.clone(),
-            profile_fingerprint: self.profile_fingerprint.clone(),
-            process_fingerprint: self.process_fingerprint.clone(),
-            execution_fingerprint: plan.execution_fingerprint().to_string(),
-            output_decimal_places: places,
-            files: entries,
-        };
-        // Published motion shape: per-stage counts, histogram, density and
-        // the precision the program actually needed. Observations are
-        // informational and never gate the bytes already checked above.
-        let motion_profile = super::motion_profile::MotionProfileReport::of(
-            &self.stages,
-            plan.motions(),
-            requested_places,
-            places,
-        );
-        let observations = motion_profile.observations();
-        let report = SequenceExportReport {
-            artifact_kind: "sequence_export_report".into(),
-            schema_version: 1,
-            engine_version: env!("CARGO_PKG_VERSION").into(),
-            plan_fingerprint: self.plan_fingerprint.clone(),
-            profile_fingerprint: self.profile_fingerprint.clone(),
-            process_fingerprint: self.process_fingerprint.clone(),
-            output_decimal_places: places,
-            machine_offset_mm: self.machine_offset_mm,
-            basic_checks: self.basic_checks.clone(),
-            program_sha256,
-            motion_count: plan.motions().len(),
-            knife_replay,
-            motion_profile,
-            observations,
-            diagnostics: vec![],
-        };
-        SequenceBundle {
-            layout,
-            files: programs,
-            manifest,
-            report,
         }
     }
 
@@ -1012,7 +870,7 @@ impl PreparedExecution {
                 }
             }
             let motions = &plan.motions()[stage.motion_range.0..stage.motion_range.1];
-            for motion in motions {
+            for motion in super::machine::MachineMoves::from(motions).iter() {
                 let end = machine_position(motion.end, self.machine_offset_mm, places);
                 let start = machine_position(motion.start, self.machine_offset_mm, places);
                 let feed = match motion.feed_mm_min {
@@ -1062,6 +920,125 @@ impl PreparedExecution {
             ));
         }
         Ok(lines.join("\n") + "\n")
+    }
+}
+
+pub(super) fn file_groups(stages: &[ExecutionStage], layout: OutputLayout) -> Vec<(usize, usize)> {
+    if layout == OutputLayout::OneProgram {
+        return vec![(0, stages.len())];
+    }
+    let mut start = 0;
+    stages
+        .chunk_by(|a, b| a.tool_id == b.tool_id)
+        .map(|run| {
+            let end = start + run.len();
+            let range = (start, end);
+            start = end;
+            range
+        })
+        .collect()
+}
+
+pub(super) struct BundleVerification<'a> {
+    pub profile_fingerprint: &'a str,
+    pub process_fingerprint: &'a str,
+    pub machine_offset_mm: [f64; 3],
+    pub basic_checks: BasicCheckReport,
+    pub motion_profile: super::motion_profile::MotionProfileReport,
+    pub knife_replay: Option<KnifeReplaySummary>,
+}
+
+pub(super) fn finish_bundle(
+    plan: &dyn SequencePlan,
+    layout: OutputLayout,
+    programs: Vec<SequenceProgram>,
+    groups: &[(usize, usize)],
+    verified: BundleVerification<'_>,
+    manual_setup: Option<super::grbl::ManualSetup>,
+) -> SequenceBundle {
+    let BundleVerification {
+        profile_fingerprint,
+        process_fingerprint,
+        machine_offset_mm,
+        basic_checks,
+        motion_profile,
+        knife_replay,
+    } = verified;
+    let places = motion_profile.decimal_places_written;
+    let mut entries = vec![];
+    let mut previous_names = vec![];
+    for (index, (program, &(start, end))) in programs.iter().zip(groups).enumerate() {
+        let sha256 = format!("{:x}", Sha256::digest(program.gcode.as_bytes()));
+        let stages = &plan.stages()[start..end];
+        entries.push(BundleManifestFile {
+            order: index + 1,
+            filename: program.filename.clone(),
+            sha256: sha256.clone(),
+            byte_length: program.gcode.len(),
+            stage_ids: stages.iter().map(|s| s.stage_id.clone()).collect(),
+            tool_number: motion_profile.stages[start].tool_number,
+            tool_id: manual_setup.as_ref().map(|_| stages[0].tool_id.clone()),
+            motion_range: (
+                stages[0].motion_range.0,
+                stages[stages.len() - 1].motion_range.1,
+            ),
+            runs_after: previous_names.clone(),
+            stock_through_operation: stages[stages.len() - 1].operation_id.clone(),
+        });
+        previous_names.push(program.filename.clone());
+    }
+    // The aggregate digest binds the exact bytes: a single file is its
+    // own digest (byte-identical behavior with the one-program export);
+    // several files hash their ordered per-file digests.
+    let program_sha256 = match programs.as_slice() {
+        [one] => format!("{:x}", Sha256::digest(one.gcode.as_bytes())),
+        many => {
+            let mut hash = Sha256::new();
+            for program in many {
+                hash.update(format!("{:x}", Sha256::digest(program.gcode.as_bytes())).as_bytes());
+            }
+            format!("{:x}", hash.finalize())
+        }
+    };
+    let manifest = SequenceBundleManifest {
+        artifact_kind: "sequence_export_manifest".into(),
+        schema_version: 1,
+        engine_version: env!("CARGO_PKG_VERSION").into(),
+        layout,
+        manual_setup,
+        plan_fingerprint: plan.execution_fingerprint().into(),
+        profile_fingerprint: profile_fingerprint.into(),
+        process_fingerprint: process_fingerprint.into(),
+        execution_fingerprint: plan.execution_fingerprint().to_string(),
+        output_decimal_places: places,
+        files: entries,
+    };
+    // Published motion shape: per-stage counts, histogram, density and
+    // the precision the program actually needed. Observations are
+    // informational and never gate the bytes already checked above.
+    let observations = motion_profile.observations();
+    let report = SequenceExportReport {
+        artifact_kind: "sequence_export_report".into(),
+        schema_version: 1,
+        engine_version: env!("CARGO_PKG_VERSION").into(),
+        plan_fingerprint: plan.execution_fingerprint().into(),
+        profile_fingerprint: profile_fingerprint.into(),
+        process_fingerprint: process_fingerprint.into(),
+        output_decimal_places: places,
+        machine_offset_mm,
+        basic_checks,
+        program_sha256,
+        motion_count: plan.motions().len(),
+        knife_replay,
+        motion_profile,
+        observations,
+        diagnostics: vec![],
+    };
+    SequenceBundle {
+        layout,
+        files: programs,
+        manifest,
+        report,
     }
 }
 
@@ -2147,7 +2124,7 @@ fn rounded_position(p: crate::motion::Position, places: usize) -> crate::motion:
     }
 }
 /// Setup-to-machine output position: work-zero Z datum shift, then rounding.
-fn machine_position(
+pub(super) fn machine_position(
     p: crate::motion::Position,
     offset: [f64; 3],
     places: usize,
@@ -2158,7 +2135,7 @@ fn machine_position(
         z: rounded(p.z - offset[2], places),
     }
 }
-fn rounded(v: f64, places: usize) -> f64 {
+pub(super) fn rounded(v: f64, places: usize) -> f64 {
     format!("{v:.places$}")
         .parse()
         .expect("finite formatted number")

@@ -917,6 +917,11 @@ impl App {
         if let Some(machine) = &machine {
             ui_widgets::section(ui, "Controller", Some(Icon::Machine));
             self.applied_machine_options(ui, ctx, false);
+            if machine.controller == cam_core::post::machine::Controller::Grbl11 {
+                ui.label("Grbl 1.1 · manual tool changes between files");
+                self.numbers(ui, ctx, &[34, 35, 7]);
+                return;
+            }
             let table =
                 machine.length_compensation == Some(cam_core::post::LengthCompensation::ToolTable);
             ui_widgets::section(ui, "Tool mapping", Some(Icon::Endmill));

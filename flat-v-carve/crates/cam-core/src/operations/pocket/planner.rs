@@ -207,7 +207,7 @@ fn generate(
             direction: s.assignment.spindle_direction,
         },
         coolant: CoolantIntent::UseMachineProfile,
-        path_control: PathControlIntent::ExactPath,
+        path_control: PathControlIntent::UseMachineProfile,
     };
     let mut b = Builder {
         id,

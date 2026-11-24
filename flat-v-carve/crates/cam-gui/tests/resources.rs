@@ -82,10 +82,15 @@ fn new_machine_requires_real_contract_details_but_can_be_completed_saved_and_app
     assert_eq!(problems.len(), 5, "{problems:?}");
     assert!(problems[0].contains("notes/reference"));
     assert!(machine.tools.is_empty());
-    machine.m6 = catalog().machines[0].m6.clone();
+    let cam_core::post::machine::MachineProfile::LinuxCnc(profile) = catalog().machines.remove(0)
+    else {
+        panic!("expected LinuxCNC fixture")
+    };
+    machine.m6 = profile.m6;
     machine.validate_shape().unwrap();
     assert!(cam_gui_runtime::resources::machine_problems(&machine).is_empty());
     let mut library = Catalog::empty("machines".into());
+    let machine = cam_core::post::machine::MachineProfile::LinuxCnc(machine);
     library.machines.push(machine.clone());
     let saved = StoredCatalog::next(None, library).unwrap();
     saved.validate().unwrap();
@@ -344,7 +349,10 @@ fn real_resource_values_generate_simulate_export_and_machine_edits_revalidate() 
     assert_eq!(stock.report["gui2"]["prefix"], motions);
     assert!(!payload.is_empty());
     let mut machine = catalog().machines.remove(0);
-    machine.work_offset = "G55".into();
+    let cam_core::post::machine::MachineProfile::LinuxCnc(p) = &mut machine else {
+        panic!("expected LinuxCNC fixture")
+    };
+    p.work_offset = "G55".into();
     job = R::Machine { profile: machine }.execute(&job).unwrap();
     let (check, _) = session::execute(
         &mut service,
@@ -368,6 +376,30 @@ fn real_resource_values_generate_simulate_export_and_machine_edits_revalidate() 
     assert!(
         v5::machine::resolve_sequence_profile(&unused.job, &v5::ReadinessScope::AllEnabled).is_ok()
     );
+    let grbl = cam_core::post::machine::MachineProfile::from_json(include_str!(
+        "../../../fixtures/gui2/grbl-machine.json"
+    ))
+    .unwrap();
+    let grbl_job = R::Machine { profile: grbl }.execute(&job).unwrap();
+    let (multi, _) = session::execute(
+        &mut service,
+        Command::Prepare {
+            job: grbl_job.to_json().unwrap(),
+            handle: handle.clone(),
+        },
+    )
+    .unwrap();
+    let output = &multi.report["gui2"];
+    let files = output["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    for (file, entry) in files
+        .iter()
+        .zip(output["bundle"]["manifest"]["files"].as_array().unwrap())
+    {
+        assert_eq!(file["filename"], entry["filename"]);
+        assert_eq!(file["sha256"], entry["sha256"]);
+        assert!(file["gcode"].as_str().unwrap().ends_with("M2\n"));
+    }
     let mut bad = job.clone();
     bad.machine_configuration.as_mut().unwrap().tools[1].tool_number = Some(3);
     assert!(

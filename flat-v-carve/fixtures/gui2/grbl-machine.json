@@ -1,0 +1,10 @@
+{
+  "controller": "grbl11",
+  "schema_version": 2,
+  "id": "grbl-router",
+  "work_offset": "G54",
+  "clearance_z_mm": 5.0,
+  "decimal_places": 3,
+  "spindle_spinup_seconds": 1.0,
+  "coolant": "off"
+}

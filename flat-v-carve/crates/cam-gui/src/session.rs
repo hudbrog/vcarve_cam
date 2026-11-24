@@ -974,12 +974,12 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
         Command::Open { json } => (open(&json)?, json!({"kind":"opened"}), true),
         Command::ApplyProfile { job, json } => {
             let mut job = open(&job)?;
-            let machine = cam_core::post::sequence::SequenceProfile::from_json(&json)
+            let machine = cam_core::post::machine::MachineProfile::from_json(&json)
                 .map_err(|e| e.to_string())?;
-            let profile = v5::machine::apply_machine_configuration(&job, &machine, &machine.id)
+            let profile = v5::machine::apply_profile(&job, &machine, machine.id())
                 .map_err(|e| e.to_string())?;
             job = profile.job;
-            job.setup.clearance_above_stock_mm = Some(machine.clearance_z_mm);
+            job.setup.clearance_above_stock_mm = Some(machine.clearance());
             (job, json!({"kind":"profile"}), true)
         }
         Command::Generate { job, scope, preset } => {
@@ -1125,11 +1125,21 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
         }
         Command::Prepare { job, handle } => {
             let job = open(&job)?;
+            use cam_core::post::{machine::Controller, sequence::OutputLayout};
+            let layout = if job
+                .machine_configuration
+                .as_ref()
+                .is_some_and(|m| m.controller == Controller::Grbl11)
+            {
+                OutputLayout::SequentialFiles
+            } else {
+                OutputLayout::OneProgram
+            };
             let reply = service
                 .execute_driven(C::PrepareOutput {
                     job: json!(job),
                     plan_handle: handle,
-                    layout: cam_core::post::sequence::OutputLayout::OneProgram,
+                    layout,
                 })
                 .map_err(|e| e.to_string())?;
             terminal(&reply)?;
@@ -1144,18 +1154,29 @@ pub fn execute(service: &mut Retained, command: Command) -> Result<(SceneMeta, V
             let handle = bundle["bundle"]["bundleHandle"]
                 .as_str()
                 .ok_or("Missing bundle")?;
-            let file = bundle["bundle"]["files"][0]["filename"]
-                .as_str()
-                .ok_or("Missing checked file")?;
-            let bytes = service
-                .execute(C::ReadPreparedBytes {
-                    bundle_handle: handle.into(),
-                    filename: file.into(),
-                })
-                .map_err(|e| e.to_string())?;
+            let mut prepared =
+                json!({"kind":"prepared","bundle":bundle["bundle"],"retained":bundle["retained"]});
+            let mut files = Vec::new();
+            for entry in bundle["bundle"]["files"]
+                .as_array()
+                .ok_or("Missing checked files")?
+            {
+                let filename = entry["filename"].as_str().ok_or("Missing filename")?;
+                let mut bytes = service
+                    .execute(C::ReadPreparedBytes {
+                        bundle_handle: handle.into(),
+                        filename: filename.into(),
+                    })
+                    .map_err(|e| e.to_string())?;
+                files.push(bytes["file"].take());
+            }
+            if layout == OutputLayout::SequentialFiles {
+                prepared["files"] = Value::Array(files);
+            } else {
+                prepared["file"] = files.pop().ok_or("Missing checked file")?;
+            }
             (
-                job,
-                json!({"kind":"prepared", "file":bytes["file"], "bundle":bundle["bundle"], "retained":bytes["retained"]}),
+                job, prepared,
                 // The display reads the checked bundle; its artwork stands.
                 false,
             )

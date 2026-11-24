@@ -283,6 +283,10 @@ means complete. Retained plans and prepared bundles live in memory in the
 planning process and are pruned oldest-terminal-first, so an output can always
 be re-read byte-identically while its bundle is retained.
 
+## Grbl 1.1 export
+
+Use the Grbl machine profile for checked three-axis milling files and manual tool changes. The GUI saves the ordered files with their manifest in a ZIP. CLI examples and setup instructions are in the [Grbl guide](../docs/flat-v-carve/grbl.md).
+
 ## M6 LinuxCNC export
 
 ```powershell

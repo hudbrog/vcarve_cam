@@ -21,6 +21,61 @@ use cam_core::{
     sequence::{OperationPlan, PlanLimits, TrustedPlan},
 };
 
+#[test]
+fn grbl_preserves_a_b_a_tool_order_and_work_zero() {
+    use cam_core::post::{grbl, machine::GrblProfile};
+    let plan = TrustedPlan::from_generated(mixed_plan());
+    let profile: GrblProfile =
+        serde_json::from_str(include_str!("../../../fixtures/gui2/grbl-machine.json")).unwrap();
+    let bundle = grbl::export_bundle(&plan, &profile, OutputLayout::SequentialFiles).unwrap();
+    let files = &bundle.manifest.files;
+    assert_eq!(
+        files
+            .iter()
+            .map(|f| f.tool_id.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        ["endmill", "vbit", "endmill"]
+    );
+    assert!(files.iter().all(|f| f.tool_number.is_none()));
+    assert_eq!(files[0].stage_ids.len(), 2);
+    assert_eq!(
+        files[2].runs_after,
+        [&files[0].filename, &files[1].filename].map(|s| s.clone())
+    );
+    assert_eq!(
+        bundle
+            .manifest
+            .manual_setup
+            .as_ref()
+            .unwrap()
+            .clearance_work_z_mm,
+        13.
+    );
+    for file in &bundle.files {
+        assert!(
+            file.gcode
+                .starts_with("M5\nM9\nG21 G17 G90 G94\nG54\nG0 Z13\n")
+        );
+        assert!(file.gcode.ends_with("G0 Z13\nM5\nM9\nM2\n"));
+        assert!(!file.gcode.contains("M6"));
+    }
+    assert_eq!(
+        grbl::export_bundle(&plan, &profile, OutputLayout::OneProgram)
+            .unwrap_err()
+            .code,
+        "GRBL_TOOL_CHANGE"
+    );
+
+    let mut only_face = mixed_job();
+    only_face.operations.truncate(1);
+    let face = TrustedPlan::from_generated(
+        OperationPlan::plan_job(&only_face, &PlanLimits::default()).unwrap(),
+    );
+    let one = grbl::export_bundle(&face, &profile, OutputLayout::OneProgram).unwrap();
+    assert_eq!(one.files[0].filename, "sequence.nc");
+    assert_eq!(one.report.machine_offset_mm, [20., 15., -8.]);
+}
+
 const LEGACY_PROFILE: &str = include_str!("../../../../real_data/machine-profile.json");
 /// Pocket 5..35 x 5..25 on a 40x30 page at scale 1: one filled component
 /// whose outer contour (`pocket-0-outer`) is the profile target.

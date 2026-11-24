@@ -970,6 +970,8 @@ fn scenario8_incomplete_snapshot_saves_and_mappings_follow_the_scope() {
     ]);
     // An incomplete snapshot: only the origin and one empty mapping row.
     job.machine_configuration = Some(v5::AppliedMachineConfiguration {
+        controller: Default::default(),
+        counterclockwise_spindle: false,
         origin: v5::ConfigurationOrigin {
             configuration_id: "half-applied".into(),
             name: "Half applied".into(),

@@ -799,7 +799,7 @@ pub fn compute(claimed: ClaimedTask) -> Result<TaskOutcome> {
                      generated; generate a new plan before preparing output",
                 ));
             }
-            let profile = machine::resolve_sequence_profile(&job, &scope)?;
+            let profile = machine::resolve_profile(&job, &scope)?;
             // Work zero is output-only (H3 excludes it from the machining
             // identity): bind the current selection to the retained
             // setup-coordinate motions instead of regenerating them. The
@@ -808,14 +808,26 @@ pub fn compute(claimed: ClaimedTask) -> Result<TaskOutcome> {
             let mut snapshot = plan.trusted.plan().clone();
             snapshot.job_snapshot.setup.work_zero = job.setup.work_zero.clone();
             let trusted = TrustedPlanV5::from_generated(snapshot);
-            let prepared = PreparedExecution::prepare(&trusted, &profile)?;
-            let bundle = prepared.export_bundle(&trusted, &profile, layout)?;
+            let (bundle, prepared) = match profile {
+                cam_core::post::machine::MachineProfile::LinuxCnc(profile) => {
+                    let prepared = PreparedExecution::prepare(&trusted, &profile)?;
+                    (
+                        prepared.export_bundle(&trusted, &profile, layout)?,
+                        Some(prepared),
+                    )
+                }
+                cam_core::post::machine::MachineProfile::Grbl(profile) => (
+                    cam_core::post::grbl::export_bundle(&trusted, &profile, layout)?,
+                    None,
+                ),
+            };
             let mut report = serde_json::to_value(&bundle.report)
                 .map_err(|e| retained_error("RETAINED_JSON", e.to_string()))?;
             // GUI6 inspection is tied to these retained bytes and this retained
             // execution. Never replan/re-export through the stateless evidence
             // route just to draw the blade. Bundled-file inspection is GUI10.
-            if layout == OutputLayout::OneProgram
+            if let Some(prepared) = prepared
+                && layout == OutputLayout::OneProgram
                 && trusted
                     .plan()
                     .stages

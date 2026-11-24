@@ -289,6 +289,10 @@ mod native {
     fn save_filter(name: &str) -> (&'static str, &'static str) {
         if name.ends_with(".ngc") {
             ("G-code", "ngc")
+        } else if name.ends_with(".zip") {
+            ("ZIP archive", "zip")
+        } else if name.ends_with(".nc") {
+            ("G-code", "nc")
         } else if name.ends_with(".svg") {
             ("SVG", "svg")
         } else {

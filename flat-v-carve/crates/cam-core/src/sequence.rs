@@ -539,6 +539,10 @@ impl TrustedPlanV5 {
 /// export, decoding, comparison and knife replay run identical algorithms over
 /// collection documents instead of a second pipeline.
 pub trait SequencePlan {
+    /// Translate the stored intent into the controller-independent process contract.
+    fn machine_intent<'a>(&self, intent: &'a ProcessIntent) -> std::borrow::Cow<'a, ProcessIntent> {
+        std::borrow::Cow::Borrowed(intent)
+    }
     fn setup(&self) -> &crate::project::SetupSettings;
     fn tolerances(&self) -> &PlanningTolerances;
     /// Geometry snapshot of a job tool, if the tool exists and carries one.
@@ -553,6 +557,20 @@ pub trait SequencePlan {
 }
 
 impl SequencePlan for OperationPlan {
+    fn machine_intent<'a>(&self, intent: &'a ProcessIntent) -> std::borrow::Cow<'a, ProcessIntent> {
+        // Older schema-4 passive stages left these two requests at the machine
+        // default. Their export contract was dry running on an exact path.
+        if intent.spindle == ProcessSpindle::Off {
+            let mut passive = intent.clone();
+            passive.coolant = CoolantIntent::Off;
+            if passive.path_control == PathControlIntent::UseMachineProfile {
+                passive.path_control = PathControlIntent::ExactPath;
+            }
+            std::borrow::Cow::Owned(passive)
+        } else {
+            std::borrow::Cow::Borrowed(intent)
+        }
+    }
     fn setup(&self) -> &crate::project::SetupSettings {
         &self.job_snapshot.setup
     }
