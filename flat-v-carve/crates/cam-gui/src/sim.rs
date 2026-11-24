@@ -35,6 +35,7 @@ pub struct Stock {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ToolSpec {
+    Pen,
     Knife {
         #[serde(rename = "bladeOffsetMm")]
         offset: f64,
@@ -65,6 +66,7 @@ pub enum ToolSpec {
 }
 #[derive(Clone, Copy, Debug)]
 pub enum Tool {
+    Pen,
     Knife,
     Endmill { radius: f64 },
     Vbit { tip: f64, slope: f64, radius: f64 },
@@ -75,6 +77,7 @@ fn positive(v: f64) -> bool {
 impl ToolSpec {
     pub fn normalize(self) -> Result<Tool, String> {
         match self {
+            Self::Pen => Ok(Tool::Pen),
             Self::Knife {
                 offset,
                 max_cut_depth,
@@ -117,7 +120,7 @@ impl ToolSpec {
     /// the cut cannot disagree (`a_cutter_body_reaches_exactly_as_far_as_the_removal`).
     pub fn radius_at_depth(self, depth: f64) -> Option<f64> {
         match self.normalize().ok()? {
-            Tool::Knife => None,
+            Tool::Pen | Tool::Knife => None,
             Tool::Endmill { radius } => Some(radius),
             Tool::Vbit { tip, slope, radius } => Some((tip + depth.max(0.) * slope).min(radius)),
         }
@@ -132,7 +135,7 @@ impl ToolSpec {
     /// portion is drawn until a tool states a shaft and a stickout.
     pub fn profile(self) -> Option<Vec<(f64, f64)>> {
         match self.normalize().ok()? {
-            Tool::Knife => None,
+            Tool::Pen | Tool::Knife => None,
             Tool::Endmill { radius } => {
                 let Self::Endmill { cutting_length, .. } = self else {
                     return None;
@@ -378,7 +381,7 @@ impl Field {
         if tools.is_empty()
             || tools.iter().any(|t| match t {
                 Tool::Endmill { radius } | Tool::Vbit { radius, .. } => !positive(*radius),
-                Tool::Knife => false,
+                Tool::Pen | Tool::Knife => false,
             })
         {
             return Err("Simulator requires positive-radius tools".into());
@@ -605,7 +608,7 @@ impl Field {
         if start <= 0. {
             self.stats.applied_motions += 1;
         }
-        if !cutting || matches!(self.tools.get(motion.tool), Some(Tool::Knife)) {
+        if !cutting || matches!(self.tools.get(motion.tool), Some(Tool::Pen | Tool::Knife)) {
             return Ok(());
         }
         if start <= 0. {
@@ -658,7 +661,7 @@ impl Field {
         }
         let tool = self.tools[motion.tool];
         let (radius, role) = match tool {
-            Tool::Knife => return Ok(()),
+            Tool::Pen | Tool::Knife => return Ok(()),
             Tool::Endmill { radius } => (radius, 1),
             Tool::Vbit { radius, .. } => (radius, 2),
         };
@@ -719,7 +722,9 @@ impl Field {
                             continue;
                         }
                         let depth = match tool {
-                            Tool::Knife => unreachable!("knife never removes stock"),
+                            Tool::Pen | Tool::Knife => {
+                                unreachable!("passive tools never remove stock")
+                            }
                             Tool::Endmill { .. } => {
                                 let d0 = -origin[2] - dz * t0;
                                 let d1 = -origin[2] - dz * t1;
@@ -1101,6 +1106,7 @@ pub fn kind_code(kind: &str) -> u8 {
     match kind {
         "cut" => 0,
         "plunge" => 1,
+        "draw" => 4,
         "ramp" => 2,
         _ => 3,
     }
@@ -1110,6 +1116,7 @@ pub fn code_kind(code: u8) -> &'static str {
     match code {
         0 => "cut",
         1 => "plunge",
+        4 => "draw",
         2 => "ramp",
         _ => "rapid",
     }

@@ -200,6 +200,11 @@ fn reserved_item_ids(job: &CamJobV5) -> BTreeSet<String> {
                     reserve(&a.geometry);
                 }
             }
+            OperationSettingsV5::CenterlinePlot(s) => {
+                for r in &s.chains {
+                    reserve(r);
+                }
+            }
             OperationSettingsV5::Drill(s) => {
                 for r in &s.points {
                     reserve(r);
@@ -640,7 +645,7 @@ pub fn set_contour_selection(
     )
 }
 
-/// Replace a Drag Knife operation's centerline chain selection.
+/// Replace the ordered chain selection for a knife or pen operation.
 pub fn set_chain_selection(
     job: &CamJobV5,
     operation_id: &str,
@@ -669,10 +674,11 @@ pub fn set_chain_selection(
     let index = operation_index(job, operation_id)?;
     let mut candidate = job.clone();
     match &mut candidate.operations[index].settings {
+        OperationSettingsV5::CenterlinePlot(settings) => settings.chains = bound,
         OperationSettingsV5::DragKnife(settings) => settings.chains = bound,
         _ => {
             return Err(command_error(format!(
-                "operation '{operation_id}' is not a drag-knife operation"
+                "operation '{operation_id}' does not accept centerline chains"
             )));
         }
     }
@@ -1147,6 +1153,7 @@ pub fn stock_overlap_issues(job: &CamJobV5) -> Result<Vec<LocatedDiagnostic>> {
 /// stays unset until the user states it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NewOperationKind {
+    CenterlinePlot,
     Pocket,
     FlatVcarve,
     Face,
@@ -1163,6 +1170,7 @@ impl NewOperationKind {
             Self::Face => "Face",
             Self::Profile => "Profile",
             Self::DragKnife => "Drag knife",
+            Self::CenterlinePlot => "Centerline Plot",
             Self::Drill => "Drill",
         }
     }
@@ -1341,6 +1349,19 @@ pub fn add_operation(
                 closure_overlap_mm: None,
                 alignment: Default::default(),
                 path_simplification_mm: None,
+            })
+        }
+        NewOperationKind::CenterlinePlot => {
+            let tool_id = push_job_tool(&mut candidate, "pen", "Pen");
+            candidate.tools.last_mut().expect("just appended").geometry =
+                Some(crate::project::ToolGeometry::Pen);
+            affected.push(AffectedEntity::JobTool(tool_id.clone()));
+            OperationSettingsV5::CenterlinePlot(super::PlotSettingsV5 {
+                chains: vec![],
+                tool_id,
+                compression_mm: 0.,
+                draw_feed_mm_min: None,
+                lower_feed_mm_min: None,
             })
         }
         NewOperationKind::Drill => {

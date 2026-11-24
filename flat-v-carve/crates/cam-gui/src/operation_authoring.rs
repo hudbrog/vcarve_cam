@@ -16,6 +16,7 @@ pub const MAX_OPERATIONS: usize = 12;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
+    CenterlinePlot,
     Pocket,
     Face,
     FlatVcarve,
@@ -32,6 +33,7 @@ impl Kind {
             Self::FlatVcarve => v5::commands::NewOperationKind::FlatVcarve,
             Self::Profile => v5::commands::NewOperationKind::Profile,
             Self::DragKnife => v5::commands::NewOperationKind::DragKnife,
+            Self::CenterlinePlot => v5::commands::NewOperationKind::CenterlinePlot,
             Self::Drill => v5::commands::NewOperationKind::Drill,
         }
     }
@@ -42,6 +44,7 @@ impl Kind {
             Self::FlatVcarve => "carving",
             Self::Profile => "profile",
             Self::DragKnife => "knife",
+            Self::CenterlinePlot => "plot",
             Self::Drill => "drill",
         }
     }

@@ -350,7 +350,7 @@ pub(crate) fn fit_motions(
 pub(crate) fn fittable_role(role: StageRole) -> bool {
     !matches!(
         role,
-        StageRole::Knife | StageRole::PocketRough | StageRole::PocketFinish
+        StageRole::Knife | StageRole::Plot | StageRole::PocketRough | StageRole::PocketFinish
     )
 }
 

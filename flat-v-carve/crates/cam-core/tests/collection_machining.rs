@@ -675,6 +675,16 @@ fn rebind_live(job: &mut v5::CamJobV5) {
                     .expect("referenced item resolves");
                 }
             }
+            OperationSettingsV5::CenterlinePlot(s) => {
+                for chain in &mut s.chains {
+                    *chain = lookup(
+                        &chain.artwork_item_id.clone(),
+                        chain.kind,
+                        &chain.local_geometry_id.clone(),
+                    )
+                    .expect("referenced item resolves");
+                }
+            }
             OperationSettingsV5::DragKnife(s) => {
                 for chain in &mut s.chains {
                     *chain = lookup(

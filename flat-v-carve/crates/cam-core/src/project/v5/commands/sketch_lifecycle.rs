@@ -273,6 +273,11 @@ pub fn apply_sketch_with_report(
                 }
                 continuity.start(&mut s.start, &op.id, impacts);
             }
+            OperationSettingsV5::CenterlinePlot(s) => {
+                for (i, r) in s.chains.iter_mut().enumerate() {
+                    continuity.bind(r, None, &op.id, format!("chains[{i}]"), impacts);
+                }
+            }
             OperationSettingsV5::Drill(s) => {
                 for (i, r) in s.points.iter_mut().enumerate() {
                     continuity.bind(r, None, &op.id, format!("points[{i}]"), impacts);

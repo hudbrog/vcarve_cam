@@ -37,6 +37,19 @@ fn target_in(job: &CamJobV5, path: &str, owner: Option<&str>) -> Option<(usize, 
         // selection that needs physical stock dimensions) lives in Setup.
         return Some((1, "Stock width".into()));
     }
+    if crate::plot::settings(job, operation).is_some() {
+        let control = match local {
+            "draw_feed_mm_min" => Some(FIELDS[2]),
+            "lower_feed_mm_min" => Some(FIELDS[10]),
+            "tool_id" => Some("Pen tool"),
+            "chains" => Some("Paths to plot"),
+            field if field.starts_with("chains[") => Some("Paths to plot"),
+            _ => None,
+        };
+        if let Some(label) = control {
+            return Some((2, label.into()));
+        }
+    }
     if crate::session::kind(job, operation) == Some(crate::session::OperationKind::Face) {
         return match local {
             "stepdown_mm" => Some((2, "Stepdown".into())),

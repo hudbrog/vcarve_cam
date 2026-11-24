@@ -860,6 +860,19 @@ pub struct ProfileSettingsV5 {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PlotSettingsV5 {
+    pub chains: Vec<GeometryRef>,
+    pub tool_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw_feed_mm_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lower_feed_mm_min: Option<f64>,
+    #[serde(default)]
+    pub compression_mm: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DragKnifeSettingsV5 {
     /// Selected centerline chains as qualified references; may be empty
     /// while incomplete.
@@ -953,6 +966,7 @@ pub enum OperationSettingsV5 {
     FlatVcarve(FlatVcarveSettingsV5),
     Face(FaceSettingsV5),
     Profile(ProfileSettingsV5),
+    CenterlinePlot(PlotSettingsV5),
     DragKnife(DragKnifeSettingsV5),
     Drill(DrillSettingsV5),
 }
@@ -1271,6 +1285,27 @@ impl CamJobV5 {
                 OperationSettingsV5::Profile(settings) => {
                     validate_profile(settings, id)?;
                     (Some(&settings.top), Some(&settings.bottom))
+                }
+                OperationSettingsV5::CenterlinePlot(s) => {
+                    if !preview::valid_id(&s.tool_id) {
+                        return Err(error("PROJECT_PARAMETER", "invalid pen tool ID"));
+                    }
+                    let mut seen = std::collections::BTreeSet::new();
+                    for chain in &s.chains {
+                        chain.validate()?;
+                        if chain.kind != GeometryRefKind::Centerline
+                            || !seen.insert((&chain.artwork_item_id.0, &chain.local_geometry_id))
+                        {
+                            return Err(error(
+                                "PROJECT_PARAMETER",
+                                "plot selection requires distinct centerline references",
+                            ));
+                        }
+                    }
+                    number(s.draw_feed_mm_min, "plot.draw_feed_mm_min", true)?;
+                    number(s.lower_feed_mm_min, "plot.lower_feed_mm_min", true)?;
+                    number(Some(s.compression_mm), "plot.compression_mm", false)?;
+                    (None, None)
                 }
                 OperationSettingsV5::DragKnife(settings) => {
                     validate_drag_knife(settings)?;

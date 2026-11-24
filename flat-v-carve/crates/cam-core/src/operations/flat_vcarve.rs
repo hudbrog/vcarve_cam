@@ -254,6 +254,7 @@ fn engine_tool(
                 "drag-knife geometry has no V-carve engine representation",
             ));
         }
+        ToolGeometry::Pen => return Err(error("ENGINE_TOOL_KIND", "A pen cannot mill a V-carve")),
         ToolGeometry::Drill(_) => {
             return Err(error(
                 "ENGINE_TOOL_KIND",

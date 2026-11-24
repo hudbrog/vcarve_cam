@@ -69,6 +69,11 @@ fn main() {
                         bind(reference);
                     }
                 }
+                OperationSettingsV5::CenterlinePlot(settings) => {
+                    for reference in &mut settings.chains {
+                        bind(reference);
+                    }
+                }
                 OperationSettingsV5::Drill(settings) => {
                     for reference in &mut settings.points {
                         bind(reference);

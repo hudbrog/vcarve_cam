@@ -247,6 +247,7 @@ pub struct Viewport {
     groups: Arc<Vec<DisplayGroup>>,
     /// Whether the operation the user is editing is a drag knife. Picking
     /// behavior follows the operation, not the whole scene.
+    pub(crate) plot_selected: bool,
     knife_selected: bool,
     /// Whether the operation being edited is a profile: viewport selection
     /// then addresses closed contours with their advisory sides.
@@ -390,6 +391,7 @@ impl Default for Viewport {
             profile_contours: Arc::new(Vec::new()),
             drill_points: Arc::new(Vec::new()),
             groups: Arc::new(Vec::new()),
+            plot_selected: false,
             knife_selected: false,
             profile_selected: false,
             drill_selected: false,
@@ -2792,7 +2794,7 @@ mod tests {
                 modifiers,
             );
             let events = view.take_artwork_events();
-            let Some(ArtworkEvent::KnifeSelection(selection)) = events.last() else {
+            let Some(ArtworkEvent::ChainSelection(selection)) = events.last() else {
                 panic!("Knife click did not emit a selection");
             };
             assert_eq!(selection.len(), count);

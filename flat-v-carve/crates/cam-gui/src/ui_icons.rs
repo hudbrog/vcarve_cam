@@ -17,6 +17,7 @@ pub enum Icon {
     Profile,
     Knife,
     Drill,
+    Pen,
     Endmill,
     Vbit,
     Add,
@@ -156,6 +157,17 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Knife => {
             line(&[(6., 2.), (14., 2.), (14., 12.), (6., 19.), (6., 2.)]);
             line(&[(6., 10.), (14., 10.)]);
+        }
+        Icon::Pen => {
+            line(&[
+                (3., 16.),
+                (4., 12.),
+                (14., 2.),
+                (17., 5.),
+                (7., 15.),
+                (3., 16.),
+            ]);
+            line(&[(3., 18.), (16., 18.)]);
         }
         Icon::Drill => {
             // A tapering bit: shank, flutes and the point.

@@ -75,6 +75,7 @@ establishes a usable surface.
 | Face | Whole-stock or rectangular coverage, margins, 0/90-degree raster, layered passes and explicit entry choice. | `cam-core/src/operations/face.rs`, `cam-core/tests/face_core.rs`, `face_workflow.rs` |
 | Flat V-carve | Endmill-only or combined roughing/rest/finish, finite-tip target, bounded links and optional arc fitting. | `cam-core/src/operations/flat_vcarve.rs`, `cam-core/src/pocket/`, `cam-core/src/vcarve/`, `cam-core/tests/rest_planning.rs`, `arc_fit.rs` |
 | Profile | Contour side, depth passes, tabs, radial finishing, starts and leads/ramps. | `cam-core/src/operations/profile/`, `cam-core/tests/profile_basic.rs`, `profile_tabs.rs`, `profile_finish.rs`, `profile_entries.rs` |
+| Centerline Plot | Ordered SVG or sketch chains drawn with a passive pen at constant contact Z. Consecutive chains sharing an end and start draw continuously. Other transfers use stock clearance. | `cam-core/src/operations/plot.rs`, `cam-core/tests/centerline_plot.rs` |
 | Drag knife | Tip paths compensated to pivot motion, explicit initial heading, corner swivels, bounded simplification and independent replay. | `cam-core/src/operations/drag_knife/`, `cam-core/tests/knife_geometry.rs`, `knife_output.rs`, `knife_simplification.rs` |
 | Drill | SVG marker points, selected or X/Y order, single plunge or peck cycles, dwell and tip/full-diameter depth references. Output expands to G0/G1/G4. | `cam-core/src/operations/drill.rs`, `cam-core/tests/drill_points.rs`, `drill_core.rs` |
 

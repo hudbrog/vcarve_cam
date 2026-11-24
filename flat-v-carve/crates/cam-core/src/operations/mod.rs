@@ -13,6 +13,7 @@ pub mod drag_knife;
 pub mod drill;
 pub mod face;
 pub mod flat_vcarve;
+pub(crate) mod plot;
 pub mod pocket;
 pub mod profile;
 

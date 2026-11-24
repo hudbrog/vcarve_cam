@@ -13,6 +13,7 @@ use cam_core::project::{
     v5::{self, CamJobV5, OperationSettingsV5},
 };
 use cam_core::sequence::{OperationPlanV5, StageRole};
+use cam_core::toolpath::MotionEffect;
 use serde_json::{Value, json};
 
 /// One stage span of the executed prefix, in display order.
@@ -51,6 +52,7 @@ impl StageSpan {
             StageRole::ProfileRough => "Profile rough",
             StageRole::ProfileFinish => "Profile finish",
             StageRole::Knife => "Knife",
+            StageRole::Plot => "Centerline Plot",
             StageRole::Drill => "Drill",
         }
     }
@@ -224,6 +226,7 @@ fn sim_tool(job: &CamJobV5, tool_id: &str) -> Result<ToolSpec, String> {
             diameter: geometry.max_cutting_diameter_mm,
             height: geometry.cutting_height_mm,
         }),
+        Some(ToolGeometry::Pen) => Ok(ToolSpec::Pen),
         Some(ToolGeometry::DragKnife(knife)) => Ok(ToolSpec::Knife {
             offset: knife.blade_offset_mm,
             max_cut_depth: knife.max_cut_depth_mm,
@@ -282,7 +285,7 @@ fn executed_frame(
     let mut radius: f64 = 0.;
     for tool in &tools {
         match *tool {
-            ToolSpec::Knife { .. } => {}
+            ToolSpec::Knife { .. } | ToolSpec::Pen => {}
             ToolSpec::Endmill {
                 diameter,
                 cutting_length,
@@ -411,6 +414,7 @@ pub(crate) fn role_color(role: StageRole) -> [f32; 4] {
         StageRole::ProfileRough => [0.45, 0.42, 0.86, 1.],
         StageRole::ProfileFinish => [0.85, 0.36, 0.68, 1.],
         StageRole::Knife => [1., 0.62, 0.2, 1.],
+        StageRole::Plot => [0.12, 0.62, 0.75, 1.],
         StageRole::Drill => [0.3, 0.5, 0.75, 1.],
     }
 }
@@ -679,12 +683,16 @@ pub fn build_reply(
     let mut motions = Vec::with_capacity(plan.motions.len());
     for (index, motion) in plan.motions.iter().enumerate() {
         let stage = stage_of(index).ok_or("Plan motion outside every stage")?;
-        let cutting = motion.effect == cam_core::toolpath::MotionEffect::MillingSweep;
+        let kind = match motion.effect {
+            MotionEffect::PenTrace => "draw",
+            MotionEffect::MillingSweep => "cut",
+            _ => "rapid_xy",
+        };
         motions.push(sim_motion(
             motion,
             stage.tool_index,
             stage_of_motion.get(index).copied().unwrap_or(0) as u16,
-            if cutting { "cut" } else { "rapid_xy" },
+            kind,
         ));
     }
     for (index, motion) in plan.motions.iter().enumerate() {
@@ -692,23 +700,24 @@ pub fn build_reply(
             Some(stage) => role_color(stage.role),
             None => TRAVEL_COLOR,
         };
-        let color = if motion.effect == cam_core::toolpath::MotionEffect::MillingSweep
-            || motion.effect == cam_core::toolpath::MotionEffect::KnifeTrace
-        {
+        let color = if matches!(
+            motion.effect,
+            MotionEffect::MillingSweep | MotionEffect::KnifeTrace | MotionEffect::PenTrace
+        ) {
             color
         } else {
             TRAVEL_COLOR
         };
-        vertices.push(vertex(
-            [motion.start.x, motion.start.y, motion.start.z],
-            bounds,
-            color,
-        ));
-        vertices.push(vertex(
-            [motion.end.x, motion.end.y, motion.end.z],
-            bounds,
-            color,
-        ));
+        for pos in [motion.start, motion.end] {
+            // Ink sits on the drawing surface. The simulator stream keeps the
+            // commanded holder Z, including spring compression, for playback.
+            let z = if motion.effect == MotionEffect::PenTrace {
+                0.
+            } else {
+                pos.z
+            };
+            vertices.push(vertex([pos.x, pos.y, z], bounds, color));
+        }
     }
     let marks: Vec<usize> = spans
         .iter()

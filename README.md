@@ -1,6 +1,6 @@
 # V-carve CAM
 
-A Rust CAM application for ordered Face, Flat V-carve, Profile, Drag knife and
+A Rust CAM application for ordered Face, Flat V-carve, Profile, Centerline Plot, Drag knife and
 Drill operations. Flat V-carve combines endmill clearing and V-bit finishing
 toward sloped walls, flat floors in broad regions and shallower narrow details.
 

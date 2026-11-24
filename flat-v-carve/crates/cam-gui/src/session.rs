@@ -264,6 +264,9 @@ pub enum ArtworkCommand {
         reference: Option<v5::GeometryRef>,
         fraction: f64,
     },
+    PlotSelection {
+        references: Vec<v5::GeometryRef>,
+    },
     KnifeSelection {
         references: Vec<v5::GeometryRef>,
     },
@@ -406,6 +409,14 @@ fn artwork_command(
             return Ok((
                 crate::knife::set_start_in(job, &target, reference.as_ref(), fraction)?,
                 json!({"kind":"knife_start"}),
+            ));
+        }
+        ArtworkCommand::PlotSelection { references } => {
+            crate::plot::settings(job, &target)
+                .ok_or("Select a plot operation before selecting paths")?;
+            return Ok((
+                crate::knife::select_chains_in(job, &target, &references)?,
+                json!({"kind":"plot_selection"}),
             ));
         }
         ArtworkCommand::KnifeSelection { references } => {
@@ -600,12 +611,13 @@ pub fn open(text: &str) -> Result<CamJobV5, String> {
                     | OperationSettingsV5::Face(_)
                     | OperationSettingsV5::Profile(_)
                     | OperationSettingsV5::DragKnife(_)
+                    | OperationSettingsV5::CenterlinePlot(_)
                     | OperationSettingsV5::Drill(_)
             )
         })
     {
         return Err(format!(
-            "This workspace supports SVG and sketch artwork and up to {} ordered Flat V-carve, Pocket, Face, Profile, Drag knife or Drill operations; the current document was retained",
+            "This workspace supports SVG and sketch artwork and up to {} ordered Flat V-carve, Pocket, Face, Profile, Drag knife, Centerline Plot or Drill operations; the current document was retained",
             crate::operation_authoring::MAX_OPERATIONS
         ));
     }
@@ -629,12 +641,14 @@ pub fn kind(job: &CamJobV5, id: &str) -> Option<OperationKind> {
         OperationSettingsV5::Face(_) => OperationKind::Face,
         OperationSettingsV5::Profile(_) => OperationKind::Profile,
         OperationSettingsV5::DragKnife(_) => OperationKind::DragKnife,
+        OperationSettingsV5::CenterlinePlot(_) => OperationKind::CenterlinePlot,
         OperationSettingsV5::Drill(_) => OperationKind::Drill,
     })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationKind {
+    CenterlinePlot,
     Pocket,
     FlatVcarve,
     Face,
@@ -651,6 +665,7 @@ pub fn kind_label(job: &CamJobV5, id: &str) -> &'static str {
         Some(OperationKind::FlatVcarve) => "Flat V-carve",
         Some(OperationKind::DragKnife) => "Drag knife",
         Some(OperationKind::Profile) => "Profile",
+        Some(OperationKind::CenterlinePlot) => "Centerline Plot",
         Some(OperationKind::Drill) => "Drill",
         None => "Operation",
     }

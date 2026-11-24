@@ -142,6 +142,7 @@ pub enum MotionPurpose {
     TabTransition,
     LeadIn,
     LeadOut,
+    Draw,
     KnifeCut,
     KnifeAlign,
     KnifeSwivel,
@@ -155,6 +156,8 @@ pub enum MotionEffect {
     /// The cutter sweep of this move removes stock under the engine's
     /// cutting semantics.
     MillingSweep,
+    /// The pen marks the surface without removing stock.
+    PenTrace,
     /// The blade traces or scores material without milled volume.
     KnifeTrace,
 }

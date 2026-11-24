@@ -157,21 +157,15 @@ fn cutter_radius(ctx: &PlanContext, assignment: &MillingAssignment) -> Result<f6
         Some(ToolGeometry::Endmill(g)) => Ok(g.diameter_mm / 2.),
         Some(other) => Err(error(
             "PROJECT_TOOL_KIND",
-            format!("face milling requires an endmill, found {}", kind_of(other)),
+            format!(
+                "face milling requires an endmill, found {}",
+                other.kind_name()
+            ),
         )),
         None => Err(error(
             "MISSING_MACHINING_SETTING",
             "face tool geometry is required",
         )),
-    }
-}
-
-fn kind_of(geometry: &ToolGeometry) -> &'static str {
-    match geometry {
-        ToolGeometry::Endmill(_) => "endmill",
-        ToolGeometry::Vbit(_) => "vbit",
-        ToolGeometry::DragKnife(_) => "drag_knife",
-        ToolGeometry::Drill(_) => "drill",
     }
 }
 
