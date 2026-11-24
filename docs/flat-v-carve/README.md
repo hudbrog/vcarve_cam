@@ -13,6 +13,7 @@ are available in Git history rather than maintained alongside the code.
 | [Tool library](tool-library.md) | Reusable tools/profiles, copied assignments and revision checks |
 | [LinuxCNC output](linuxcnc.md) | Machine contracts, checked output, readback and validation limits |
 | [UI assets](ui-asset-manifest.md) | Procedural artwork and visual conventions |
+| [Centerline Plot](centerline-plot-plan.md) | Passive pen setup, path order, matching endpoints and LinuxCNC output |
 | [Backlog](backlog.md) | Unfinished work and explicit optional extensions |
 
 [Artwork sketcher discovery and plan](artwork-sketcher-plan.md) records the shared

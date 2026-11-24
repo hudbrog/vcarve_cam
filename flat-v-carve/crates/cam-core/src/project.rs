@@ -284,6 +284,7 @@ impl DragKnifeSpec {
     deny_unknown_fields
 )]
 pub enum ToolGeometry {
+    Pen,
     Endmill(EndmillGeometry),
     Vbit(VBitSpec),
     DragKnife(DragKnifeSpec),
@@ -295,14 +296,16 @@ impl ToolGeometry {
             Self::Endmill(g) => g.validate(),
             Self::Vbit(spec) => VBit::try_from(spec.clone()).map(|_| ()),
             Self::DragKnife(spec) => spec.validate(),
+            Self::Pen => Ok(()),
             Self::Drill(spec) => Drill::try_from(spec.clone()).map(|_| ()),
         }
     }
-    fn kind_name(&self) -> &'static str {
+    pub(crate) fn kind_name(&self) -> &'static str {
         match self {
             Self::Endmill(_) => "endmill",
             Self::Vbit(_) => "vbit",
             Self::DragKnife(_) => "drag_knife",
+            Self::Pen => "pen",
             Self::Drill(_) => "drill",
         }
     }

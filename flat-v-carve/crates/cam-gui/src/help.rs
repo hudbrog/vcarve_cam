@@ -74,6 +74,10 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
         "Drill bit can plunge" => {
             "Whether the drill bit can feed straight down into material. This capability is copied from the tool library; ordinary drill bits support plunging."
         }
+        "Drawing feed" => "Speed of the pen along a selected line, in mm/min.",
+        "Lowering feed" => {
+            "Speed of the vertical approach from clearance to the drawing surface, in mm/min."
+        }
         "Drilling feed" => {
             "Speed at which the drill bit feeds down the hole, in mm/min. Use the drilling feed recommended for the bit, stock material and spindle speed."
         }
@@ -199,7 +203,7 @@ pub(super) fn explanation(label: &str) -> Option<&'static str> {
     })
 }
 
-const FIELD_HELP: [&str; 126] = [
+const FIELD_HELP: [&str; FIELDS.len()] = [
     "Total carving depth below the operation top, in millimeters. Stepdown controls how much is removed in each pass.",
     "Material left on walls by roughing, in millimeters, for a later finishing pass. Zero requests no extra allowance.",
     "Endmill cutting speed along the path, in mm/min. Choose for your cutter, material and machine; it is not spindle RPM.",
@@ -326,6 +330,7 @@ const FIELD_HELP: [&str; 126] = [
     "Pocket top offset from the selected reference. A top below the original stock surface requires a preceding face covering the selected regions.",
     "Pocket bottom offset from the selected reference. Use a negative offset from operation top for pocket depth; all selected regions share this bottom.",
     "Radius of the cutter-center helix path. Swept diameter equals tool diameter plus twice this radius. It must be smaller than the tool radius to avoid a central plug, and the whole entry must fit within each pocket.",
+    "Extra downward Z travel after the pen touches the stock top, in mm. Zero stops at the surface. Set this for the spring travel of the fitted pen holder.",
 ];
 
 #[cfg(test)]

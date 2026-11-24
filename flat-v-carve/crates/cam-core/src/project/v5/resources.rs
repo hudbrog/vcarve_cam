@@ -36,6 +36,8 @@ pub enum AssignmentRole {
     Milling,
     /// The knife assignment of a Drag Knife operation.
     Knife,
+    /// Passive plotting pen.
+    Pen,
     /// The single assignment of a Drill operation.
     Drill,
 }
@@ -47,6 +49,7 @@ impl AssignmentRole {
             Self::Vbit => "vbit",
             Self::Milling => "milling",
             Self::Knife => "knife",
+            Self::Pen => "pen",
             Self::Drill => "drill",
         }
     }
@@ -91,6 +94,9 @@ fn assignment_mut<'a>(
             AssignmentRole::Knife => AssignmentRef::Knife(&mut settings.assignment),
             _ => return Err(mismatch("drag_knife")),
         },
+        OperationSettingsV5::CenterlinePlot(_) => {
+            return Err(resource_error("Pen feeds are set on the plot operation"));
+        }
         OperationSettingsV5::Drill(settings) => match role {
             AssignmentRole::Drill => AssignmentRef::Milling(&mut settings.assignment),
             _ => return Err(mismatch("drill")),
@@ -394,6 +400,7 @@ pub fn reapply_profile(
     let (library_tool_id, preset_id) = {
         let settings = &candidate.operations[index].settings;
         match assignment_ref_of(settings, role)? {
+            AssignmentRead::Pen(_) => None,
             AssignmentRead::Milling(assignment) => assignment
                 .applied_profile
                 .as_ref()
@@ -474,6 +481,7 @@ pub fn reapply_profile(
 }
 
 enum AssignmentRead<'a> {
+    Pen(&'a super::PlotSettingsV5),
     Milling(&'a MillingAssignmentV5),
     Knife(&'a KnifeAssignmentV5),
 }
@@ -524,6 +532,12 @@ fn assignment_ref_of<'a>(
                 ));
             }
         },
+        OperationSettingsV5::CenterlinePlot(s) if role == AssignmentRole::Pen => {
+            AssignmentRead::Pen(s)
+        }
+        OperationSettingsV5::CenterlinePlot(_) => {
+            return Err(resource_error("Expected a pen assignment"));
+        }
         OperationSettingsV5::Drill(settings) => match role {
             AssignmentRole::Drill => AssignmentRead::Milling(&settings.assignment),
             _ => {
@@ -753,6 +767,7 @@ pub fn use_job_tool(
             geometry,
             crate::project::ToolGeometry::Endmill(_) | crate::project::ToolGeometry::Vbit(_)
         ),
+        AssignmentRole::Pen => matches!(geometry, crate::project::ToolGeometry::Pen),
         AssignmentRole::Knife => matches!(geometry, crate::project::ToolGeometry::DragKnife(_)),
         AssignmentRole::Drill => matches!(geometry, crate::project::ToolGeometry::Drill(_)),
     };
@@ -767,6 +782,25 @@ pub fn use_job_tool(
         )));
     }
     let mut candidate = job.clone();
+    if role == AssignmentRole::Pen {
+        let OperationSettingsV5::CenterlinePlot(s) = &mut candidate.operations[index].settings
+        else {
+            return Err(resource_error("Expected a Centerline Plot operation"));
+        };
+        if s.tool_id != tool.id {
+            s.tool_id = tool.id.clone();
+            s.draw_feed_mm_min = None;
+            s.lower_feed_mm_min = None;
+            s.compression_mm = 0.;
+        }
+        return super::commands::CommandOutcome::commit(
+            candidate,
+            vec![
+                super::commands::AffectedEntity::Operation(operation_id.into()),
+                super::commands::AffectedEntity::JobTool(tool_id.into()),
+            ],
+        );
+    }
     let mut milled_switch = false;
     match assignment_mut(
         &mut candidate.operations[index].settings,
@@ -818,6 +852,9 @@ pub fn assignments_of(job: &CamJobV5) -> Vec<(String, AssignmentRole)> {
             OperationSettingsV5::DragKnife(_) => {
                 out.push((operation.id.clone(), AssignmentRole::Knife));
             }
+            OperationSettingsV5::CenterlinePlot(_) => {
+                out.push((operation.id.clone(), AssignmentRole::Pen))
+            }
             OperationSettingsV5::Drill(_) => {
                 out.push((operation.id.clone(), AssignmentRole::Drill));
             }
@@ -845,6 +882,7 @@ pub fn assignment_statuses(job: &CamJobV5) -> Vec<AssignmentStatus> {
             let operation = job.operations.iter().find(|op| op.id == operation_id)?;
             let read = assignment_ref_of(&operation.settings, role).ok()?;
             let (tool_id, status, applied) = match read {
+                AssignmentRead::Pen(s) => (s.tool_id.clone(), ProfileStatus::Custom, None),
                 AssignmentRead::Milling(assignment) => (
                     assignment.tool_id.clone(),
                     milling_status(assignment),

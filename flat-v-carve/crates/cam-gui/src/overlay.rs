@@ -73,6 +73,10 @@ pub fn build(
 /// knife. Both are placed by the tip and drawn to the same scale as the paths.
 fn draw_cutter(out: &mut Overlay, marker: &Marker<'_>) {
     match marker.tool {
+        crate::sim::ToolSpec::Pen => {
+            axis(out, marker.tip, marker.top);
+            assembly(out, marker, marker.tip[2]);
+        }
         crate::sim::ToolSpec::Knife {
             offset,
             max_cut_depth,

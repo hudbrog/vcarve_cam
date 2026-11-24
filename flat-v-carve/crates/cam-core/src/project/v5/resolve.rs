@@ -588,6 +588,9 @@ pub(crate) fn plan_operation_v5(
             prior_motions,
             &PlannerGeometry::Catalogue(catalogue),
         ),
+        OperationSettingsV5::CenterlinePlot(settings) => {
+            crate::operations::plot::plan(ctx, &operation.id, settings, catalogue)
+        }
         OperationSettingsV5::Drill(settings) => crate::operations::drill::plan(
             ctx,
             &operation.id,

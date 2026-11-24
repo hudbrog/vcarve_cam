@@ -157,6 +157,7 @@ pub enum StageRole {
     ProfileFinish,
     VcarveRough,
     VcarveFinish,
+    Plot,
     Knife,
     Drill,
 }
@@ -1004,7 +1005,7 @@ fn compose_stock_history(
     for stage in &stages[..end] {
         // Knife traces never enter the milling-stock model (plan section
         // 9.1); knife stages contribute no sweeps and need no cutter.
-        if stage.role == StageRole::Knife {
+        if matches!(stage.role, StageRole::Knife | StageRole::Plot) {
             continue;
         }
         let cutter = tool_geometry(&stage.tool_id).and_then(|geometry| match &geometry {
@@ -1124,6 +1125,7 @@ pub(crate) fn tool_ids_of_v5(settings: &OperationSettingsV5) -> Vec<&str> {
         OperationSettingsV5::Face(s) => vec![s.assignment.tool_id.as_str()],
         OperationSettingsV5::Profile(s) => vec![s.assignment.tool_id.as_str()],
         OperationSettingsV5::DragKnife(s) => vec![s.assignment.tool_id.as_str()],
+        OperationSettingsV5::CenterlinePlot(s) => vec![&s.tool_id],
         OperationSettingsV5::Drill(s) => vec![s.assignment.tool_id.as_str()],
     }
 }
@@ -1165,6 +1167,9 @@ fn referenced_item_ids(settings: &OperationSettingsV5) -> Vec<&v5::ArtworkItemId
             .map(|r| &r.artwork_item_id)
             .chain(anchors(&s.start).into_iter().map(|r| &r.artwork_item_id))
             .collect(),
+        OperationSettingsV5::CenterlinePlot(s) => {
+            s.chains.iter().map(|r| &r.artwork_item_id).collect()
+        }
         OperationSettingsV5::Drill(s) => s.points.iter().map(|r| &r.artwork_item_id).collect(),
     }
 }
@@ -1198,6 +1203,7 @@ fn semantic_knife(assignment: &KnifeAssignmentV5) -> KnifeAssignmentV5 {
 
 fn semantic_settings(settings: &OperationSettingsV5) -> OperationSettingsV5 {
     match settings {
+        OperationSettingsV5::CenterlinePlot(_) => settings.clone(),
         OperationSettingsV5::Pocket(s) => OperationSettingsV5::Pocket(v5::PocketSettingsV5 {
             assignment: semantic_milling(&s.assignment),
             finish_feed_mm_min: if s.finish_walls {

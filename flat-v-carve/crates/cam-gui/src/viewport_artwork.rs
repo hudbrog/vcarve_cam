@@ -7,7 +7,7 @@ use cam_core::{geometry::Point, project::v5::GeometryRef, svg::Placement};
 
 #[derive(Clone)]
 pub enum ArtworkEvent {
-    KnifeSelection(Vec<GeometryRef>),
+    ChainSelection(Vec<GeometryRef>),
     ProfileSelection(Vec<GeometryRef>),
     DrillSelection(Vec<GeometryRef>),
     CarveSelection(Vec<GeometryRef>),
@@ -120,7 +120,9 @@ impl Viewport {
                 ("Rotate artwork", GestureMode::Rotate),
                 ("Scale artwork", GestureMode::Scale),
             ] {
-                let label = if mode == GestureMode::Select && self.is_knife() {
+                let label = if mode == GestureMode::Select && self.plot_selected {
+                    "Select plot paths"
+                } else if mode == GestureMode::Select && self.is_knife() {
                     "Select knife paths"
                 } else if mode == GestureMode::Select && self.is_profile() {
                     "Select profile contours"
@@ -137,6 +139,7 @@ impl Viewport {
             }
             if self.artwork.candidates.len() > 1
                 && !self.is_knife()
+                && !self.plot_selected
                 && !self.is_profile()
                 && !self.is_drill()
             {
@@ -157,7 +160,7 @@ impl Viewport {
                 }
             }
         });
-        ui.small(if self.artwork.mode != GestureMode::Select {"Drag the whole source · rotate/scale about setup 0,0 (numeric page origin) · Esc cancels"} else if self.is_knife() {"Click a knife path to assign it to this operation · Shift-click adds/removes · or use Geometry to cut in the operation"} else if self.is_profile() {"Click a closed contour to assign it to the profile with its suggested side · Shift-click adds/removes · choose Inside/Outside/On in the operation"} else if self.is_drill() {"Click a hole marker to assign it to this drill operation · Shift-click adds/removes"} else {"Click a filled region to assign it to this operation · Shift-click adds/removes · or use Geometry to carve in the operation"});
+        ui.small(if self.artwork.mode != GestureMode::Select {"Drag the whole source · rotate/scale about setup 0,0 (numeric page origin) · Esc cancels"} else if self.plot_selected {"Click a path to plot · Shift-click adds or removes it"} else if self.is_knife() {"Click a knife path to assign it to this operation · Shift-click adds/removes · or use Geometry to cut in the operation"} else if self.is_profile() {"Click a closed contour to assign it to the profile with its suggested side · Shift-click adds/removes · choose Inside/Outside/On in the operation"} else if self.is_drill() {"Click a hole marker to assign it to this drill operation · Shift-click adds/removes"} else {"Click a filled region to assign it to this operation · Shift-click adds/removes · or use Geometry to carve in the operation"});
     }
     pub(super) fn artwork_pointer(
         &mut self,
@@ -234,7 +237,7 @@ impl Viewport {
                 }
                 return;
             }
-            if self.is_knife() {
+            if self.is_knife() || self.plot_selected {
                 if response.clicked()
                     && let Some(p) = response.interact_pointer_pos()
                 {
@@ -295,7 +298,7 @@ impl Viewport {
                         }
                         self.artwork
                             .events
-                            .push(ArtworkEvent::KnifeSelection(selected));
+                            .push(ArtworkEvent::ChainSelection(selected));
                     }
                 }
                 return;

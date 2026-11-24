@@ -366,12 +366,7 @@ fn cutter_radius(ctx: &PlanContext, assignment: &MillingAssignment) -> Result<f6
             "PROJECT_TOOL_KIND",
             format!(
                 "profile milling requires an endmill, found {}",
-                match other {
-                    ToolGeometry::Endmill(_) => "endmill",
-                    ToolGeometry::Vbit(_) => "vbit",
-                    ToolGeometry::DragKnife(_) => "drag_knife",
-                    ToolGeometry::Drill(_) => "drill",
-                }
+                other.kind_name()
             ),
         )),
         None => Err(error(

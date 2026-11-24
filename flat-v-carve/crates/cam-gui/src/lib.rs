@@ -19,6 +19,7 @@ pub mod pages;
 pub mod paging;
 pub mod pick;
 pub mod platform;
+pub(crate) mod plot;
 pub mod pocket;
 pub mod profile;
 pub mod recovery;

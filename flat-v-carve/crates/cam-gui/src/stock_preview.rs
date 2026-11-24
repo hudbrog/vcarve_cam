@@ -374,6 +374,7 @@ pub fn simulation_key(
     }
     for tool in tools {
         match *tool {
+            crate::sim::ToolSpec::Pen => mix(4),
             crate::sim::ToolSpec::Knife {
                 offset,
                 max_cut_depth,

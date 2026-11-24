@@ -21,6 +21,7 @@ pub(crate) fn library_fits(geometry: &LibraryGeometry, role: AssignmentRole) -> 
         }
         AssignmentRole::Vbit => matches!(geometry, LibraryGeometry::Vbit(_)),
         AssignmentRole::Knife => matches!(geometry, LibraryGeometry::DragKnife(_)),
+        AssignmentRole::Pen => false,
         AssignmentRole::Drill => matches!(geometry, LibraryGeometry::Drill(_)),
     }
 }
@@ -251,6 +252,10 @@ impl ResourceCommand {
                     }.clear_fields(&added.job))
                     .unwrap_or_default();
             }
+            Self::UseTool { operation, role: AssignmentRole::Pen, tool } => {
+                if crate::plot::settings(job,operation).is_some_and(|s| &s.tool_id == tool) {return vec![];}
+                return vec![2,10,126,32,33];
+            }
             Self::UseTool { operation, role: AssignmentRole::Drill, tool } => {
                 if crate::session::drill(job, operation).is_some_and(|s| &s.assignment.tool_id == tool) {
                     return vec![];
@@ -291,6 +296,7 @@ impl ResourceCommand {
                 // face operation's stepover comes from the profile too.
                 AssignmentRole::Milling => vec![2, 9, 10, 11, 88, 12, 13],
                 AssignmentRole::Knife => vec![],
+                AssignmentRole::Pen => vec![2, 10, 126],
                 AssignmentRole::Drill => vec![2, 10, 11],
             };
         }
@@ -300,6 +306,7 @@ impl ResourceCommand {
                 AssignmentRole::Vbit => vec![3, 20, 21, 22, 46],
                 AssignmentRole::Milling => vec![2, 9, 10, 11, 88],
                 AssignmentRole::Knife => vec![63, 64, 65, 66],
+                AssignmentRole::Pen => vec![2, 10, 126],
                 AssignmentRole::Drill => vec![2, 10, 11],
             };
         }
@@ -557,6 +564,9 @@ pub fn capture_tool(tool: &v5::JobToolV5, id: String, name: String) -> Result<Li
         }),
         ToolGeometry::Vbit(g) => LibraryGeometry::Vbit(g),
         ToolGeometry::DragKnife(g) => LibraryGeometry::DragKnife(g),
+        ToolGeometry::Pen => {
+            return Err("Pens are assigned directly from the job in the plot editor".into());
+        }
         ToolGeometry::Drill(g) => LibraryGeometry::Drill(g),
     };
     let result = LibraryTool {
@@ -714,6 +724,7 @@ pub fn role_word(role: AssignmentRole) -> &'static str {
         AssignmentRole::Vbit => "V-bit",
         AssignmentRole::Milling => "cutter",
         AssignmentRole::Knife => "knife",
+        AssignmentRole::Pen => "pen",
         AssignmentRole::Drill => "drill",
     }
 }
@@ -760,9 +771,9 @@ pub struct Editor {
     pub new_machine_id: String,
     pub picker_loaded: bool,
     /// One selection per assignment role (endmill, V-bit, milling, knife, drill).
-    pub picker_tools: [String; 5],
-    pub picker_job_tools: [String; 5],
-    pub picker_profiles: [String; 5],
+    pub picker_tools: [String; 6],
+    pub picker_job_tools: [String; 6],
+    pub picker_profiles: [String; 6],
     pub base: Option<StoredCatalog>,
     pub draft: Catalog,
     pub ready: bool,

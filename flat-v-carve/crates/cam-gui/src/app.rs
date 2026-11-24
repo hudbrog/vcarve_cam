@@ -140,6 +140,7 @@ pub fn operation_selection(
             .iter()
             .map(|c| c.geometry.clone())
             .collect(),
+        Some(OperationSettingsV5::CenterlinePlot(s)) => s.chains.clone(),
         Some(OperationSettingsV5::Drill(settings)) => settings.points.clone(),
         _ => vec![],
     }
@@ -196,6 +197,7 @@ fn kind_name(kind: OperationKind) -> &'static str {
         OperationKind::Face => "face",
         OperationKind::Profile => "profile",
         OperationKind::DragKnife => "drag_knife",
+        OperationKind::CenterlinePlot => "centerline_plot",
         OperationKind::Drill => "drill",
     }
 }
@@ -217,6 +219,7 @@ pub fn value(job: &CamJobV5, operation_id: &str, field: usize) -> Option<f64> {
         Some(OperationKind::Face) => crate::face::value(job, operation_id, field),
         Some(OperationKind::Profile) => crate::profile::value(job, operation_id, field),
         Some(OperationKind::DragKnife) => crate::knife::value_in(job, operation_id, field),
+        Some(OperationKind::CenterlinePlot) => crate::plot::value(job, operation_id, field),
         Some(OperationKind::Drill) => crate::drill::value(job, operation_id, field),
         Some(OperationKind::FlatVcarve) => {
             let s = engine::settings_in(job, operation_id)?;
@@ -262,6 +265,9 @@ pub fn set_value(
         Some(OperationKind::Profile) => crate::profile::set(&mut job, operation_id, field, value)?,
         Some(OperationKind::DragKnife) => {
             crate::knife::set_in(&mut job, operation_id, field, value)?;
+        }
+        Some(OperationKind::CenterlinePlot) => {
+            crate::plot::set(&mut job, operation_id, field, value)?
         }
         Some(OperationKind::Drill) => {
             crate::drill::set(&mut job, operation_id, field, value)?;
@@ -1405,6 +1411,7 @@ impl App {
                 | "carve_selection"
                 | "drill_selection"
                 | "knife_start"
+                | "plot_selection"
                 | "knife_selection"
                 | "knife_outlines"
                 | "profile_selection"
@@ -1441,7 +1448,7 @@ impl App {
                 }
                 self.simulate = false;
                 self.status = match reply["kind"].as_str() {
-                    Some("carve_selection" | "drill_selection" | "knife_selection" | "profile_selection") => {
+                    Some("carve_selection" | "drill_selection" | "plot_selection" | "knife_selection" | "profile_selection") => {
                         "Operation geometry updated. Undo restores the previous selection."
                     }
                     Some(
@@ -1985,6 +1992,7 @@ impl App {
         }
         self.view.stock_loading = self.active.is_some() || self.export_dialog.is_some();
         self.view.result_current = self.current();
+        self.view.plot_selected = self.operation_kind() == Some(OperationKind::CenterlinePlot);
         self.view
             .set_knife_selected(self.operation_kind() == Some(OperationKind::DragKnife));
         self.view
@@ -2009,9 +2017,13 @@ impl App {
         }
         for event in self.view.take_artwork_events() {
             match event {
-                crate::viewport::ArtworkEvent::KnifeSelection(references) => {
+                crate::viewport::ArtworkEvent::ChainSelection(references) => {
                     self.artwork_command(
-                        engine::ArtworkCommand::KnifeSelection { references },
+                        if self.operation_kind() == Some(OperationKind::CenterlinePlot) {
+                            engine::ArtworkCommand::PlotSelection { references }
+                        } else {
+                            engine::ArtworkCommand::KnifeSelection { references }
+                        },
                         ctx,
                     );
                     self.operation_tab = 0;

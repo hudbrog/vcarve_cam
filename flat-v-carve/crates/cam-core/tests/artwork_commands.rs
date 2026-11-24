@@ -681,7 +681,7 @@ fn assignment_commands_validate_picks() {
         set_chain_selection(&job, "face-1", &[])
             .unwrap_err()
             .message
-            .contains("not a drag-knife operation")
+            .contains("does not accept centerline chains")
     );
 
     // Clearing a selection is an allowed incomplete state.

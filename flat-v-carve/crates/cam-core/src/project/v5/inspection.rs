@@ -266,6 +266,11 @@ pub fn inspect_operation_fields(
         OperationSettingsV5::Face(_) => inspect_face_fields(job, operation_id),
         OperationSettingsV5::DragKnife(_) => inspect_knife_fields(job, operation_id),
         OperationSettingsV5::Profile(_) => inspect_profile_fields(job, operation_id),
+        OperationSettingsV5::CenterlinePlot(s) => Ok(crate::operations::plot::missing_fields(
+            &crate::operations::PlanContext::from_v5(job),
+            operation_id,
+            s,
+        )),
         OperationSettingsV5::Drill(_) => inspect_drill_fields(job, operation_id),
     }
 }
@@ -277,6 +282,7 @@ fn operation_kind(settings: &OperationSettingsV5) -> &'static str {
         OperationSettingsV5::Face(_) => "face",
         OperationSettingsV5::Profile(_) => "profile",
         OperationSettingsV5::DragKnife(_) => "drag_knife",
+        OperationSettingsV5::CenterlinePlot(_) => "centerline_plot",
         OperationSettingsV5::Drill(_) => "drill",
     }
 }
@@ -314,6 +320,7 @@ fn geometry_refs(settings: &OperationSettingsV5) -> Vec<&GeometryRef> {
             .chain(tab_anchors(&s.tabs))
             .collect(),
         OperationSettingsV5::DragKnife(s) => s.chains.iter().chain(start(&s.start)).collect(),
+        OperationSettingsV5::CenterlinePlot(s) => s.chains.iter().collect(),
         OperationSettingsV5::Drill(s) => s.points.iter().collect(),
     }
 }
@@ -736,6 +743,10 @@ fn resolve_settings_heights(
                     bottom_z_mm: Some(heights.bottom_z),
                 })
         }
+        OperationSettingsV5::CenterlinePlot(s) => Some(ResolvedHeightsDto {
+            top_z_mm: 0.,
+            bottom_z_mm: Some(-s.compression_mm),
+        }),
         OperationSettingsV5::Drill(s) => {
             crate::setup::resolve_heights_values(thickness, &s.top, &s.bottom, published)
                 .ok()

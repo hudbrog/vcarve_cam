@@ -88,6 +88,7 @@ impl App {
                 Settings::FlatVcarve(_) => Icon::Carve,
                 Settings::Profile(_) => Icon::Profile,
                 Settings::DragKnife(_) => Icon::Knife,
+                Settings::CenterlinePlot(_) => Icon::Pen,
                 Settings::Drill(_) => Icon::Drill,
             };
             let tools: Vec<_> = assignments
@@ -254,6 +255,7 @@ impl App {
                 ("Add Flat V-carve", Kind::FlatVcarve),
                 ("Add Profile", Kind::Profile),
                 ("Add drag knife", Kind::DragKnife),
+                ("Add Centerline Plot", Kind::CenterlinePlot),
                 ("Add Drill", Kind::Drill),
             ] {
                 let label = format!("{label} — {}", operation_authoring::next_id(&job, kind));

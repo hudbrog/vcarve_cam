@@ -508,6 +508,7 @@ impl App {
     pub(super) fn resource_windows(&mut self, ctx: &egui::Context) {
         match self.operation_kind() {
             Some(OperationKind::DragKnife) => self.resources.role = Role::Knife,
+            Some(OperationKind::CenterlinePlot) => self.resources.role = Role::Pen,
             Some(OperationKind::Drill) => self.resources.role = Role::Drill,
             Some(OperationKind::Face | OperationKind::Profile) => {
                 self.resources.role = Role::Milling
@@ -515,7 +516,7 @@ impl App {
             Some(OperationKind::FlatVcarve)
                 if matches!(
                     self.resources.role,
-                    Role::Knife | Role::Milling | Role::Drill
+                    Role::Knife | Role::Milling | Role::Drill | Role::Pen
                 ) =>
             {
                 self.resources.role = Role::Endmill
@@ -663,6 +664,11 @@ impl App {
                     .map(|(i, op)| format!("{:02} · {}", i + 1, op.name))
             })
             .unwrap_or_default();
+        if self.operation_kind() == Some(OperationKind::CenterlinePlot) {
+            self.resources.role = Role::Pen;
+            ui.label(format!("{target} · Pen"));
+            return;
+        }
         if self
             .document
             .as_ref()

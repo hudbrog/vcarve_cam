@@ -302,11 +302,12 @@ fn operation_reference_issues(
         let Some(geometry) = &tool.geometry else {
             return;
         };
-        let kind = geometry_kind_name(geometry);
+        let kind = geometry.kind_name();
         let expected = match role {
             "knife" => "drag_knife",
             "endmill" => "endmill",
             "V-bit" => "vbit",
+            "pen" => "pen",
             "drill" => "drill",
             _ => return,
         };
@@ -430,6 +431,16 @@ fn operation_reference_issues(
                 &mut issues,
             );
         }
+        OperationSettingsV5::CenterlinePlot(settings) => {
+            require_tool(&mut issues, &settings.tool_id, "pen", "tool_id");
+            for (index, chain) in settings.chains.iter().enumerate() {
+                let field = format!("chains[{index}]");
+                let outcome = resolve_geometry_ref(chain, items);
+                if let Some(issue) = geometry_issue(chain, &outcome, id, &field) {
+                    issues.push(issue);
+                }
+            }
+        }
         OperationSettingsV5::DragKnife(settings) => {
             require_tool(
                 &mut issues,
@@ -481,15 +492,6 @@ fn operation_reference_issues(
         }
     }
     issues
-}
-
-fn geometry_kind_name(geometry: &crate::project::ToolGeometry) -> &'static str {
-    match geometry {
-        crate::project::ToolGeometry::Endmill(_) => "endmill",
-        crate::project::ToolGeometry::Vbit(_) => "vbit",
-        crate::project::ToolGeometry::DragKnife(_) => "drag_knife",
-        crate::project::ToolGeometry::Drill(_) => "drill",
-    }
 }
 
 fn machine_configuration_issues(

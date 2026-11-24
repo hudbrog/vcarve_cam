@@ -84,6 +84,7 @@ fn bodies(
 ) -> Vec<Body> {
     let mut bodies = Vec::new();
     let cutting_top = match tool.normalize() {
+        Ok(NormalizedTool::Pen) => tip_z,
         Ok(NormalizedTool::Knife) => match tool {
             ToolSpec::Knife { max_cut_depth, .. } => tip_z + max_cut_depth,
             _ => return bodies,
@@ -91,7 +92,7 @@ fn bodies(
         Ok(_) => match tool {
             ToolSpec::Endmill { cutting_length, .. } => tip_z + cutting_length,
             ToolSpec::Vbit { height, .. } => tip_z + height,
-            ToolSpec::Knife { .. } => return bodies,
+            ToolSpec::Knife { .. } | ToolSpec::Pen => return bodies,
         },
         Err(_) => return bodies,
     };

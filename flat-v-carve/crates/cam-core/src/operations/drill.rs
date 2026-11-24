@@ -145,12 +145,7 @@ fn drill_of(ctx: &PlanContext, settings: &DrillSettings) -> Result<Drill> {
             "PROJECT_TOOL_KIND",
             format!(
                 "drilling requires a drill tool, found {}",
-                match other {
-                    ToolGeometry::Endmill(_) => "endmill",
-                    ToolGeometry::Vbit(_) => "vbit",
-                    ToolGeometry::DragKnife(_) => "drag_knife",
-                    ToolGeometry::Drill(_) => unreachable!(),
-                }
+                other.kind_name()
             ),
         )),
         None => Err(error(

@@ -354,12 +354,20 @@ pub fn select_in(
     references: &[GeometryRef],
 ) -> Result<CamJobV5, String> {
     settings_in(job, operation_id).ok_or("Add a knife operation before selecting chains")?;
+    select_chains_in(job, operation_id, references)
+}
+
+pub(crate) fn select_chains_in(
+    job: &CamJobV5,
+    operation_id: &str,
+    references: &[GeometryRef],
+) -> Result<CamJobV5, String> {
     let available = chains(job)?;
     if references
         .iter()
         .any(|r| !available.iter().any(|c| &c.reference == r))
     {
-        return Err("Artwork changed; select the knife chain again".into());
+        return Err("Artwork changed; select the chain again".into());
     }
     commands::set_chain_selection(job, operation_id, &crate::authoring::picks(references))
         .map(|o| o.job)

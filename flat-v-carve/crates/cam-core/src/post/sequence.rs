@@ -512,7 +512,7 @@ fn resolve_process(
             // Knife stages always run coolant off and exact path (plan
             // sections 12.5 and 14.4): no machine-profile coolant or blend
             // tolerance may leak into swivel geometry.
-            StageRole::Knife => Coolant::Off,
+            StageRole::Knife | StageRole::Plot => Coolant::Off,
             _ => profile.coolant,
         },
         path_control: match stage.role {
@@ -520,6 +520,7 @@ fn resolve_process(
             // the deviation the planner verified with its own tip replay; an
             // intent that did not ask for a bound stays exact path (plan
             // sections 12.5 and 14.4).
+            StageRole::Plot => PathControl::ExactPath,
             StageRole::Knife => knife_path_control(&intent.path_control, profile)?,
             _ => profile.path_control,
         },
@@ -2109,6 +2110,7 @@ fn role_name(role: StageRole) -> &'static str {
         StageRole::ProfileFinish => "profile_finish",
         StageRole::VcarveRough => "vcarve_rough",
         StageRole::VcarveFinish => "vcarve_finish",
+        StageRole::Plot => "centerline_plot",
         StageRole::Knife => "knife",
         StageRole::Drill => "drill",
     }

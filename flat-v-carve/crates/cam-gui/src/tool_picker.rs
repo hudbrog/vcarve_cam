@@ -103,6 +103,7 @@ pub(super) fn role_index(role: Role) -> usize {
         Role::Vbit => 1,
         Role::Milling => 2,
         Role::Knife => 3,
+        Role::Pen => 5,
         Role::Drill => 4,
     }
 }
@@ -113,6 +114,7 @@ fn geometry_fits(geometry: &ToolGeometry, role: Role) -> bool {
         Role::Vbit => matches!(geometry, ToolGeometry::Vbit(_)),
         Role::Milling => matches!(geometry, ToolGeometry::Endmill(_)),
         Role::Knife => matches!(geometry, ToolGeometry::DragKnife(_)),
+        Role::Pen => matches!(geometry, ToolGeometry::Pen),
         Role::Drill => matches!(geometry, ToolGeometry::Drill(_)),
     }
 }
@@ -291,6 +293,7 @@ impl App {
                     "Knife · {} mm offset · {} mm cut depth",
                     g.blade_offset_mm, g.max_cut_depth_mm
                 ),
+                Some(ToolGeometry::Pen) => "Passive pen".into(),
                 Some(ToolGeometry::Drill(g)) => format!(
                     "Drill · Ø {} mm · {}° point · {} mm flutes",
                     g.diameter_mm, g.tip_angle_deg, g.cutting_length_mm
@@ -567,6 +570,7 @@ mod tests {
             role_index(Role::Vbit),
             role_index(Role::Milling),
             role_index(Role::Knife),
+            role_index(Role::Pen),
             role_index(Role::Drill),
         ];
         let unique: std::collections::BTreeSet<_> = slots.iter().collect();
@@ -644,6 +648,7 @@ mod tests {
                     role_index(Role::Milling)
                 }
                 Some(Kind::DragKnife) => role_index(Role::Knife),
+                Some(Kind::CenterlinePlot) => role_index(Role::Pen),
                 Some(Kind::Drill) => role_index(Role::Drill),
             };
             (

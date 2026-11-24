@@ -20,6 +20,7 @@ fn geometry(tool: &cam_core::project::v5::JobToolV5) -> String {
             g.included_angle_deg, g.max_cutting_diameter_mm
         ),
         Some(ToolGeometry::DragKnife(g)) => format!("Knife · {} mm offset", g.blade_offset_mm),
+        Some(ToolGeometry::Pen) => "Passive pen".into(),
         Some(ToolGeometry::Drill(g)) => {
             format!("Drill · Ø {} mm · {}°", g.diameter_mm, g.tip_angle_deg)
         }
@@ -43,6 +44,9 @@ fn cutting_values(job: &CamJobV5, operation: &str, role: Role) -> (String, Strin
         }
         OperationSettingsV5::Face(s) => &s.assignment,
         OperationSettingsV5::Profile(s) => &s.assignment,
+        OperationSettingsV5::CenterlinePlot(s) => {
+            return (number(s.draw_feed_mm_min), "Off".into());
+        }
         OperationSettingsV5::Drill(s) => &s.assignment,
         OperationSettingsV5::DragKnife(s) => {
             return (number(s.assignment.cutting_feed_mm_min), "Off".into());
@@ -248,7 +252,16 @@ impl App {
                     assigned.profile_label()
                 ));
             }
-            if role == Role::Knife {
+            if role == Role::Pen {
+                if let Some(s) = crate::plot::settings(&job, &operation) {
+                    ui.label(format!(
+                        "Draw {} · lower {} mm/min · compression {} mm",
+                        number(s.draw_feed_mm_min),
+                        number(s.lower_feed_mm_min),
+                        s.compression_mm
+                    ));
+                }
+            } else if role == Role::Knife {
                 if let Some(s) = crate::knife::settings_in(&job, &operation) {
                     let a = &s.assignment;
                     ui.label(format!(
@@ -353,7 +366,13 @@ impl App {
                     ctx,
                 );
             }
-            if button(ui, "Edit copied geometry", true).clicked() {
+            if button(
+                ui,
+                "Edit copied geometry",
+                tool.geometry != Some(ToolGeometry::Pen),
+            )
+            .clicked()
+            {
                 match crate::resources::capture_tool(tool, tool.id.clone(), tool.name.clone()) {
                     Ok(t) => {
                         self.resources.job_tool_draft = Some((self.revision, t));

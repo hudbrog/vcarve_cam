@@ -188,6 +188,12 @@ pub fn tool_in<'a>(
                 .assignment
                 .tool_id
         }
+        crate::session::OperationKind::CenterlinePlot => {
+            if finishing {
+                return None;
+            }
+            &crate::plot::settings(job, operation_id)?.tool_id
+        }
         crate::session::OperationKind::Drill => {
             if finishing {
                 return None;
@@ -375,7 +381,7 @@ pub const FIELDS: &[usize] = &[
     56, 57, 58, 59, 60, 34, 35, 36, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76,
     77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99,
     100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118,
-    119, 120, 121, 122, 123, 124, 125,
+    119, 120, 121, 122, 123, 124, 125, 126,
 ];
 
 /// Face-editor field IDs (GUI7a/b). Reused IDs 2/8/9/10/11 are the operation's
@@ -402,6 +408,9 @@ pub fn active_in(job: &CamJobV5, operation_id: &str, field: usize) -> bool {
         }
         Some(crate::session::OperationKind::Face) => return crate::face::active(field),
         Some(crate::session::OperationKind::Profile) => return crate::profile::active(field),
+        Some(crate::session::OperationKind::CenterlinePlot) => {
+            return matches!(field, 2 | 6 | 7 | 10 | 23 | 25..=36 | 40..=45 | 126);
+        }
         Some(crate::session::OperationKind::Drill) => return crate::drill::active(field),
         _ => {}
     }

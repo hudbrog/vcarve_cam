@@ -161,8 +161,62 @@ pub fn check_plan_v5(plan: &crate::sequence::OperationPlanV5) -> Result<BasicChe
     )?;
     if report.export_ready {
         check_pockets(plan, &mut report)?;
+        check_plots(plan, &mut report)?;
     }
     Ok(report)
+}
+
+fn check_plots(
+    plan: &crate::sequence::OperationPlanV5,
+    report: &mut BasicCheckReport,
+) -> Result<()> {
+    use crate::project::v5::{self, OperationSettingsV5};
+    let job = &plan.job_snapshot;
+    let mut catalogue = None;
+    for result in &plan.operation_results {
+        let Some(op) = job
+            .operations
+            .iter()
+            .find(|op| op.id == result.operation_id)
+        else {
+            continue;
+        };
+        let OperationSettingsV5::CenterlinePlot(settings) = &op.settings else {
+            continue;
+        };
+        if catalogue.is_none() {
+            catalogue = Some(v5::resolve::assembled_catalogue(&v5::inspect_artwork(
+                job,
+            )?)?);
+        }
+        let stage = plan
+            .stages
+            .iter()
+            .find(|s| s.operation_id == op.id && s.role == StageRole::Plot);
+        let checked = match (stage, job.setup.clearance_above_stock_mm) {
+            (Some(s), Some(clearance)) => crate::operations::plot::verify(
+                settings,
+                catalogue.as_ref().unwrap(),
+                clearance,
+                &plan.motions[s.motion_range.0..s.motion_range.1],
+            ),
+            _ => Err(Diagnostic::new(
+                "PLOT_TRACE",
+                "Missing plot stage or pen clearance",
+            )),
+        };
+        if let Err(d) = checked {
+            report.status = CheckStatus::Failed;
+            report.export_ready = false;
+            report.findings.push(CheckFinding {
+                code: d.code,
+                message: d.message,
+                operation_id: Some(op.id.clone()),
+                stage_id: stage.map(|s| s.stage_id.clone()),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn check_pockets(
@@ -288,7 +342,7 @@ impl CutterSafety {
             // A passive knife is pressed into its material by design and its
             // stage role is exempt from this pass; unknown geometry cannot
             // prove anything about clearance.
-            Some(ToolGeometry::DragKnife(_)) | None => (None, None, None),
+            Some(ToolGeometry::DragKnife(_) | ToolGeometry::Pen) | None => (None, None, None),
             // A drill's widest point is its cylindrical body; for clearance it
             // behaves like an endmill of the same diameter.
             Some(ToolGeometry::Drill(g)) => {
@@ -920,7 +974,7 @@ fn check_assembly(
     }
     for stage in stages {
         // A passive knife is pressed into its material by design.
-        if stage.role == StageRole::Knife {
+        if matches!(stage.role, StageRole::Knife | StageRole::Plot) {
             continue;
         }
         // Never lower the reference *above* the original stock top: an
@@ -1034,7 +1088,22 @@ fn check_assembly(
                 tool == tool_id
             }
             (Expected::Intent(stage), ExecutionItem::SetProcessIntent { intent }) => {
-                if matches!(intent.spindle, ProcessSpindle::Off) && stage.role != StageRole::Knife {
+                if stage.role == StageRole::Plot
+                    && (intent.spindle != ProcessSpindle::Off
+                        || intent.coolant != crate::sequence::CoolantIntent::Off
+                        || intent.path_control != crate::sequence::PathControlIntent::ExactPath)
+                {
+                    let mut f = finding(
+                        "PROCESS_PEN_STATE",
+                        "plotting requires spindle and coolant off and exact path",
+                    );
+                    f.stage_id = Some(stage.stage_id.clone());
+                    findings.push(f);
+                    failed = true;
+                }
+                if matches!(intent.spindle, ProcessSpindle::Off)
+                    && !matches!(stage.role, StageRole::Knife | StageRole::Plot)
+                {
                     let mut f = finding(
                         "PROCESS_SPINDLE_STATE",
                         format!("milling stage '{}' requests spindle off", stage.stage_id),

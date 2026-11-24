@@ -9,6 +9,8 @@ mod knife_ui;
 mod machine_ui;
 #[path = "operation_ui.rs"]
 mod operation_ui;
+#[path = "plot_ui.rs"]
+mod plot_ui;
 #[path = "pocket_ui.rs"]
 mod pocket_ui;
 #[path = "profile_ui.rs"]
@@ -78,6 +80,10 @@ impl App {
             let operation = self.inspector_tab == 2;
             let drill = self.operation_kind() == Some(OperationKind::Drill);
             let name = match field {
+                2 if self.operation_kind() == Some(OperationKind::CenterlinePlot) => "Drawing feed",
+                10 if self.operation_kind() == Some(OperationKind::CenterlinePlot) => {
+                    "Lowering feed"
+                }
                 10 if drill => "Drilling feed",
                 2 | 3 if operation => "Cutting feed",
                 21 if operation => "Plunge feed",
@@ -133,10 +139,9 @@ impl App {
                 name,
                 &mut text,
                 unit,
-                if drill && field == 10 {
-                    "Drilling feed"
-                } else {
-                    FIELDS[field]
+                match name {
+                    "Drawing feed" | "Lowering feed" | "Drilling feed" => name,
+                    _ => FIELDS[field],
                 },
             );
             observe_control(FIELDS[field], response.rect);
@@ -525,6 +530,11 @@ impl App {
                             .filter(|r| r.geometry.artwork_item_id == item.id)
                             .count(),
                         OperationSettingsV5::DragKnife(s) => s
+                            .chains
+                            .iter()
+                            .filter(|r| r.artwork_item_id == item.id)
+                            .count(),
+                        OperationSettingsV5::CenterlinePlot(s) => s
                             .chains
                             .iter()
                             .filter(|r| r.artwork_item_id == item.id)

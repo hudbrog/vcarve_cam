@@ -104,6 +104,9 @@ fn tab_for_operation_control(kind: Option<crate::session::OperationKind>, label:
             }
             _ => 1,
         },
+        Some(OperationKind::CenterlinePlot) => usize::from(
+            matches!(field, Some(2 | 10 | 126)) || label.contains("feed") || label == "Pen tool",
+        ),
         Some(OperationKind::Drill) => match field {
             Some(111..=114) => 1,
             Some(115..=119) => 2,
@@ -195,6 +198,10 @@ impl App {
             Some(crate::session::OperationKind::DragKnife) => {
                 ui.small("Passive XYZ · spindle and coolant off");
                 self.operation_tabs(ui, &["Geometry", "Cutting", "Corners & start"]);
+                return;
+            }
+            Some(crate::session::OperationKind::CenterlinePlot) => {
+                self.operation_tabs(ui, &["Paths", "Pen"]);
                 return;
             }
             Some(crate::session::OperationKind::Drill) => return self.drill_header(ui, ctx),
@@ -294,6 +301,7 @@ impl App {
             Some(crate::session::OperationKind::Pocket) => return self.pocket_panel(ui, ctx),
             Some(crate::session::OperationKind::Face) => return self.face_panel(ui, ctx),
             Some(crate::session::OperationKind::DragKnife) => return self.knife_panel(ui, ctx),
+            Some(crate::session::OperationKind::CenterlinePlot) => return self.plot_panel(ui, ctx),
             Some(crate::session::OperationKind::Drill) => return self.drill_panel(ui, ctx),
             _ => {}
         }
