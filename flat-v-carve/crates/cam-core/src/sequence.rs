@@ -186,6 +186,9 @@ pub enum CoolantIntent {
 #[serde(rename_all = "snake_case")]
 pub enum PathControlIntent {
     UseMachineProfile,
+    /// Use exact-path control when the controller can select it. Its native
+    /// trajectory planner is also suitable for this stage.
+    PreferExactPath,
     ExactPath,
     /// Knife stages: the machine profile's path control is allowed, bounded by
     /// this deviation. The planner publishes it only after its own tip replay

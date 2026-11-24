@@ -1091,11 +1091,15 @@ fn check_assembly(
                 if stage.role == StageRole::Plot
                     && (intent.spindle != ProcessSpindle::Off
                         || intent.coolant != crate::sequence::CoolantIntent::Off
-                        || intent.path_control != crate::sequence::PathControlIntent::ExactPath)
+                        || !matches!(
+                            intent.path_control,
+                            crate::sequence::PathControlIntent::PreferExactPath
+                                | crate::sequence::PathControlIntent::ExactPath
+                        ))
                 {
                     let mut f = finding(
                         "PROCESS_PEN_STATE",
-                        "plotting requires spindle and coolant off and exact path",
+                        "plotting requires spindle and coolant off and an exact-path preference or requirement",
                     );
                     f.stage_id = Some(stage.stage_id.clone());
                     findings.push(f);

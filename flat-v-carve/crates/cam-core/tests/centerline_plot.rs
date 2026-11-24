@@ -262,6 +262,39 @@ fn linuxcnc_exports_one_continuous_run_for_touching_paths() {
 }
 
 #[test]
+fn grbl_plots_with_the_native_planner_and_preserves_strokes_at_controller_precision() {
+    use cam_core::post::{grbl, machine::GrblProfile};
+
+    let mut job = selected(&["box", "a", "b"]);
+    set_gap(&mut job, 0.002);
+    let mut profile: GrblProfile =
+        serde_json::from_str(include_str!("../../../fixtures/gui2/grbl-machine.json")).unwrap();
+    profile.decimal_places = 1;
+    profile.coolant = Coolant::Flood;
+    let trusted = TrustedPlanV5::from_generated(plan(&job));
+    for layout in [OutputLayout::OneProgram, OutputLayout::SequentialFiles] {
+        let bundle = grbl::export_bundle(&trusted, &profile, layout).unwrap();
+        let g = &bundle.files[0].gcode;
+        assert_eq!(bundle.report.output_decimal_places, 3);
+        assert!(g.starts_with("M5\nM9\n"));
+        assert!(
+            !g.split_whitespace()
+                .any(|w| matches!(w, "M3" | "M4" | "M7" | "M8" | "G61" | "G64" | "G4"))
+        );
+        // Finish the square short of its start, lift vertically, then cross to the open strokes.
+        assert!(
+            g.contains("G1 X10.002 Y19.998 Z-0.2 F320\nG0 X10.002 Y19.998 Z5\nG0 X2 Y25 Z5"),
+            "{g}"
+        );
+        // The next two paths share an endpoint and are drawn without lifting.
+        assert!(
+            g.contains("G1 X10 Y25 Z-0.2 F320\nG1 X10 Y20 Z-0.2 F320"),
+            "{g}"
+        );
+    }
+}
+
+#[test]
 fn exported_coordinates_keep_a_small_closure_gap_open() {
     let mut job = selected(&["box"]);
     set_gap(&mut job, 0.02);

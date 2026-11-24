@@ -43,7 +43,10 @@ struct Run<'a> {
 }
 
 fn process(intent: &ProcessIntent, stage_id: &str, profile: &GrblProfile) -> Result<Process> {
-    if intent.path_control != PathControlIntent::UseMachineProfile {
+    if !matches!(
+        intent.path_control,
+        PathControlIntent::UseMachineProfile | PathControlIntent::PreferExactPath
+    ) {
         return Err(error(
             "PROCESS_PATH_CONTROL",
             format!(
@@ -159,6 +162,15 @@ pub fn export_bundle(
             .unwrap_or(f64::INFINITY),
     );
     for places in profile.decimal_places..=9 {
+        if !super::machine::plot_gaps_preserved(plan, |p| blocks::output_xy(p, frame, places))? {
+            if places < 9 {
+                continue;
+            }
+            return Err(error(
+                "POST_PRECISION",
+                "Grbl coordinate precision would close an open pen stroke",
+            ));
+        }
         let mut files = Vec::with_capacity(groups.len());
         let mut retry = false;
         for (index, &(start, end)) in groups.iter().enumerate() {

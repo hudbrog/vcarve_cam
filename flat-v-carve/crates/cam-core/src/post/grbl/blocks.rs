@@ -1,7 +1,7 @@
 //! The writer and reader operate exclusively on machine actions in work coordinates.
 use super::{GrblProfile, Run};
 use crate::{
-    geometry::{Diagnostic, Result},
+    geometry::{Diagnostic, Point, Result},
     motion::Position,
     post::{Coolant, SpindleDirection, error, sequence::PreparedSpindle},
     toolpath::Interpolation,
@@ -215,9 +215,19 @@ fn precision() -> Diagnostic {
     )
 }
 
-// Upstream read_float accumulates at most eight decimal digits and scales a 32-bit float.
+pub(super) fn output_xy(p: Position, zero: Position, places: usize) -> Result<Point> {
+    Ok(Point::new(
+        read_number(&decimal(p.x - zero.x, places))?,
+        read_number(&decimal(p.y - zero.y, places))?,
+    ))
+}
+
 fn number(word: &str, letter: char) -> Result<f64> {
-    let raw = word.strip_prefix(letter).ok_or_else(subset)?;
+    read_number(word.strip_prefix(letter).ok_or_else(subset)?)
+}
+
+// Upstream read_float accumulates at most eight decimal digits and scales a 32-bit float.
+fn read_number(raw: &str) -> Result<f64> {
     let digits = raw.strip_prefix('-').unwrap_or(raw);
     let mut value = 0u32;
     let mut count = 0;

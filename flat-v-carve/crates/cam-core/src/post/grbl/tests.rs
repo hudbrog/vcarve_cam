@@ -54,14 +54,19 @@ fn the_same_machine_actions_have_the_same_bytes_and_requirements_for_every_produ
     other.stage_id = "finish".into();
     other.purpose = MotionPurpose::Finish;
     assert_eq!(gcode, generate(&other));
-    let constrained = ProcessIntent {
-        path_control: PathControlIntent::ExactPath,
-        ..intent.clone()
-    };
-    for m in [&motion, &other] {
-        let e = process(&constrained, &m.stage_id, &profile).unwrap_err();
-        assert_eq!(e.code, "PROCESS_PATH_CONTROL");
-        assert_eq!(e.source_id.as_ref(), Some(&m.stage_id));
+    for path_control in [
+        PathControlIntent::ExactPath,
+        PathControlIntent::BlendWithin { tolerance_mm: 0.01 },
+    ] {
+        let constrained = ProcessIntent {
+            path_control,
+            ..intent.clone()
+        };
+        for m in [&motion, &other] {
+            let e = process(&constrained, &m.stage_id, &profile).unwrap_err();
+            assert_eq!(e.code, "PROCESS_PATH_CONTROL");
+            assert_eq!(e.source_id.as_ref(), Some(&m.stage_id));
+        }
     }
     let runs = [Run {
         process: process(&intent, &motion.stage_id, &profile).unwrap(),

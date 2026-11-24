@@ -1,6 +1,11 @@
 //! Reusable controller profiles. Untagged schema-2 files are the existing LinuxCNC contract.
 use super::{Coolant, HolderSelection, error, sequence::SequenceProfile};
-use crate::geometry::Result;
+use crate::{
+    geometry::{Point, Result},
+    motion::Position,
+    sequence::{SequencePlan, StageRole},
+    toolpath::MotionEffect,
+};
 use serde::{Deserialize, Serialize};
 
 /// Controller-facing view of one move. Geometry stays in setup coordinates until output preparation.
@@ -80,6 +85,29 @@ pub(super) fn stage_runs(plan: &dyn crate::sequence::SequencePlan) -> Result<Vec
         return Err(error("PLAN_EXECUTION_ORDER", "missing execution stage"));
     }
     Ok(result)
+}
+
+/// Even when each individual move survives rounding, the end of an open
+/// stroke must remain distinct from its start in the controller's coordinates.
+pub(super) fn plot_gaps_preserved(
+    plan: &dyn SequencePlan,
+    output_xy: impl Fn(Position) -> Result<Point>,
+) -> Result<bool> {
+    for stage in plan.stages().iter().filter(|s| s.role == StageRole::Plot) {
+        let (start, end) = stage.motion_range;
+        for stroke in plan.motions()[start..end].chunk_by(|a, b| a.pass_id == b.pass_id) {
+            let mut draws = stroke.iter().filter(|m| m.effect == MotionEffect::PenTrace);
+            if let Some(first) = draws.next() {
+                let last = draws.next_back().unwrap_or(first);
+                if first.start.xy() != last.end.xy()
+                    && output_xy(first.start)? == output_xy(last.end)?
+                {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(true)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

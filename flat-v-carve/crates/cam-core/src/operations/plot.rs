@@ -254,7 +254,7 @@ pub(crate) fn plan(
             intent: ProcessIntent {
                 spindle: ProcessSpindle::Off,
                 coolant: CoolantIntent::Off,
-                path_control: PathControlIntent::ExactPath,
+                path_control: PathControlIntent::PreferExactPath,
             },
         }],
         motions,

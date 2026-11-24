@@ -17,7 +17,7 @@ Operation for a passive pen raised and lowered by the machine's Z axis. The user
 
 For each chain, reach clearance before moving XY to its start, lower vertically at the Z feed, then follow the chain at constant contact Z and drawing feed. With **Closure gap** at zero, draw the whole loop. A positive value leaves that many millimeters undrawn at the end of each closed stroke, measured along the placed centerline. For a fineliner, try 0.2 mm. The gap must be shorter than the loop. If the next chain starts at the same XY, continue drawing at contact Z. Otherwise retract vertically before crossing the gap. The plot stage ends at clearance.
 
-Use the catalogue's tolerance-bounded polylines for the first release. Keep spindle and coolant off throughout the plot stage and request exact-path control for draw and lift transitions. The postprocessor applies the existing work-zero and tool-length contracts. Store drawing moves for preview and verification. A plot contributes zero removed material and establishes no machined surface for later operations.
+Use the catalogue's tolerance-bounded polylines. Keep spindle and coolant off throughout the plot stage. LinuxCNC uses exact-path control (`G61`). Grbl 1.1 uses its native motion planner. Both exporters preserve the programmed stroke endpoints and vertical pen lifts. The postprocessor applies the controller's work-zero and tool-length contracts. Store drawing moves for preview and verification. A plot contributes zero removed material and establishes no machined surface for later operations.
 
 ## Editor and export
 
@@ -25,7 +25,7 @@ Choose **Operations → Add Centerline Plot**. In **Paths**, check individual pa
 
 The plot picker skips paths with no drawable length. If a saved job already includes them, choose **Paths → Remove undrawable paths** to remove them together and preserve the drawing order of the remaining paths.
 
-Map the pen's job-tool ID in the applied machine configuration, then generate the job or a prefix ending at the plot. The preview shows ink on the drawing surface and clearance travel in a different color. Playback retains the commanded Z, including spring compression. Export supports one LinuxCNC program or sequential files. The emitted bytes are checked against the retained motions, including the lifts, working heights and passive process state.
+For LinuxCNC, map the pen's job-tool ID in the applied machine configuration. For Grbl, fit the pen identified in the export manifest and touch off Z at the job datum. Generate the job or a prefix ending at the plot. The preview shows ink on the drawing surface and clearance travel in a different color. Playback retains the commanded Z, including spring compression. Both exporters check the emitted moves, working heights and passive process state.
 
 ## Verification
 
