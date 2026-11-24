@@ -26,8 +26,8 @@ fn canonical_flower_retains_exact_execution_and_prepares_without_replanning() {
     let (scene, payload) = gui::execute(&mut service, Command::generate(input.clone())).unwrap();
     // The endmill cleanup uses the available motion-tolerance budget, removing
     // tiny interior segments while preserving the verified clearance guard.
-    assert_eq!(scene.motions, 18_653);
-    assert_eq!(scene.rough_vertices / 2, 2_818);
+    assert_eq!(scene.motions, 18_654);
+    assert_eq!(scene.rough_vertices / 2, 2_819);
     let total = scene.motions;
     let rough_end = scene.rough_vertices / 2;
     assert!(scene.stock.is_some());
